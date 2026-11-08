@@ -174,6 +174,37 @@ Feature: What a baseline covers
       "findings":[],"baselined":1,"fixed":0
       """
 
+  Scenario: A tool that did not start does not make its accepted findings fixed
+    Given the C file "old.json" holds:
+      """
+      {
+        "version": 1,
+        "findings": [
+          {"code": "CC-GCC-ANALYZER-MALLOC-LEAK", "file": "fixtures/leak.c", "message": "leak of 'buf'", "count": 1}
+        ]
+      }
+      """
+    When I run cchecker with "--json --tools gcc --gcc no-such-gcc -b $DIR/old.json fixtures/leak.c"
+    Then the exit code is 2
+    And the output includes:
+      """
+      "findings":[],"baselined":0,"fixed":0
+      """
+
+  Scenario: A file spelled with dots is the file of the baseline
+    Given the C file "a.c" holds:
+      """
+      int use_buffer(int n) { return n; }
+      """
+    When I run cchecker with "--tools gcc --baseline $DIR/base.json --update-baseline $DIR/./a.c"
+    Then the exit code is 0
+    When I run cchecker with "--json --tools gcc --baseline $DIR/base.json $DIR/a.c $DIR/b.c"
+    Then the exit code is 0
+    And the output includes:
+      """
+      "findings":[],"baselined":1,"fixed":0
+      """
+
   Scenario: An update with the flags that show another finding of a header keeps the first one
     Given the C file "h.h" holds:
       """

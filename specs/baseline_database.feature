@@ -114,3 +114,48 @@ Feature: Updating a baseline from a whole compile database
       """
       "findings":[],"baselined":1,"fixed":0
       """
+
+  Scenario: A file of the database that is not a C file keeps its entries in a full update
+    Given the C file "z.cc" holds:
+      """
+      #include <stdlib.h>
+
+      int take_cc(int n) {
+        char *p = (char *)malloc(10);
+        if (n > 3) {
+          return 1;
+        }
+        free(p);
+        return 0;
+      }
+      """
+    When I run cchecker with "--tools gcc -b $DIR/cxx.json --update-baseline $DIR/z.cc"
+    Then the exit code is 0
+    Given the C file "compile_commands.json" holds:
+      """
+      [
+        {"directory": ".", "command": "cc -c a.c", "file": "a.c"},
+        {"directory": ".", "command": "cc -c b.c", "file": "b.c"},
+        {"directory": ".", "command": "c++ -c z.cc", "file": "z.cc"}
+      ]
+      """
+    When I run cchecker with "--tools gcc -p $DIR -b $DIR/cxx.json --update-baseline"
+    Then the exit code is 0
+    When I run cchecker with "--json --tools gcc -b $DIR/cxx.json $DIR/z.cc"
+    Then the exit code is 0
+    And the output includes:
+      """
+      "findings":[],"baselined":1,"fixed":0
+      """
+
+  Scenario: A full update with one tool keeps the entries of the other tool
+    When I run cchecker with "-p $DIR -b $DIR/both.json --update-baseline"
+    Then the exit code is 0
+    When I run cchecker with "--tools gcc -p $DIR -b $DIR/both.json --update-baseline"
+    Then the exit code is 0
+    When I run cchecker with "--json -p $DIR -b $DIR/both.json"
+    Then the exit code is 0
+    And the output includes:
+      """
+      "findings":[],"baselined":3,"fixed":0
+      """

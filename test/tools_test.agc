@@ -27,3 +27,17 @@ end
 def test_a_kill_is_not_told_as_a_timeout() -> Result[Void]
   return Test.assert(Tools.failure(true, 5, "", 137) != Tools.failure(true, 5, "", 124), "137 and 124")
 end
+
+def test_the_reason_of_a_killed_cc1_is_the_fatal_error() -> Result[Void]
+  text = (
+    "a.c:1:1: error: leak of 'p' [-Werror=analyzer-malloc-leak]\n" +
+    "gcc: fatal error: Killed signal terminated program cc1\ncompilation terminated.\n"
+  )
+
+  return Test.eq(Tools.first_line(text), "gcc: fatal error: Killed signal terminated program cc1")
+end
+
+def test_the_reason_without_a_fatal_error_is_the_first_error() -> Result[Void]
+  text = "In function 'f':\na.c:3:5: error: unknown name 'x'\na.c:4:5: error: unknown name 'y'\n"
+  return Test.eq(Tools.first_line(text), "a.c:3:5: error: unknown name 'x'")
+end

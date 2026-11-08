@@ -236,6 +236,15 @@ Feature: Running the analyzers on C files
       "errors":[{"tool":"gcc","file":"fixtures/clean.c"
       """
 
+  Scenario Outline: The tools run with the C locale
+    When I run cchecker with "--tools <tool> --<tool> fixtures/fake_tool_locale.sh fixtures/clean.c"
+    Then the exit code is 0
+
+    Examples:
+      | tool         |
+      | gcc          |
+      | clang-tidy   |
+
   Scenario: A .clang-tidy that makes warnings errors does not make findings tool errors
     When I run cchecker with "--tools clang-tidy fixtures/werror_tidy/div.c"
     Then the exit code is 1
