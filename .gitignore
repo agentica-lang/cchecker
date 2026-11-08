@@ -1,0 +1,6 @@
+.tools/
+_build/
+deps/
+tmp/
+dist/
+specs/scratch/
