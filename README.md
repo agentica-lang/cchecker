@@ -553,7 +553,8 @@ tests in `test/`. They need `gcc`, `clang`, `clang-tidy` and `sh`.
 make check       # agentica check
 make fmt-check   # agentica fmt --check; `agentica fmt` fixes it
 make test        # agentica test --jobs 4 without the @slow scenarios, from the root of the repository
-make test-slow   # the @slow scenarios only
+make test-slow   # the @slow scenarios only (the bounds of specs/limits.feature, the property tests on many cases)
+make deps        # agentica install: prop into deps/; make check, test and test-slow run it first
 make native      # builds the native module once; make test and make test-slow run it first
 make bench       # the rules on the C VM of Agentica: wall time and peak RSS (BENCH_JOBS=2 for -j 2)
 ```
@@ -561,6 +562,11 @@ make bench       # the rules on the C VM of Agentica: wall time and peak RSS (BE
 A scenario tagged `@slow` runs a large generated input (`specs/limits.feature`: a chain of 1000 branches, a
 declaration of 16 million lines of the dump, a function over the guard of nodes or of states) under a bound on memory
 (`ulimit -v`) and on time. `make test` leaves them out; CI runs them in a job of their own on every pull request.
+
+`specs/properties.feature` holds property tests, with the [prop](https://github.com/agentica-lang/packages) package
+(`make deps` installs it into `deps/`; cchecker itself needs no package): a law of the rules is checked on generated C
+files, and a failure shows the seed and the shrunk C file. `make test` runs a few cases and `make test-slow` many.
+`CCHECKER_PROP_SEED=SEED agentica test --only "NAME" specs/properties.feature` runs the cases of a failure again.
 
 `make bench` fetches Agentica at a pinned commit (`AGENTICA_BENCH_COMMIT`) into `.bench/`, with only the submodules
 whose headers its VM reads, and runs `--tools rules` on the 84 files of `vm/`; it fails when a file is not checked. It

@@ -7,3 +7,7 @@ blank_line_after_end = true
 # The scan of clang's JSON AST in C (src/scan.agc), built by the first run with the system C compiler.
 [native.cchecker_scan]
 build = { sources = ["native/scan.c"] }
+
+# Property tests of the features (specs/props.agc).
+[dependencies]
+prop = { git = "https://github.com/agentica-lang/packages", tag = "prop-0.1.0", subdir = "prop" }

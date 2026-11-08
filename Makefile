@@ -3,12 +3,12 @@
 
 JOBS ?= 4
 
-.PHONY: check fmt-check test test-slow native
+.PHONY: check fmt-check test test-slow native deps
 
 # The Agentica files of the repository, named so that nothing else under the root is read.
 SOURCES = cchecker.agc src specs test
 
-check:
+check: deps
 	@agentica check $(SOURCES)
 
 # `agentica fmt --check` lists the files that `agentica fmt` would change, and fails if there are any.
@@ -18,14 +18,18 @@ fmt-check:
 # The features of specs/ and the unit tests of test/, up to JOBS files at once, without the scenarios tagged @slow. Run
 # it from the root of the repository: the steps of the features start cchecker from there. `--tags` leaves the unit
 # tests out, so they run on their own.
-test: native
+test: deps native
 	@agentica test --jobs $(JOBS) --tags "not @slow" specs
 	@agentica test --jobs $(JOBS) test
 
-# The scenarios tagged @slow (large generated inputs with bounds on time and memory), one file at a time so that the
-# bounds hold: the slow job of CI.
-test-slow: native
+# The scenarios tagged @slow (large generated inputs with bounds on time and memory, and the property tests on many
+# cases), one file at a time so that the bounds hold: the slow job of CI.
+test-slow: deps native
 	@agentica test --tags "@slow" specs
+
+# The packages of agentica.lock (prop, for the property tests of specs/) into deps/. cchecker itself needs none.
+deps:
+	@agentica install > /dev/null
 
 # One run of cchecker builds its native module (agentica.toml) into the build cache before the tests start many runs
 # at once: on an empty cache, two runs that build it together can fail to make the same folder.
