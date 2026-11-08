@@ -98,11 +98,19 @@ def file_missing(ctx: BDD.Context, args: List[String]) -> BDD.Context
   return BDD.assert(ctx, not File.stat(path).ok?, "#{path} exists")
 end
 
-# The file holds the pid of a process the tool started. A killed process is gone from /proc once init has reaped it.
+# The file holds the pid of a process the tool started. A killed process is gone from /proc once its parent or init has
+# reaped it; in a container nothing may reap it, and it stays as a zombie, which has ended too.
 def process_ended(ctx: BDD.Context, args: List[String]) -> BDD.Context
   pid = File.read_text(host_path(ctx, args[0])).unwrap!.strip
   Task.sleep(500)
-  return BDD.assert(ctx, not File.stat("/proc/#{pid}").ok?, "process #{pid} is still running")
+  return BDD.assert(ctx, ended?(pid), "process #{pid} is still running")
+end
+
+def ended?(pid: String) -> Bool
+  case File.read_text("/proc/#{pid}/status")
+    ok(status) -> return status.include?("State:\tZ")
+    error(_) -> return true
+  end
 end
 
 # A path of a step is relative to specs/, and $DIR is the folder of the scenario.
