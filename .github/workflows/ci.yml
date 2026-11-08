@@ -22,8 +22,8 @@ jobs:
     steps:
       - name: Install the tools
         run: |
-          apt-get update
-          apt-get install -y --no-install-recommends ca-certificates curl git make gcc libc6-dev clang clang-tidy
+          apt-get -o Acquire::Retries=3 update
+          apt-get -o Acquire::Retries=3 install -y --no-install-recommends ca-certificates curl git make gcc libc6-dev clang clang-tidy
 
       # The tools are the product: a missing one is a failure here, never a skipped test.
       - name: Check that the tools are there
@@ -42,7 +42,7 @@ jobs:
           # GitHub's release downloads sometimes answer 5xx for a while: 5 tries, waiting 10, 20, 40 and 80 s.
           delay=10
           for try in 1 2 3 4 5; do
-            curl -fsSL --connect-timeout 20 --max-time 300 -o "$RUNNER_TEMP/$archive" "$url" && break
+            curl -fsSL --connect-timeout 20 --max-time 60 -o "$RUNNER_TEMP/$archive" "$url" && break
             if [ "$try" = 5 ]; then
               echo "download failed after $try tries"
               exit 1
