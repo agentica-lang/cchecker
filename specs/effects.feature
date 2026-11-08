@@ -219,6 +219,12 @@ Feature: Effects on the call graph
       | SSL_new              | CC_HOT   | CC-EFFECT-HOT-ALLOCATES |
       | mmap                 | CC_HOT   | CC-EFFECT-HOT-SYSCALL   |
       | pthread_mutex_unlock | CC_HOT   | CC-EFFECT-HOT-SYSCALL   |
+      | link                 | CC_HOT   | CC-EFFECT-HOT-SYSCALL   |
+      | symlink              | CC_HOT   | CC-EFFECT-HOT-SYSCALL   |
+      | lchown               | CC_HOT   | CC-EFFECT-HOT-SYSCALL   |
+      | utime                | CC_HOT   | CC-EFFECT-HOT-SYSCALL   |
+      | statfs               | CC_HOT   | CC-EFFECT-HOT-SYSCALL   |
+      | mkdtemp              | CC_HOT   | CC-EFFECT-HOT-SYSCALL   |
 
   Scenario: A large table of numbers is left out of the graph, and the rest of the file is checked
     Given the C file "table.c" holds, with ITEMS as 100000 times "7,":

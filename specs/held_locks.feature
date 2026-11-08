@@ -388,6 +388,58 @@ Feature: What runs while a lock is held
       "18:3 calls f, which takes runtime.sync"]
       """
 
+  Scenario Outline: A call under a lock through a pointer that holds two functions reaches both (<case>)
+    Given the C file "cb.c" holds:
+      """
+      #include "pthread.h" /* found in the system folders */
+      #include "unistd.h"
+      #include "cchecker.h"
+
+      struct queue { CC_NO_SYSCALL_UNDER() pthread_mutex_t mu; void (*cb)(struct queue *q); int fd; };
+      static void count(struct queue *q) { q->fd++; }
+      static void flush(struct queue *q) { write(q->fd, "x", 1); }
+      void quiet(struct queue *q) { q->cb = count; }
+      <setup>
+      void push(struct queue *q) { pthread_mutex_lock(&q->mu); q->cb(q); pthread_mutex_unlock(&q->mu); }
+      """
+    When I run cchecker with "--tools rules --json $DIR/cb.c -- -I../include"
+    Then the exit code is <exit>
+    And the output <found>:
+      """
+      "10:58 calls q->cb: flush -> write"]
+      """
+
+    Examples:
+      | case            | setup                                          | exit | found            |
+      | both stored     | void loud(struct queue *q) { q->cb = flush; }  | 1    | includes         |
+      | one stored      | void loud(struct queue *q) { (void)q; }        | 0    | does not include |
+
+  Scenario Outline: A lock of a helper is classed through the qualifiers of its parameter (<case>)
+    Given the C file "order.c" holds:
+      """
+      #include "pthread.h" /* found in the system folders */
+      #include "cchecker.h"
+
+      struct queue { CC_LOCK_LEVEL(2) pthread_mutex_t mu; };
+      struct runtime { CC_LOCK_LEVEL(1) pthread_mutex_t sync; };
+      CC_ACQUIRES(r->sync) void rt_lock(struct runtime *<qualifier> r);
+      CC_RELEASES(r->sync) void rt_unlock(struct runtime *<qualifier> r);
+      void f(struct runtime *rt, struct queue *q) { pthread_mutex_lock(&q->mu); rt_lock(rt); rt_unlock(rt); pthread_mutex_unlock(&q->mu); }
+      """
+    When I run cchecker with "--tools rules --json $DIR/order.c -- -I../include -Wno-nullability-completeness"
+    Then the exit code is 1
+    And the output includes:
+      """
+      {"code":"CC-PATH-LOCK-ORDER","tool":"rules","file":"$DIR/order.c","line":8,"column":6,
+      """
+
+    Examples:
+      | case          | qualifier    |
+      | none          | const        |
+      | _Atomic       | _Atomic      |
+      | __restrict__  | __restrict__ |
+      | _Nonnull      | _Nonnull     |
+
   Scenario: Locks are classed through arrays, const pointers and their own declarations, and a trylock waits for none
     Given the C file "classes.c" holds:
       """
@@ -502,9 +554,82 @@ Feature: What runs while a lock is held
       """
       "errors":[{"tool":"rules","file":"$DIR/marks.c",
       """
+    And the output includes:
+      """
+      <message>
+      """
 
     Examples:
-      | case               | code                                                                |
-      | a level not a number | struct box { CC_LOCK_LEVEL(0x2) pthread_mutex_t mu; };            |
-      | a lock named on a field | struct box { CC_NO_SYSCALL_UNDER(mu) pthread_mutex_t mu; };    |
-      | a field with no class | struct { CC_LOCK_LEVEL(1) pthread_mutex_t mu; } box;              |
+      | case                    | code                                                         | message                                                  |
+      | a level not a number    | struct box { CC_LOCK_LEVEL(0x2) pthread_mutex_t mu; };       | box.mu: CC_LOCK_LEVEL takes a decimal number             |
+      | a lock named on a field | struct box { CC_NO_SYSCALL_UNDER(mu) pthread_mutex_t mu; };  | box.mu: CC_NO_SYSCALL_UNDER() on a lock names no lock    |
+      | a field with no class   | struct { CC_LOCK_LEVEL(1) pthread_mutex_t mu; } box;         | a lock mark needs a field of a named struct or a global  |
+
+  Scenario: A CC_RELEASES helper whose prototype names its parameters apart from its definition stops at its unlock
+    Given the C file "push.c" holds:
+      """
+      #include "pthread.h" /* found in the system folders */
+      #include "cchecker.h"
+
+      struct queue { CC_NO_SYSCALL_UNDER() pthread_mutex_t mu; pthread_cond_t cv; int n; };
+      CC_RELEASES(queue->mu) void unlock_and_wake(struct queue *queue);
+      void unlock_and_wake(struct queue *q) { pthread_mutex_unlock(&q->mu); pthread_cond_signal(&q->cv); }
+      void push(struct queue *q) { pthread_mutex_lock(&q->mu); q->n++; unlock_and_wake(q); }
+      """
+    When I run cchecker with "--tools rules --json $DIR/push.c -- -I../include"
+    Then the exit code is 0
+
+  Scenario: A CC_RELEASES helper of two locks is held to its system calls up to the release of the quiet one
+    Given the C file "push.c" holds:
+      """
+      #include "pthread.h" /* found in the system folders */
+      #include "unistd.h"
+      #include "cchecker.h"
+
+      struct queue { CC_NO_SYSCALL_UNDER() pthread_mutex_t mu; int fd; int n; }; struct box { pthread_mutex_t mu; };
+      CC_RELEASES(a->mu, b->mu) void unlock_both(struct queue *a, struct box *b) { pthread_mutex_unlock(&b->mu); write(a->fd, "x", 1); pthread_mutex_unlock(&a->mu); }
+      void push(struct queue *q, struct box *x) { pthread_mutex_lock(&x->mu); pthread_mutex_lock(&q->mu); q->n++; unlock_both(q, x); }
+      """
+    When I run cchecker with "--tools rules --json $DIR/push.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      calls unlock_both: unlock_both -> write"]
+      """
+
+  Scenario: The restore of a CC_PAIR whose set ran under a CC_NO_SYSCALL_UNDER lock is held to its system calls
+    Given the C file "push.c" holds:
+      """
+      #include "pthread.h" /* found in the system folders */
+      #include "signal.h"
+      #include "cchecker.h"
+
+      struct queue { CC_NO_SYSCALL_UNDER() pthread_mutex_t mu; int n; };
+      CC_PAIR(mask_signals, restore_signals) void mask_signals(void); void restore_signals(void);
+      void mask_signals(void) { sigprocmask(SIG_BLOCK, 0, 0); } void restore_signals(void) { sigprocmask(SIG_SETMASK, 0, 0); }
+      void push(struct queue *q) { pthread_mutex_lock(&q->mu); mask_signals(); q->n++; restore_signals(); pthread_mutex_unlock(&q->mu); }
+      """
+    When I run cchecker with "--tools rules --json $DIR/push.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      calls restore_signals: restore_signals -> sigprocmask"]
+      """
+
+  Scenario: A call of a CC_RELEASES helper that cannot name one of its locks stops the walk at any of them
+    Given the C file "push.c" holds:
+      """
+      #include "pthread.h" /* found in the system folders */
+      #include "unistd.h"
+      #include "cchecker.h"
+
+      struct queue { CC_NO_SYSCALL_UNDER() pthread_mutex_t mu; int fd; int n; }; struct box { pthread_mutex_t mu; };
+      struct box *box_of(struct queue *q);
+      CC_RELEASES(a->mu, b->mu) void unlock_both(struct queue *a, struct box *b) { pthread_mutex_unlock(&b->mu); write(a->fd, "x", 1); pthread_mutex_unlock(&a->mu); }
+      void push(struct queue *q) { pthread_mutex_lock(&q->mu); q->n++; unlock_both(q, box_of(q)); }
+      """
+    When I run cchecker with "--tools rules --json $DIR/push.c -- -I../include"
+    Then the output does not include:
+      """
+      calls unlock_both
+      """

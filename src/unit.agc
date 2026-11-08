@@ -37,7 +37,10 @@ GC_ALLOC = "gc_alloc"
 MAX_BODY_NODES = 20_000
 
 # The words of a type that are not the name of its struct.
-TYPE_QUALIFIERS = Set.new(["const", "volatile", "restrict", "__restrict", "struct", "union"])
+TYPE_QUALIFIERS = Set.new([
+  "const", "volatile", "restrict", "__restrict", "__restrict__", "_Atomic", "_Nonnull", "_Nullable",
+  "_Null_unspecified", "struct", "union",
+])
 
 # The marks of a lock field or global: CC_NO_SYSCALL_UNDER() and CC_LOCK_LEVEL(n), n a decimal number.
 QUIET_MARK = "no_syscall_under"
@@ -525,10 +528,15 @@ def class_of_text(
   return ""
 end
 
-# The name of the struct of a type as clang writes it: `struct server *`, `const server *` and `struct server *const`
-# are `server`.
+# The name of the struct of a type as clang writes it: `struct server *`, `const server *`, `struct server *const`,
+# `_Atomic(struct server *)` and `struct server * _Nonnull` are `server`.
 def type_name(type: String) -> String
-  words = type.replace("*", " ").split(" ").select do |word| word != "" and not TYPE_QUALIFIERS.include?(word) end
+  words = type.replace("_Atomic(", " ")
+    .replace(")", " ")
+    .replace("*", " ")
+    .split(" ")
+    .select do |word| word != "" and not TYPE_QUALIFIERS.include?(word) end
+
   return words.join(" ")
 end
 

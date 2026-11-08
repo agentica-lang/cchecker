@@ -88,8 +88,9 @@ block (`uv_fs_close`, `uv_fs_stat`, `uv_fs_unlink`, `uv_fs_mkdir`, ...) is a
 system call and not a blocking one, as `close` is. The lists are in
 `src/known.agc`. A function the project defines is judged by its body; a library
 function that is not listed has no effect. A known name is known by name alone:
-a project function named `remove`, `rewind`, `ftell` or `dlsym` counts as the
-libc one in a run that does not read its body.
+a project function named `remove`, `rewind`, `ftell`, `dlsym` or `link` counts
+as the libc one in a run that does not read its body, as when the run only sees
+its declaration and its body is in a file left out.
 
 A call through a function pointer reaches every function the project stores in
 the same place: a field of a struct or a union (by record and field name, in an
@@ -101,14 +102,17 @@ function kept in a `void *` or an `uintptr_t` is reached by a call through it,
 but not one kept in a table whose first item is a literal number (`uintptr_t t[]
 = {0, (uintptr_t)f}`): that is a table of numbers (see [The AST
 dump](#the-ast-dump)). A variable with `__attribute__((cleanup(f)))` calls `f`.
-A pointer that comes from anywhere else reaches nothing: a return value, the
-arguments of a variadic function, and a function handed to a library that calls
-it back (`qsort`; a libuv callback is a root of its own, see
-[Roots](settings.md#roots)). A walk goes only through what the run read, so run
-it on all the files of the project: with a subset of the files, a call into a
-file that was not run reaches nothing. For the baseline, only a full run of a
-compile database covers the findings of the rules: a run of some files never
-counts them fixed and never drops them on `--update-baseline`.
+A pointer that comes from anywhere else reaches nothing: one that no checked
+file stores a function in (set outside the files of the run, or never set), a
+return value, the arguments of a variadic function, and a function handed to a
+library that calls it back (`qsort`; a libuv callback is a root of its own, see
+[Roots](settings.md#roots)). Two calls through pointers that start at the same
+place (`x->f(1)->g(2)`) are one call to the walk, and each reaches the functions
+of both: more findings, never fewer. A walk goes only through what the run read,
+so run it on all the files of the project: with a subset of the files, a call
+into a file that was not run reaches nothing. For the baseline, only a full run
+of a compile database covers the findings of the rules: a run of some files
+never counts them fixed and never drops them on `--update-baseline`.
 
 ## Locks on every path
 
@@ -152,15 +156,19 @@ returns, so it changes nothing.
 A path does not go where a condition that the function tests twice would have to
 be true and false, so `if (locked) lock(); ...; if (locked) unlock();` passes; a
 write to a variable of the condition, or a call given its address
-(`f(&locked)`), forgets its value; a call given `&q->mu` does not change `q`. A
-function whose paths would take more than 200 000 states to follow is walked
-again without these conditions; when that is not enough either, its findings are
-those of the paths followed, and the run lists it in `incomplete_functions` of
-`--json` (`file`, `line` and `function`) and on standard error (the exit code
-does not change). A function whose AST has more than 20 000 nodes (about four
-times the largest of the Agentica VM) gets no graph: that is an error of the
-`rules` tool on its file, so the exit code is 2, and the rest of the run is
-checked.
+(`f(&locked)`), forgets its value; a call given `&q->mu`, or the address of any
+other field (`atomic_store(&q->ready, 0)`, `f(&q->count)`), does not change `q`:
+the values of the conditions are kept by variable, not by field, so a condition
+on `q->ready` keeps its value after `atomic_store(&q->ready, 0)`; copy the field
+to a local first and test the local (`int ready = q->ready; if (ready) ...`)
+when the call may change it. A function whose paths would take more than 200 000
+states to follow is walked again without these conditions; when that is not
+enough either, its findings are those of the paths followed, and the run lists
+it in `incomplete_functions` of `--json` (`file`, `line` and `function`) and on
+standard error (the exit code does not change). A function whose AST has more
+than 20 000 nodes (about four times the largest of the Agentica VM) gets no
+graph: that is an error of the `rules` tool on its file, so the exit code is 2,
+and the rest of the run is checked.
 
 A function that takes a lock for its caller, or releases the caller's lock, says
 so on its prototype: `CC_ACQUIRES(lock)` or `CC_RELEASES(lock)`, with the lock
@@ -200,14 +208,15 @@ finding. A `CC_RELEASES` helper that releases the quiet lock is held to the
 system calls it may make before that release, on any path of its body (a
 `write`, the signal of a condition), a wait with the lock included, as the lock
 is held again after it; what it does after the release of the quiet lock is no
-finding. A helper that releases a lock taken under the quiet lock is held to all
-its system calls. An unlock or a wait in a helper is a release, never its system
-call. A call through a function pointer releases nothing, so it is never such a
-release. Limits: a lock taken under the quiet lock is told by the order of the
-takes on the path, so the release of a quiet lock taken again (a recursive
-mutex) counts as the release of the quiet lock, a lock taken both before and
-after the quiet lock counts as taken after it, and a helper that takes two locks
-in one call has them both taken at that call, neither under the other.
+finding. A helper that releases a lock taken under the quiet lock, or the
+restore of a `CC_PAIR` whose set ran under it, is held to all its system calls.
+An unlock or a wait in a helper is a release, never its system call. A call
+through a function pointer releases nothing, so it is never such a release.
+Limits: a lock taken under the quiet lock is told by the order of the takes on
+the path, so the release of a quiet lock taken again (a recursive mutex) counts
+as the release of the quiet lock, a lock taken both before and after the quiet
+lock counts as taken after it, and a helper that takes two locks in one call has
+them both taken at that call, neither under the other.
 `CC_NO_SYSCALL_UNDER(lock)` on a function says the same of one lock of that
 function, in the names of its parameters.
 

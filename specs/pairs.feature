@@ -24,15 +24,15 @@ Feature: Pairs of calls restored on every path
       """
 
     Examples:
-      | case          | column | code                                                                                                                                                         |
-      | early return  | 44     | CC_PAIR(mask_signals, restore_signals) int guarded(int n) { mask_signals(); if (work(n)) return -1; restore_signals(); return 0; }                         |
-      | error path    | 44     | CC_PAIR(mask_signals, restore_signals) int guarded(int n) { mask_signals(); if (work(n)) goto fail; restore_signals(); return 0; fail: return -1; }        |
-      | set twice     | 44     | CC_PAIR(mask_signals, restore_signals) int guarded(int n) { mask_signals(); mask_signals(); restore_signals(); return n; }                                 |
-      | restore first | 44     | CC_PAIR(mask_signals, restore_signals) int guarded(int n) { restore_signals(); mask_signals(); return n; }                                                 |
-      | set form      | 69     | CC_PAIR(mask_signals, restore_signals) void mask_signals(void); int guarded(int n) { mask_signals(); if (work(n)) return -1; restore_signals(); return 0; } |
-      | marked twice  | 133    | CC_PAIR(mask_signals, restore_signals) void mask_signals(void); CC_PAIR(mask_signals, restore_signals) void mask_signals(void); int guarded(int n) { mask_signals(); mask_signals(); restore_signals(); return n; } |
-      | both forms    | 108    | CC_PAIR(mask_signals, restore_signals) void mask_signals(void); CC_PAIR(mask_signals, restore_signals) int guarded(int n) { mask_signals(); mask_signals(); restore_signals(); return n; } |
-      | two pairs on a set | 79     | CC_PAIR(mask_signals, restore_signals) CC_PAIR(mask_signals, log_restore) int guarded(int n) { mask_signals(); log_restore(); log_restore(); return n; } |
+      | case               | column | code                                                                                                                                                                                                                |
+      | early return       | 44     | CC_PAIR(mask_signals, restore_signals) int guarded(int n) { mask_signals(); if (work(n)) return -1; restore_signals(); return 0; }                                                                                  |
+      | error path         | 44     | CC_PAIR(mask_signals, restore_signals) int guarded(int n) { mask_signals(); if (work(n)) goto fail; restore_signals(); return 0; fail: return -1; }                                                                 |
+      | set twice          | 44     | CC_PAIR(mask_signals, restore_signals) int guarded(int n) { mask_signals(); mask_signals(); restore_signals(); return n; }                                                                                          |
+      | restore first      | 44     | CC_PAIR(mask_signals, restore_signals) int guarded(int n) { restore_signals(); mask_signals(); return n; }                                                                                                          |
+      | set form           | 69     | CC_PAIR(mask_signals, restore_signals) void mask_signals(void); int guarded(int n) { mask_signals(); if (work(n)) return -1; restore_signals(); return 0; }                                                         |
+      | marked twice       | 133    | CC_PAIR(mask_signals, restore_signals) void mask_signals(void); CC_PAIR(mask_signals, restore_signals) void mask_signals(void); int guarded(int n) { mask_signals(); mask_signals(); restore_signals(); return n; } |
+      | both forms         | 108    | CC_PAIR(mask_signals, restore_signals) void mask_signals(void); CC_PAIR(mask_signals, restore_signals) int guarded(int n) { mask_signals(); mask_signals(); restore_signals(); return n; }                          |
+      | two pairs on a set | 79     | CC_PAIR(mask_signals, restore_signals) CC_PAIR(mask_signals, log_restore) int guarded(int n) { mask_signals(); log_restore(); log_restore(); return n; }                                                            |
 
   Scenario Outline: A set restored on every path passes (<case>)
     Given the C file "guard.c" holds:
@@ -48,17 +48,18 @@ Feature: Pairs of calls restored on every path
     Then the exit code is 0
 
     Examples:
-      | case              | code                                                                                                                                                                                                       |
-      | both paths        | CC_PAIR(mask_signals, restore_signals) int guarded(int n) { mask_signals(); if (work(n)) { restore_signals(); return -1; } restore_signals(); return 0; }                                                 |
-      | goto out          | CC_PAIR(mask_signals, restore_signals) int guarded(int n) { int rc = 0; mask_signals(); if (work(n)) { rc = -1; goto out; } work(n); out: restore_signals(); return rc; }                                |
-      | same condition    | CC_PAIR(mask_signals, restore_signals) int guarded(int n) { if (n) mask_signals(); work(n); if (n) restore_signals(); return 0; }                                                                        |
-      | cleanup           | static void restore_at(int *p) { (void)p; restore_signals(); } CC_PAIR(mask_signals, restore_at) int guarded(int n) { mask_signals(); int g __attribute__((cleanup(restore_at))) = 0; return work(n + g); } |
-      | does not return   | CC_PAIR(mask_signals, restore_signals) int guarded(int n) { mask_signals(); if (work(n)) abort(); restore_signals(); return 0; }                                                                         |
-      | another function  | CC_PAIR(mask_signals, restore_signals) int guarded(int n); int other(int n) { mask_signals(); return work(n); }                                                                                           |
-      | set form          | CC_PAIR(mask_signals, restore_signals) void mask_signals(void); int guarded(int n) { mask_signals(); work(n); restore_signals(); return 0; }                                                              |
-      | set defined       | CC_PAIR(mask_signals, restore_signals) void mask_signals(void); void mask_signals(void) { work(0); } int guarded(int n) { mask_signals(); restore_signals(); return n; }                                  |
-      | a set that wraps  | CC_PAIR(mask_signals, restore_signals) void mask_signals(void); CC_PAIR(enter_quiet, leave_quiet) void enter_quiet(void); void leave_quiet(void); void enter_quiet(void) { mask_signals(); } void leave_quiet(void) { restore_signals(); } |
-      | restore alone     | CC_PAIR(mask_signals, restore_signals) void mask_signals(void); int reset(int n) { restore_signals(); return n; }                                                                                         |
+      | case                    | code                                                                                                                                                                                                                                       |
+      | both paths              | CC_PAIR(mask_signals, restore_signals) int guarded(int n) { mask_signals(); if (work(n)) { restore_signals(); return -1; } restore_signals(); return 0; }                                                                                  |
+      | goto out                | CC_PAIR(mask_signals, restore_signals) int guarded(int n) { int rc = 0; mask_signals(); if (work(n)) { rc = -1; goto out; } work(n); out: restore_signals(); return rc; }                                                                  |
+      | same condition          | CC_PAIR(mask_signals, restore_signals) int guarded(int n) { if (n) mask_signals(); work(n); if (n) restore_signals(); return 0; }                                                                                                          |
+      | cleanup                 | static void restore_at(int *p) { (void)p; restore_signals(); } CC_PAIR(mask_signals, restore_at) int guarded(int n) { mask_signals(); int g __attribute__((cleanup(restore_at))) = 0; return work(n + g); }                                |
+      | does not return         | CC_PAIR(mask_signals, restore_signals) int guarded(int n) { mask_signals(); if (work(n)) abort(); restore_signals(); return 0; }                                                                                                           |
+      | another function        | CC_PAIR(mask_signals, restore_signals) int guarded(int n); int other(int n) { mask_signals(); return work(n); }                                                                                                                            |
+      | set form                | CC_PAIR(mask_signals, restore_signals) void mask_signals(void); int guarded(int n) { mask_signals(); work(n); restore_signals(); return 0; }                                                                                               |
+      | set defined             | CC_PAIR(mask_signals, restore_signals) void mask_signals(void); void mask_signals(void) { work(0); } int guarded(int n) { mask_signals(); restore_signals(); return n; }                                                                   |
+      | a set that wraps        | CC_PAIR(mask_signals, restore_signals) void mask_signals(void); CC_PAIR(enter_quiet, leave_quiet) void enter_quiet(void); void leave_quiet(void); void enter_quiet(void) { mask_signals(); } void leave_quiet(void) { restore_signals(); } |
+      | one restore of two sets | CC_PAIR(mask_signals, restore_signals) void mask_signals(void); CC_PAIR(enter_quiet, restore_signals) void enter_quiet(void); int f(int n) { mask_signals(); enter_quiet(); restore_signals(); return n; }                                 |
+      | restore alone           | CC_PAIR(mask_signals, restore_signals) void mask_signals(void); int reset(int n) { restore_signals(); return n; }                                                                                                                          |
 
   Scenario Outline: A restore with no set before it is a finding in a function that calls the set (<case>)
     Given the C file "guard.c" holds:
@@ -77,14 +78,14 @@ Feature: Pairs of calls restored on every path
       """
 
     Examples:
-      | case                | code                                                                                                                         | exit | found            |
-      | restored twice      | CC_PAIR(mask_signals, restore_signals) int guarded(int n) { mask_signals(); restore_signals(); restore_signals(); return n; } | 1    | includes         |
-      | restore first       | CC_PAIR(mask_signals, restore_signals) int guarded(int n) { restore_signals(); mask_signals(); restore_signals(); return n; } | 1    | includes         |
-      | restored once       | CC_PAIR(mask_signals, restore_signals) int guarded(int n) { mask_signals(); restore_signals(); return n; }                    | 0    | does not include |
-      | no set in function  | CC_PAIR(mask_signals, restore_signals) int guarded(int n) { restore_signals(); restore_signals(); return n; }                 | 0    | does not include |
-      | restore skips set   | CC_PAIR(mask_signals, restore_signals) int guarded(int n) { if (n) goto out; mask_signals(); work(n); out: restore_signals(); return n; } | 1 | includes |
-      | one restore of two  | CC_PAIR(mask_signals, restore_signals) void mask_signals(void); CC_PAIR(enter_quiet, restore_signals) void enter_quiet(void); int f(int x) { if (x) mask_signals(); else enter_quiet(); restore_signals(); return 0; } | 0 | does not include |
-      | set past the count  | CC_PAIR(mask_signals, restore_signals) int guarded(int n) { mask_signals(); mask_signals(); mask_signals(); work(n); restore_signals(); restore_signals(); restore_signals(); return n; } | 0 | does not include |
+      | case               | code                                                                                                                                                                                                                   | exit | found            |
+      | restored twice     | CC_PAIR(mask_signals, restore_signals) int guarded(int n) { mask_signals(); restore_signals(); restore_signals(); return n; }                                                                                          | 1    | includes         |
+      | restore first      | CC_PAIR(mask_signals, restore_signals) int guarded(int n) { restore_signals(); mask_signals(); restore_signals(); return n; }                                                                                          | 1    | includes         |
+      | restored once      | CC_PAIR(mask_signals, restore_signals) int guarded(int n) { mask_signals(); restore_signals(); return n; }                                                                                                             | 0    | does not include |
+      | no set in function | CC_PAIR(mask_signals, restore_signals) int guarded(int n) { restore_signals(); restore_signals(); return n; }                                                                                                          | 0    | does not include |
+      | restore skips set  | CC_PAIR(mask_signals, restore_signals) int guarded(int n) { if (n) goto out; mask_signals(); work(n); out: restore_signals(); return n; }                                                                              | 1    | includes         |
+      | one restore of two | CC_PAIR(mask_signals, restore_signals) void mask_signals(void); CC_PAIR(enter_quiet, restore_signals) void enter_quiet(void); int f(int x) { if (x) mask_signals(); else enter_quiet(); restore_signals(); return 0; } | 0    | does not include |
+      | set past the count | CC_PAIR(mask_signals, restore_signals) int guarded(int n) { mask_signals(); mask_signals(); mask_signals(); work(n); restore_signals(); restore_signals(); restore_signals(); return n; }                              | 0    | does not include |
 
   Scenario: The path of a restore with no set goes from the set to the second restore
     Given the C file "guard.c" holds:
@@ -135,19 +136,38 @@ Feature: Pairs of calls restored on every path
       """
 
     Examples:
-      | case                   | type   | failed                         | ok                         | exit | found            |
-      | a negative constant    | int    | return -1;                     | 0                          | 1    | includes         |
-      | a null pointer         | void * | return NULL;                   | (void *)&token             | 1    | includes         |
-      | a false bool           | _Bool  | return 0;                      | 1                          | 1    | includes         |
-      | an errno constant      | int    | return -EINVAL;                | 0                          | 1    | includes         |
-      | a negated enum         | int    | return -E_BAD;                 | 0                          | 1    | includes         |
-      | a cast zero            | void * | return (void *)0;              | (void *)&token             | 1    | includes         |
-      | false of stdbool       | bool   | return false;                  | true                       | 1    | includes         |
-      | a typedef'd pointer    | handle_t | return NULL;                 | (void *)&token             | 1    | includes         |
-      | a returned variable    | int    | int rc = -1; return rc;        | 0                          | 0    | does not include |
-      | restored on the error  | int    | restore_signals(); return -1;  | 0                          | 0    | does not include |
-      | a positive value       | int    | return 1;                      | 0                          | 0    | does not include |
-      | a zero int             | int    | return 0;                      | 0                          | 0    | does not include |
+      | case                  | type     | failed                        | ok             | exit | found            |
+      | a negative constant   | int      | return -1;                    | 0              | 1    | includes         |
+      | a null pointer        | void *   | return NULL;                  | (void *)&token | 1    | includes         |
+      | a false bool          | _Bool    | return 0;                     | 1              | 1    | includes         |
+      | an errno constant     | int      | return -EINVAL;               | 0              | 1    | includes         |
+      | a negated enum        | int      | return -E_BAD;                | 0              | 1    | includes         |
+      | a cast zero           | void *   | return (void *)0;             | (void *)&token | 1    | includes         |
+      | false of stdbool      | bool     | return false;                 | true           | 1    | includes         |
+      | a typedef'd pointer   | handle_t | return NULL;                  | (void *)&token | 1    | includes         |
+      | a returned variable   | int      | int rc = -1; return rc;       | 0              | 0    | does not include |
+      | restored on the error | int      | restore_signals(); return -1; | 0              | 0    | does not include |
+      | a positive value      | int      | return 1;                     | 0              | 0    | does not include |
+      | a zero int            | int      | return 0;                     | 0              | 0    | does not include |
+
+  Scenario: Two pairs on one set each name their own restore
+    Given the C file "guard.c" holds:
+      """
+      #include "cchecker.h"
+
+      void mask_signals(void); void restore_signals(void); void log_restore(void);
+      CC_PAIR(mask_signals, restore_signals) CC_PAIR(mask_signals, log_restore) int guarded(int n) { mask_signals(); log_restore(); return n; }
+      """
+    When I run cchecker with "--tools rules --json $DIR/guard.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "message":"guarded calls mask_signals and does not call restore_signals after it on every path"
+      """
+    And the output does not include:
+      """
+      does not call log_restore
+      """
 
   Scenario: The path of a finding goes from the set to the return that skips the restore
     Given the C file "guard.c" holds:
