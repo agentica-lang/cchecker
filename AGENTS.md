@@ -25,7 +25,7 @@ test/             unit tests of the pure helpers (the parsers)
 - `make check`: `agentica check`. `make fmt-check`: `agentica fmt --check` (`agentica fmt` fixes it). `make test`:
   `agentica test --jobs 4` (the features and the unit tests). `agentica test --only TEXT` runs the scenarios whose name
   contains `TEXT`.
-- The tests need `gcc`, `clang` and `clang-tidy` on PATH. CI installs them and fails if one is missing; a local run
+- The tests need `gcc`, `clang`, `clang-tidy` and `timeout` (coreutils) on PATH. CI installs them and fails if one is missing; a local run
   without one fails the scenarios too.
 - `agentica cchecker.agc [options] FILE... -- FLAGS...` runs the tool; `agentica compile cchecker.agc -o cchecker.agcb`
   builds it.
@@ -36,6 +36,7 @@ test/             unit tests of the pure helpers (the parsers)
 - Tests are written first: the scenario that fails, then the code. All tests are Agentica and run with `agentica test`
   (BDD features in `specs/` first, `*_test.agc` unit tests in `test/` only for a pure helper such as a parser). No Python
   (no pytest, no helper scripts) in the tests or in CI, and no property-based tests for now.
+- A fake tool for a scenario is a small shell script in `specs/fixtures/` (`fake_gcc_*.sh`, run with `--gcc`).
 - A scenario runs `cchecker.agc` on a small C fixture and asserts the exit code, the codes and the `--json` fields, never
   message text (the compilers' texts change between versions). A fixture is one small file per case, with a clean twin
   that does not trigger. Check that a new scenario fails without the code it covers (stub the code, run, restore).

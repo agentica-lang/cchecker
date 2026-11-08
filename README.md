@@ -46,14 +46,21 @@ cchecker: 2 new findings in 1 file
 and `message`), `baselined`, `fixed` and `errors` (a tool that did not run or could not compile a file: `tool`, `file`
 and `message`).
 
-Exit codes: `0` no new findings, `1` new findings, `2` a usage error or a tool error (a missing tool, a timeout, a file
-that does not compile). Only the C files of a database are run; the paths are relative to the working directory, and a
-finding in a file outside it (a system or third-party header) is dropped.
+Exit codes: `0` no new findings, `1` new findings, `2` a usage error or a tool error. A tool error is a tool that
+is missing, ends in a timeout or exits with a non-zero code, except for the `1` of a compiler that found errors in the
+file (a file that does not compile is an error, never a finding: gcc 14 refuses an implicit function declaration, for
+example). gcc reports its analyzer only (`CC-GCC-ANALYZER-...`); the other warnings of the build flags (`-Wall`) are
+not findings, as they are not for clang-tidy.
+
+Only the C files of a database are run. The paths are relative to the working directory: a file outside it is skipped
+(a line on standard error and `skipped` in `--json`), and a finding in a header outside it (a system or third-party
+header) is dropped.
 
 ### Codes
 
 A code is stable: a baseline holds it. `CC-GCC-` is followed by the gcc warning option in capitals
-(`-Wanalyzer-malloc-leak` is `CC-GCC-ANALYZER-MALLOC-LEAK`), and `CC-TIDY-` by the clang-tidy check
+(`-Wanalyzer-malloc-leak` is `CC-GCC-ANALYZER-MALLOC-LEAK`, also when `-Werror` made it `-Werror=analyzer-malloc-leak`), and
+`CC-TIDY-` by the clang-tidy check
 (`clang-analyzer-unix.Malloc` is `CC-TIDY-CLANG-ANALYZER-UNIX-MALLOC`). A diagnostic without a name is `CC-GCC-WARNING`
 or `CC-TIDY-WARNING`.
 
@@ -65,9 +72,14 @@ agentica cchecker.agc -p build --baseline cchecker-baseline.json                
 ```
 
 A finding matches the baseline by its code, its file and its message, never its line, so edits above it do not break
-the baseline. The file holds a count for each kind, so a second finding of a kind the baseline holds once is new.
-`fixed` in the report counts the accepted findings that no tool found this time: update the baseline to drop them.
-`--update-baseline` refuses to write when a tool failed.
+the baseline. The file holds a count for each kind, so a second finding of a kind the baseline holds once is new. The
+file is read before any tool runs, and written in one rename.
+
+A run covers the tools and the files it ran (every file, headers included, when it ran a whole database without
+`--exclude`). `fixed` counts the accepted findings of that scope that no tool found this time, and
+`--update-baseline` replaces the entries of that scope and keeps the others, so `--tools gcc` or a subset of FILEs
+updates only what it ran. It refuses to write, and leaves the file as it was, when a tool failed (exit 2) or with
+`--checks` (a baseline made with other checks would lose the findings of the default ones).
 
 ### Options
 
@@ -77,15 +89,19 @@ the baseline. The file holds a count for each kind, so a second finding of a kin
 | `-t, --tools LIST` | `gcc`, `clang-tidy` or both (default both) |
 | `--checks LIST` | the clang-tidy checks, after those of a `.clang-tidy` file; default below |
 | `-j, --jobs N` | tool runs at once (default 4) |
-| `--timeout SECONDS` | for one tool on one file (default 300) |
+| `--timeout SECONDS` | for one tool on one file (default 300); a timeout is a tool error |
 | `-b, --baseline FILE`, `--update-baseline` | see above |
-| `--exclude LIST` | comma separated path prefixes to skip: their files do not run and their findings are dropped |
+| `--exclude LIST` | comma separated files or folders to skip (`src/vendor`, `./gen/a.c`, absolute paths): they match whole path parts, their files do not run and their findings are dropped |
 | `--gcc PROGRAM`, `--clang-tidy PROGRAM` | the programs to run, for a versioned name such as `gcc-14` |
 | `--json` | one JSON object |
 
-The default checks are `-*`, `clang-analyzer-core.*`, `-unix.*` and `-security.*` (without `insecureAPI`), and the
+The default checks are `-*`, `clang-analyzer-core.*`, `clang-analyzer-unix.*` and `clang-analyzer-security.*` (without
+`insecureAPI`), and the
 bugprone checks `sizeof-expression`, `integer-division`, `suspicious-memory-comparison`, `signed-char-misuse`,
 `misplaced-widening-cast` and `unused-return-value`. The tools run with `LC_ALL=C`, so the messages are in English on any machine.
+
+A timeout stops the tool and everything it started (gcc runs `cc1` as a child) when `timeout` of coreutils is installed.
+Without it (macOS has none) only the tool itself is stopped.
 
 ## Annotations
 
