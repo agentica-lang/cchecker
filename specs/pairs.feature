@@ -82,6 +82,9 @@ Feature: Pairs of calls restored on every path
       | restore first       | CC_PAIR(mask_signals, restore_signals) int guarded(int n) { restore_signals(); mask_signals(); restore_signals(); return n; } | 1    | includes         |
       | restored once       | CC_PAIR(mask_signals, restore_signals) int guarded(int n) { mask_signals(); restore_signals(); return n; }                    | 0    | does not include |
       | no set in function  | CC_PAIR(mask_signals, restore_signals) int guarded(int n) { restore_signals(); restore_signals(); return n; }                 | 0    | does not include |
+      | restore skips set   | CC_PAIR(mask_signals, restore_signals) int guarded(int n) { if (n) goto out; mask_signals(); work(n); out: restore_signals(); return n; } | 1 | includes |
+      | one restore of two  | CC_PAIR(mask_signals, restore_signals) void mask_signals(void); CC_PAIR(enter_quiet, restore_signals) void enter_quiet(void); int f(int x) { if (x) mask_signals(); else enter_quiet(); restore_signals(); return 0; } | 0 | does not include |
+      | set past the count  | CC_PAIR(mask_signals, restore_signals) int guarded(int n) { mask_signals(); mask_signals(); mask_signals(); work(n); restore_signals(); restore_signals(); restore_signals(); return n; } | 0 | does not include |
 
   Scenario: The path of a restore with no set goes from the set to the second restore
     Given the C file "guard.c" holds:
@@ -113,10 +116,13 @@ Feature: Pairs of calls restored on every path
     Given the C file "quiet.c" holds:
       """
       #include "stdlib.h"
+      #include "errno.h"
+      #include "stdbool.h"
       #include "cchecker.h"
 
       void mask_signals(void); void restore_signals(void); int work(int n); static int token;
       CC_PAIR(mask_signals, restore_signals) void mask_signals(void);
+      typedef void *handle_t; enum status { E_BAD = 1 };
       CC_PAIR(enter_quiet, leave_quiet) <type> enter_quiet(int n);
       void leave_quiet(void) { restore_signals(); }
       <type> enter_quiet(int n) { mask_signals(); if (work(n)) { <failed> } return <ok>; }
@@ -125,7 +131,7 @@ Feature: Pairs of calls restored on every path
     Then the exit code is <exit>
     And the output <found>:
       """
-      {"code":"CC-PATH-PAIR-NOT-RESTORED","tool":"rules","file":"$DIR/quiet.c","line":8,
+      {"code":"CC-PATH-PAIR-NOT-RESTORED","tool":"rules","file":"$DIR/quiet.c","line":11,
       """
 
     Examples:
@@ -133,6 +139,12 @@ Feature: Pairs of calls restored on every path
       | a negative constant    | int    | return -1;                     | 0                          | 1    | includes         |
       | a null pointer         | void * | return NULL;                   | (void *)&token             | 1    | includes         |
       | a false bool           | _Bool  | return 0;                      | 1                          | 1    | includes         |
+      | an errno constant      | int    | return -EINVAL;                | 0                          | 1    | includes         |
+      | a negated enum         | int    | return -E_BAD;                 | 0                          | 1    | includes         |
+      | a cast zero            | void * | return (void *)0;              | (void *)&token             | 1    | includes         |
+      | false of stdbool       | bool   | return false;                  | true                       | 1    | includes         |
+      | a typedef'd pointer    | handle_t | return NULL;                 | (void *)&token             | 1    | includes         |
+      | a returned variable    | int    | int rc = -1; return rc;        | 0                          | 0    | does not include |
       | restored on the error  | int    | restore_signals(); return -1;  | 0                          | 0    | does not include |
       | a positive value       | int    | return 1;                      | 0                          | 0    | does not include |
       | a zero int             | int    | return 0;                      | 0                          | 0    | does not include |

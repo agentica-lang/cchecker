@@ -483,12 +483,16 @@ the take of the lock held to the call, and the call path to the system call when
 every path that returns, as a lock is by its unlock (the same graph and the same walk). On a declaration of `set`
 itself it says so in every function that calls `set`. The two are functions, by name, whatever their arguments: a
 cleanup function counts as a call. A `restore` with no `set` before it on the path is a finding in a function that
-calls `set` on some path (`gc_pause(); gc_resume(); gc_resume();`), and does nothing in one that never calls it; a
-`set` twice needs two restores. `set` and `restore` are two functions (a pair of one function, such as `umask`, never
+calls `set` on some path (`gc_pause(); gc_resume(); gc_resume();`), and does nothing in one that never calls it. That
+includes a restore that a path reaches around the set (`if (bad) goto out; gc_pause(); ... out: gc_resume();`). A
+restore of two pairs is a finding only when it restores neither, and a set made more than twice on a path counts as
+twice, so the restores after it are not counted; a `set` twice needs two restores. `set` and `restore` are two functions (a pair of one function, such as `umask`, never
 gives a finding). The body of a `set` that carries its own `CC_PAIR` is how the pair works (a wrapper of
 `GC_disable`), so it may leave another pair set for its caller, but not on a return of an error value, after which the
-caller does not call `restore`: a negative constant (`return -1`, `return -EINVAL`), a null pointer, or a false bool.
-Any other value, `0` of an `int` included, counts as a success.
+caller does not call `restore`: a negative constant (`return -1`, `return -EINVAL`, a negated enum constant), a null
+pointer (`NULL`, `(void *)0`, `nullptr`), or a false bool, read through typedefs. Any other value, `0` of an `int`
+included, counts as a success, and a returned variable is not followed (`rc = -1; goto out; out: return rc;` is a
+success).
 
 ```c
 CC_PAIR(mask_signals, restore_signals) void mask_signals(sigset_t *old);   /* in every caller */

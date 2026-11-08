@@ -510,13 +510,24 @@ export def noreturn_type?(node: Json) -> Bool
   )
 end
 
-## Returns whether a returned value is an error by the usual C convention: a negative integer constant, a null pointer
-## constant, or a false bool. Any other value, 0 of an int included, may be a success.
+## Returns whether a returned value is an error by the usual C convention: a negative integer constant (or a negated
+## enum constant), a null pointer constant, or a false bool, by the type after typedefs. Any other value, 0 of an int
+## and a variable included, may be a success.
 export def error_value?(node: Json) -> Bool
-  type = unqualified(Ast.text(JSON.get(node, "type").unwrap_or(JSON.from("")), "qualType"))
+  type_node = JSON.get(node, "type").unwrap_or(JSON.from(""))
+  type = Ast.text(type_node, "desugaredQualType")
+  if type == ""
+    type = Ast.text(type_node, "qualType")
+  end
+
+  type = unqualified(type)
   bare = see_through(node)
   if type.end_with?("*") or type == "_Bool" or type == "bool"
-    return zero?(node) or (Ast.kind(bare) == "CXXBoolLiteralExpr" and not Ast.flag?(bare, "value"))
+    return (
+      zero?(node) or
+      Ast.kind(bare) == "CXXNullPtrLiteralExpr" or
+      (Ast.kind(bare) == "CXXBoolLiteralExpr" and not Ast.flag?(bare, "value"))
+    )
   end
 
   if Ast.kind(bare) != "UnaryOperator" or Ast.text(bare, "opcode") != "-" or Ast.children(bare).empty?
@@ -524,7 +535,8 @@ export def error_value?(node: Json) -> Bool
   end
 
   value = see_through(Ast.children(bare).first)
-  return Ast.kind(value) == "IntegerLiteral" and Ast.text(value, "value") != "0"
+  constant = Ast.kind(value) == "DeclRefExpr" and Ast.referenced_kind(value) == "EnumConstantDecl"
+  return constant or (Ast.kind(value) == "IntegerLiteral" and Ast.text(value, "value") != "0")
 end
 
 ## Returns whether an expression is the constant 0, through casts and parentheses.
