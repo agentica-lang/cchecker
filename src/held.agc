@@ -108,7 +108,7 @@ def under_quiet(rules: Rules, body: Body, held: List[Held], site: Site, at: Stri
     path = reached
     if site.drops.concat(site.waits).any? do |lock| lock.key == h.lock.key end
       path = before_release(rules, site, true)
-    elsif nested_release?(held, h, site)
+    elsif nested_release?(rules, body, held, h, site)
       path = before_release(rules, site, false)
     end
 
@@ -134,10 +134,35 @@ end
 
 # Whether a call releases a lock taken while `h` was held: the path of a held lock starts at its last take, so a lock
 # taken later has a shorter one.
-def nested_release?(held: List[Held], h: Held, site: Site) -> Bool
+def nested_release?(rules: Rules, body: Body, held: List[Held], h: Held, site: Site) -> Bool
   return site.drops.any? do |lock|
-    held.any? do |other| other.lock.key == lock.key and other.path.size < h.path.size end
+    held.any? do |other|
+      other.lock.key == lock.key and other.path.size < h.path.size and system_take?(rules, body, other)
+    end
   end
+end
+
+# Whether the take of a held lock was a system call, and so a finding of its own under the quiet lock: not a trylock,
+# nor a helper whose body makes none. The first step of its path is its take (`LINE:COL takes LOCK`).
+def system_take?(rules: Rules, body: Body, h: Held) -> Bool
+  if h.path.empty?
+    return false
+  end
+
+  at = h.path.first.split(" ").first
+  for node in body.nodes
+    case node.event
+      Event.Call(call) ->
+        taken = call.takes.any? do |lock| lock.key == h.lock.key end
+        if taken and "#{call.line}:#{call.column}" == at
+          return not system_call(rules, body, call).empty?
+        end
+
+      _ -> next
+    end
+  end
+
+  return false
 end
 
 # The call path to a system call that a call which releases a lock makes while the quiet lock is held: none for a call

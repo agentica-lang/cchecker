@@ -176,6 +176,26 @@ Feature: What runs while a lock is held
       calls pthread_mutex_unlock
       """
 
+  Scenario: The release of a lock taken by a trylock under a CC_NO_SYSCALL_UNDER lock is a finding, as its take is none
+    Given the C file "push.c" holds:
+      """
+      #include "pthread.h" /* found in the system folders */
+      #include "cchecker.h"
+
+      struct queue { CC_NO_SYSCALL_UNDER() pthread_mutex_t mu; int n; }; pthread_mutex_t other;
+      void push(struct queue *q) { pthread_mutex_lock(&q->mu); if (pthread_mutex_trylock(&other) == 0) { q->n++; pthread_mutex_unlock(&other); } pthread_mutex_unlock(&q->mu); }
+      """
+    When I run cchecker with "--tools rules --json $DIR/push.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      calls pthread_mutex_unlock"]
+      """
+    And the output does not include:
+      """
+      calls pthread_mutex_trylock
+      """
+
   Scenario: The [library] flags do not turn off a blocking call under a CC_NO_SYSCALL_UNDER lock: it is a system call
     Given the C file "push.c" holds:
       """
