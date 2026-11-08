@@ -124,3 +124,76 @@ Feature: What a baseline covers
     When I run cchecker with "--tools gcc --gcc fixtures/fake_gcc_marker.sh fixtures/clean.c"
     Then the exit code is 0
     And the file "scratch/ran.marker" exists
+
+  Scenario: A job that failed does not make its accepted findings fixed
+    Given the C file "b.c" holds:
+      """
+      int release_twice(void) { return missing_name; }
+      """
+    When I run cchecker with "--json --baseline $DIR/base.json $DIR/a.c $DIR/b.c"
+    Then the exit code is 2
+    And the output includes:
+      """
+      "findings":[],"baselined":2,"fixed":0
+      """
+
+  Scenario: An update from a database with files outside the working directory is refused
+    Given the C file "old.json" holds:
+      """
+      {
+        "version": 1,
+        "findings": [
+          {"code": "CC-GCC-ANALYZER-MALLOC-LEAK", "file": "fixtures/leak.c", "message": "leak of 'buf'", "count": 1}
+        ]
+      }
+      """
+    When I run cchecker with "--tools gcc -p fixtures/outside -b $DIR/old.json --update-baseline"
+    Then the exit code is 2
+    When I run cchecker with "--json --tools gcc -b $DIR/old.json fixtures/leak.c"
+    Then the exit code is 0
+    And the output includes:
+      """
+      "findings":[],"baselined":1,"fixed":0
+      """
+
+  Scenario: An update with the flags that show another finding of a header keeps the first one
+    Given the C file "h.h" holds:
+      """
+      #include <stdlib.h>
+      #ifdef X
+      #define NAME pa
+      #else
+      #define NAME pb
+      #endif
+
+      static inline int take(int n) {
+        char *NAME = malloc(10);
+        if (n > 3) {
+          return 1;
+        }
+        free(NAME);
+        return 0;
+      }
+      """
+    And the C file "uses.c" holds:
+      """
+      #include "h.h"
+
+      int from_uses(void) { return take(1); }
+      """
+    When I run cchecker with "--tools gcc -b $DIR/header.json --update-baseline $DIR/uses.c"
+    Then the exit code is 0
+    When I run cchecker with "--tools gcc -b $DIR/header.json --update-baseline $DIR/uses.c -- -DX"
+    Then the exit code is 0
+    When I run cchecker with "--json --tools gcc -b $DIR/header.json $DIR/uses.c"
+    Then the exit code is 0
+    And the output includes:
+      """
+      "findings":[],"baselined":1,"fixed":0
+      """
+    When I run cchecker with "--json --tools gcc -b $DIR/header.json $DIR/uses.c -- -DX"
+    Then the exit code is 0
+    And the output includes:
+      """
+      "findings":[],"baselined":1,"fixed":0
+      """

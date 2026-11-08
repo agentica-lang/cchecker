@@ -203,19 +203,74 @@ Feature: Running the analyzers on C files
     When I run cchecker with "fixtures/unused.c -- -Wall -Wextra"
     Then the exit code is 0
 
-  Scenario: A warning that -Werror turns into an error keeps its code
-    When I run cchecker with "--tools gcc fixtures/leak.c -- -Werror"
+  Scenario Outline: A warning that -Werror turns into an error keeps its code
+    When I run cchecker with "--tools gcc fixtures/leak.c -- <flag>"
     Then the exit code is 1
     And the output includes:
       """
       fixtures/leak.c:9:12 CC-GCC-ANALYZER-MALLOC-LEAK
       """
 
-  Scenario: A tool that does not end in time is stopped with everything it started
-    When I run cchecker with "--json --tools gcc --gcc fixtures/fake_gcc_hang.sh --timeout 1 fixtures/clean.c"
+    Examples:
+      | flag                           |
+      | -Werror                        |
+      | -Werror=analyzer-malloc-leak   |
+
+  Scenario: -Werror does not make the other warnings of the build errors
+    When I run cchecker with "--tools gcc fixtures/unused.c -- -Wall -Werror"
+    Then the exit code is 0
+
+  Scenario: An analyzer error of -Werror is a finding when gcc ran to the end
+    When I run cchecker with "--tools gcc --gcc fixtures/fake_gcc_werror.sh fixtures/clean.c -- -Werror"
+    Then the exit code is 1
+    And the output includes:
+      """
+      fixtures/clean.c:1:1 CC-GCC-ANALYZER-MALLOC-LEAK
+      """
+
+  Scenario: A gcc that was killed after an analyzer error is a tool error, not a finding
+    When I run cchecker with "--json --tools gcc --gcc fixtures/fake_gcc_killed.sh fixtures/clean.c -- -Werror"
+    Then the exit code is 2
+    And the output includes:
+      """
+      "errors":[{"tool":"gcc","file":"fixtures/clean.c"
+      """
+
+  Scenario: A .clang-tidy that makes warnings errors does not make findings tool errors
+    When I run cchecker with "--tools clang-tidy fixtures/werror_tidy/div.c"
+    Then the exit code is 1
+    And the output includes:
+      """
+      fixtures/werror_tidy/div.c:2:17 CC-TIDY-BUGPRONE-INTEGER-DIVISION
+      """
+
+  Scenario: A tool that is killed by a signal is a tool error
+    When I run cchecker with "--json --tools gcc --gcc fixtures/fake_gcc_suicide.sh fixtures/clean.c"
+    Then the exit code is 2
+    And the output includes:
+      """
+      "errors":[{"tool":"gcc","file":"fixtures/clean.c"
+      """
+
+  Scenario Outline: A tool that does not end in time is stopped with everything it started
+    Given the file "scratch/hang.pid" is removed
+    When I run cchecker with "--json --tools gcc --gcc fixtures/<tool> --timeout 1 fixtures/clean.c"
     Then the exit code is 2
     And the output includes:
       """
       "errors":[{"tool":"gcc","file":"fixtures/clean.c"
       """
     And the process written in "scratch/hang.pid" has ended
+
+    Examples:
+      | tool                          |
+      | fake_gcc_hang.sh              |
+      | fake_gcc_ignores_term.sh      |
+
+  Scenario: A database with a file outside the working directory is reported as skipped
+    When I run cchecker with "--json --tools gcc -p fixtures/outside"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "skipped":1
+      """

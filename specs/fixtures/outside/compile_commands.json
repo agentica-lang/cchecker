@@ -1,0 +1,12 @@
+[
+  {
+    "directory": "..",
+    "command": "cc -c leak.c",
+    "file": "leak.c"
+  },
+  {
+    "directory": "../../..",
+    "command": "cc -c outside.c",
+    "file": "outside.c"
+  }
+]

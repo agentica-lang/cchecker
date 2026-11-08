@@ -10,11 +10,13 @@ def entry(file: String, count: Int) -> Baseline.Entry
 end
 
 def everything() -> Baseline.Scope
-  return Baseline.Scope(tools: Set.new(["gcc", "clang-tidy"]), files: Set.new([]), full: true)
+  return Baseline.Scope(tools: Set.new(["gcc", "clang-tidy"]), pairs: Set.new([]), full: true)
 end
 
+# A run of gcc on these files, all of which ended well.
 def files(names: List[String]) -> Baseline.Scope
-  return Baseline.Scope(tools: Set.new(["gcc"]), files: Set.new(names), full: false)
+  pairs = names.map do |name| Baseline.pair("gcc", name) end
+  return Baseline.Scope(tools: Set.new(["gcc"]), pairs: Set.new(pairs), full: false)
 end
 
 def test_a_finding_matches_at_any_line() -> Result[Void]
@@ -68,4 +70,15 @@ end
 
 def test_a_baseline_of_another_version_is_a_baseline_error() -> Result[Void]
   return Test.error?(Baseline.parse("base.json", "{\"version\": 2, \"findings\": []}"))
+end
+
+def test_a_header_entry_of_a_partial_update_keeps_the_larger_count() -> Result[Void]
+  more = Baseline.merged([entry("shared.h", 1)], files(["a.c"]), [leak("shared.h", 7), leak("shared.h", 9)])
+  try Test.eq(more, [entry("shared.h", 2)])
+  less = Baseline.merged([entry("shared.h", 3)], files(["a.c"]), [leak("shared.h", 7)])
+  return Test.eq(less, [entry("shared.h", 3)])
+end
+
+def test_a_header_entry_is_not_fixed_by_a_partial_run() -> Result[Void]
+  return Test.eq(Baseline.split([], [entry("shared.h", 2)], files(["a.c"])).fixed, 0)
 end

@@ -18,3 +18,12 @@ def test_a_check_of_clang_tidy_is_the_code() -> Result[Void]
   try Test.eq(Tools.code_of(Tool.ClangTidy, some("clang-analyzer-unix.Malloc")), "CC-TIDY-CLANG-ANALYZER-UNIX-MALLOC")
   return Test.eq(Tools.code_of(Tool.ClangTidy, none), "CC-TIDY-WARNING")
 end
+
+def test_a_stop_by_timeout_is_not_told_as_a_plain_exit() -> Result[Void]
+  try Test.ne(Tools.failure(true, 5, "", 124), Tools.failure(false, 5, "", 124))
+  return Test.ne(Tools.failure(true, 5, "", 137), Tools.failure(false, 5, "", 137))
+end
+
+def test_a_stop_by_timeout_does_not_claim_a_timeout() -> Result[Void]
+  return Test.ne(Tools.failure(true, 5, "", 137), Tools.failure(true, 5, "", 124))
+end

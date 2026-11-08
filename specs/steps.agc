@@ -98,12 +98,15 @@ def file_missing(ctx: BDD.Context, args: List[String]) -> BDD.Context
   return BDD.assert(ctx, not File.stat(path).ok?, "#{path} exists")
 end
 
-# The file holds the pid of a process the tool started. A killed process is gone from /proc once its parent or init has
-# reaped it; in a container nothing may reap it, and it stays as a zombie, which has ended too.
+# The file holds the pid of a process the tool started, so it must be there and hold a number: a missing or stale file
+# would pass for a process that ended. A killed process is gone from /proc once its parent or init has reaped it; in a
+# container nothing may reap it, and it stays as a zombie, which has ended too.
 def process_ended(ctx: BDD.Context, args: List[String]) -> BDD.Context
-  pid = File.read_text(host_path(ctx, args[0])).unwrap!.strip
+  path = host_path(ctx, args[0])
+  text = File.read_text(path).unwrap_or("").strip
+  found = BDD.assert(ctx, text.to_i.ok?, "#{path} does not hold a pid: #{text}")
   Task.sleep(500)
-  return BDD.assert(ctx, ended?(pid), "process #{pid} is still running")
+  return BDD.assert(found, ended?(text), "process #{text} is still running")
 end
 
 def ended?(pid: String) -> Bool
