@@ -21,11 +21,12 @@ struct Document
   findings: List[Entry]
 end
 
-## What a run covered: the tools it ran and the files. `full` is a run of a whole compile database, which covers every
-## file, the headers included.
+## What a run covered: the tools it ran, and the pairs of a tool and a file whose job ended well (see `pair`).
+## `full` is a run of every file of a compile database where every job ended well; only it covers the headers, which
+## the run did not name.
 export struct Scope
   tools: Set[String]
-  files: Set[String]
+  pairs: Set[String]
   full: Bool
 end
 
@@ -67,11 +68,31 @@ export def entries_of(findings: List[Finding]) -> List[Entry]
   end
 end
 
+## Returns the key of a tool on a file, the unit that a scope covers.
+export def pair(tool: String, file: String) -> String
+  return "#{tool}\n#{file}"
+end
+
 ## Returns the entries of an updated baseline: those of `entries` that the run did not cover, and one for each kind of
-## the findings of the run.
+## the findings of the run. A finding in a file that the run did not cover (a header seen through the flags of one
+## file) never lowers the count of its entry: a header can show other findings with other flags, so the larger count
+## stays.
 export def merged(entries: List[Entry], scope: Scope, findings: List[Finding]) -> List[Entry]
   kept = entries.select do |entry| not covered?(scope, entry) end
-  return kept.concat(entries_of(findings)).sort_by do |entry| "#{entry.file}\n#{entry.code}\n#{entry.message}" end
+  held: Map[String, Int] = {}
+  for entry in kept
+    held = held.put(Findings.key(entry.code, entry.file, entry.message), entry.count)
+  end
+
+  found = entries_of(findings).map do |entry|
+    count = larger(entry.count, held.get(Findings.key(entry.code, entry.file, entry.message), 0))
+    Entry(code: entry.code, file: entry.file, message: entry.message, count: count)
+  end
+
+  replaced = Set.new(found.map do |entry| Findings.key(entry.code, entry.file, entry.message) end)
+  combined = kept.select do |entry| not replaced.include?(Findings.key(entry.code, entry.file, entry.message)) end
+  combined = combined.concat(found)
+  return combined.sort_by do |entry| "#{entry.file}\n#{entry.code}\n#{entry.message}" end
 end
 
 ## Writes the baseline, one line for each entry. A file that exists is swapped for the new one in a single rename, so a
@@ -122,10 +143,22 @@ export def split(findings: List[Finding], entries: List[Entry], scope: Scope) ->
   return Split(new_findings: new_findings, accepted: matched, fixed: fixed)
 end
 
-# Whether the run covered the entry: it ran the tool of the code, on the file or on all of them.
+def larger(a: Int, b: Int) -> Int
+  if a > b
+    return a
+  end
+
+  return b
+end
+
+# Whether the run covered the entry: its tool ran on the file and ended well, or the run was full.
 def covered?(scope: Scope, entry: Entry) -> Bool
   tool = tool_of(entry.code)
-  return scope.tools.include?(tool) and (scope.full or scope.files.include?(entry.file))
+  if scope.full
+    return scope.tools.include?(tool)
+  end
+
+  return scope.pairs.include?(pair(tool, entry.file))
 end
 
 # The tool that makes the codes with this prefix; a code of a later phase has no tool and is never covered.

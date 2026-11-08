@@ -17,6 +17,7 @@ DEFAULT_DATABASE = "compile_commands.json"
 struct Collected
   findings: List[Finding]
   errors: List[ToolError]
+  ran: List[String]
 end
 
 # The jobs of a run, and the files that were left out because they are outside the working directory.
@@ -38,6 +39,9 @@ export def run(options: Options) -> Result[Int]
 
   if not plan.skipped.empty?
     IO.warn(skipped_line(plan.skipped))
+    if options.update_baseline
+      return error("the baseline is not updated: files of the database were not run, and it would lose their findings")
+    end
   end
 
   collected = collect(options, plan.jobs)
@@ -48,7 +52,7 @@ export def run(options: Options) -> Result[Int]
     |> Findings.sort()
   )
 
-  scope = scope_of(options, plan.jobs, findings)
+  scope = scope_of(options, plan, collected)
   case options.baseline
     some(path) ->
       if options.update_baseline
@@ -196,13 +200,13 @@ def skipped_line(skipped: List[String]) -> String
   return "cchecker: skipped #{count} #{word} outside the working directory: #{skipped.take(5).join(", ")}"
 end
 
-# What the run covered, for the baseline: its tools and files, and every file when it ran a whole database.
-def scope_of(options: Options, jobs: List[Tools.Job], findings: List[Finding]) -> Baseline.Scope
-  files = jobs.map do |job| job.shown end.concat(findings.map do |f| f.file end)
+# What the run covered, for the baseline: its tools, the files each tool ended well on, and every file when it ran all
+# the files of a database and every job ended well.
+def scope_of(options: Options, plan: Plan, collected: Collected) -> Baseline.Scope
   return Baseline.Scope(
     tools: Set.new(options.tools.map do |tool| ToolKind.name(tool) end),
-    files: Set.new(files),
-    full: options.files.empty? and options.exclude.empty?,
+    pairs: Set.new(collected.ran),
+    full: options.files.empty? and options.exclude.empty? and plan.skipped.empty? and collected.errors.empty?,
   )
 end
 
@@ -210,18 +214,23 @@ def collect(options: Options, jobs: List[Tools.Job]) -> Collected
   results = Task.map(jobs, options.jobs, Tools.limit_ms(options), &Tools.run)
   findings: List[Finding] = []
   errors: List[ToolError] = []
+  ran: List[String] = []
   for i in 0...jobs.size
     job = jobs[i]
     case results[i]
       ok(outcome) ->
         findings = findings.concat(outcome.findings)
         errors = errors.concat(outcome.errors)
+        if outcome.errors.empty?
+          ran = ran.push(Baseline.pair(ToolKind.name(job.tool), job.shown))
+        end
+
       error(message) ->
         errors = errors.push(ToolError(tool: ToolKind.name(job.tool), file: job.entry.file, message: message))
     end
   end
 
-  return Collected(findings: findings, errors: errors)
+  return Collected(findings: findings, errors: errors, ran: ran)
 end
 
 # Shortens the paths to be relative to the working directory, and drops what is outside it (system and third-party

@@ -17,6 +17,10 @@ CLANG_FLAGS = [
   "--extra-arg-before=-Wno-unknown-argument",
 ]
 
+# After the flags of the database: a `-Werror` there would make every warning of the build an error of the tool. The
+# analyzer warnings named with `-Werror=analyzer-...` stay errors, and cchecker reports them as findings.
+NO_ERROR = "-Wno-error"
+
 # What `timeout` gets to stop the whole process group after it sent the signal: gcc runs cc1 and as as its children,
 # and a
 # child that outlives its parent would keep running after a timeout.
@@ -99,6 +103,21 @@ export def code_of(tool: Tool, option: Optional[String]) -> String
   end
 end
 
+## Returns why a run with a non-zero exit code failed. Under `timeout` the code 124 is the timeout and 137 is the kill
+## after it, but a tool that kills itself or is killed from outside (the OOM killer) gives the same codes, so the text
+## says both.
+export def failure(wrapped: Bool, timeout_s: Int, text: String, code: Int) -> String
+  if wrapped and code == 124
+    return "was stopped after #{timeout_s} seconds, or ended by itself with code 124"
+  end
+
+  if wrapped and code == 137
+    return "was killed: it did not end in #{timeout_s} seconds, or a signal ended it"
+  end
+
+  return "exited with code #{code}: #{first_line(text)}"
+end
+
 def executable(job: Job) -> String
   case job.tool
     Tool.Gcc -> return job.options.gcc
@@ -121,7 +140,7 @@ def arguments(job: Job) -> List[String]
       return (
         ["-fanalyzer", "-fdiagnostics-color=never", "-fdiagnostics-path-format=none", "-fno-diagnostics-show-caret"]
           .concat(entry.args)
-          .concat(["-c", entry.file, "-o", "/dev/null"])
+          .concat([NO_ERROR, "-c", entry.file, "-o", "/dev/null"])
       )
     Tool.ClangTidy ->
       return (
@@ -154,8 +173,10 @@ def outcome(job: Job, text: String, code: Int) -> Outcome
     end
   end
 
-  if code != 0 and not (code == 1 and (not errors.empty? or promoted > 0))
-    errors = errors.push(ToolError(tool: tool, file: job.entry.file, message: failure(job, text, code)))
+  if code != 0 and not (code == 1 and (not errors.empty? or (promoted > 0 and treated_as_errors?(text))))
+    errors = errors.push(
+      ToolError(tool: tool, file: job.entry.file, message: failure(job.wrapped, job.options.timeout_s, text, code)),
+    )
   end
 
   return Outcome(findings: findings, errors: errors)
@@ -205,12 +226,13 @@ def plain_option(option: String) -> String
   return option
 end
 
-def failure(job: Job, text: String, code: Int) -> String
-  if job.wrapped and (code == 124 or code == 137)
-    return "did not end in #{job.options.timeout_s} seconds"
-  end
-
-  return "exited with code #{code}: #{first_line(text)}"
+# Whether gcc says that it ended the run on purpose because of -Werror. A cc1 that was killed after it printed such an
+# error says "Killed" and exits 1 as well, and its output is not a whole run.
+def treated_as_errors?(text: String) -> Bool
+  return (
+    text.include?("cc1: all warnings being treated as errors") or
+    text.include?("cc1: some warnings being treated as errors")
+  )
 end
 
 # The place of a diagnostic, short when it is in the folder the tool ran in.
