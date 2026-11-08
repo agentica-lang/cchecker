@@ -394,6 +394,17 @@ export def shown_of(lock: String) -> String
   return written
 end
 
+## Returns whether the type of a node (a function, or a pointer to one) says that it never returns, as clang writes it
+## or without its typedefs, so a `noreturn` behind a typedef shows. clang writes the attribute at the end of the type
+## it belongs to, so one inside (a parameter that points to a function that does not return) does not count.
+export def noreturn_type?(node: Json) -> Bool
+  type = JSON.get(node, "type").unwrap_or(JSON.from(""))
+  return (
+    Ast.text(type, "qualType").end_with?(NORETURN_TYPE) or
+    Ast.text(type, "desugaredQualType").end_with?(NORETURN_TYPE)
+  )
+end
+
 # The pointers of a function that own, or may stand for one that does. A local is one when it gets an owned value (a
 # call of a function that returns one, or a realloc of a pointer that owns) or a pointer that owns; the walk tells at
 # each point whether it owns.
@@ -1003,7 +1014,7 @@ def declaration(b: Builder, node: Json, preds: List[Int]) -> Built
     owner: owner,
   )
 
-  site = site_of(written.b, function, [var], place, "")
+  site = site_of(written.b, function, [var], place, false)
   scope = written.b.scopes.last
   scopes = written.b.scopes.set(written.b.scopes.size - 1, scope.with(cleanups: scope.cleanups.push(site)))
   return Built(b: written.b.with(scopes: scopes), exits: written.exits)
@@ -1239,7 +1250,7 @@ def call(b: Builder, node: Json, preds: List[Int], tried: Bool) -> Built
       column: place.column,
       takes: [],
       drops: [],
-      stops: type_text(parts.first).include?(NORETURN_TYPE),
+      stops: noreturn_type?(parts.first),
       pointer: true,
     )
 
@@ -1262,13 +1273,13 @@ def call(b: Builder, node: Json, preds: List[Int], tried: Bool) -> Built
   end
 
   # The type of the declaration: the reference to a builtin such as `__builtin_abort` has no type of its own.
-  type = type_text(JSON.get(callee, "referencedDecl").unwrap_or(JSON.from("")))
+  noreturn = noreturn_type?(JSON.get(callee, "referencedDecl").unwrap_or(JSON.from("")))
   site = site_of(
     built.b,
     Ast.referenced_name(callee),
     args.map do |arg| arg_of(built.b, arg) end,
     Ast.start_of(node),
-    type,
+    noreturn,
   )
 
   if tried
@@ -1289,12 +1300,12 @@ end
 
 # What a call does to the locks: a known call takes or drops the lock of its first argument, and a function with
 # CC_ACQUIRES or CC_RELEASES the locks it names, in the texts of the arguments of the call.
-def site_of(b: Builder, name: String, args: List[Arg], place: Ast.Place, type: String) -> Site
+def site_of(b: Builder, name: String, args: List[Arg], place: Ast.Place, noreturn: Bool) -> Site
   key = key_of_function(b.ctx, name)
   takes: List[Lock] = []
   drops: List[Lock] = []
   waits: List[Lock] = []
-  stops = Known.NORETURN.include?(name) or type.include?(NORETURN_TYPE)
+  stops = Known.NORETURN.include?(name) or noreturn
   if Known.TAKES.include?(name)
     takes = lock_of(args, 0)
   end
@@ -1552,7 +1563,7 @@ def trial(b: Builder, tried: Tried, preds: List[Int]) -> Split
   args = Ast.children(tried.call).drop(1)
   name = callee_name(tried.call)
   passed = args.map do |arg| arg_of(called.b, arg) end
-  site = site_of(called.b, name, passed, Ast.start_of(tried.call), "")
+  site = site_of(called.b, name, passed, Ast.start_of(tried.call), false)
   taken = add(
     called.b,
     Event.Call(site.with(takes: lock_of(passed, 0), tried: Known.NO_WAIT.include?(name))),
@@ -1684,12 +1695,6 @@ def storage_root(node: Json) -> String
       return storage_root(Ast.children(base).first)
     _ -> return ""
   end
-end
-
-# The type of a node as clang writes it and without its typedefs, so a `noreturn` behind a typedef shows.
-def type_text(node: Json) -> String
-  type = JSON.get(node, "type").unwrap_or(JSON.from(""))
-  return "#{Ast.text(type, "qualType")} #{Ast.text(type, "desugaredQualType")}"
 end
 
 def see_through(node: Json) -> Json

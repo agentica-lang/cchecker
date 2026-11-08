@@ -4,8 +4,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** a `uv_fs_*` call run at once whose libc call does not block (`uv_fs_close`, `uv_fs_stat`,
+  `uv_fs_unlink`, `uv_fs_mkdir`, ...) is a system call (`CC-EFFECT-HOT-SYSCALL`), no longer a blocking call
+  (`CC-EFFECT-SHORT-BLOCKS`): a baseline that holds such a finding counts it fixed.
+
 ### Added
 
+- `--all-paths`: a finding of the rules for each distinct bad call that a root reaches, each with its shortest path.
+  The nearest one keeps its baseline key; the others are keyed by the call their message names.
+- The effect walk does not go into a function that is `_Noreturn`, `[[noreturn]]`, `CC_NORETURN`,
+  `__attribute__((noreturn))` (also through a typedef) or `__attribute__((cold))`: an error exit. `[effects]
+  follow_cold = true` follows it; a `CC_BLOCKING` mark on such a function still counts.
+- Settings, read from the first of `-c FILE` (its `[tool.cchecker]` table when it has one), `cchecker.toml`, the
+  `[tool.cchecker]` table of `agentica.toml`, and the defaults; `config` in `--json` says which. `[library]` turns the
+  families of blocking calls off one by one (`libc_blocking`, `pthread_blocking`, `libuv_blocking`, `libgc_blocking`),
+  and `source` in `--json` names the one of a finding. `[roots]` names `CC_SHORT` and `CC_HOT` roots without a mark.
+- Inferred roots: a function passed as a callback to a libuv call that runs it on the loop thread is a `CC_SHORT` root
+  (`libuv_callbacks_short`, `--no-infer`). Its finding gives the call in `root`; a callback that leads to no function
+  is listed in `unresolved_callbacks` of `--json`. `--update-baseline` is refused while `--no-infer` or a `[library]`
+  flag set to false turns a check of the rules off.
 - The `rules` tool (on by default): one call graph of the project from clang's JSON AST, function pointers included
   where the project stores a function in a field, a variable or a parameter. `CC-EFFECT-SHORT-BLOCKS`: a `CC_SHORT`
   function reaches a blocking call (a `CC_BLOCKING` function, or a known blocking call of libc, pthread or libuv).

@@ -184,8 +184,8 @@ end
 
 ## Returns whether a call never comes back: by its type or name, or by a CC_NORETURN on the function.
 export def stops?(site: Site, functions: Map[String, Function]) -> Bool
-  marked = functions.get(site.key).map do |f| f.marks.include?("noreturn") end.unwrap_or(false)
-  return site.stops or marked
+  noreturn = functions.get(site.key).map do |f| f.noreturn end.unwrap_or(false)
+  return site.stops or noreturn
 end
 
 ## Returns the word of the value of a condition on a step of a path.

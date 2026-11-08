@@ -7,12 +7,13 @@
 
 import Ast from "ast"
 import Flow from "flow"
+import Known from "known"
 
 # The prefix of an annotation of include/cchecker.h. Under CCHECKER_AST the macros are `deprecated` attributes, whose
 # message clang 19 keeps in its JSON AST (it drops the string of an `annotate` attribute).
 MARK_PREFIX = "cchecker:"
 
-# The attributes of a function that never returns.
+# The attributes of a function that never returns (`_Noreturn`, `[[noreturn]]`).
 NORETURN_ATTRS = Set.new(["C11NoReturnAttr", "NoReturnAttr", "CXX11NoReturnAttr"])
 
 # The annotations that name locks, and whether the function takes them.
@@ -36,12 +37,17 @@ TYPE_QUALIFIERS = Set.new(["const", "volatile", "restrict", "__restrict", "struc
 QUIET_MARK = "no_syscall_under"
 LEVEL_MARK = "lock_level"
 
+# The slot that the argument of a callback is read into, which no other store names: only its sources are kept.
+CALLBACK_SLOT = "callback"
+
 # The nodes a function pointer goes through on its way to a call or a store, which do not change where it points.
 TRANSPARENT = Set.new(["ImplicitCastExpr", "CStyleCastExpr", "ParenExpr", "CompoundLiteralExpr"])
 
 ## A function of the project, as one translation unit declares it. `key` is its name, and `name@file` for a static
 ## function, which is another function in each file. `marks` are the annotations, as written after `cchecker:`
-## (`short`, `blocking`, `hot`). The place is that of the declaration, of the definition when `defined`.
+## (`short`, `blocking`, `hot`). The place is that of the declaration, of the definition when `defined`. `noreturn`
+## says that the declaration never returns (an attribute, its type, or CC_NORETURN), and `cold` that it is
+## `__attribute__((cold))`: either is an error exit.
 export struct Function
   key: String
   name: String
@@ -50,6 +56,8 @@ export struct Function
   column: Int
   defined: Bool
   marks: List[String]
+  noreturn: Bool = false
+  cold: Bool = false
 end
 
 ## Where a call goes: a function, by key, or a slot.
@@ -93,9 +101,20 @@ struct LockMarks
   errors: List[String]
 end
 
-## The functions, calls and stores of one translation unit, the graphs of its functions that take or release a lock,
-## and the annotations of its locks. `too_large` names the functions too large for a graph (`MAX_BODY_NODES`), and
-## `mark_errors` says what is wrong with the lock marks that cannot be read.
+## A function pointer passed to a libuv call that runs it on the loop thread (`Known.LOOP_CALLBACKS`): the call, the
+## place of the argument (from 0), the place of the call (`file` absolute), and what the argument holds, which is empty
+## when it is neither a function nor a pointer that the rules follow.
+export struct Callback
+  call: String
+  argument: Int
+  file: String
+  line: Int
+  sources: List[Source]
+end
+
+## The functions, calls and stores of one translation unit, its callbacks of libuv, the graphs of its functions that
+## take or release a lock, and the annotations of its locks. `too_large` names the functions too large for a graph
+## (`MAX_BODY_NODES`), and `mark_errors` says what is wrong with the lock marks that cannot be read.
 export struct Unit
   functions: List[Function]
   calls: List[Call]
@@ -104,6 +123,7 @@ export struct Unit
   lock_marks: List[LockMark] = []
   too_large: List[String] = []
   mark_errors: List[String] = []
+  callbacks: List[Callback] = []
 end
 
 # A struct or union: its name (a typedef name for an anonymous one) and the ids and names of its fields.
@@ -146,6 +166,7 @@ end
 struct Found
   calls: List[Call]
   stores: List[Store]
+  callbacks: List[Callback] = []
 end
 
 ## Returns the unit of the declarations that `Scan` kept, a JSON array.
@@ -192,6 +213,7 @@ export def read(decls: Json) -> Result[Unit]
       lock_marks: marked.marks,
       too_large: too_large,
       mark_errors: marked.errors,
+      callbacks: found.callbacks,
     ),
   )
 end
@@ -221,8 +243,7 @@ def context_of(tables: Tables, nodes: List[Json]) -> Flow.Context
       .flat_map do |mark| annotated(mark, params) end
       .map do |lock| lock.with(class: class_of_text(tables, globals, lock.text, params, types)) end
 
-    attributes = Ast.children(node).map(&Ast.kind)
-    stops = function.marks.include?("noreturn") or attributes.any? do |name| NORETURN_ATTRS.include?(name) end
+    stops = function.noreturn
     if not locks.empty? or stops
       known = callees.get(function.key).unwrap_or(Flow.Callee(locks: [], stops: false))
       callees = callees.put(function.key, Flow.Callee(locks: known.locks.concat(locks), stops: known.stops or stops))
@@ -656,7 +677,14 @@ def function_of(tables: Tables, node: Json) -> Function
     column: place.column,
     defined: Ast.children(node).any? do |child| Ast.kind(child) == "CompoundStmt" end,
     marks: marks,
+    noreturn: marks.include?("noreturn") or noreturn?(node),
+    cold: Ast.children(node).any? do |child| Ast.kind(child) == "ColdAttr" end,
   )
+end
+
+# A declaration that never returns by an attribute, or by its type, as written or behind a typedef (`fatal_fn die;`).
+def noreturn?(node: Json) -> Bool
+  return Ast.children(node).any? do |child| NORETURN_ATTRS.include?(Ast.kind(child)) end or Flow.noreturn_type?(node)
 end
 
 def in_function(tables: Tables, key: String, node: Json, found: Found) -> Found
@@ -711,11 +739,12 @@ def with_call(tables: Tables, scope: Scope, node: Json, found: Found) -> Found
       stores = stores.concat(stored(tables, scope, "param:#{key}:#{i - 1}", parts[i]))
     end
 
+    noted = with_callbacks(found, callbacks_of(tables, scope, node, Ast.referenced_name(callee), parts))
     if async_fs?(Ast.referenced_name(callee), parts)
-      return with_stores(found, stores)
+      return with_stores(noted, stores)
     end
 
-    called = found.with(calls: found.calls.push(Call(caller: scope.caller, target: Target.Direct(key))))
+    called = noted.with(calls: noted.calls.push(Call(caller: scope.caller, target: Target.Direct(key))))
     return with_stores(called, stores)
   end
 
@@ -726,6 +755,37 @@ def with_call(tables: Tables, scope: Scope, node: Json, found: Found) -> Found
       return found.with(calls: found.calls.push(call))
     none -> return found
   end
+end
+
+# The callbacks of a call of libuv that runs them on the loop. A null pointer (`NULL`, 0) is no callback.
+def callbacks_of(tables: Tables, scope: Scope, node: Json, name: String, parts: List[Json]) -> List[Callback]
+  places = Known.LOOP_CALLBACKS.get(name).unwrap_or([])
+  if places.empty?
+    return []
+  end
+
+  # The place of the call: where its macro was expanded, when a macro wrote it.
+  place = Ast.start_of(node)
+  found: List[Callback] = []
+  for argument in places
+    if argument + 1 < parts.size and not null?(parts[argument + 1])
+      sources = stored(tables, scope, CALLBACK_SLOT, parts[argument + 1]).map do |store| store.source end
+      found = found.push(
+        Callback(call: name, argument: argument, file: place.file, line: place.line, sources: sources),
+      )
+    end
+  end
+
+  return found
+end
+
+def null?(node: Json) -> Bool
+  value = bare(node)
+  return Ast.kind(value) == "IntegerLiteral" and Ast.text(value, "value") == "0"
+end
+
+def with_callbacks(found: Found, callbacks: List[Callback]) -> Found
+  return found.with(callbacks: found.callbacks.concat(callbacks))
 end
 
 # A call of libuv's file functions with a callback, its last argument, only starts the work: the loop runs it on a
