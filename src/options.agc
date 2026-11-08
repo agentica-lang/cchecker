@@ -2,14 +2,16 @@
 
 import OP from "std/option_parser"
 import {Opt, Kind} from "std/option_parser"
+import ToolKind from "tool_kind"
+import {Tool} from "tool_kind"
 
 # The clang-tidy checks of a run without --checks: the path-sensitive analyzer families that find real bugs in C, and a
-# few bugprone checks that are about C itself. Off because they only made noise on the Agentica VM and agentica-db (see
-# the PR of phase 0): the insecureAPI checks (they ask for strlcpy in code that bounds its copies), deadcode (dead
-# stores), bugprone-not-null-terminated-result (a length-based buffer is not a C string) and
-# bugprone-multi-level-implicit-pointer-conversion (void ** into void * in FFI code). A .clang-tidy file of the
-# project is
-# applied first, and these checks come after it.
+# few bugprone checks that are about C itself.
+# A .clang-tidy file of the project is applied first, and these checks come after it.
+# Left out because they only made noise on the Agentica VM and on agentica-db (the PR of phase 0 has the numbers):
+# the insecureAPI checks ask for strlcpy in code that bounds its copies; deadcode reports dead stores;
+# bugprone-not-null-terminated-result flags a buffer that is built by length and is no C string;
+# bugprone-multi-level-implicit-pointer-conversion flags void ** passed as void * in FFI code.
 DEFAULT_CHECKS = (
   "-*,clang-analyzer-core.*,clang-analyzer-unix.*,clang-analyzer-security.*,-clang-analyzer-security.insecureAPI.*," +
   "bugprone-sizeof-expression,bugprone-integer-division,bugprone-suspicious-memory-comparison," +
@@ -37,7 +39,7 @@ OPTIONS = [
   Opt(name: "timeout", kind: Kind.Int, default: "300", min: some(1), help: "seconds for one tool on one file"),
   Opt(name: "baseline", short: "b", metavar: "FILE", help: "findings to accept; only others are reported"),
   Opt(name: "update-baseline", kind: Kind.Flag, help: "write the baseline from the findings and exit 0"),
-  Opt(name: "exclude", metavar: "LIST", help: "comma separated path prefixes to skip"),
+  Opt(name: "exclude", metavar: "LIST", help: "comma separated files or folders to skip"),
   Opt(name: "gcc", default: "gcc", metavar: "PROGRAM", help: "the gcc to run"),
   Opt(name: "clang-tidy", default: "clang-tidy", metavar: "PROGRAM", help: "the clang-tidy to run"),
   Opt(name: "json", kind: Kind.Flag, help: "print one JSON object"),
@@ -57,8 +59,9 @@ export struct Options
   files: List[String]
   flags: List[String]
   database: Optional[String]
-  tools: List[String]
+  tools: List[Tool]
   checks: String
+  custom_checks: Bool
   jobs: Int
   timeout_s: Int
   baseline: Optional[String]
@@ -85,6 +88,7 @@ export def parse(args: List[String]) -> Result[Options]
     database: database,
     tools: tools,
     checks: OP.optional_string(parsed, "checks").unwrap_or(DEFAULT_CHECKS),
+    custom_checks: OP.optional_string(parsed, "checks").some?,
     jobs: OP.int(parsed, "jobs"),
     timeout_s: OP.int(parsed, "timeout"),
     baseline: OP.optional_string(parsed, "baseline"),
@@ -113,6 +117,10 @@ def mistake(options: Options) -> String
     return "--update-baseline needs --baseline FILE"
   end
 
+  if options.update_baseline and options.custom_checks
+    return "--update-baseline needs the default --checks: a baseline made with fewer checks would lose the others"
+  end
+
   if not options.files.empty? and options.database.some?
     return "give FILEs or --compile-commands, not both"
   end
@@ -128,11 +136,12 @@ def hint() -> String
   return "Try 'cchecker --help' for more information"
 end
 
-def tool_list(text: String) -> Result[List[String]]
-  tools = names(text)
-  for tool in tools
-    if not TOOLS.include?(tool)
-      return error("cchecker: unknown tool '#{tool}', expected #{TOOLS.join(" or ")}\n#{hint()}")
+def tool_list(text: String) -> Result[List[Tool]]
+  tools: List[Tool] = []
+  for word in names(text).uniq
+    case ToolKind.named(word)
+      some(tool) -> tools = tools.push(tool)
+      none -> return error("cchecker: unknown tool '#{word}', expected #{TOOLS.join(" or ")}\n#{hint()}")
     end
   end
 

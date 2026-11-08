@@ -7,13 +7,11 @@ import {Finding, ToolError} from "findings"
 import {Options} from "options"
 import Paths from "paths"
 import Report from "report"
+import ToolKind from "tool_kind"
 import Tools from "tools"
 
 # The compile database that a run without FILE or -p reads.
 DEFAULT_DATABASE = "compile_commands.json"
-
-# A tool is stopped by its own timeout first, with a message that says so; the task's timeout is the last resort.
-TASK_GRACE_MS = 5_000
 
 # What the tools made of all the jobs, before the paths are shortened and the repeats taken out.
 struct Collected
@@ -21,17 +19,28 @@ struct Collected
   errors: List[ToolError]
 end
 
+# The jobs of a run, and the files that were left out because they are outside the working directory.
+struct Plan
+  jobs: List[Tools.Job]
+  skipped: List[String]
+end
+
 ## Runs the tools, prints the report and returns the exit code: 0 for no new findings, 1 for new ones, 2 for an error
 ## of a tool. A setup error (no files, a bad baseline) is an `error`.
 export def run(options: Options) -> Result[Int]
   cwd = try Paths.working_directory()
+  accepted = try baseline_entries(options)
   entries = try gather(options)
-  jobs = try jobs_for(options, entries, cwd)
-  if jobs.empty?
+  plan = try plan_for(options, entries, cwd)
+  if plan.jobs.empty?
     return error("no C files to check")
   end
 
-  collected = collect(options, jobs)
+  if not plan.skipped.empty?
+    IO.warn(skipped_line(plan.skipped))
+  end
+
+  collected = collect(options, plan.jobs)
   findings = (
     collected.findings
     |> localize(cwd, options.exclude)
@@ -39,14 +48,14 @@ export def run(options: Options) -> Result[Int]
     |> Findings.sort()
   )
 
+  scope = scope_of(options, plan.jobs, findings)
   case options.baseline
     some(path) ->
       if options.update_baseline
-        return update(path, findings, collected.errors, options)
+        return update(path, accepted, scope, findings, collected.errors, options)
       end
 
-      accepted = try Baseline.load(path)
-      split = Baseline.split(findings, accepted)
+      split = Baseline.split(findings, accepted, scope)
       return ok(
         finish(
           options,
@@ -55,22 +64,57 @@ export def run(options: Options) -> Result[Int]
             baselined: split.accepted,
             fixed: split.fixed,
             errors: collected.errors,
+            skipped: plan.skipped.size,
           ),
         ),
       )
     none ->
-      return ok(finish(options, Report.Report(findings: findings, baselined: 0, fixed: 0, errors: collected.errors)))
+      return ok(
+        finish(
+          options,
+          Report.Report(
+            findings: findings,
+            baselined: 0,
+            fixed: 0,
+            errors: collected.errors,
+            skipped: plan.skipped.size,
+          ),
+        ),
+      )
   end
 end
 
-# Writes the baseline when every tool ran: a baseline made from a half run would accept less than the project has.
-def update(path: String, findings: List[Finding], errors: List[ToolError], options: Options) -> Result[Int]
+# The accepted findings, read before any tool runs so that a baseline that cannot be read costs no time. A baseline
+# that is not there yet is empty when it is about to be written.
+def baseline_entries(options: Options) -> Result[List[Baseline.Entry]]
+  case options.baseline
+    some(path) ->
+      if options.update_baseline and not File.stat(path).ok?
+        return ok([])
+      end
+
+      return Baseline.load(path)
+    none -> return ok([])
+  end
+end
+
+# Writes the baseline when every tool ran: a baseline made from a half run would accept less than the project has. The
+# entries of the tools and files that the run did not cover stay as they were.
+def update(
+  path: String,
+  accepted: List[Baseline.Entry],
+  scope: Baseline.Scope,
+  findings: List[Finding],
+  errors: List[ToolError],
+  options: Options,
+) -> Result[Int]
   if not errors.empty?
-    return ok(finish(options, Report.Report(findings: [], baselined: 0, fixed: 0, errors: errors)))
+    return ok(finish(options, Report.Report(findings: [], baselined: 0, fixed: 0, errors: errors, skipped: 0)))
   end
 
-  try Baseline.write(path, findings)
-  puts("cchecker: wrote #{findings.size} findings to #{path}")
+  entries = Baseline.merged(accepted, scope, findings)
+  try Baseline.write(path, entries)
+  puts("cchecker: wrote #{entries.reduce(0) do |total, entry| total + entry.count end} findings to #{path}")
   return ok(0)
 end
 
@@ -116,27 +160,54 @@ end
 
 # One job for each tool and each C file of the database (a file named on the command line is checked whatever
 # its name).
-# Files that are outside the working directory or excluded are not run, as their findings would be dropped.
-def jobs_for(options: Options, entries: List[Commands.Entry], cwd: String) -> Result[List[Tools.Job]]
-  tools = options.tools.map do |name| Tools.named(name) end
+# Excluded files are not run. Files outside the working directory are not run either, as their findings would be
+# dropped, and the report says so.
+def plan_for(options: Options, entries: List[Commands.Entry], cwd: String) -> Result[Plan]
+  wrapped = Tools.timeout_available?()
   jobs: List[Tools.Job] = []
+  skipped: List[String] = []
   for entry in entries
     path = try Paths.absolute(entry.directory, entry.file)
-    wanted = options.files.include?(entry.file) or entry.file.end_with?(".c")
-    shown = Paths.inside(cwd, path)
-    if wanted and shown.some? and not excluded?(shown.unwrap!, options.exclude)
-      for tool in tools
-        jobs = jobs.push(Tools.Job(tool: tool, entry: entry, options: options))
-      end
+    if not (options.files.include?(entry.file) or entry.file.end_with?(".c"))
+      next
+    end
+
+    case Paths.inside(cwd, path)
+      none -> skipped = skipped.push(entry.file)
+      some(shown) ->
+        if not Paths.excluded?(cwd, shown, options.exclude)
+          for tool in options.tools
+            jobs = jobs.push(Tools.Job(tool: tool, entry: entry, options: options, shown: shown, wrapped: wrapped))
+          end
+        end
     end
   end
 
-  return ok(jobs)
+  return ok(Plan(jobs: jobs, skipped: skipped))
+end
+
+def skipped_line(skipped: List[String]) -> String
+  count = skipped.size
+  word = "files"
+  if count == 1
+    word = "file"
+  end
+
+  return "cchecker: skipped #{count} #{word} outside the working directory: #{skipped.take(5).join(", ")}"
+end
+
+# What the run covered, for the baseline: its tools and files, and every file when it ran a whole database.
+def scope_of(options: Options, jobs: List[Tools.Job], findings: List[Finding]) -> Baseline.Scope
+  files = jobs.map do |job| job.shown end.concat(findings.map do |f| f.file end)
+  return Baseline.Scope(
+    tools: Set.new(options.tools.map do |tool| ToolKind.name(tool) end),
+    files: Set.new(files),
+    full: options.files.empty? and options.exclude.empty?,
+  )
 end
 
 def collect(options: Options, jobs: List[Tools.Job]) -> Collected
-  timeout_ms = options.timeout_s * 1000 + TASK_GRACE_MS
-  results = Task.map(jobs, options.jobs, timeout_ms, &Tools.run)
+  results = Task.map(jobs, options.jobs, Tools.limit_ms(options), &Tools.run)
   findings: List[Finding] = []
   errors: List[ToolError] = []
   for i in 0...jobs.size
@@ -146,7 +217,7 @@ def collect(options: Options, jobs: List[Tools.Job]) -> Collected
         findings = findings.concat(outcome.findings)
         errors = errors.concat(outcome.errors)
       error(message) ->
-        errors = errors.push(ToolError(tool: Tools.name(job.tool), file: job.entry.file, message: message))
+        errors = errors.push(ToolError(tool: ToolKind.name(job.tool), file: job.entry.file, message: message))
     end
   end
 
@@ -159,14 +230,10 @@ def localize(findings: List[Finding], cwd: String, exclude: List[String]) -> Lis
   kept: List[Finding] = []
   for f in findings
     shown = Paths.inside(cwd, f.file)
-    if shown.some? and not excluded?(shown.unwrap!, exclude)
+    if shown.some? and not Paths.excluded?(cwd, shown.unwrap!, exclude)
       kept = kept.push(f.with(file: shown.unwrap!))
     end
   end
 
   return kept
-end
-
-def excluded?(path: String, exclude: List[String]) -> Bool
-  return exclude.any? do |prefix| path.start_with?(prefix) end
 end

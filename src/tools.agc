@@ -5,21 +5,35 @@ import Diagnostics from "diagnostics"
 import {Finding, ToolError} from "findings"
 import {Options} from "options"
 import Paths from "paths"
+import ToolKind from "tool_kind"
+import {Tool} from "tool_kind"
 
 # Flags before the user's: a database made for gcc has flags that clang does not know, and it would stop with an error.
-CLANG_QUIET = ["--extra-arg-before=-Wno-unknown-warning-option", "--extra-arg-before=-Wno-unknown-argument"]
+# clang-tidy turns no warning into an error, whatever the .clang-tidy of the project says: a failed run is a
+# tool error.
+CLANG_FLAGS = [
+  "--warnings-as-errors=-*",
+  "--extra-arg-before=-Wno-unknown-warning-option",
+  "--extra-arg-before=-Wno-unknown-argument",
+]
 
-## The tools cchecker runs.
-export enum Tool
-  Gcc
-  ClangTidy
-end
+# What `timeout` gets to stop the whole process group after it sent the signal: gcc runs cc1 and as as its children,
+# and a
+# child that outlives its parent would keep running after a timeout.
+KILL_AFTER_S = 2
 
-## One tool on one translation unit.
+# The time a wrapped run has beyond the timeout for the kill and the exit, so `timeout` ends the run before
+# cchecker does.
+WRAPPER_MS = 6_000
+
+## One tool on one translation unit. `shown` is the path of the file in the report. `wrapped` runs the tool under
+## `timeout`, which stops the children of the tool too.
 export struct Job
   tool: Tool
   entry: Commands.Entry
   options: Options
+  shown: String
+  wrapped: Bool
 end
 
 ## What a job found, and what kept it from finding more.
@@ -28,21 +42,27 @@ export struct Outcome
   errors: List[ToolError]
 end
 
-## Returns the name of the tool, as the findings and the `--tools` option spell it.
-export def name(tool: Tool) -> String
-  case tool
-    Tool.Gcc -> return "gcc"
-    Tool.ClangTidy -> return "clang-tidy"
-  end
+# What a diagnostic of a tool is for cchecker.
+enum Verdict
+  Report
+  Failure
+  Ignore
 end
 
-## Returns the tool of a name given to `--tools`.
-export def named(text: String) -> Tool
-  if text == "gcc"
-    return Tool.Gcc
-  end
+## Returns the time in milliseconds after which nothing of a job is left to wait for.
+export def limit_ms(options: Options) -> Int
+  return options.timeout_s * 1000 + WRAPPER_MS + 5_000
+end
 
-  return Tool.ClangTidy
+## Returns whether `timeout` of coreutils is installed. Without it a timeout stops the tool but not its children.
+export def timeout_available?() -> Bool
+  case Process.spawn_captured("timeout", ["--version"], ".", 5_000)
+    ok(process) ->
+      code = Process.wait(process, 5_000).unwrap_or(1)
+      Process.close(process)
+      return code == 0
+    error(_) -> return false
+  end
 end
 
 ## Runs the job. An error is a tool that did not start or did not finish in time; a file that does not compile is an
@@ -50,7 +70,15 @@ end
 export def run(job: Job) -> Result[Outcome]
   program = executable(job)
   timeout_ms = job.options.timeout_s * 1000
-  process = try start(program, arguments(job), job.entry.directory, timeout_ms)
+  command = program
+  args = arguments(job)
+  if job.wrapped
+    command = "timeout"
+    args = ["--kill-after=#{KILL_AFTER_S}", "#{job.options.timeout_s}", program].concat(args)
+    timeout_ms += WRAPPER_MS
+  end
+
+  process = try start(command, args, job.entry.directory, timeout_ms, program)
   output = try Process.output(process, timeout_ms)
   code = try Process.wait(process, timeout_ms)
   Process.close(process)
@@ -61,6 +89,16 @@ export def run(job: Job) -> Result[Outcome]
   return ok(outcome(job, "#{output.stdout}\n#{output.stderr}", code))
 end
 
+## Returns the code of a diagnostic: `-Wanalyzer-malloc-leak` of gcc is CC-GCC-ANALYZER-MALLOC-LEAK, and the check
+## `clang-analyzer-unix.Malloc` is CC-TIDY-CLANG-ANALYZER-UNIX-MALLOC. A diagnostic with no name is CC-GCC-WARNING or
+## CC-TIDY-WARNING.
+export def code_of(tool: Tool, option: Optional[String]) -> String
+  case tool
+    Tool.Gcc -> return "CC-GCC-" + plain_option(option.unwrap_or("-WWARNING")).replace("=", "").upcase
+    Tool.ClangTidy -> return "CC-TIDY-" + option.unwrap_or("WARNING").replace(".", "-").upcase
+  end
+end
+
 def executable(job: Job) -> String
   case job.tool
     Tool.Gcc -> return job.options.gcc
@@ -69,8 +107,8 @@ def executable(job: Job) -> String
 end
 
 # LC_ALL=C keeps the messages in English with plain quotes, so a baseline holds on any machine.
-def start(program: String, args: List[String], directory: String, timeout_ms: Int) -> Result[Process]
-  case Process.spawn_captured(program, args, directory, timeout_ms, {"LC_ALL": "C"})
+def start(command: String, args: List[String], directory: String, timeout_ms: Int, program: String) -> Result[Process]
+  case Process.spawn_captured(command, args, directory, timeout_ms, {"LC_ALL": "C"})
     ok(process) -> return ok(process)
     error(message) -> return error("cannot run #{program}: #{message}")
   end
@@ -88,44 +126,91 @@ def arguments(job: Job) -> List[String]
     Tool.ClangTidy ->
       return (
         ["--quiet", "--checks=#{job.options.checks}", "--header-filter=.*"]
-          .concat(CLANG_QUIET)
+          .concat(CLANG_FLAGS)
           .concat([entry.file, "--"])
           .concat(entry.args)
       )
   end
 end
 
+# A run that exits with a non-zero code is a tool error, unless the code is 1 and the output says why: a
+# diagnostic that
+# is an error, or a finding that -Werror made an error.
 def outcome(job: Job, text: String, code: Int) -> Outcome
   findings: List[Finding] = []
   errors: List[ToolError] = []
-  tool = name(job.tool)
+  promoted = 0
+  tool = ToolKind.name(job.tool)
   for d in Diagnostics.parse(text)
-    if compile_error?(d)
-      errors = errors.push(ToolError(tool: tool, file: job.entry.file, message: where(job, d)))
-    else
-      findings = findings.push(finding(job, d))
+    case verdict(job.tool, d)
+      Verdict.Report ->
+        findings = findings.push(finding(job, d))
+        if d.severity != "warning"
+          promoted += 1
+        end
+
+      Verdict.Failure -> errors = errors.push(ToolError(tool: tool, file: job.entry.file, message: where(job, d)))
+      Verdict.Ignore -> next
     end
   end
 
-  if code != 0 and findings.empty? and errors.empty?
-    errors = errors.push(
-      ToolError(tool: tool, file: job.entry.file, message: "exited with code #{code}: #{first_line(text)}"),
-    )
+  if code != 0 and not (code == 1 and (not errors.empty? or promoted > 0))
+    errors = errors.push(ToolError(tool: tool, file: job.entry.file, message: failure(job, text, code)))
   end
 
   return Outcome(findings: findings, errors: errors)
 end
 
-# An error without a check name is the compiler refusing the file; clang-tidy names those clang-diagnostic-error.
-def compile_error?(d: Diagnostics.Diagnostic) -> Bool
-  if d.severity == "warning"
-    return false
+# gcc reports its analyzer only. Its other warnings come from the flags of the build (-Wall), and clang-tidy leaves
+# those out as well. An error is the compiler refusing the file, whatever its name: gcc 14 refuses an implicit
+# declaration with [-Wimplicit-function-declaration]. An analyzer warning that -Werror made an error is still
+# a finding.
+def verdict(tool: Tool, d: Diagnostics.Diagnostic) -> Verdict
+  failed = d.severity != "warning"
+  case tool
+    Tool.Gcc ->
+      if analyzer?(Diagnostics.option(d))
+        return Verdict.Report
+      end
+
+      if failed
+        return Verdict.Failure
+      end
+
+      return Verdict.Ignore
+    Tool.ClangTidy ->
+      if failed
+        return Verdict.Failure
+      end
+
+      return Verdict.Report
+  end
+end
+
+def analyzer?(option: Optional[String]) -> Bool
+  case option
+    some(text) -> return plain_option(text).start_with?("analyzer-")
+    none -> return false
+  end
+end
+
+# The option without the -W, and without the -Werror= and -Wno-error= that gcc puts in front of a promoted warning.
+def plain_option(option: String) -> String
+  for prefix in ["-Werror=", "-Wno-error=", "-W"]
+    if option.start_with?(prefix)
+      return option.slice(prefix.length, option.length - prefix.length)
+    end
   end
 
-  case Diagnostics.option(d)
-    some(option) -> return option.start_with?("clang-diagnostic")
-    none -> return true
+  return option
+end
+
+def failure(job: Job, text: String, code: Int) -> String
+  if job.wrapped and (code == 124 or code == 137)
+    return "did not end in #{job.options.timeout_s} seconds"
   end
+
+  return "exited with code #{code}: #{first_line(text)}"
 end
 
 # The place of a diagnostic, short when it is in the folder the tool ran in.
@@ -138,23 +223,12 @@ end
 def finding(job: Job, d: Diagnostics.Diagnostic) -> Finding
   return Finding(
     code: code_of(job.tool, Diagnostics.option(d)),
-    tool: name(job.tool),
+    tool: ToolKind.name(job.tool),
     file: Paths.absolute(job.entry.directory, d.file).unwrap_or(d.file),
     line: d.line,
     column: d.column,
     message: d.message.split(" ").select do |word| word != "" end.join(" "),
   )
-end
-
-# gcc -Wanalyzer-malloc-leak is CC-GCC-ANALYZER-MALLOC-LEAK; clang-analyzer-unix.Malloc is
-# CC-TIDY-CLANG-ANALYZER-UNIX-MALLOC. A diagnostic with no name is CC-GCC-WARNING or CC-TIDY-WARNING.
-def code_of(tool: Tool, option: Optional[String]) -> String
-  case tool
-    Tool.Gcc ->
-      text = option.unwrap_or("-WWARNING")
-      return "CC-GCC-" + text.slice(2, text.length - 2).replace("=", "").upcase
-    Tool.ClangTidy -> return "CC-TIDY-" + option.unwrap_or("WARNING").replace(".", "-").upcase
-  end
 end
 
 # The line that says why a tool stopped: the first error, else the first line.

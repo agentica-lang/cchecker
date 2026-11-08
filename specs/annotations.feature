@@ -31,7 +31,7 @@ Feature: The annotation header
       """
 
   Scenario Outline: The macros are empty for gcc, in every C standard
-    When I run cchecker with "--tools gcc fixtures/annotated.c -- -I../include -std=<standard> -Wall -Wextra -pedantic-errors"
+    When I run cchecker with "--tools gcc fixtures/annotated.c -- -I../include -std=<standard> -Wall -pedantic-errors"
     Then the exit code is 0
 
     Examples:

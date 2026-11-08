@@ -11,12 +11,17 @@
   },
   {
     "directory": ".",
-    "command": "cc -c clean.c",
+    "command": "cc -c ./clean.c",
     "file": "clean.c"
   },
   {
     "directory": ".",
     "command": "cc '-DLABEL=\"two words\"' -c quoted.c",
     "file": "quoted.c"
+  },
+  {
+    "directory": ".",
+    "arguments": ["cc", "-DLEAK", "-c", "flags.c"],
+    "file": "flags.c"
   }
 ]

@@ -1,4 +1,4 @@
-## Reading the diagnostics of gcc and clang-tidy, which print the same `file:line:column: severity: message [tag]` lines.
+## Reading the diagnostics of gcc and clang-tidy, which print `file:line:column: severity: message [tag]` lines.
 
 import Regex from "std/regex"
 

@@ -145,6 +145,12 @@ Feature: The baseline
     When I run cchecker with "--tools gcc --baseline $DIR/missing.json $DIR/leak.c"
     Then the exit code is 2
 
-  Scenario: Updating the baseline refuses a run where a tool failed
-    When I run cchecker with "--tools gcc --gcc no-such-gcc --baseline $DIR/other.json --update-baseline $DIR/leak.c"
+  Scenario: Updating the baseline refuses a run where a tool failed and leaves the file as it was
+    When I run cchecker with "--tools gcc --gcc no-such-gcc --baseline $DIR/base.json --update-baseline $DIR/leak.c"
     Then the exit code is 2
+    When I run cchecker with "--tools gcc --baseline $DIR/base.json --json $DIR/leak.c"
+    Then the exit code is 0
+    And the output includes:
+      """
+      "findings":[],"baselined":1
+      """

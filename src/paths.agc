@@ -35,6 +35,12 @@ export def inside(cwd: String, path: String) -> Optional[String]
   return none
 end
 
+## Returns whether the path, relative to `cwd`, is one of the excluded files or folders or is inside one. An exclusion
+## may be written with `./` or `..`, with a trailing slash or as an absolute path, and it matches whole path parts.
+export def excluded?(cwd: String, path: String, exclude: List[String]) -> Bool
+  return exclude.any? do |item| matches?(cwd, path, item) end
+end
+
 ## Returns the folder of an absolute path.
 export def parent(path: String) -> String
   parts = path.split("/")
@@ -44,4 +50,25 @@ export def parent(path: String) -> String
   end
 
   return folder
+end
+
+def matches?(cwd: String, path: String, item: String) -> Bool
+  full = without_slash(absolute(cwd, item).unwrap_or(item))
+  if full == cwd
+    return true
+  end
+
+  case inside(cwd, full)
+    some(relative) -> return path == relative or path.start_with?(relative + "/")
+    none -> return false
+  end
+end
+
+# Path.resolve keeps the slash of a path that ends with one.
+def without_slash(path: String) -> String
+  if path.length > 1 and path.end_with?("/")
+    return without_slash(path.slice(0, path.length - 1))
+  end
+
+  return path
 end

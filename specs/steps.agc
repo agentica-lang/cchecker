@@ -1,12 +1,13 @@
-## The steps of the features: each scenario runs cchecker (more than once when it needs to) on C files, then asserts the
-## exit code and what the output holds.
+## The steps of the features. A scenario runs cchecker, more than once when it needs to, then checks the exit code
+## and the output.
 
 import BDD from "std/bdd"
 
-# The steps run from the folder where `agentica test` runs (the root of the repository), and cchecker runs in
-# specs/, as
-# a user would run it in a project. Scenarios that write C files do it in a folder of their own, specs/scratch/NAME
-# (gitignored; cchecker shows only the files under its working directory). The scenario removes it when it ends.
+# The steps run from the folder where `agentica test` runs, the root of the repository.
+# cchecker runs in specs/, as a user would run it in a project.
+# A scenario that writes C files does it in a folder of its own, specs/scratch/NAME, removed at the end of the scenario.
+# the end.
+# The folder is under specs/ because cchecker shows only the files under its working directory.
 SPECS = "specs"
 SCRATCH = "scratch"
 PROGRAM = "../cchecker.agc"
@@ -20,6 +21,11 @@ def main() -> Void
     BDD.step("the exit code is {int}", &exit_code_is),
     BDD.step("the output includes:", &output_includes),
     BDD.step("the output does not include:", &output_excludes),
+    BDD.step("the errors include:", &errors_include),
+    BDD.step("the file {string} is removed", &remove_file),
+    BDD.step("the file {string} exists", &file_exists),
+    BDD.step("the file {string} does not exist", &file_missing),
+    BDD.step("the process written in {string} has ended", &process_ended),
   ])
 end
 
@@ -69,6 +75,38 @@ def output_excludes(ctx: BDD.Context, args: List[String]) -> BDD.Context
   unwanted = BDD.doc_string(ctx).strip
   shown = text(ctx, "stdout")
   return BDD.assert(ctx, not shown.include?(unwanted), "the output includes #{unwanted}: #{shown}")
+end
+
+def errors_include(ctx: BDD.Context, args: List[String]) -> BDD.Context
+  expected = BDD.doc_string(ctx).strip
+  shown = text(ctx, "stderr")
+  return BDD.assert(ctx, shown.include?(expected), "the errors do not include #{expected}: #{shown}")
+end
+
+def remove_file(ctx: BDD.Context, args: List[String]) -> BDD.Context
+  return check(ctx, Path.remove(host_path(ctx, args[0])))
+end
+
+def file_exists(ctx: BDD.Context, args: List[String]) -> BDD.Context
+  path = host_path(ctx, args[0])
+  return BDD.assert(ctx, File.stat(path).ok?, "#{path} does not exist")
+end
+
+def file_missing(ctx: BDD.Context, args: List[String]) -> BDD.Context
+  path = host_path(ctx, args[0])
+  return BDD.assert(ctx, not File.stat(path).ok?, "#{path} exists")
+end
+
+# The file holds the pid of a process the tool started. A killed process is gone from /proc once init has reaped it.
+def process_ended(ctx: BDD.Context, args: List[String]) -> BDD.Context
+  pid = File.read_text(host_path(ctx, args[0])).unwrap!.strip
+  Task.sleep(500)
+  return BDD.assert(ctx, not File.stat("/proc/#{pid}").ok?, "process #{pid} is still running")
+end
+
+# A path of a step is relative to specs/, and $DIR is the folder of the scenario.
+def host_path(ctx: BDD.Context, path: String) -> String
+  return "#{SPECS}/#{path.replace("$DIR", folder_of(ctx))}"
 end
 
 def text(ctx: BDD.Context, name: String) -> String

@@ -102,8 +102,9 @@ export def split_words(text: String) -> List[String]
   return words
 end
 
-## Returns the flags of a compiler command: it leaves out the compiler, the source file and the flags that name an output.
-export def flags_of(words: List[String], file: String) -> List[String]
+## Returns the flags of a compiler command: it leaves out the compiler, the source file (however the command spells it
+## against `directory`) and the flags that name an output.
+export def flags_of(words: List[String], source: String, directory: String) -> List[String]
   kept: List[String] = []
   skip = false
   for word in words.drop(1)
@@ -114,7 +115,7 @@ export def flags_of(words: List[String], file: String) -> List[String]
 
     if DROPPED_WITH_VALUE.include?(word)
       skip = true
-    elsif not DROPPED.include?(word) and word != file
+    elsif not DROPPED.include?(word) and not names?(word, source, directory)
       kept = kept.push(word)
     end
   end
@@ -133,5 +134,15 @@ def entry(folder: String, row: Raw) -> Result[Entry]
   end
 
   directory = try Paths.absolute(folder, row.directory)
-  return ok(Entry(directory: directory, file: row.file, args: flags_of(words, row.file)))
+  source = try Paths.absolute(directory, row.file)
+  return ok(Entry(directory: directory, file: row.file, args: flags_of(words, source, directory)))
+end
+
+# Whether the word is a path to the source file. A flag is not, and a word that cannot be made a path is not either.
+def names?(word: String, source: String, directory: String) -> Bool
+  if word.start_with?("-")
+    return false
+  end
+
+  return Paths.absolute(directory, word).unwrap_or("") == source
 end

@@ -11,5 +11,10 @@ end
 
 def test_flags_leave_out_the_compiler_the_file_and_the_outputs() -> Result[Void]
   words = ["cc", "-I.", "-MD", "-MF", "x.d", "-o", "x.o", "-c", "x.c", "-DA=1"]
-  return Test.eq(Commands.flags_of(words, "x.c"), ["-I.", "-DA=1"])
+  return Test.eq(Commands.flags_of(words, "/p/x.c", "/p"), ["-I.", "-DA=1"])
+end
+
+def test_the_source_file_is_left_out_however_it_is_spelled() -> Result[Void]
+  words = ["cc", "-c", "./src/../a.c", "-DA=1", "b.c"]
+  return Test.eq(Commands.flags_of(words, "/p/a.c", "/p"), ["-DA=1", "b.c"])
 end
