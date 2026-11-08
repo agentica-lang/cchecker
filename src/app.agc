@@ -44,6 +44,7 @@ struct Collected
   incomplete_functions: Int = 0
   unresolved: List[UnresolvedCallback] = []
   missing_roots: List[String] = []
+  missing_assumed: List[String] = []
   unchecked: List[UncheckedFile] = []
 end
 
@@ -117,6 +118,16 @@ export def run(options: Options) -> Result[Int]
     elsif not collected.missing_roots.empty?
       missing = collected.missing_roots.join(", ")
       return error("#{config.origin}: no function of the compile database is named #{missing} ([roots])")
+    end
+  end
+
+  assumes = not (config.trusted.empty? and config.stops.empty? and config.short_locks.empty?)
+  if options.tools.include?(Tool.Rules) and assumes
+    if not scope.full
+      IO.warn("cchecker: the names of [assume] were not checked: only a full run of a compile database sees them all")
+    elsif not collected.missing_assumed.empty?
+      missing = collected.missing_assumed.join(", ")
+      return error("#{config.origin}: no function or lock of the compile database is named #{missing}")
     end
   end
 
@@ -482,6 +493,8 @@ def collect(options: Options, config: Config.Config, jobs: List[Tools.Job], cwd:
     end
   end
 
+  # `[assume]` holds for every rule, as the marks it stands for.
+  units = Effects.assumed(units, config)
   checked = Profile.measure("effects") do Effects.check(units, config, options.infer, options.all_paths, cwd) end
   locked = Profile.measure("locking") do Locking.check(units) end
   owned = Profile.measure("ownership") do Ownership.check(units) end
@@ -499,6 +512,7 @@ def collect(options: Options, config: Config.Config, jobs: List[Tools.Job], cwd:
     incomplete_functions: locked.incomplete + owned.incomplete,
     unresolved: checked.unresolved,
     missing_roots: checked.missing_roots,
+    missing_assumed: checked.missing_assumed,
     unchecked: unchecked.group_by do |u| "#{u.file}\n#{u.missing}" end
       .values
       .map do |same| same.first end

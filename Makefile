@@ -3,13 +3,18 @@
 
 JOBS ?= 4
 
-.PHONY: check fmt-check test test-slow native deps
+.PHONY: check lint fmt-check test test-slow native deps
 
 # The Agentica files of the repository, named so that nothing else under the root is read.
 SOURCES = cchecker.agc src specs test
 
+# `agentica check`, then the style suggestions of `agentica lint`: `--strict` makes a suggestion fail the target.
 check: deps
 	@agentica check $(SOURCES)
+	@$(MAKE) --no-print-directory lint
+
+lint: deps
+	@agentica lint --strict $(SOURCES)
 
 # `agentica fmt --check` lists the files that `agentica fmt` would change, and fails if there are any.
 fmt-check:

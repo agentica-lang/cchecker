@@ -166,6 +166,13 @@ Feature: Suppressions
       | /* cchecker: ignore : a reason */                            | 2    |
       | /* cchecker: ignore    CC-GCC-ANALYZER-MALLOC-LEAK: spaces */ | 0    |
       | /* cchecker: ignore CC-GCCC-ANALYZER-MALLOC-LEAK: a reason */ | 2    |
+      | /// cchecker: ignore CC-GCC-ANALYZER-MALLOC-LEAK: doc comment  | 0    |
+      | //! cchecker: ignore CC-GCC-ANALYZER-MALLOC-LEAK: doc comment  | 0    |
+      | // cchecker: ignore: a reason                                | 2    |
+      | // cchecker: ignore,CC-GCC-ANALYZER-MALLOC-LEAK: a reason    | 2    |
+      | // cchecker: ignored CC-GCC-ANALYZER-MALLOC-LEAK: a reason   | 2    |
+      | // cchecker: ignore CC-GCC-*-LEAK: a star inside a code      | 2    |
+      | // cchecker: ignore CC-UNUSED-IGNORE: the unused code        | 2    |
 
   Scenario: A suppression that matches no finding is a finding
     Given the C file "clean.c" holds:

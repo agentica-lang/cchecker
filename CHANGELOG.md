@@ -6,17 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Suppression comments read `///`, `//!` and tabs between codes, and refuse near-miss markers (`ignored`).
 - The rules run 2.6 times faster with 44% less memory (the 84 files of the VM of Agentica at -j 2: 47.0 s and 732 MB
   before, 17.9 s and 411 MB now): a native module in C scans clang's AST. `-j` defaults to the number of cores, and
   the jobs of the largest files start first.
 - A deeply nested function no longer makes the rules slow: a chain of 3000 else-if took 104 s and 1 GB, and now 4 s
   and 170 MB. clang writes the AST into a FIFO, which cchecker copies with the indents cut short.
-- **Breaking:** a `uv_fs_*` call run at once whose libc call does not block (`uv_fs_close`, `uv_fs_stat`,
+- A `uv_fs_*` call run at once whose libc call does not block (`uv_fs_close`, `uv_fs_stat`,
   `uv_fs_unlink`, `uv_fs_mkdir`, ...) is a system call (`CC-EFFECT-HOT-SYSCALL`), no longer a blocking call
   (`CC-EFFECT-SHORT-BLOCKS`): a baseline that holds such a finding counts it fixed.
 
 ### Added
 
+- Assumptions of a project: `CC_ASSUME_SHORT` and `[assume] short` name a function that counts as fine for
+  `CC_SHORT` (the short rule does not walk into it); `CC_STOP` and `[assume] stop` one that no rule walks into. A name
+  of `[assume]` that no function of the compile database declares is an error.
+- Short locks: taking a lock marked `CC_NO_SYSCALL_UNDER()`, or named in `[assume] short_locks` (`queue.mu`), is not
+  blocking for `CC_SHORT`.
 - A file whose `#include` is not found is not checked, with `cchecker: warning: FILE not checked: HEADER not
   found` and an entry in `unchecked_files` of `--json`; the other files are checked and the exit code does not change.
 - `--all-paths`: a finding of the rules for each distinct bad call that a root reaches, each with its shortest path.
@@ -39,7 +45,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   printed line and the new `path` field of `--json` give the call path; the baseline matches the message without it.
   A table too large to read that names no function is skipped and counted in `skipped_declarations` of `--json`; one
   that names a function, even past its first million lines, is a tool error.
-- **Breaking:** the default tools are now `gcc,clang-tidy,rules`, so `clang` is needed too; `--tools gcc,clang-tidy`
+- The default tools are now `gcc,clang-tidy,rules`, so `clang` is needed too; `--tools gcc,clang-tidy`
   runs without it.
 - Suppressions with a reason: a comment `cchecker: ignore CODE: reason` after the code of a finding's line or alone on
   the line above, and `CC_IGNORE("CODE", "reason")` on a function for the rules. `--json` lists them under

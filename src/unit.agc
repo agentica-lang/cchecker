@@ -73,12 +73,14 @@ export enum Target
 end
 
 ## A call of `caller`, a function key. A call through a slot has the place of the call, so the path rules find the
-## functions that a call of a pointer under a lock reaches.
+## functions that a call of a pointer under a lock reaches. A call that takes a lock (`Known.TAKES`) has the class of
+## its lock in `lock` (`queue.mu`, or a global), "" when the rules cannot tell.
 export struct Call
   caller: String
   target: Target
   line: Int = 0
   column: Int = 0
+  lock: String = ""
 end
 
 ## What a slot gets: a function, by key, or every function of another slot (a copy of a pointer).
@@ -834,7 +836,12 @@ def with_call(tables: Tables, scope: Scope, node: Json, found: Found) -> Found
       return with_stores(noted, stores)
     end
 
-    called = noted.with(calls: noted.calls.push(Call(caller: scope.caller, target: Target.Direct(key))))
+    call = Call(caller: scope.caller, target: Target.Direct(key))
+    if Known.TAKES.include?(Ast.referenced_name(callee)) and parts.size > 1
+      call = call.with(lock: lock_class(slot_of(tables, scope, parts[1]).unwrap_or("")))
+    end
+
+    called = noted.with(calls: noted.calls.push(call))
     return with_stores(called, stores)
   end
 
@@ -876,6 +883,18 @@ end
 
 def with_callbacks(found: Found, callbacks: List[Callback]) -> Found
   return found.with(callbacks: found.callbacks.concat(callbacks))
+end
+
+# The class of a lock by its slot: a field (`field:queue.mu`) or a global (`var:big_lock`); "" for a local or a
+# parameter, whose lock the rules do not know.
+def lock_class(slot: String) -> String
+  for prefix in ["field:", "var:"]
+    if slot.start_with?(prefix)
+      return slot.slice(prefix.length, slot.length - prefix.length)
+    end
+  end
+
+  return ""
 end
 
 # A call of libuv's file functions with a callback, its last argument, only starts the work: the loop runs it on a

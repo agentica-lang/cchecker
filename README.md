@@ -107,8 +107,10 @@ flag set to false (Settings), for the same reason. The exit code is `2` in each 
 A finding that is a false positive, where the check cannot be made smarter, is suppressed next to the code, with the
 reason. A comment that trails code holds for the findings of its line; a comment alone on its line holds for its line
 and the line below it. Only a comment that starts with `cchecker: ignore` counts (not a string or a comment that
-mentions it). It takes one or more codes, each of a tool (`CC-GCC-`, `CC-TIDY-`, `CC-EFFECT-`, `CC-PATH-` or
-`CC-OWN-`), and a code that ends with `*` is a prefix:
+mentions it); a doc comment (`///`, `//!`, `/**`) and a line inside a block comment that starts with it count too, as
+the line of that comment. It takes one or more codes, separated by commas or blanks, each of a tool (`CC-GCC-`,
+`CC-TIDY-`, `CC-EFFECT-`, `CC-PATH-` or `CC-OWN-`), and a code that ends with `*` is a prefix (a `*` anywhere else is a
+usage error, and so is a word that only starts with `ignore`, such as `ignore:` or `ignored`):
 
 ```c
 /* cchecker: ignore CC-GCC-ANALYZER-MALLOC-LEAK: conn_free frees it through the struct */
@@ -159,10 +161,12 @@ tools that are running (they end by themselves or at the timeout); see
 
 `include/cchecker.h` defines the macros that the rules read: `CC_SHORT`, `CC_BLOCKING`, `CC_HOT`, `CC_ACQUIRES(lock)`,
 `CC_RELEASES(lock)`, `CC_NORETURN`, `CC_NO_SYSCALL_UNDER(lock)`, `CC_LOCK_LEVEL(n)`, `CC_PAIR(set, restore)`,
-`CC_OWNS`, `CC_FREES`, `CC_GC`, `CC_GC_ALLOC` and `CC_IGNORE("CODE", "reason")` (a suppression). With clang each is
-`__attribute__((annotate("cchecker:...")))`; with any other compiler it is empty. When cchecker dumps the AST it
-defines `CCHECKER_AST`, and the macros become `deprecated("cchecker:...")`: the JSON AST of clang 19 drops the text of
-`annotate` and keeps the message of `deprecated`. The dump runs with `-w`, so this gives no warning.
+`CC_OWNS`, `CC_FREES`, `CC_GC`, `CC_GC_ALLOC`, `CC_ASSUME_SHORT` (the function counts as fine for `CC_SHORT`),
+`CC_STOP` (no rule walks into the function; both are assumptions, see Settings) and `CC_IGNORE("CODE", "reason")` (a
+suppression). With clang each is `__attribute__((annotate("cchecker:...")))`; with any other compiler it is empty. When
+cchecker dumps the AST it defines `CCHECKER_AST`, and the macros become `deprecated("cchecker:...")`: the JSON AST of
+clang 19 drops the text of `annotate` and keeps the message of `deprecated`. The dump runs with `-w`, so this gives no
+warning.
 
 ```c
 #include "cchecker.h"
@@ -182,7 +186,7 @@ cchecker reads its settings from the first of these that it finds:
    manifest), that table; else the whole file. A file that is not there or cannot be read is an error (exit 2).
 2. `cchecker.toml` in the working directory, the project folder.
 3. The `[tool.cchecker]` table of `agentica.toml` in the project folder. An `agentica.toml` without it is skipped.
-4. The defaults: every `[library]` flag on, no `[roots]`, `follow_cold = false`.
+4. The defaults: every `[library]` flag on, no `[roots]`, `follow_cold = false`, no `[assume]`.
 
 The first one wins, and the others are not read. `--json` says which in `config` (`"cchecker.toml"`, the path given to
 `-c`, or `"defaults"`), and a run without `--json` says it in one line on standard error. A key that is not one of
@@ -203,6 +207,11 @@ hot = ["dispatch"]
 
 [effects]
 follow_cold = false
+
+[assume]
+short = ["run_or_queue"]
+stop = ["trace_emit"]
+short_locks = ["queue.mu"]
 ```
 
 `[library]` turns each family of library knowledge on or off. All are on by default. A finding of the rules says in
@@ -231,6 +240,38 @@ Rules); by default it does not.
 function both marked and listed is one root. A name that no function of the compile database defines is an error
 (exit 2), so a rename cannot leave a rule that checks nothing. Only a full run of a compile database can tell (a run of
 some files does not see the others), so only it checks the names; another run says on standard error that it did not.
+
+`[assume]` says what the project knows of its own functions and cchecker cannot see in the C, as `CC_ASSUME_SHORT` and
+`CC_STOP` do on a declaration. `short` names the functions that count as fine for `CC_SHORT`: the short rule does not
+walk into them (a helper that runs a request inline only on the loop thread and queues it otherwise, a read of a
+descriptor that never blocks); the other rules still do. `stop` names the functions that no rule walks into, and whose
+calls count for none of them (a trace call behind a runtime flag): the effect rules, the system calls under a
+`CC_NO_SYSCALL_UNDER` lock, and the lock levels. Either holds for every root, inferred roots included, and for every
+path of `--all-paths`; the ownership rules and the rule on values of the collector, which read one function at a time,
+do not change.
+
+An assumption cuts the walk into the function, not the function itself: a root that is assumed short or stopped still
+has its own body checked, as a caller does not walk into it. What the function calls is not walked either, a callback
+passed to it as a function pointer included. A function that blocks itself (`CC_BLOCKING`) cannot be assumed short: its
+mark wins. `CC_STOP` wins over every other mark, `CC_BLOCKING` included. A name is that of the function (a static
+function of that name in any file, as in `[roots]`), and a name that no function of the compile database declares is an
+error (exit 2) that names its key (`trace (assume.stop)`), checked as those of `[roots]` are.
+
+A short lock is one held for a few instructions: a lock whose field or global is marked `CC_NO_SYSCALL_UNDER()`, or
+whose class `[assume] short_locks` names: `queue.mu` for the field `mu` of `struct queue`, the name of a global, and
+for a static global its name (every static global of that name, as `[assume] short` names static functions) or its name
+and the end of the path of its file (`big_lock@src/queue.c`). Taking it (`pthread_mutex_lock(&q->mu)`) is not blocking
+for `CC_SHORT`; the rule on what runs under it still checks that no system call does, and `CC_HOT` still counts the
+call. A lock that the rules cannot tell is not short, so the call still counts: one named through a parameter, or
+through a local that points to it (`pthread_mutex_t *m = &q->mu; pthread_mutex_lock(m)`). A lock wrapper is assumed
+short with `CC_ASSUME_SHORT` or `[assume] short`. A class of `short_locks` that no lock of the compile database has
+(none taken, none marked) is an error, as for the names.
+
+A suppression and an assumption answer different questions. A suppression (`cchecker: ignore`, `CC_IGNORE`) says
+that one finding is wrong, at one place; it stays next to that code and shows when the finding goes away
+(`CC-UNUSED-IGNORE`). An assumption says something about a function, once, for every root and every path that reaches
+it: use it when the same function makes many findings for the same reason, and a suppression when one finding is
+wrong.
 
 ### Roots
 
@@ -558,7 +599,7 @@ The tests are Agentica too: BDD features in `specs/` that run cchecker on the C 
 tests in `test/`. They need `gcc`, `clang`, `clang-tidy` and `sh`.
 
 ```sh
-make check       # agentica check
+make check       # agentica check, then agentica lint --strict (make lint alone)
 make fmt-check   # agentica fmt --check; `agentica fmt` fixes it
 make test        # agentica test --jobs 4 without the @slow scenarios, from the root of the repository
 make test-slow   # the @slow scenarios only (the bounds of specs/limits.feature, the property tests on many cases)
@@ -573,9 +614,9 @@ declaration of 16 million lines of the dump, a function over the guard of nodes 
 
 `specs/properties.feature` holds property tests, with the [prop](https://github.com/agentica-lang/packages) package
 (`make deps` installs it into `deps/`; cchecker itself needs no package): a law of the rules is checked on generated C
-files (tables of function pointers, and functions whose lock walk is compared with an oracle that follows all their
-paths), and a failure shows the seed and the shrunk C file. `make test` runs a few cases and `make test-slow` many.
-`CCHECKER_PROP_SEED=SEED agentica test --only "NAME" specs/properties.feature` runs the cases of a failure again.
+files (tables of function pointers, functions whose lock walk is compared with an oracle that follows all their
+paths, and suppressions placed at random next to findings), and a failure shows the seed and the shrunk C file.
+`make test` runs a few cases and `make test-slow` many. `CCHECKER_PROP_SEED=SEED agentica test --only "NAME" specs/properties.feature` runs the cases of a failure again.
 
 `make bench` fetches Agentica at a pinned commit (`AGENTICA_BENCH_COMMIT`) into `.bench/`, with only the submodules
 whose headers its VM reads, and runs `--tools rules` on the 84 files of `vm/`; it fails when a file is not checked. It

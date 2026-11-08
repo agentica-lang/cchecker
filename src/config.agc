@@ -1,6 +1,6 @@
 ## The settings of a project: which families of library knowledge the rules use (`[library]`), the functions that
-## are CC_SHORT or CC_HOT roots without a mark in the C (`[roots]`), and how the effect rules walk the project's own
-## functions (`[effects]`).
+## are CC_SHORT or CC_HOT roots without a mark in the C (`[roots]`), how the effect rules walk the project's own
+## functions (`[effects]`), and what the project assumes of some of them (`[assume]`).
 ##
 ## They come from the first of: the file of `-c` (its `[tool.cchecker]` table when it has one, else the whole file),
 ## `cchecker.toml` in the project folder, the `[tool.cchecker]` table of `agentica.toml` there, the defaults. An
@@ -26,13 +26,18 @@ WHOLE_NOTE = " (no [tool.cchecker] table; read as a cchecker file)"
 
 ## The settings of a run. `origin` is the file they were read from, as the user wrote it, or "defaults". `off` holds
 ## the `[library]` flags that are false; `short` and `hot` are the names of `[roots]`. `follow_cold` is
-## `[effects] follow_cold`: the walk goes into the functions that never return or are cold.
+## `[effects] follow_cold`: the walk goes into the functions that never return or are cold. `trusted` and `stops` are
+## `[assume] short` and `[assume] stop`: the functions that count as fine for CC_SHORT, and those no walk goes into;
+## `short_locks` is `[assume] short_locks`, the classes of the locks that taking is not blocking for CC_SHORT.
 export struct Config
   origin: String
   off: Set[String]
   short: List[String]
   hot: List[String]
   follow_cold: Bool = false
+  trusted: List[String] = []
+  stops: List[String] = []
+  short_locks: List[String] = []
 end
 
 ## Returns the settings of a run in `folder`, the project folder: those of `explicit` (the file of -c) when given.
@@ -76,6 +81,18 @@ export def from_table(origin: String, prefix: String, table: Toml.Value, note: S
           path = "#{prefix}effects.#{name}"
           case name
             "follow_cold" -> config = config.with(follow_cold: try flag_of(origin, path, effects.get(name).unwrap!))
+            _ -> return error(unknown(origin, path, note))
+          end
+        end
+
+      "assume" ->
+        assume = try table_of(origin, "#{prefix}assume", value)
+        for name in assume.keys
+          path = "#{prefix}assume.#{name}"
+          case name
+            "short" -> config = config.with(trusted: try names_of(origin, path, assume.get(name).unwrap!))
+            "stop" -> config = config.with(stops: try names_of(origin, path, assume.get(name).unwrap!))
+            "short_locks" -> config = config.with(short_locks: try names_of(origin, path, assume.get(name).unwrap!))
             _ -> return error(unknown(origin, path, note))
           end
         end

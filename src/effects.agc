@@ -10,6 +10,15 @@ import {Callback, Function, Source, Store, Target, Unit} from "unit"
 ## The tool name of the findings of the rules.
 export TOOL = "rules"
 
+## The mark of a function that counts as fine for CC_SHORT (CC_ASSUME_SHORT, `[assume] short`).
+export ASSUME_SHORT = "assume_short"
+
+## The mark of a function that no walk goes into (CC_STOP, `[assume] stop`).
+export STOP = "stop"
+
+# The mark of a short lock: a field or a global marked CC_NO_SYSCALL_UNDER().
+SHORT_LOCK_MARK = "no_syscall_under()"
+
 # The effects a rule looks for.
 enum Effect
   Blocks
@@ -19,28 +28,34 @@ end
 
 ## The call graph of the project. A function is merged from all its declarations: the marks of each, and the place of
 ## its definition. A slot holds every function stored in it. `pointers` are the slots of each call through a pointer,
-## by its caller and place (`caller LINE:COL`).
+## by its caller and place (`caller LINE:COL`). `locks` are the classes of the locks that a function takes with each
+## call of a lock function, by caller and callee (`caller>callee`), "" for a lock the rules cannot tell.
 export struct Graph
   functions: Map[String, Function]
   edges: Map[String, List[Target]]
   slots: Map[String, List[String]]
   pointers: Map[String, List[String]] = {}
+  locks: Map[String, List[String]] = {}
 end
 
 # How a rule walks the graph: the families of blocking calls that are on, whether it goes into the functions that never
-# return or are cold, and whether it finds every bad call or stops at the first.
+# return or are cold, whether it finds every bad call or stops at the first, and the classes of the short locks, whose
+# taking is not blocking.
 struct Walk
   families: List[Known.Family]
   follow_cold: Bool
   all: Bool
+  short_locks: Set[String]
 end
 
 ## What the rules found: the findings, and the callbacks of libuv calls they could not follow to a function.
-## `missing_roots` are the names of `[roots]` that no function of the units defines.
+## `missing_roots` are the names of `[roots]` that no function of the units defines, and `missing_assumed` those of
+## `[assume]` that no function of the units declares, each with its key (`trace (assume.stop)`).
 export struct Checked
   findings: List[Finding]
   unresolved: List[UnresolvedCallback]
   missing_roots: List[String] = []
+  missing_assumed: List[String] = []
 end
 
 # The CC_SHORT roots inferred from the callbacks of libuv, by function key, each with the call that made it, and the
@@ -58,7 +73,13 @@ end
 export def check(units: List[Unit], config: Config, infer: Bool, all_paths: Bool, cwd: String) -> Checked
   graph = graph_of(units)
   families = Known.BLOCKING_FAMILIES.select do |family| not config.off.include?(family.flag) end
-  walk = Walk(families: families, follow_cold: config.follow_cold, all: all_paths)
+  walk = Walk(
+    families: families,
+    follow_cold: config.follow_cold,
+    all: all_paths,
+    short_locks: short_locks_of(units, config),
+  )
+
   inferred = Inferred(roots: {}, unresolved: [])
   if infer and not config.off.include?(Known.CALLBACKS_FLAG)
     inferred = inferred_of(graph, units, cwd)
@@ -86,7 +107,26 @@ export def check(units: List[Unit], config: Config, infer: Bool, all_paths: Bool
     end
   end
 
-  return Checked(findings: findings, unresolved: inferred.unresolved, missing_roots: missing_roots(graph, config))
+  return Checked(
+    findings: findings,
+    unresolved: inferred.unresolved,
+    missing_roots: missing_roots(graph, config),
+    missing_assumed: missing_assumed(graph, config).concat(missing_locks(units, graph, config)),
+  )
+end
+
+## Returns the units with the marks that `[assume]` gives the functions it names, as if the C had them.
+export def assumed(units: List[Unit], config: Config) -> List[Unit]
+  if config.trusted.empty? and config.stops.empty?
+    return units
+  end
+
+  return units.map do |unit| unit.with(functions: unit.functions.map do |f| with_assumed(f, config) end) end
+end
+
+## Returns whether no walk goes into a function: it is marked CC_STOP or named in `[assume] stop`.
+export def stopped?(graph: Graph, key: String) -> Bool
+  return marked?(graph, key, STOP)
 end
 
 ## Returns the functions of the units, each merged from all its declarations.
@@ -101,13 +141,17 @@ export def system_path(graph: Graph, key: String) -> Optional[List[String]]
   # A function of the project marked CC_BLOCKING is one itself, whatever its body does. Every blocking call enters the
   # kernel whatever the `[library]` flags say, so the families passed do not change what a system call is.
   families = Known.BLOCKING_FAMILIES
+  if stopped?(graph, key)
+    return none
+  end
+
   if has?(graph, families, key, Effect.System)
     return some([name_of(graph, key)])
   end
 
   # The lock rules follow every call, cold ones included: `[effects] follow_cold` is about the roots of the
   # effect rules.
-  walk = Walk(families: families, follow_cold: true, all: false)
+  walk = Walk(families: families, follow_cold: true, all: false, short_locks: Set.new([]))
   paths = search(graph, walk, key, Effect.System)
   if paths.empty?
     return none
@@ -145,6 +189,7 @@ export def graph_of(units: List[Unit]) -> Graph
   functions: Map[String, Function] = {}
   edges: Map[String, List[Target]] = {}
   pointers: Map[String, List[String]] = {}
+  locks: Map[String, List[String]] = {}
   stores: List[Store] = []
   for unit in units
     for function in unit.functions
@@ -158,6 +203,9 @@ export def graph_of(units: List[Unit]) -> Graph
       end
 
       case call.target
+        Target.Direct(to) if Known.TAKES.include?(name_of_key(functions, to)) ->
+          at = "#{call.caller}>#{to}"
+          locks = locks.put(at, locks.get(at).unwrap_or([]).push(call.lock))
         Target.Slot(slot) if call.line > 0 ->
           at = "#{call.caller} #{call.line}:#{call.column}"
           pointers = pointers.put(at, pointers.get(at).unwrap_or([]).push(slot))
@@ -168,7 +216,106 @@ export def graph_of(units: List[Unit]) -> Graph
     stores = stores.concat(unit.stores)
   end
 
-  return Graph(functions: functions, edges: edges, slots: slots_of(stores), pointers: pointers)
+  return Graph(functions: functions, edges: edges, slots: slots_of(stores), pointers: pointers, locks: locks)
+end
+
+# The classes of the short locks: those marked CC_NO_SYSCALL_UNDER() and those of `[assume] short_locks`.
+def short_locks_of(units: List[Unit], config: Config) -> Set[String]
+  marked = units.flat_map do |unit| unit.lock_marks end
+    .select do |m| m.mark == SHORT_LOCK_MARK end
+    .map do |m| m.class end
+
+  return Set.new(marked.concat(config.short_locks))
+end
+
+# Whether every call of the lock function `callee` in `key` takes a short lock, so the short rule does not count it.
+def short_takes?(graph: Graph, walk: Walk, key: String, callee: String) -> Bool
+  classes = graph.locks.get("#{key}>#{callee}").unwrap_or([])
+  return not classes.empty? and classes.all? do |c| c != "" and short_lock?(walk.short_locks, c) end
+end
+
+# Whether a class is among the short locks: as it is, or by the name of a static global (`big_lock` for
+# `big_lock@src/a.c`, as `[assume]` names a static function), or by its name and the end of its file (`big_lock@a.c`).
+def short_lock?(short: Set[String], class: String) -> Bool
+  return (
+    short.include?(class) or
+    short.include?(bare_class(class)) or
+    short.to_a.any? do |entry| in_file?(entry, class) end
+  )
+end
+
+# Whether `entry` (`name@file`) names the static global `class` by the end of its file's path.
+def in_file?(entry: String, class: String) -> Bool
+  name = bare_class(entry)
+  if name == entry or name != bare_class(class)
+    return false
+  end
+
+  file = entry.slice(name.length + 1, entry.length - name.length - 1)
+  path = class.slice(name.length + 1, class.length - name.length - 1)
+  return path == file or path.end_with?("/#{file}")
+end
+
+# A class without the file of a static global.
+def bare_class(class: String) -> String
+  case class.index_of("@")
+    some(at) -> return class.slice(0, at)
+    none -> return class
+  end
+end
+
+# The classes of `[assume] short_locks` that no lock of the units has: none taken and none marked, with their key.
+def missing_locks(units: List[Unit], graph: Graph, config: Config) -> List[String]
+  if config.short_locks.empty?
+    return []
+  end
+
+  classes = graph.locks
+    .values
+    .flat_map do |found| found end
+    .concat(units.flat_map do |unit| unit.lock_marks end.map do |m| m.class end)
+
+  known = Set.new(classes.concat(classes.map(&bare_class)))
+  missing = config.short_locks.uniq.select do |c|
+    not known.include?(c) and not classes.any? do |class| in_file?(c, class) end
+  end
+
+  return missing.map do |c| "#{c} (assume.short_locks)" end
+end
+
+# The name of a function by key, or the key itself for one the units do not declare.
+def name_of_key(functions: Map[String, Function], key: String) -> String
+  return functions.get(key).map do |f| f.name end.unwrap_or(key)
+end
+
+# A function with the marks of `[assume]` that name it.
+def with_assumed(function: Function, config: Config) -> Function
+  marks = function.marks
+  if config.trusted.include?(function.name)
+    marks = marks.push(ASSUME_SHORT)
+  end
+
+  if config.stops.include?(function.name)
+    marks = marks.push(STOP)
+  end
+
+  return function.with(marks: marks.uniq)
+end
+
+# The names of `[assume]` that no function of the graph has, defined or declared, each with its key.
+def missing_assumed(graph: Graph, config: Config) -> List[String]
+  if config.trusted.empty? and config.stops.empty?
+    return []
+  end
+
+  known = Set.new(graph.functions.values.map do |f| f.name end)
+  short = config.trusted.uniq.select do |name| not known.include?(name) end.map do |name| "#{name} (assume.short)" end
+  stop = config.stops.uniq.select do |name| not known.include?(name) end.map do |name| "#{name} (assume.stop)" end
+  return short.concat(stop)
+end
+
+def marked?(graph: Graph, key: String, mark: String) -> Bool
+  return graph.functions.get(key).map do |f| f.marks.include?(mark) end.unwrap_or(false)
 end
 
 # The names of `[roots]` that no function of the graph defines.
@@ -306,8 +453,9 @@ end
 # A walk of the graph in breadth from `start`, which gives the keys of the path to each function with the effect, in
 # the order it reaches them, and stops at the first unless `walk.all`. A function is reached once, by its shortest
 # path, and the walk does not go past one with the effect. It goes only through the functions that the project
-# defines (one it does not define is a call of a library), and not into one that never returns or is cold unless
-# `walk.follow_cold`: that call is an error exit, not the path the rule is about.
+# defines (one it does not define is a call of a library), not into one that the project assumes away (`cut?`), and
+# not into one that never returns or is cold unless `walk.follow_cold`: that call is an error exit, not the path the
+# rule is about.
 def search(graph: Graph, walk: Walk, start: String, effect: Effect) -> List[List[String]]
   callers: Map[String, String] = {}
   callers = callers.put(start, start)
@@ -318,7 +466,11 @@ def search(graph: Graph, walk: Walk, start: String, effect: Effect) -> List[List
     key = queue[i]
     i += 1
     for callee in callees(graph, key)
-      if callers.key?(callee) or (not walk.follow_cold and skips?(graph, callee))
+      if callers.key?(callee) or cut?(graph, walk, callee, effect, not walk.follow_cold)
+        next
+      end
+
+      if effect == Effect.Blocks and short_takes?(graph, walk, key, callee)
         next
       end
 
@@ -335,6 +487,18 @@ def search(graph: Graph, walk: Walk, start: String, effect: Effect) -> List[List
   end
 
   return found
+end
+
+# Whether the walk of a rule does not go into a function: it is stopped, trusted for the short rule, or (with `cold`)
+# it never returns or is cold.
+def cut?(graph: Graph, walk: Walk, key: String, effect: Effect, cold: Bool) -> Bool
+  # A function that blocks itself (CC_BLOCKING) cannot be assumed short; CC_STOP wins over every mark.
+  trusted = marked?(graph, key, ASSUME_SHORT) and not marked?(graph, key, "blocking")
+  if stopped?(graph, key) or (effect == Effect.Blocks and trusted)
+    return true
+  end
+
+  return cold and skips?(graph, key)
 end
 
 # A function that never returns or is cold, which the walk does not go into, unless a CC_BLOCKING mark says what it
