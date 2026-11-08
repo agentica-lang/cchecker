@@ -279,6 +279,34 @@ Feature: Effects on the call graph
       "skipped_declarations":0
       """
 
+  Scenario Outline: A table of functions whose first item is a null pointer is followed
+    Given the C file "nulls.c" holds:
+      """
+      #define NULL 0
+      #include "cchecker.h"
+
+      unsigned int sleep(unsigned int seconds);
+      typedef int (*fn)(int);
+      static int slow(int x) { sleep(1); return x; }
+      <table>
+      CC_SHORT int entry(int i) { return <call>; }
+      """
+    When I run cchecker with "--tools rules --json $DIR/nulls.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "path":["entry","slow","sleep"]
+      """
+
+    Examples:
+      | table                                         | call              |
+      | static int (*table[])(int) = {0, slow};       | table[i](i)       |
+      | static int (*const table[])(int) = {0, slow}; | table[i](i)       |
+      | static fn table[] = {0, slow};                | table[i](i)       |
+      | static const fn table[] = {0, slow};          | table[i](i)       |
+      | static fn table[] = {NULL, slow};             | table[i](i)       |
+      | static void *table[] = {0, (void *)slow};     | ((fn)table[i])(i) |
+
   Scenario Outline: A declaration too large to keep that names no function is skipped and counted
     Given the C file "big.c" holds, with ITEMS as <count> times "<item>":
       """

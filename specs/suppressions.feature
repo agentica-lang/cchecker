@@ -181,6 +181,23 @@ Feature: Suppressions
       | CC_IGNORE("CC-EFFECT-HOT-ALLOCATES", "the pool is warm")       | 0    | "reason":"the pool is warm" |
       | CC_IGNORE("CC-EFFECT-HOT-SYSCALL", "never a system call here") | 1    | "code":"CC-UNUSED-IGNORE"   |
 
+  Scenario: CC_IGNORE suppresses a finding whose path goes through a table whose first item is a null pointer
+    Given the C file "nulls.c" holds:
+      """
+      #include "cchecker.h"
+
+      unsigned int sleep(unsigned int seconds);
+      static int slow(int x) { sleep(1); return x; }
+      static int (*table[])(int) = {0, slow};
+      CC_IGNORE("CC-EFFECT-SHORT-BLOCKS", "only at startup") CC_SHORT int entry(int i) { return table[i](i); }
+      """
+    When I run cchecker with "--tools rules --json $DIR/nulls.c -- -I../include"
+    Then the exit code is 0
+    And the output includes:
+      """
+      "reason":"only at startup"
+      """
+
   Scenario: A CC_IGNORE that matched nothing in a run of some files is not unused: the run saw part of the graph
     Given the C file "hot.c" holds:
       """
