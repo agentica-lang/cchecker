@@ -207,9 +207,10 @@ counts them fixed and never drops them on `--update-baseline`.
 
 The rules build a control flow graph of each function that takes or releases a lock, and follow every path through
 it: `if`, `switch` with its fallthrough and without a `default`, loops with `break` and `continue`, `goto` (a computed
-one may go to any label), `return`, `&&`, `||`, `?:` and statement expressions. A path ends at a `return`, at the end
-of the body, or at a call that never comes back (`abort`, a `_Noreturn` or `noreturn` function, or one marked
-`CC_NORETURN`, such as a function that jumps out with `longjmp`); a lock held there is not a finding. The cleanup
+one may go to any label), `return`, `&&`, `||`, `?:`, `x ?: y` and statement expressions. A path ends at a `return`,
+at the end of the body, or at a call that never comes back (`abort`, a `_Noreturn` or `noreturn` function, through a
+typedef or a function pointer too, or one marked `CC_NORETURN`, such as a function that jumps out with `longjmp`); a
+lock held there is not a finding. The cleanup
 function of a variable with `__attribute__((cleanup(f)))` runs on every way out of its block.
 
 | Code | |
@@ -218,7 +219,8 @@ function of a variable with `__attribute__((cleanup(f)))` runs on every way out 
 | `CC-PATH-LOCK-NOT-HELD` | a path releases a lock that the function did not take |
 
 The finding is at the function, once for each code and lock, and `path` is a shortest path that breaks the rule, from
-the call that took (or released) the lock to the end: `7:7 true` is the condition at line 7, column 7, taken as true.
+the last call that took the lock (or released it, for `NOT-HELD`) to the end: `7:7 true` is the condition at line 7,
+column 7, taken as true.
 
 ```text
 src/queue.c:5:5 CC-PATH-LOCK-NOT-RELEASED pop does not release q->mu on every path: 6:3 takes q->mu -> 7:7 true -> 8:5 returns
@@ -233,8 +235,13 @@ is a condition compared with 0, on the side where it gave 0: `if (pthread_mutex_
 on a condition (`pthread_cond_wait(&cv, &q->mu)`) gives the lock back before it returns, so it changes nothing.
 
 A path does not go where a condition that the function tests twice would have to be true and false, so `if (locked)
-lock(); ...; if (locked) unlock();` passes; a write to a variable of the condition forgets its value. A function whose
-paths would take more than 200 000 states to follow is checked without these conditions.
+lock(); ...; if (locked) unlock();` passes; a write to a variable of the condition, or a call given its address
+(`f(&locked)`), forgets its value; a call given `&q->mu` does not change `q`. A function whose paths would take more
+than 200 000 states to follow is walked again without these conditions; when that is not enough either, its findings
+are those of the paths followed, and the run counts it in `incomplete_functions` of `--json` and says so on standard
+error (the exit code does not change). A function whose AST has more than 20 000 nodes (about four times the largest
+of the Agentica VM) gets no graph: that is an error of the `rules` tool on its file, so the exit code is 2, and the
+rest of the run is checked.
 
 A function that takes a lock for its caller, or releases the caller's lock, says so on its prototype:
 `CC_ACQUIRES(lock)` or `CC_RELEASES(lock)`, with the lock written in the names of its parameters (or a global). A call
@@ -246,18 +253,26 @@ the callers include: a caller sees the declarations of its own file. A function 
 some of its returns (`false` when it dropped the lock) is beyond these rules: suppress its findings with `CC_IGNORE`,
 with the reason. A call through a function pointer does nothing to the locks.
 
+Limits: a lock is counted by its text, so a lock taken in a loop over several objects (`lock(&a[i]->mu)`), locks
+taken hand over hand, or a pointer that is set again between the lock and the unlock (`q = q->next`) can give false
+findings; the result of a lock stored before the test (`r = trylock(&q->mu); if (r == 0)`) takes nothing; a global
+that a called function changes keeps the value the path knew.
+
 ### What runs while a lock is held
 
 A lock held for short sections only, which other threads spin for, is marked on its field (or on a global lock):
 `CC_NO_SYSCALL_UNDER()`. While a path holds it, no call is a system call or a blocking call (the lists of the effects,
-a lock or an unlock of another lock included) or reaches one through the functions of the project, except the
-release of the lock itself and a wait on a condition with it. `CC_NO_SYSCALL_UNDER(lock)` on a function says the same
+a lock or an unlock of another lock included, and a `CC_BLOCKING` function) or reaches one through the functions of
+the project, a call through a function pointer included (the functions stored in it), except the release of the lock
+itself and a wait on a condition with it. `CC_NO_SYSCALL_UNDER(lock)` on a function says the same
 of one lock of that function, in the names of its parameters.
 
 `CC_LOCK_LEVEL(n)` on the field of a lock (or a global lock) orders the locks: a path takes a lock with a level only
 while every lock it holds with a level has a lower one, and it calls a function that takes one (in its body or in the
-functions it reaches) only then. Two locks of the same level are never held together; a called function that takes
-the class of a lock held again (a counted lock, taken once more by the same thread) is not out of order.
+functions it reaches, or those stored in a pointer it calls) only then. Two locks of the same level are never held
+together. A trylock (`pthread_mutex_trylock`) never waits, so it is never out of order. One exception: a called
+function that takes the class of a lock held again is not out of order, for a lock that counts its takes by the same
+thread; the rules cannot tell it from another lock of the same class.
 
 ```c
 struct runtime { CC_LOCK_LEVEL(1) pthread_mutex_t sync; ... };
@@ -269,8 +284,12 @@ struct runq { CC_NO_SYSCALL_UNDER() CC_LOCK_LEVEL(3) pthread_mutex_t lock; ... }
 | `CC-PATH-SYSCALL-UNDER-LOCK` | a call under a `CC_NO_SYSCALL_UNDER` lock is or reaches a system call |
 | `CC-PATH-LOCK-ORDER` | a lock with a level is taken (or a function that takes one is called) under one of the same or a higher level |
 
-A field is known by its struct and its name (`runq.lock`, the name of a typedef for an anonymous struct), and a global
-by its name. A lock of a `CC_ACQUIRES` is followed to its field through the types of the parameters
+A field is known by its struct and its name (`runq.lock`, the name of a typedef for an anonymous struct; an item of
+an array of locks is its field), and a global by its name (`name@file` for a static one; a parameter or a local of the
+same name is not it). The marks are `CC_NO_SYSCALL_UNDER()` with nothing in it and `CC_LOCK_LEVEL(n)` with a decimal
+number; another form, or a mark on a field of a struct with no name, is an error of the `rules` tool (exit code 2). A
+lock is known by its text in a function, so the same lock written two ways (`&q->mu` and `m` set later to it) is two
+locks. A lock of a `CC_ACQUIRES` is followed to its field through the types of the parameters
 (`CC_ACQUIRES(s->pool->mu)` on `void pool_lock(struct server *s)` takes `pool.mu`). The path of a finding goes from
 the take of the lock held to the call, and the call path to the system call when there is one: `13:3 calls bump: bump
 -> pthread_mutex_lock`.
@@ -311,8 +330,8 @@ int load(int n) {
   CC_OWNS char *buf = malloc(n);            /* the local owns its value */
 ```
 
-The rules follow every path of a function that has a pointer that owns, with the graph and the walk of the locks. A
-parameter marked `CC_OWNS` or `CC_FREES` owns from the entry, a local marked `CC_OWNS` owns the value it gets (other
+The rules follow every path of a function that has a pointer that owns, with the graph and the walk of the locks and
+their limits (a function with too many paths counts in `incomplete_functions`, once for each walk). A parameter marked `CC_OWNS` or `CC_FREES` owns from the entry, a local marked `CC_OWNS` owns the value it gets (other
 than `NULL`), and a local that gets the value of a `CC_OWNS` function owns it without a mark. On every path that
 returns, each one is freed or handed on: returned, stored in a `CC_OWNS` field (or an item of one, `q->items[i] = p`,
 or a `CC_OWNS` global), or passed to a `CC_OWNS` parameter. Stored anywhere else or passed to another parameter, it is

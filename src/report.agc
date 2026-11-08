@@ -7,7 +7,8 @@ import {Suppressed} from "suppressions"
 ## accepted findings of the tools and files of the run that no tool found this time. `skipped` counts the files that
 ## were left out because they are outside the working directory, and `skipped_declarations` the declarations the rules
 ## did not read because they are too large and named no function in the lines read (tables of numbers, mostly; a
-## function past the cap is not seen). `suppressed` are the findings that a suppression took out.
+## function past the cap is not seen). `incomplete_functions` counts the functions with more paths than the path rules
+## follow. `suppressed` are the findings that a suppression took out.
 export struct Report
   findings: List[Finding]
   baselined: Int
@@ -15,6 +16,7 @@ export struct Report
   errors: List[ToolError]
   skipped: Int
   skipped_declarations: Int = 0
+  incomplete_functions: Int = 0
   suppressed: List[Suppressed] = []
 end
 
@@ -27,6 +29,7 @@ struct Encoded
   errors: List[ToolError]
   skipped: Int
   skipped_declarations: Int
+  incomplete_functions: Int
   suppressed: List[Suppressed]
 end
 
@@ -47,6 +50,7 @@ export def json(report: Report) -> String
       errors: report.errors,
       skipped: report.skipped,
       skipped_declarations: report.skipped_declarations,
+      incomplete_functions: report.incomplete_functions,
       suppressed: report.suppressed,
     ),
   )

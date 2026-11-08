@@ -94,9 +94,16 @@ struct Walk
   complete: Bool
 end
 
+## What the rules found, and the number of functions with more paths than the walk follows, checked on those it went
+## through only.
+export struct Checked
+  findings: List[Finding]
+  incomplete: Int
+end
+
 ## Returns the findings of the ownership rules on the functions of the units. A function defined in several units (a
 ## static inline function of a header) is checked once.
-export def check(units: List[Unit]) -> List[Finding]
+export def check(units: List[Unit]) -> Checked
   functions: Map[String, Function] = {}
   for function in Effects.functions(units)
     functions = functions.put(function.key, function)
@@ -104,21 +111,26 @@ export def check(units: List[Unit]) -> List[Finding]
 
   done: Set[String] = Set.new([])
   findings: List[Finding] = []
+  incomplete = 0
   for unit in units
     for body in unit.bodies
       if body.owns and not done.include?(body.key)
-        findings = findings.concat(checked(body, functions))
+        walk = checked(body, functions)
+        findings = findings.concat(walk.findings.values)
+        if not walk.complete
+          incomplete += 1
+        end
       end
 
       done = done.add(body.key)
     end
   end
 
-  return findings
+  return Checked(findings: findings, incomplete: incomplete)
 end
 
 # The findings of one function: with the conditions it tests twice, or without them when there are too many paths.
-def checked(body: Body, functions: Map[String, Function]) -> List[Finding]
+def checked(body: Body, functions: Map[String, Function]) -> Walk
   walker = Walker(body: body, functions: functions, tracked: Locking.tracked_of(body), roots: Locking.roots_of(body))
 
   walk = walked(walker)
@@ -126,7 +138,7 @@ def checked(body: Body, functions: Map[String, Function]) -> List[Finding]
     walk = walked(walker.with(tracked: Set.new([])))
   end
 
-  return walk.findings.values
+  return walk
 end
 
 def walked(walker: Walker) -> Walk

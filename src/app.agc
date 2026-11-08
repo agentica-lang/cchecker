@@ -34,6 +34,7 @@ struct Collected
   ran: List[String]
   units: List[Unit]
   skipped_declarations: Int = 0
+  incomplete_functions: Int = 0
 end
 
 # The jobs of a run, the files that were left out because they are outside the working directory, and the entries of
@@ -71,6 +72,13 @@ export def run(options: Options) -> Result[Int]
     )
   end
 
+  if collected.incomplete_functions > 0
+    IO.warn(
+      "cchecker: #{collected.incomplete_functions} functions have more paths than the path rules follow; " +
+      "their findings are those of the paths followed",
+    )
+  end
+
   found = (
     collected.findings
     |> localize(cwd, options.exclude)
@@ -100,6 +108,7 @@ export def run(options: Options) -> Result[Int]
             errors: collected.errors,
             skipped: plan.skipped.size,
             skipped_declarations: collected.skipped_declarations,
+            incomplete_functions: collected.incomplete_functions,
             suppressed: applied.suppressed,
           ),
         ),
@@ -115,6 +124,7 @@ export def run(options: Options) -> Result[Int]
             errors: collected.errors,
             skipped: plan.skipped.size,
             skipped_declarations: collected.skipped_declarations,
+            incomplete_functions: collected.incomplete_functions,
             suppressed: applied.suppressed,
           ),
         ),
@@ -390,17 +400,20 @@ def collect(options: Options, jobs: List[Tools.Job]) -> Collected
     end
   end
 
+  locked = Locking.check(units)
+  owned = Ownership.check(units)
   return Collected(
     findings: (
       findings.concat(Effects.check(units))
-        .concat(Locking.check(units))
-        .concat(Ownership.check(units))
+        .concat(locked.findings)
+        .concat(owned.findings)
         .concat(units.flat_map do |unit| unit.collected end)
     ),
     errors: errors,
     ran: ran,
     units: units,
     skipped_declarations: skipped_declarations,
+    incomplete_functions: locked.incomplete + owned.incomplete,
   )
 end
 

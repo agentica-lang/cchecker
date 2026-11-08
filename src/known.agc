@@ -225,6 +225,12 @@ export TRIES = Set.new([
   "pthread_mutex_lock", "pthread_spin_lock", "pthread_rwlock_rdlock", "pthread_rwlock_wrlock", "mtx_lock",
 ])
 
+## The calls of `TRIES` that never wait for their lock, so a trylock is never out of the lock order.
+export NO_WAIT = Set.new([
+  "pthread_mutex_trylock", "pthread_spin_trylock", "pthread_rwlock_tryrdlock", "pthread_rwlock_trywrlock",
+  "mtx_trylock", "uv_mutex_trylock", "uv_rwlock_tryrdlock", "uv_rwlock_trywrlock",
+])
+
 ## The calls that release the lock of their first argument.
 export DROPS = Set.new([
   "pthread_mutex_unlock", "pthread_spin_unlock", "pthread_rwlock_unlock", "mtx_unlock", "uv_mutex_unlock",
