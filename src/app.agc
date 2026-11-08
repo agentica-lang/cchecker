@@ -449,7 +449,7 @@ def collect(options: Options, config: Config.Config, jobs: List[Tools.Job], cwd:
       findings.concat(checked.findings)
         .concat(locked.findings)
         .concat(owned.findings)
-        .concat(units.flat_map do |unit| unit.collected end)
+        .concat(units.flat_map do |unit| unit.collected end.select do |f| not config.off.include?(f.source) end)
     ),
     errors: errors,
     ran: ran,

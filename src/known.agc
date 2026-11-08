@@ -158,8 +158,11 @@ export FREES = Set.new(["free"])
 ## first argument still owns it.
 export RESIZES = Set.new(["realloc", "reallocarray"])
 
+## The `[library]` flag of the allocators of the Boehm collector (`LIBGC_ALLOC`) in the collector rule.
+export LIBGC_ALLOC_FLAG = "libgc_alloc"
+
 ## The allocators of the Boehm collector whose memory it manages (not the uncollectable ones, which are roots).
-export COLLECTED = Set.new([
+export LIBGC_ALLOC = Set.new([
   "GC_malloc", "GC_malloc_atomic", "GC_realloc", "GC_strdup", "GC_strndup", "GC_malloc_ignore_off_page",
   "GC_malloc_atomic_ignore_off_page", "GC_debug_malloc", "GC_debug_malloc_atomic", "GC_debug_realloc",
   "GC_debug_strdup", "GC_debug_strndup", "GC_debug_malloc_ignore_off_page", "GC_debug_malloc_atomic_ignore_off_page",

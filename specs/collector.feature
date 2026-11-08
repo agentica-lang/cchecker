@@ -160,6 +160,7 @@ Feature: Values of the collector kept where it sees them
       CC_GC_ALLOC void *gc_alloc(size_t n);
 
       void f(int n) { void **a = malloc(8); a[0] = GC_malloc(n); a[1] = gc_alloc(n); free(a); }
+      void g(int n) { void **b = malloc(8); b[0] = GC_malloc(n); b[0] = gc_alloc(n); free(b); }
       """
     When I run cchecker in its folder with "--tools rules --json boehm.c -- -I../../../include"
     Then the exit code is 1
@@ -181,6 +182,10 @@ Feature: Values of the collector kept where it sees them
     And the output includes:
       """
       in memory from malloc: a[1]"
+      """
+    And the output includes:
+      """
+      in memory from malloc: b[0]"
       """
     And the output does not include:
       """

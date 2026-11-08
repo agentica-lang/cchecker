@@ -6,7 +6,8 @@
 ## that got one of those. Memory from `malloc` is what a pointer points to when it got the value of `malloc`,
 ## `calloc`, `realloc`, `strdup` or a CC_OWNS function, or is marked CC_OWNS (a local, a parameter, a field or a
 ## global). The rule reads each store (`a[i] = v`, `p->f = v`, `*p = v`, `x = v`) of a function on its own, whatever
-## the path, and each declaration of a variable of static storage of a collector type.
+## the path, and each declaration of a variable of static storage of a collector type. A finding that only the
+## allocators of the Boehm collector make has `source` `libgc_alloc`, the `[library]` flag that turns them off.
 
 import Ast from "ast"
 import {Finding} from "findings"
@@ -35,11 +36,13 @@ export struct Marks
   statics: Set[String]
 end
 
-# What the check of one function knows: the marks of the unit and its context, the ids of its static locals, its
-# locals that point to memory from malloc (`heap`) and those that hold a value of the collector (`collected`).
+# What the check of one function knows: the marks of the unit and its context, the library allocators of the
+# collector it counts, the ids of its static locals, its locals that point to memory from malloc (`heap`) and those
+# that hold a value of the collector (`collected`).
 struct Scope
   marks: Marks
   ctx: Context
+  library: Set[String]
   statics: Set[String]
   heap: Set[String]
   collected: Set[String]
@@ -94,12 +97,15 @@ export def stores(
   start = Scope(
     marks: marks,
     ctx: ctx,
+    library: Set.new([]),
     statics: marks.statics.union(Set.new(static_locals.map do |n| Ast.text(n, "id") end)),
     heap: Set.new(params.concat(marked)),
     collected: Set.new([]),
   )
 
-  scope = grown(start, written)
+  # The marks alone, and the marks with the Boehm allocators: a store that only the second sees is theirs.
+  marked_only = grown(start, written)
+  scope = grown(start.with(library: Known.LIBGC_ALLOC), written)
   found: Map[String, Finding] = {}
   for decl in static_locals
     if collector_type?(marks, type_of(decl)) and not constant?(type_of(decl))
@@ -132,8 +138,15 @@ export def stores(
         _ -> code = ""
       end
 
-      if code != "" and not found.key?("#{code} #{target}")
-        found = found.put("#{code} #{target}", at(place, code, message, [step]))
+      # A store that the marks make wins over one of the same target that only the Boehm allocators make.
+      source = ""
+      if not collected?(marked_only, parts[1])
+        source = Known.LIBGC_ALLOC_FLAG
+      end
+
+      key = "#{code} #{target}"
+      if code != "" and (not found.key?(key) or (source == "" and found.get(key).unwrap!.source != ""))
+        found = found.put(key, at(place, code, message, [step]).with(source: source))
       end
     end
   end
@@ -200,10 +213,7 @@ def collected?(scope: Scope, node: Json) -> Bool
   case Ast.kind(bare)
     "CallExpr" ->
       called = Flow.callee_name(bare)
-      return (
-        Known.COLLECTED.include?(called) or
-        scope.marks.allocators.include?(Flow.key_of_function(scope.ctx, called))
-      )
+      return scope.library.include?(called) or scope.marks.allocators.include?(Flow.key_of_function(scope.ctx, called))
     "DeclRefExpr" -> return scope.collected.include?(Flow.variable_name(bare))
     "ConditionalOperator" -> return Ast.children(bare).drop(1).any? do |branch| collected?(scope, branch) end
     _ -> return false

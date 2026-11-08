@@ -94,7 +94,11 @@ end
 
 ## Returns the flags of `[library]` that a run knows, in the order of the README.
 export def flags() -> List[String]
-  return Known.BLOCKING_FAMILIES.map do |family| family.flag end.push(Known.CALLBACKS_FLAG)
+  return (
+    Known.BLOCKING_FAMILIES.map do |family| family.flag end
+      .push(Known.CALLBACKS_FLAG)
+      .push(Known.LIBGC_ALLOC_FLAG)
+  )
 end
 
 # The settings of the project folder: cchecker.toml, else the table of cchecker in agentica.toml, else the defaults.

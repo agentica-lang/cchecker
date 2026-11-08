@@ -191,6 +191,7 @@ pthread_blocking = true
 libuv_blocking = true
 libgc_blocking = true
 libuv_callbacks_short = true
+libgc_alloc = true
 
 [roots]
 short = ["io_poll", "on_timer"]
@@ -212,9 +213,10 @@ it reaches (`libc_blocking`), and for an inferred root the inference before it (
 | `libuv_blocking` | `uv_run`, `uv_sleep`, `uv_thread_join`, the locks and waits of `uv_mutex_`, `uv_rwlock_`, `uv_cond_`, `uv_sem_`, `uv_barrier_wait`, `uv_once`, and the `uv_fs_*` calls whose libc call blocks (`uv_fs_open`, `uv_fs_read`, `uv_fs_write`, `uv_fs_fsync`, `uv_fs_fdatasync`, `uv_fs_copyfile`, `uv_fs_sendfile`, `uv_fs_mkstemp`, `uv_fs_realpath`) when their callback, the last argument, is `NULL` or 0 |
 | `libgc_blocking` | `GC_gcollect` of the Boehm collector, which stops the world |
 | `libuv_callbacks_short` | a `CC_SHORT` root for each function passed as a callback that libuv runs on the loop thread: the `cb` of `uv_timer_start` (argument 1, from 0), `uv_poll_start` (2), `uv_async_init` (2) and `uv_close` (1), the `alloc_cb` and `read_cb` of `uv_read_start` (1 and 2), the callback of `uv_write` (4), `uv_write2` (5), `uv_shutdown` (2), `uv_tcp_connect` (3), `uv_pipe_connect` (3) and `uv_pipe_connect2` (5), and the `after_work_cb` of `uv_queue_work` (3), never its `work_cb`, which runs on the pool (Roots) |
+| `libgc_alloc` | the allocators of the Boehm collector (`GC_malloc`, `GC_malloc_atomic`, `GC_realloc`, `GC_strdup`, their `GC_debug_` forms, ...) to the allocators of `CC_GC_ALLOC`, in the rule on values of the collector (`source` `libgc_alloc`) |
 
-A flag changes only the blocking calls of `CC_SHORT`: the rules of `CC_HOT` and of `CC_NO_SYSCALL_UNDER` count every
-known blocking call as a system call whatever the flags.
+A blocking flag changes only the blocking calls of `CC_SHORT`: the rules of `CC_HOT` and of `CC_NO_SYSCALL_UNDER`
+count every known blocking call as a system call whatever the flags.
 
 `[effects]` holds how the effect rules walk the project's own functions, so it is not a `[library]` flag, which is a
 fact of a library. `follow_cold = true` makes the walk go into a function that never returns or is cold (below in
@@ -487,7 +489,7 @@ A collector frees what no pointer that it sees points to. It scans its own heap 
 statics for some), never memory from `malloc`: a pointer kept there, or in a static that it does not scan, does not
 keep the value alive. The rule keeps them out of both. `CC_GC` on a struct, a union or a typedef says that the
 collector manages its values, and `CC_GC_ALLOC` on a function that it returns memory of the collector; the allocators
-of the Boehm collector (`GC_malloc`, `GC_malloc_atomic`, `GC_realloc`, ...) are known.
+of the Boehm collector (`GC_malloc`, `GC_malloc_atomic`, `GC_realloc`, ...) are known (`[library]` `libgc_alloc`).
 
 ```c
 struct CC_GC object { ... };                     /* a struct object, or a pointer to one */
