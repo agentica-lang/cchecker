@@ -191,24 +191,32 @@ export def run(job: Job) -> Result[Outcome]
   process = try started
   if job.tool == Tool.Rules
     # The copy runs while clang writes. Its deadline starts with the call, so a wait for a thread of the compute
-    # pool does not count; past it clang is stopped. On another error clang's own outcome is still read: its
-    # failure comes first.
+    # pool does not count. Past it, or on an error before clang opened the FIFO (where it may wait for good), clang
+    # is stopped before the FIFO goes. On another error clang has the FIFO closed under it and ends by itself: its
+    # own outcome is still read, and its failure comes first.
     copied = Profile.measure("clang") do Scan.compact(fifo, job.dump, timeout_ms) end
-    _ = Path.remove(fifo)
     case copied
       ok(found) -> raws = found
       error(message) ->
         _ = Path.remove(job.dump)
-        if message == Scan.TIMED_OUT
+        if message == Scan.TIMED_OUT or message.start_with?(Scan.UNSTARTED)
           Process.close(process)
+          _ = Path.remove(fifo)
           return error(message)
         end
 
         copy_error = message
     end
+
+    _ = Path.remove(fifo)
   end
 
-  output = try Profile.measure("clang") do Process.output(process, timeout_ms) end
+  read_output = Profile.measure("clang") do Process.output(process, timeout_ms) end
+  if not read_output.ok?
+    Process.close(process)
+  end
+
+  output = try read_output
   code = try Process.wait(process, timeout_ms)
   Process.close(process)
   if output.truncated

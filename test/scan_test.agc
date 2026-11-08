@@ -280,20 +280,27 @@ def test_the_scan_in_c_gives_what_the_scan_in_agentica_gives() -> Result[Void]
 end
 
 # A FIFO that no writer opens (a clang that never started, or was killed before its redirect) ends the copy at its
-# timeout, and holds no thread of the compute pool for the rest of the run.
+# timeout, and holds no thread of the compute pool for the rest of the run; a failure before a writer says so.
 def test_the_copy_of_a_fifo_that_no_one_opens_ends_at_its_timeout() -> Result[Void]
   folder = "#{System.env("TMPDIR").unwrap_or("/tmp")}/cchecker-fifo-test-#{System.pid()}"
   try Dir.mkdir_private(folder)
   fifo = "#{folder}/0.fifo"
   made = Scan.fifo(fifo)
   copied = Scan.compact(fifo, "#{folder}/0.json", 200)
+  # A copy that cannot be written fails at once, before a writer: the caller then stops clang.
+  unwritten = Scan.compact(fifo, "#{folder}/missing/0.json", 10_000)
   _ = Path.remove(fifo)
   _ = Path.remove("#{folder}/0.json")
   _ = Path.remove(folder)
   try made
+  try Test.eq(error_of(copied), Scan.TIMED_OUT)
+  return Test.eq(error_of(unwritten).start_with?(Scan.UNSTARTED), true)
+end
+
+def error_of(copied: Result[List[String]]) -> String
   case copied
-    ok(_) -> return Test.eq("copied", Scan.TIMED_OUT)
-    error(message) -> return Test.eq(message, Scan.TIMED_OUT)
+    ok(_) -> return "copied"
+    error(message) -> return message
   end
 end
 

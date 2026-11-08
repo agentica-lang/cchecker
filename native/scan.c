@@ -152,6 +152,7 @@ typedef struct {
   char *data;
   size_t cap, start, end;
   bool eof;
+  bool connected; /* a writer opened the FIFO: a read of it gave bytes or its end */
   bool any_bytes; /* files() checks only the values it keeps: it leaves the rest of the UTF-8 check to scan() */
   const char *error;
 } lines;
@@ -159,6 +160,17 @@ typedef struct {
 static const char not_utf8[] = "the AST dump is not UTF-8";
 /* The text of the error of `Process.output` on a timeout, which src/scan.agc checks for (TIMED_OUT). */
 static const char timed_out[] = "process: operation timed out";
+/* The start of the error of `compact` when it failed before a writer opened the FIFO (UNSTARTED): clang may then wait
+ * in its open for good, and the caller stops it. */
+static const char unstarted[] = "before clang wrote its dump: ";
+
+/* An error result: `message`, after `unstarted` when no writer opened the FIFO of `r`. */
+static an_term copy_error(an_env *env, const lines *r, const char *message) {
+  if (r->connected || message == timed_out) return an_error(env, message, strlen(message));
+  char text[200];
+  int n = snprintf(text, sizeof text, "%s%s", unstarted, message);
+  return an_error(env, text, n < 0 ? 0 : (size_t)n < sizeof text ? (size_t)n : sizeof text - 1);
+}
 
 static int64_t now_ms(void) {
   struct timespec t;
@@ -186,7 +198,10 @@ static size_t fill(lines *r, char *at, size_t n) {
     if (ready == 0 || (ready < 0 && errno == EINTR)) continue;
     if (ready < 0) break;
     ssize_t got = read(r->fd, at, n);
-    if (got >= 0) return (size_t)got;
+    if (got >= 0) {
+      r->connected = true;
+      return (size_t)got;
+    }
     if (errno != EAGAIN && errno != EINTR) break;
   }
   r->error = "the AST dump could not be read";
@@ -287,14 +302,15 @@ static bool open_lines_until(an_env *env, an_term path_term, int64_t timeout_ms,
     r->f = fopen(path, "rb");
     opened = r->f != NULL;
   } else {
-    r->deadline_ms = now_ms() + timeout_ms;
+    int64_t now = now_ms();
+    r->deadline_ms = timeout_ms > INT64_MAX - now ? INT64_MAX : now + timeout_ms;
     r->fd = open(path, O_RDONLY | O_NONBLOCK);
     opened = r->fd >= 0;
   }
   free(path);
   if (!opened) {
-    static const char message[] = "the AST dump could not be opened";
-    *failure = an_error(env, message, sizeof message - 1);
+    r->error = "the AST dump could not be opened";
+    *failure = an_error(env, r->error, strlen(r->error));
     return false;
   }
   r->data = malloc(BLOCK_BYTES);
@@ -418,14 +434,14 @@ static an_term compact(an_env *env, int argc, const an_term *argv) {
   an_term result;
   if (!open_lines_until(env, argv[0], timeout_ms, &r, &result)) {
     free(to);
-    return result;
+    return r.error ? copy_error(env, &r, r.error) : result;
   }
   /* The bytes are copied as they are: `scan` checks them. */
   r.any_bytes = true;
 #ifdef F_SETPIPE_SZ
   /* A pipe holds 64 KiB: clang would wait on each one. A larger one (at most /proc/sys/fs/pipe-max-size) is fewer
-   * switches between the two. Past the user's pipe-user-pages-soft (16 MiB of pipes at once by default, so -j 16 of
-   * these) the call fails and the pipe keeps the default size, only slower. */
+   * switches between the two. Past the user's pipe-user-pages-soft (16384 pages, 64 MiB of pipes by default, so
+   * about -j 64 of these) the call fails, and new pipes of the user get only 2 pages: slower, still correct. */
   (void)fcntl(r.fd, F_SETPIPE_SZ, (int)BLOCK_BYTES);
 #endif
   FILE *out = fopen(to, "wb");
@@ -445,9 +461,8 @@ static an_term compact(an_env *env, int argc, const an_term *argv) {
     written = written && fwrite(line.s, 1, line.n, out) == line.n && fputc('\n', out) != EOF;
   }
   if (out && fclose(out) != 0) written = false;
-  if (!written && !r.error) {
-    static const char message[] = "the copy of the AST dump could not be written";
-    result = an_error(env, message, sizeof message - 1);
+  if (r.error || !written) {
+    result = copy_error(env, &r, r.error ? r.error : "the copy of the AST dump could not be written");
     free(f.values);
     free(f.seen.data);
   } else {
