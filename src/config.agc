@@ -109,7 +109,7 @@ export def defaults() -> Config
   return Config(origin: DEFAULTS, off: Set.new([]), short: [], hot: [])
 end
 
-## Returns the flags of `[library]` that a run knows, in the order of the README.
+## Returns the flags of `[library]` that a run knows, in the order of docs/settings.md.
 export def flags() -> List[String]
   return (
     Known.BLOCKING_FAMILIES.map do |family| family.flag end
