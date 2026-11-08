@@ -54,11 +54,13 @@ export struct Job
 end
 
 ## What a job found, and what kept it from finding more. A job of the rules finds nothing alone: it gives the unit
-## that the rules check with the units of the other files.
+## that the rules check with the units of the other files, and the count of declarations too large to read that named
+## no function.
 export struct Outcome
   findings: List[Finding]
   errors: List[ToolError]
   units: List[Unit] = []
+  skipped_declarations: Int = 0
 end
 
 # What a diagnostic of a tool is for cchecker.
@@ -195,7 +197,7 @@ def with_unit(job: Job, done: Outcome) -> Result[Outcome]
     )
   end
 
-  return ok(done.with(units: [unit], errors: done.errors.concat(errors)))
+  return ok(done.with(units: [unit], errors: done.errors.concat(errors), skipped_declarations: dump.skipped))
 end
 
 # LC_ALL=C keeps the messages in English with plain quotes, so a baseline holds on any machine.

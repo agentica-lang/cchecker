@@ -2,7 +2,8 @@
 ##
 ## The AST of one C file is tens of MiB, nearly all of it from the system headers, and `JSON.parse` of all of it would
 ## hold it all in memory. A declaration is kept when the place it is written (where a macro was expanded, for one that
-## a macro made) is under the project; a variable whose type holds no function pointer (a table of numbers) is not.
+## a macro made) is under the project; a table of numbers is not: an array whose type is plain numbers or characters,
+## or whose first item is a number, even of a typedef that clang does not desugar (`const uint8_t[30000]`).
 ## clang writes the dump with a fixed indent, one key per line, so a top-level declaration is the lines from `    {` to
 ## `    }`. clang also leaves the file and the line out of a location when they are those of the location written
 ## before it, so a declaration alone does not say where it is: the scan follows every location in order, and writes
@@ -14,7 +15,8 @@ import Paths from "paths"
 LINE_BYTES = 16_777_216
 
 # The most lines the scan keeps of one declaration, so that a generated table cannot take all the memory. The largest
-# function of the Agentica VM has 190 thousand.
+# function of the Agentica VM has 190 thousand. A declaration over it that has named no function so far (a table of
+# enum values or of structs of numbers) is skipped and counted; one that has is an error, since its calls are lost.
 MAX_DECL_LINES = 1_000_000
 
 DECL_START = "    {"
@@ -27,10 +29,21 @@ NAME_KEY = "      \"name\": "
 DESUGARED_KEY = "        \"desugaredQualType\": "
 TYPE_KEY = "        \"qualType\": "
 
-# The words of a type of numbers and characters, which no function pointer is in.
+# The kind of the initializer of a top-level variable, and the kinds of an item in it: a cast or a zero fill is looked
+# through, and a literal number tells a table of numbers.
+INIT_LIST = "          \"kind\": \"InitListExpr\","
+KIND_KEY = "\"kind\": "
+SEEN_THROUGH = Set.new(["\"ImplicitCastExpr\"", "\"ImplicitValueInitExpr\""])
+LITERALS = Set.new(["\"IntegerLiteral\"", "\"FloatingLiteral\"", "\"CharacterLiteral\""])
+
+# A function that a declaration names, at any depth: a `referencedDecl`, or the declaration itself.
+FUNCTION_KIND = "\"kind\": \"FunctionDecl\","
+
+# The words of a type of numbers and characters, which no function pointer is in. `void` is not one: a `void *` can
+# hold a function through a cast.
 PLAIN_WORDS = Set.new([
-  "char", "short", "int", "long", "unsigned", "signed", "float", "double", "_Bool", "bool", "void", "__int128",
-  "const", "volatile", "static",
+  "char", "short", "int", "long", "unsigned", "signed", "float", "double", "_Bool", "bool", "__int128", "const",
+  "volatile", "static",
 ])
 
 # Where the scan is: between two top-level declarations, in one whose place it does not know yet, or in one it keeps
@@ -54,18 +67,24 @@ export struct State
   phase: Phase = Phase.Between
   spelling: Bool = false
   variable: Bool = false
+  array: Bool = false
+  items: Bool = false
+  functions: Bool = false
   desugared: String = ""
   name: String = ""
   lines: List[String] = []
   decls: List[String] = []
   oversized: List[String] = []
+  skipped: Int = 0
   ended: Bool = false
 end
 
-## The declarations of the project in a dump, as the text of a JSON array, and the names of those too large to keep.
+## The declarations of the project in a dump, as the text of a JSON array, the names of those too large to keep whose
+## calls are lost, and the count of those too large to keep that named no function.
 export struct Dump
   decls: String
   oversized: List[String]
+  skipped: Int
 end
 
 ## Returns the declarations of the project in the dump at `path`, or an error when the dump ends early.
@@ -75,7 +94,7 @@ export def project_decls(path: String, directory: String, cwd: String) -> Result
     return error("the AST dump ends early")
   end
 
-  return ok(Dump(decls: finish(state), oversized: state.oversized))
+  return ok(Dump(decls: finish(state), oversized: state.oversized, skipped: state.skipped))
 end
 
 ## Returns the state before the first line.
@@ -86,7 +105,16 @@ end
 ## Returns the state after one line of the dump.
 export def step(state: State, line: String) -> State
   if line == DECL_START
-    return state.with(phase: Phase.Open, lines: [line], variable: false, desugared: "", name: "")
+    return state.with(
+      phase: Phase.Open,
+      lines: [line],
+      variable: false,
+      array: false,
+      items: false,
+      functions: false,
+      desugared: "",
+      name: "",
+    )
   end
 
   if DECL_ENDS.include?(line) and state.phase != Phase.Between
@@ -98,15 +126,18 @@ export def step(state: State, line: String) -> State
   end
 
   if state.phase == Phase.Kept and state.lines.size >= MAX_DECL_LINES
-    return state.with(phase: Phase.Dropped, lines: [], oversized: state.oversized.push(state.name))
+    return oversized(state)
   end
 
   current = state
   if line.start_with?("      \"") or line.start_with?("        \"")
     current = top_key(state, line)
-    if current.phase == Phase.Dropped
-      return current
-    end
+  else
+    current = deeper_key(state, line)
+  end
+
+  if current.phase == Phase.Dropped
+    return current
   end
 
   return located_or_kept(current, line)
@@ -115,6 +146,18 @@ end
 ## Returns the kept declarations as the text of a JSON array.
 export def finish(state: State) -> String
   return "[#{state.decls.join(",\n")}]"
+end
+
+## Whether a type, as clang writes it (`"const unsigned char[300]"`), is an array of numbers or characters. A scalar or
+## a pointer, `void *` among them, can hold a function through a cast, and a typedef is not known here.
+export def plain_array?(type: String) -> Bool
+  if not type.include?("[") or type.include?("(") or type.include?("*")
+    return false
+  end
+
+  words = type.replace("\"", " ").replace("[", " [").split(" ")
+  return words.select do |word| word != "" and not word.start_with?("[") end
+    .all? do |word| PLAIN_WORDS.include?(word) end
 end
 
 # The lines of a location move the file and the line; every other line is kept or dropped with its declaration.
@@ -152,6 +195,16 @@ def located_or_kept(state: State, line: String) -> State
   return keep(state, line)
 end
 
+# A declaration too large to keep: an error when it named a function, as its calls are lost, and skipped otherwise.
+def oversized(state: State) -> State
+  dropped = state.with(phase: Phase.Dropped, lines: [])
+  if state.functions
+    return dropped.with(oversized: state.oversized.push(state.name))
+  end
+
+  return dropped.with(skipped: state.skipped + 1)
+end
+
 # The keys of the declaration itself and of its type: whether it is a variable, its name, and, at its type, whether a
 # variable of that type can hold a function pointer.
 def top_key(state: State, line: String) -> State
@@ -159,8 +212,13 @@ def top_key(state: State, line: String) -> State
     return state.with(variable: true)
   end
 
+  if line.end_with?(FUNCTION_KIND)
+    return state.with(functions: true)
+  end
+
   if line.start_with?(NAME_KEY)
-    return state.with(name: value_of(line.strip, "\"name\": "))
+    name = value_of(line.strip, "\"name\": ")
+    return state.with(name: JSON.string(JSON.parse(name).unwrap_or(JSON.from(name))).unwrap_or(name))
   end
 
   if line.start_with?(DESUGARED_KEY)
@@ -173,23 +231,54 @@ def top_key(state: State, line: String) -> State
       type = value_of(line, TYPE_KEY)
     end
 
-    if plain?(type)
+    if plain_array?(type)
       return state.with(phase: Phase.Dropped, lines: [])
     end
+
+    return state.with(array: type.include?("["))
   end
 
   return state
 end
 
-# Whether a type, as clang writes it (`"const unsigned char[300]"`), is made of numbers and characters only.
-def plain?(type: String) -> Bool
-  if type.include?("(")
-    return false
+# The lines below the keys of the declaration: whether it names a function, and, for an array whose type does not tell
+# (a typedef), whether its first item is a number.
+def deeper_key(state: State, line: String) -> State
+  if state.phase != Phase.Kept
+    return state
   end
 
-  words = type.replace("\"", " ").replace("[", " [").replace("*", " ").split(" ")
-  return words.select do |word| word != "" and not word.start_with?("[") end
-    .all? do |word| PLAIN_WORDS.include?(word) end
+  if not state.functions and line.end_with?(FUNCTION_KIND)
+    return state.with(functions: true, array: false)
+  end
+
+  if not state.array
+    return state
+  end
+
+  if line == INIT_LIST
+    return state.with(items: true)
+  end
+
+  if not state.items
+    return state
+  end
+
+  text = line.strip
+  if not text.start_with?(KIND_KEY)
+    return state
+  end
+
+  kind = value_of(text, KIND_KEY)
+  if SEEN_THROUGH.include?(kind)
+    return state
+  end
+
+  if LITERALS.include?(kind)
+    return state.with(phase: Phase.Dropped, lines: [])
+  end
+
+  return state.with(array: false)
 end
 
 # The `col` of a location comes after its file and line, so they are known here. The first location of a declaration

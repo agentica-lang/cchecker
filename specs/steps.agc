@@ -19,7 +19,8 @@ def main() -> Void
   BDD.run([
     BDD.step("the C file {string} holds:", &write_file),
     BDD.step("the C file {string} holds, with ITEMS as {int} times {string}:", &write_generated),
-    BDD.step("there is a folder {string}", &make_folder),
+    BDD.step("there is a private folder {string} holding {string}", &make_private_folder),
+    BDD.step("there is a folder {string} holding {string}", &make_open_folder),
     BDD.step("I run cchecker with {string}", &run_cchecker),
     BDD.step("I run cchecker with {string} and TMPDIR {string}", &run_with_tmpdir),
     BDD.step("the folder {string} is empty", &folder_empty),
@@ -54,9 +55,26 @@ def write_text(ctx: BDD.Context, name: String, text: String) -> BDD.Context
   return check(made, File.write_text(path, text))
 end
 
-def make_folder(ctx: BDD.Context, args: List[String]) -> BDD.Context
+# A folder made as cchecker makes its folder of dumps (mode 0700), or with the usual mode, with one empty file in it.
+def make_private_folder(ctx: BDD.Context, args: List[String]) -> BDD.Context
+  return make_folder_with(ctx, args, true)
+end
+
+def make_open_folder(ctx: BDD.Context, args: List[String]) -> BDD.Context
+  return make_folder_with(ctx, args, false)
+end
+
+def make_folder_with(ctx: BDD.Context, args: List[String], private: Bool) -> BDD.Context
   started = ensure_folder(ctx)
-  return check(started, Dir.mkdir(host_path(started, args[0])))
+  path = host_path(started, args[0])
+  made = check(started, Dir.mkdir(Paths.parent(path)))
+  if private
+    made = check(made, Dir.mkdir_private(path))
+  else
+    made = check(made, Dir.mkdir(path))
+  end
+
+  return check(made, File.write_text("#{path}/#{args[1]}", ""))
 end
 
 # $DIR in the words is the folder of the scenario. The words are split at spaces: no argument here has one.
@@ -167,9 +185,10 @@ def ended?(pid: String) -> Bool
   end
 end
 
-# A path of a step is relative to specs/, and $DIR is the folder of the scenario.
+# A path of a step is relative to specs/, $DIR is the folder of the scenario and $PID the pid of the steps, a process
+# that runs as long as the scenario.
 def host_path(ctx: BDD.Context, path: String) -> String
-  return "#{SPECS}/#{path.replace("$DIR", folder_of(ctx))}"
+  return "#{SPECS}/#{path.replace("$DIR", folder_of(ctx)).replace("$PID", "#{System.pid()}")}"
 end
 
 def text(ctx: BDD.Context, name: String) -> String

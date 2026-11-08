@@ -181,6 +181,9 @@ Feature: Effects on the call graph
       | pasted_name.c               | "entry","wait_ready","sleep"   |
       | pasted_struct.c             | "entry","slow","sleep"         |
       | deprecated_too.c            | "entry","slow","sleep"         |
+      | cast_void_pointer.c         | "entry","slow","sleep"         |
+      | cast_void_array.c           | "entry","slow","sleep"         |
+      | cast_integer.c              | "entry","slow","sleep"         |
 
   Scenario: Fields of the same name in the anonymous unions of two structs are two places
     When I run cchecker with "--tools rules fixtures/effects/pointer_anonymous_twin.c -- -I../include"
@@ -208,7 +211,7 @@ Feature: Effects on the call graph
     Examples:
       | name                 | mark     | code                    |
       | uv_mutex_lock        | CC_SHORT | CC-EFFECT-SHORT-BLOCKS  |
-      | uv_fs_open           | CC_SHORT | CC-EFFECT-SHORT-BLOCKS  |
+      | uv_fs_fsync          | CC_SHORT | CC-EFFECT-SHORT-BLOCKS  |
       | pthread_cond_wait    | CC_SHORT | CC-EFFECT-SHORT-BLOCKS  |
       | GC_gcollect          | CC_SHORT | CC-EFFECT-SHORT-BLOCKS  |
       | free                 | CC_HOT   | CC-EFFECT-HOT-ALLOCATES |
@@ -255,6 +258,73 @@ Feature: Effects on the call graph
       "errors":[{"tool":"rules",
       """
 
+  Scenario: A table of typedef'd numbers is left out by its items
+    Given the C file "rom.c" holds, with ITEMS as 30000 times "7,":
+      """
+      #include <stdint.h>
+      #include "cchecker.h"
+
+      unsigned int sleep(unsigned int seconds);
+      static const uint8_t ROM[] = {ITEMS};
+      CC_SHORT int entry(int i) { return ROM[i] + (int)sleep(1); }
+      """
+    When I run cchecker with "--tools rules --json $DIR/rom.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "path":["entry","sleep"]
+      """
+    And the output includes:
+      """
+      "skipped_declarations":0
+      """
+
+  Scenario Outline: A declaration too large to keep that names no function is skipped and counted
+    Given the C file "big.c" holds, with ITEMS as <count> times "<item>":
+      """
+      #include "cchecker.h"
+
+      unsigned int sleep(unsigned int seconds);
+      enum color { RED, GREEN };
+      struct point { int x; int y; };
+      static const <type> BIG[] = {ITEMS};
+      CC_SHORT int entry(int i) { return (int)sizeof BIG[i] + (int)sleep(1); }
+      """
+    When I run cchecker with "--tools rules --json $DIR/big.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "path":["entry","sleep"]
+      """
+    And the output includes:
+      """
+      "skipped_declarations":1
+      """
+
+    Examples:
+      | type         | count | item    |
+      | enum color   | 60000 | GREEN,  |
+      | struct point | 30000 | {1, 2}, |
+
+  Scenario Outline: A call of libuv's file functions blocks when it has no callback
+    Given the C file "fs.c" holds:
+      """
+      #include "cchecker.h"
+
+      typedef void (*fs_cb)(void *req);
+      int uv_fs_open(void *loop, void *req, const char *path, int flags, int mode, fs_cb cb);
+      static void opened(void *req) { (void)req; }
+      CC_SHORT int entry(void *loop, void *req) { return uv_fs_open(loop, req, "x", 0, 0, <callback>); }
+      """
+    When I run cchecker with "--tools rules $DIR/fs.c -- -I../include"
+    Then the exit code is <code>
+
+    Examples:
+      | callback | code |
+      | 0        | 1    |
+      | (fs_cb)0 | 1    |
+      | opened   | 0    |
+
   Scenario: A dump that ends early is an error of the rules tool
     When I run cchecker with "--tools rules --clang fixtures/fake_clang_truncated.sh --json fixtures/clean.c"
     Then the exit code is 2
@@ -264,10 +334,22 @@ Feature: Effects on the call graph
       """
 
   Scenario: The folder of a run that was killed is removed by the next run
-    Given there is a folder "$DIR/tmp/cchecker-999999999-1"
+    Given there is a private folder "$DIR/tmp/cchecker-999999999-1" holding "0.json"
     When I run cchecker with "--tools rules fixtures/effects/short_blocks.c -- -I../include" and TMPDIR "$DIR/tmp"
     Then the exit code is 1
     And the folder "$DIR/tmp" is empty
+
+  Scenario: Only a folder of a dead run of this user that holds dumps alone is removed
+    Given there is a private folder "$DIR/tmp/cchecker-$PID-1" holding "0.json"
+    And there is a private folder "$DIR/tmp/cchecker-abc-1" holding "0.json"
+    And there is a private folder "$DIR/tmp/cchecker-999999999-2" holding "notes.txt"
+    And there is a folder "$DIR/tmp/cchecker-999999999-3" holding "0.json"
+    When I run cchecker with "--tools rules fixtures/effects/short_blocks.c -- -I../include" and TMPDIR "$DIR/tmp"
+    Then the exit code is 1
+    And the file "$DIR/tmp/cchecker-$PID-1" exists
+    And the file "$DIR/tmp/cchecker-abc-1" exists
+    And the file "$DIR/tmp/cchecker-999999999-2" exists
+    And the file "$DIR/tmp/cchecker-999999999-3" exists
 
   Scenario: A relative TMPDIR holds for a compile database whose files are in another folder
     Given the C file "sub/a.c" holds:

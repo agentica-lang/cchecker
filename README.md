@@ -178,27 +178,33 @@ The baseline matches the message, without the path, so a finding stays accepted 
 | `CC-EFFECT-HOT-SYSCALL` | a `CC_HOT` function reaches a system call; a blocking call is one too |
 
 The known calls are those of libc, pthread, libuv, OpenSSL and the Boehm collector that block (`read`, `sleep`,
-`pthread_mutex_lock`, `uv_run`, a `uv_fs_*` call, which runs at once without a callback), allocate (`malloc`, `free`,
-`strdup`, `GC_malloc`, `SSL_new`) or enter the kernel (`write`, `mmap`, `close`); an unlock or the signal of a
-condition counts as a system call, as it wakes a waiter with a futex call. The lists are in `src/known.agc`. A
-function the project defines is judged by its body; a library function that is not listed has no effect.
+`pthread_mutex_lock`, `uv_run`, a `uv_fs_*` call whose last argument, the callback, is `NULL` or 0, as it then runs
+at once), allocate (`malloc`, `free`, `strdup`, `GC_malloc`, `SSL_new`) or enter the kernel (`write`, `mmap`,
+`close`); an unlock or the signal of a condition counts as a system call, as it wakes a waiter with a futex call. The
+lists are in `src/known.agc`. A function the project defines is judged by its body; a library function that is not
+listed has no effect. A known name is known by name alone: a project function named `remove`, `rewind`, `ftell` or
+`dlsym` counts as the libc one in a run that does not read its body.
 
 A call through a function pointer reaches every function the project stores in the same place: a field of a struct or
 a union (by record and field name, in an initializer, designated or not, or an assignment), a variable, or a parameter
 of a function (from the direct calls that pass a function), and every function of a place copied into it
-(`box.handle = handle`). A variable with `__attribute__((cleanup(f)))` calls `f`. A pointer that comes from anywhere
-else reaches nothing: a return value, a cast to another type, the arguments of a variadic function, and a function
-handed to a library that calls it back (`qsort`, a libuv callback). A walk goes only through what the run read, so run
+(`box.handle = handle`). A cast is seen through, so a function kept in a `void *` or an `uintptr_t` is reached by a
+call through it. A variable with `__attribute__((cleanup(f)))` calls `f`. A pointer that comes from anywhere else
+reaches nothing: a return value, the arguments of a variadic function, and a function handed to a library that calls
+it back (`qsort`, a libuv callback). A walk goes only through what the run read, so run
 it on all the files of the project: with a subset of the files, a call into a file that was not run reaches nothing.
 For the baseline, only a full run of a compile database covers the findings of the rules: a run of some files never
 counts them fixed and never drops them on `--update-baseline`.
 
 The AST of a file is tens of MiB with its system headers, more than a process output holds in Agentica (1 MiB): `sh`
 writes it to a file in a private folder under `$TMPDIR`, and cchecker reads it line by line and keeps only the
-declarations of the project. A variable whose type holds no function pointer (a table of numbers) is not kept, and a
-declaration of more than a million lines of the dump is a tool error and is left out, while the rest of the file is
-checked. A dump that ends early is a tool error. The folder is removed at the end of the run, and a run removes the
-folders that killed runs of the same user left there.
+declarations of the project. A table of numbers is not kept: an array of a number or character type, or whose first
+item is a number (`const uint8_t ROM[]`). A declaration of more than a million lines of the dump is left out: when it
+named no function so far (a table of enum values or of structs of numbers) it is counted in `skipped_declarations`
+of `--json` and in a line on standard error, and otherwise it is a tool error, while the rest of the file is checked.
+A dump that ends early is a tool error. The folder is removed at the end of the run, and a run removes the folders
+that killed runs left there: a folder of the same user, private, not a link, holding only dumps, whose process is
+gone. Runs in different PID namespaces that share `$TMPDIR` can remove each other's folders.
 
 ## Development
 
