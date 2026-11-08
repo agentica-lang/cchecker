@@ -19,11 +19,15 @@ DEFAULT_DATABASE = "compile_commands.json"
 # The start of the name of the folder of the AST dumps of a run, in $TMPDIR.
 SCRATCH_PREFIX = "cchecker-"
 
+# The mode of that folder, 0700: only its user can read it.
+PRIVATE_MODE = 448
+
 # What the tools made of all the jobs, before the paths are shortened and the repeats taken out.
 struct Collected
   findings: List[Finding]
   errors: List[ToolError]
   ran: List[String]
+  skipped_declarations: Int = 0
 end
 
 # The jobs of a run, the files that were left out because they are outside the working directory, and the entries of
@@ -54,6 +58,12 @@ export def run(options: Options) -> Result[Int]
   end
 
   collected = try collect_in_scratch(options, plan.jobs, scratch)
+  if collected.skipped_declarations > 0
+    IO.warn(
+      "cchecker: skipped #{collected.skipped_declarations} declarations too large to read; they name no function",
+    )
+  end
+
   findings = (
     collected.findings
     |> localize(cwd, options.exclude)
@@ -78,6 +88,7 @@ export def run(options: Options) -> Result[Int]
             fixed: split.fixed,
             errors: collected.errors,
             skipped: plan.skipped.size,
+            skipped_declarations: collected.skipped_declarations,
           ),
         ),
       )
@@ -91,6 +102,7 @@ export def run(options: Options) -> Result[Int]
             fixed: 0,
             errors: collected.errors,
             skipped: plan.skipped.size,
+            skipped_declarations: collected.skipped_declarations,
           ),
         ),
       )
@@ -265,8 +277,10 @@ def scratch_path(cwd: String) -> Result[String]
   return ok("#{folder}/#{SCRATCH_PREFIX}#{System.pid()}-#{Time.now_ms()}")
 end
 
-# Removes the folders that runs which were killed left next to `folder`: those of this user whose process is gone. A
-# process is known to be gone only where /proc lists the running ones.
+# Removes the folders that runs which were killed left next to `folder`: those whose process is gone, and which look
+# like a folder that cchecker made: a directory (not a link) of this user, private (mode 0700), with nothing in it but
+# dumps (`N.json`). Anything else of that name is left alone. A process is known to be gone only where /proc lists the
+# running ones.
 def remove_stale(folder: String) -> Void
   if not File.stat("/proc/self").ok?
     return
@@ -277,10 +291,29 @@ def remove_stale(folder: String) -> Void
   nothing: List[String] = []
   for name in Dir.list(base).unwrap_or(nothing)
     path = "#{base}/#{name}"
-    if path != folder and stale?(name) and owner(path) == user
+    if path != folder and stale?(name) and scratch?(path, user)
       _ = Path.remove(path)
     end
   end
+end
+
+# Whether a path is a folder of dumps of the user: a private directory, not a link, that holds only `N.json` files.
+def scratch?(path: String, user: Int) -> Bool
+  case File.lstat(path)
+    ok(info) ->
+      if info.kind != "directory" or info.user_id != user or info.mode % 4096 != PRIVATE_MODE
+        return false
+      end
+
+    error(_) -> return false
+  end
+
+  nothing: List[String] = []
+  return Dir.list(path).unwrap_or(nothing).all? do |name| dump_name?(name) end
+end
+
+def dump_name?(name: String) -> Bool
+  return name.end_with?(".json") and name.slice(0, name.length - 5).to_i.ok?
 end
 
 # The user id of a file, not following a link, or -1.
@@ -324,6 +357,7 @@ def collect(options: Options, jobs: List[Tools.Job]) -> Collected
   errors: List[ToolError] = []
   ran: List[String] = []
   units: List[Unit] = []
+  skipped_declarations = 0
   for i in 0...jobs.size
     job = jobs[i]
     case results[i]
@@ -331,6 +365,7 @@ def collect(options: Options, jobs: List[Tools.Job]) -> Collected
         findings = findings.concat(outcome.findings)
         errors = errors.concat(outcome.errors)
         units = units.concat(outcome.units)
+        skipped_declarations = skipped_declarations + outcome.skipped_declarations
         if outcome.errors.empty?
           ran = ran.push(Baseline.pair(ToolKind.name(job.tool), job.shown))
         end
@@ -340,7 +375,12 @@ def collect(options: Options, jobs: List[Tools.Job]) -> Collected
     end
   end
 
-  return Collected(findings: findings.concat(Effects.check(units)), errors: errors, ran: ran)
+  return Collected(
+    findings: findings.concat(Effects.check(units)),
+    errors: errors,
+    ran: ran,
+    skipped_declarations: skipped_declarations,
+  )
 end
 
 # Shortens the paths to be relative to the working directory, and drops what is outside it (system and third-party

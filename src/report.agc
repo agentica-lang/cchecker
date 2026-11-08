@@ -4,13 +4,15 @@ import {Finding, ToolError} from "findings"
 
 ## The result of a run. `findings` are the new ones; `baselined` were accepted by the baseline, and `fixed` are
 ## accepted findings of the tools and files of the run that no tool found this time. `skipped` counts the files that
-## were left out because they are outside the working directory.
+## were left out because they are outside the working directory, and `skipped_declarations` the declarations the rules
+## did not read because they are too large and name no function (tables of numbers).
 export struct Report
   findings: List[Finding]
   baselined: Int
   fixed: Int
   errors: List[ToolError]
   skipped: Int
+  skipped_declarations: Int = 0
 end
 
 # The JSON form of a report, which says in `clean` whether the run is clean.
@@ -21,6 +23,7 @@ struct Encoded
   fixed: Int
   errors: List[ToolError]
   skipped: Int
+  skipped_declarations: Int
 end
 
 ## Returns the report for people: one line for each finding, then a summary line.
@@ -39,6 +42,7 @@ export def json(report: Report) -> String
       fixed: report.fixed,
       errors: report.errors,
       skipped: report.skipped,
+      skipped_declarations: report.skipped_declarations,
     ),
   )
 end
