@@ -34,11 +34,12 @@ test/             unit tests of the pure helpers (the parsers, the scan of the A
 - Binary: the Agentica release pinned in `.github/workflows/ci.yml` (the `version` and `sha256` inputs of
   `agentica-lang/setup-agentica`, in both jobs). Download it
   under `.tools/` (gitignored), never `/tmp`. Changing the pin changes both values from the release's SHA256SUMS.
-- `make check`: `agentica check`. `make fmt-check`: `agentica fmt --check` (`agentica fmt` fixes it). `make test`:
-  `agentica test --jobs 4` (the features and the unit tests) without the scenarios tagged `@slow`; `make test-slow`
-  runs those, in a CI job of their own (on a shared machine, run at most one, with `--only`). Both first run
-  `make deps` (`agentica install`: prop into `deps/`, with the network only when the download cache lacks the locked
-  commit) and `make native`, which builds the native module once. `make check` runs `make deps` too.
+- `make check`: `agentica check`, then `make lint` (`agentica lint --strict`: a style suggestion fails it).
+  `make fmt-check`: `agentica fmt --check` (`agentica fmt` fixes it). `make test`: `agentica test --jobs 4` (the
+  features and the unit tests) without the scenarios tagged `@slow`; `make test-slow` runs those, in a CI job of
+  their own (on a shared machine, run at most one, with `--only`). Both first run `make deps` (`agentica install`:
+  prop into `deps/`, with the network only when the download cache lacks the locked commit) and `make native`, which
+  builds the native module once. `make check` runs `make deps` too.
   `agentica test --only TEXT` runs the scenarios whose name contains `TEXT`.
 - The tests need `gcc`, `clang`, `clang-tidy`, `sh` and `timeout` (coreutils) on PATH. CI installs them and fails if
   one is missing; a local run without one fails the scenarios too.

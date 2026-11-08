@@ -61,12 +61,13 @@ end
 
 ## The generator of files: up to 8 lines.
 export def files() -> Prop.Gen[List[Line]]
-  parts = Prop.pair(
-    Prop.pair(Prop.int(0, CALLER), Prop.int(0, 2)),
-    Prop.pair(Prop.int(0, MARK), Prop.int(0, NO_REASON)),
+  kind_and_code = Prop.pair(Prop.int(0, CALLER), Prop.int(0, 2))
+  attach_and_reason = Prop.pair(Prop.int(0, MARK), Prop.int(0, NO_REASON))
+  return (
+    Prop.pair(kind_and_code, attach_and_reason)
+    |> Prop.map(&line_of)
+    |> Prop.list(8)
   )
-
-  return Prop.list(Prop.map(parts, &line_of), 8)
 end
 
 ## Checks `runs` files, from `seed` when it is given, with cchecker (the bytecode `program`, run in specs/ on a compile
