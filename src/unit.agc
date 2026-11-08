@@ -18,6 +18,8 @@ NORETURN_ATTRS = Set.new(["C11NoReturnAttr", "NoReturnAttr", "CXX11NoReturnAttr"
 # The annotations that name locks, and whether the function takes them.
 LOCK_MARKS = {"acquires": true, "releases": false}
 
+PAIR_MARK = "pair("
+
 # The nodes a function pointer goes through on its way to a call or a store, which do not change where it points.
 TRANSPARENT = Set.new(["ImplicitCastExpr", "CStyleCastExpr", "ParenExpr", "CompoundLiteralExpr"])
 
@@ -83,6 +85,12 @@ struct Record
   types: List[String] = []
 end
 
+# The functions of a CC_PAIR(set, restore), by name.
+struct Pair
+  set: String
+  restore: String
+end
+
 # A record declaration and the name of the record it is declared in ("" at the top level).
 struct Nested
   node: Json
@@ -125,8 +133,9 @@ export def read(decls: Json) -> Result[Unit]
         function = function_of(tables, node)
         functions = functions.push(function)
         found = in_function(tables, function.key, node, found)
-        if function.defined and Flow.locks?(ctx, node)
-          bodies = bodies.push(Flow.body_of(ctx, function.key, node))
+        own = paired(ctx, tables, function)
+        if function.defined and Flow.locks?(own, node)
+          bodies = bodies.push(Flow.body_of(own, function.key, node))
         end
 
       "VarDecl" ->
@@ -175,12 +184,64 @@ def context_of(tables: Tables, nodes: List[Json]) -> Flow.Context
     end
   end
 
+  # CC_PAIR(set, restore) on `set` itself holds in every function that calls it.
+  for node in declarations
+    name = Ast.text(node, "name")
+    for pair in own_marks(node).flat_map(&pair_of)
+      if pair.set == name
+        callees = with_pair(callees, tables, pair)
+      end
+    end
+  end
+
   fields: Map[String, String] = {}
   for id in tables.field_slots.keys
     fields = fields.put(id, tables.field_slots[id].replace("field:", ""))
   end
 
   return Flow.Context(callees: callees, statics: tables.static_functions, fields: fields, globals: globals)
+end
+
+# The context of the body of a function: CC_PAIR(set, restore) on a function other than `set` holds in its body only.
+def paired(ctx: Flow.Context, tables: Tables, function: Function) -> Flow.Context
+  callees = ctx.callees
+  for pair in function.marks.flat_map(&pair_of)
+    if pair.set != function.name
+      callees = with_pair(callees, tables, pair)
+    end
+  end
+
+  return ctx.with(callees: callees)
+end
+
+# The callees with the lock of a pair: `set` takes it and `restore` releases it. The lock names no parameter, so a call
+# passes nothing to it. A pair marked twice gives `set` two takes and `restore` two releases, which cancel the
+# same way.
+def with_pair(callees: Map[String, Flow.Callee], tables: Tables, pair: Pair) -> Map[String, Flow.Callee]
+  text = "#{Flow.PAIR_PREFIX}#{pair.set}"
+  added = callees
+  for side in [pair.set, pair.restore]
+    lock = Flow.Annotated(text: text, params: [], takes: side == pair.set, pair: pair.restore)
+    key = function_key(tables, side)
+    known = added.get(key).unwrap_or(Flow.Callee(locks: [], stops: false))
+    added = added.put(key, known.with(locks: known.locks.push(lock)))
+  end
+
+  return added
+end
+
+# The functions of a mark `pair(set, restore)`; none for another mark, or one that does not name two functions.
+def pair_of(mark: String) -> List[Pair]
+  if not mark.start_with?(PAIR_MARK) or not mark.end_with?(")")
+    return []
+  end
+
+  names = mark.slice(PAIR_MARK.length, mark.length - PAIR_MARK.length - 1).split(",").map do |name| name.strip end
+  if names.size != 2 or names.any? do |name| name == "" end
+    return []
+  end
+
+  return [Pair(set: names[0], restore: names[1])]
 end
 
 # The class of the lock of an annotation, through the types of the parameters: `s->pool->mu` of `struct server *s` is

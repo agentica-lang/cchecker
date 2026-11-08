@@ -8,8 +8,9 @@ baseline file accepts the findings a project has today, so CI fails only on new 
 The rules read clang's JSON AST and the annotations of `include/cchecker.h`. This version checks effects on the call
 graph (a `CC_SHORT` function never reaches a blocking call, and a `CC_HOT` function never allocates or makes a system
 call) and locks on every path of a function: a lock taken is released, a lock released is held, no system call runs
-under a lock marked `CC_NO_SYSCALL_UNDER`, and locks are taken in the order of their `CC_LOCK_LEVEL`. Paired state
-and ownership come in later phases; the plan is in [issue 1](https://github.com/agentica-lang/cchecker/issues/1).
+under a lock marked `CC_NO_SYSCALL_UNDER`, locks are taken in the order of their `CC_LOCK_LEVEL`, and the set of a
+`CC_PAIR` is restored. Ownership comes in a later phase; the plan is in
+[issue 1](https://github.com/agentica-lang/cchecker/issues/1).
 
 ## Install
 
@@ -142,8 +143,8 @@ tools that are running (they end by themselves or at the timeout); see
 ## Annotations
 
 `include/cchecker.h` defines the macros that the rules read: `CC_SHORT`, `CC_BLOCKING`, `CC_HOT`, `CC_ACQUIRES(lock)`,
-`CC_RELEASES(lock)`, `CC_NORETURN`, `CC_NO_SYSCALL_UNDER(lock)`, `CC_LOCK_LEVEL(n)`, `CC_OWNS`, `CC_PAIR(set,
-restore)` (these two for later phases) and `CC_IGNORE("CODE", "reason")` (a suppression). With clang each is
+`CC_RELEASES(lock)`, `CC_NORETURN`, `CC_NO_SYSCALL_UNDER(lock)`, `CC_LOCK_LEVEL(n)`, `CC_PAIR(set, restore)`,
+`CC_OWNS` (for a later phase) and `CC_IGNORE("CODE", "reason")` (a suppression). With clang each is
 `__attribute__((annotate("cchecker:...")))`; with any other compiler it is empty. When cchecker dumps the AST it
 defines `CCHECKER_AST`, and the macros become `deprecated("cchecker:...")`: the JSON AST of clang 19 drops the text of
 `annotate` and keeps the message of `deprecated`. The dump runs with `-w`, so this gives no warning.
@@ -268,6 +269,26 @@ by its name. A lock of a `CC_ACQUIRES` is followed to its field through the type
 (`CC_ACQUIRES(s->pool->mu)` on `void pool_lock(struct server *s)` takes `pool.mu`). The path of a finding goes from
 the take of the lock held to the call, and the call path to the system call when there is one: `13:3 calls bump: bump
 -> pthread_mutex_lock`.
+
+### Pairs of calls
+
+`CC_PAIR(set, restore)` on a function says that in its body, a call of `set` is followed by a call of `restore` on
+every path that returns, as a lock is by its unlock (the same graph and the same walk). On a declaration of `set`
+itself it says so in every function that calls `set`. The two are functions, by name, whatever their arguments: a
+cleanup function counts as a call. A `restore` with no `set` before it on the path does nothing, so restoring twice is
+no finding; a `set` twice needs two restores. `set` and `restore` are two functions (a pair of one function, such as
+`umask`, never gives a finding).
+
+```c
+CC_PAIR(mask_signals, restore_signals) void mask_signals(sigset_t *old);   /* in every caller */
+CC_PAIR(gc_pause, gc_resume) int copy_out(struct heap *h);                  /* in copy_out */
+```
+
+| Code | |
+|---|---|
+| `CC-PATH-PAIR-NOT-RESTORED` | a path returns after a call of `set` and no call of `restore` after it |
+
+The path goes from the call of `set` to the return: `7:3 calls mask_signals -> 8:7 true -> 9:5 returns`.
 
 The AST of a file is tens of MiB with its system headers, more than a process output holds in Agentica (1 MiB):
 `sh` writes it to a file in a private folder under `$TMPDIR`, and cchecker reads it line by line and keeps only the

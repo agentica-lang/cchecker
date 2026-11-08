@@ -8,6 +8,10 @@
 import Ast from "ast"
 import Known from "known"
 
+## The start of the key of the lock that stands for a CC_PAIR(set, restore): `pair:set`, which the calls of `set` take
+## and the calls of `restore` release: no lock expression of the code looks like it.
+export PAIR_PREFIX = "pair:"
+
 # The nodes that do not change the value of the expression inside them.
 SEE_THROUGH = Set.new(["ImplicitCastExpr", "CStyleCastExpr", "ParenExpr", "ConstantExpr", "ExprWithCleanups"])
 
@@ -26,11 +30,13 @@ ALIAS_DEPTH = 4
 
 ## A lock: `key` is what tells two locks apart (`q.mu` for `&q->mu`, `q->mu` and `(&q->mu)`), `shown` how the code
 ## wrote it, and `class` the field it is (`queue.mu`, by struct and field name) or the global, which the marks of
-## CC_NO_SYSCALL_UNDER() and CC_LOCK_LEVEL name; "" when the rules cannot tell.
+## CC_NO_SYSCALL_UNDER() and CC_LOCK_LEVEL name; "" when the rules cannot tell. `pair` is the restore of the lock of
+## a CC_PAIR, "" for a lock of the code.
 export struct Lock
   key: String
   shown: String
   class: String = ""
+  pair: String = ""
 end
 
 ## A call of a function, by name and key (`name@file` for a static one), and what it does to the locks: those it takes,
@@ -89,12 +95,13 @@ export struct Body
 end
 
 ## A lock of a CC_ACQUIRES (`takes`) or a CC_RELEASES, as written, with the names of the parameters of the
-## declaration that carries it.
+## declaration that carries it; or the lock of a CC_PAIR that a set takes and its restore (`pair`) releases.
 export struct Annotated
   text: String
   params: List[String]
   takes: Bool
   class: String = ""
+  pair: String = ""
 end
 
 ## What a function of the translation unit says about locks, from all its declarations, and whether it never returns.
@@ -808,7 +815,9 @@ end
 
 # The lock of an annotation, in the texts of the arguments of the call.
 def annotated_lock(lock: Annotated, texts: List[String]) -> List[Lock]
-  return locks_of([substituted(lock.text, lock.params, texts)]).map do |found| found.with(class: lock.class) end
+  return locks_of([substituted(lock.text, lock.params, texts)]).map do |found|
+    found.with(class: lock.class, pair: lock.pair)
+  end
 end
 
 def arg_of(b: Builder, node: Json) -> Arg

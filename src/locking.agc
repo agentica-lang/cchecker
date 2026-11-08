@@ -1,5 +1,6 @@
 ## The lock rules on the paths of each function: a lock that a function takes is released on every path that returns,
-## and a lock that it releases is one it holds. A function with CC_ACQUIRES or CC_RELEASES is a helper that takes or
+## and a lock that it releases is one it holds. The set of a CC_PAIR is a lock too, which its restore releases; a
+## restore with no set before it does nothing. A function with CC_ACQUIRES or CC_RELEASES is a helper that takes or
 ## drops a lock for its callers: its body is how the lock works (a count of nested takes, a spin before the wait), and
 ## the rules trust it and check its callers.
 ##
@@ -20,6 +21,9 @@ export NOT_RELEASED = "CC-PATH-LOCK-NOT-RELEASED"
 
 ## The code of a path that releases a lock that the function did not take.
 export NOT_HELD = "CC-PATH-LOCK-NOT-HELD"
+
+## The code of a path that returns after a call of the set of a CC_PAIR and no call of its restore.
+export PAIR_NOT_RESTORED = "CC-PATH-PAIR-NOT-RESTORED"
 
 # A lock taken or released more times than this on one path counts as this many, so a loop ends.
 MAX_COUNT = 2
@@ -195,7 +199,7 @@ def walked(walker: Walker) -> Walk
     node = body.nodes[item.node]
     found = with_breaches(found, walker, item, node.event)
     case stepped(walker, node.event, item)
-      Moved.Ended(path) -> found = with_exit(found, body, item.state, path)
+      Moved.Ended(path) -> found = with_exit(found, walker, item.state, path)
       Moved.Stopped -> next
       Moved.Went(moved) ->
         for after in node.next
@@ -274,22 +278,31 @@ def marked(mark: Mark) -> Step
   return Step(text: "#{mark.line}:#{mark.column} #{mark.word}")
 end
 
-# The state and the path after a call: the locks it takes and releases.
+# The state and the path after a call: the locks it takes and releases. The step of a pair names the call.
 def after_call(item: Item, site: Site) -> Item
   held = item.state.held
   steps = item.path
   for lock in site.takes
     held = counted(held, lock.key, 1)
-    steps = steps.push(
-      Step(text: "#{site.line}:#{site.column} takes #{lock.shown}", lock: lock.key, shown: lock.shown),
-    )
+    text = "takes #{lock.shown}"
+    if lock.pair != ""
+      text = "calls #{site.name}"
+    end
+
+    steps = steps.push(Step(text: "#{site.line}:#{site.column} #{text}", lock: lock.key, shown: lock.shown))
   end
 
   for lock in site.drops
-    held = counted(held, lock.key, -1)
-    steps = steps.push(
-      Step(text: "#{site.line}:#{site.column} releases #{lock.shown}", lock: lock.key, shown: lock.shown),
-    )
+    text = "releases #{lock.shown}"
+    if lock.pair != ""
+      text = "calls #{site.name}"
+    end
+
+    if lock.pair == "" or held.get(lock.key, 0) > 0
+      held = counted(held, lock.key, -1)
+    end
+
+    steps = steps.push(Step(text: "#{site.line}:#{site.column} #{text}", lock: lock.key, shown: lock.shown))
   end
 
   return item.with(state: item.state.with(held: held), path: steps)
@@ -315,30 +328,36 @@ end
 
 # The findings of a path that ends: each lock it holds that it took, and each it released and did not take. One finding
 # for each code and lock: the first path, which is a shortest one.
-def with_exit(found: Map[String, Finding], body: Body, state: State, path: List[Step]) -> Map[String, Finding]
+def with_exit(found: Map[String, Finding], walker: Walker, state: State, path: List[Step]) -> Map[String, Finding]
   kept = found
   for key in state.held.keys
     count = state.held[key]
+    restore = walker.locks.get(key).map do |lock| lock.pair end.unwrap_or("")
     code = NOT_RELEASED
-    if count < 0
+    if restore != ""
+      code = PAIR_NOT_RESTORED
+    elsif count < 0
       code = NOT_HELD
     end
 
     id = "#{code} #{key}"
     if not kept.key?(id)
-      kept = kept.put(id, finding(body, code, key, path))
+      kept = kept.put(id, finding(walker.body, code, key, restore, path))
     end
   end
 
   return kept
 end
 
-def finding(body: Body, code: String, key: String, path: List[Step]) -> Finding
+def finding(body: Body, code: String, key: String, restore: String, path: List[Step]) -> Finding
   steps = from_last(path, key)
   shown = steps.first.shown
   message = "#{body.name} does not release #{shown} on every path"
   if code == NOT_HELD
     message = "#{body.name} releases #{shown}, which it does not hold, on a path"
+  elsif code == PAIR_NOT_RESTORED
+    set = key.slice(Flow.PAIR_PREFIX.length, key.length - Flow.PAIR_PREFIX.length)
+    message = "#{body.name} calls #{set} and does not call #{restore} after it on every path"
   end
 
   return located(body, code, message, steps.map do |step| step.text end)
