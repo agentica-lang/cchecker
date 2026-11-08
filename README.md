@@ -552,9 +552,15 @@ tests in `test/`. They need `gcc`, `clang`, `clang-tidy` and `sh`.
 ```sh
 make check       # agentica check
 make fmt-check   # agentica fmt --check; `agentica fmt` fixes it
-make test        # agentica test --jobs 4, from the root of the repository
+make test        # agentica test --jobs 4 without the @slow scenarios, from the root of the repository
+make test-slow   # the @slow scenarios only
+make native      # builds the native module once; make test and make test-slow run it first
 make bench       # the rules on the C VM of Agentica: wall time and peak RSS (BENCH_JOBS=2 for -j 2)
 ```
+
+A scenario tagged `@slow` runs a large generated input (`specs/limits.feature`: a chain of 1000 branches, a
+declaration of 16 million lines of the dump, a function over the guard of nodes or of states) under a bound on memory
+(`ulimit -v`) and on time. `make test` leaves them out; CI runs them in a job of their own on every pull request.
 
 `make bench` fetches Agentica at a pinned commit (`AGENTICA_BENCH_COMMIT`) into `.bench/`, with only the submodules
 whose headers its VM reads, and runs `--tools rules` on the 84 files of `vm/`; it fails when a file is not checked. It
