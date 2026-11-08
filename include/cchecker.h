@@ -18,8 +18,15 @@
 #ifndef CCHECKER_H
 #define CCHECKER_H
 
-#if defined(__clang__)
+#if defined(__clang__) && defined(CCHECKER_AST)
+/* cchecker defines CCHECKER_AST when it dumps the AST: clang 19 leaves the text of `annotate` out of its JSON AST, and
+ * keeps the message of `deprecated`. The dump hides the warnings this gives. */
+#define CC_ANNOTATE_(text) __attribute__((deprecated("cchecker:" text)))
+#elif defined(__clang__)
 #define CC_ANNOTATE_(text) __attribute__((annotate("cchecker:" text)))
+#endif
+
+#if defined(__clang__)
 /* The arguments are kept as written, so `CC_PAIR(mask_signals, restore_signals)` is "pair(mask_signals, ...)". */
 #define CC_ANNOTATE_ARGS_(name, ...) CC_ANNOTATE_(name "(" #__VA_ARGS__ ")")
 #define CC_SHORT CC_ANNOTATE_("short")

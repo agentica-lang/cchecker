@@ -1,6 +1,7 @@
 ## The findings that every tool is normalized to, and the failures of the tools.
 
-## One problem found by a tool. `file` is relative to the working directory.
+## One problem found by a tool. `file` is relative to the working directory. `path` is the call path of a finding of
+## the rules, from the function at `file`, `line` and `column` to the call that breaks the rule.
 export struct Finding
   code: String
   tool: String
@@ -8,6 +9,7 @@ export struct Finding
   line: Int
   column: Int
   message: String
+  path: List[String] = []
 end
 
 ## A tool that could not do its work on a file: it did not start, ran out of time or could not compile the file.

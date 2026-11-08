@@ -1,17 +1,19 @@
 # cchecker
 
-Checks C code and runs the usual analyzers in one command. It runs `gcc -fanalyzer` and `clang-tidy` on each file, in
-parallel, and prints what they find in one format with stable codes. A baseline file accepts the findings a project has
-today, so CI fails only on new ones. It is written in [Agentica](https://github.com/agentica-lang/agentica).
+Checks C code for the rules of a project and runs the usual analyzers in one command. It runs `gcc -fanalyzer`,
+`clang-tidy` and its own rules on each file, in parallel, and prints what they find in one format with stable codes. A
+baseline file accepts the findings a project has today, so CI fails only on new ones. It is written in
+[Agentica](https://github.com/agentica-lang/agentica).
 
-The rules of a project (a call that must never block, a lock held across a system call, a value restored on every path)
-come in later phases and read clang's JSON AST; the plan is in [issue
-1](https://github.com/agentica-lang/cchecker/issues/1). This version ships the one command and the annotation header.
+The rules read clang's JSON AST and the annotations of `include/cchecker.h`. This version checks effects on the call
+graph: a `CC_SHORT` function never reaches a blocking call, and a `CC_HOT` function never allocates or makes a system
+call. Locks and paired state on every path, and ownership, come in later phases; the plan is in [issue
+1](https://github.com/agentica-lang/cchecker/issues/1).
 
 ## Install
 
-cchecker needs Agentica 0.26.1 or later, and `gcc` 10 or later and `clang-tidy` on PATH. Clone the repository and run
-it with `agentica`, or compile it to bytecode:
+cchecker needs Agentica 0.26.1 or later, and `gcc` 10 or later, `clang` and `clang-tidy` on PATH, and `sh`. Clone the
+repository and run it with `agentica`, or compile it to bytecode:
 
 ```sh
 agentica cchecker.agc [options] FILE... -- COMPILER-FLAGS...
@@ -42,9 +44,9 @@ src/a.c:9:12 CC-TIDY-CLANG-ANALYZER-UNIX-MALLOC Potential leak of memory pointed
 cchecker: 2 new findings in 1 file
 ```
 
-`--json` prints one object for tools and agents: `clean`, `findings` (each has `code`, `tool`, `file`, `line`, `column`
-and `message`), `baselined`, `fixed` and `errors` (a tool that did not run or could not compile a file: `tool`, `file`
-and `message`).
+`--json` prints one object for tools and agents: `clean`, `findings` (each has `code`, `tool`, `file`, `line`,
+`column`, `message` and `path`, the call path of a finding of the rules), `baselined`, `fixed` and `errors` (a tool
+that did not run or could not compile a file: `tool`, `file` and `message`).
 
 Exit codes: `0` no new findings, `1` new findings, `2` a usage error or a tool error. A tool error is a tool that
 is missing, ends in a timeout or exits with a non-zero code, except for the `1` of a compiler that found errors in the
@@ -67,7 +69,8 @@ system or third-party header) is dropped.
 A code is stable: a baseline holds it. `CC-GCC-` is followed by the gcc warning option in capitals
 (`-Wanalyzer-malloc-leak` is `CC-GCC-ANALYZER-MALLOC-LEAK`, also when `-Werror` made it
 `-Werror=analyzer-malloc-leak`), and `CC-TIDY-` by the clang-tidy check (`clang-analyzer-unix.Malloc` is
-`CC-TIDY-CLANG-ANALYZER-UNIX-MALLOC`). A diagnostic without a name is `CC-GCC-WARNING` or `CC-TIDY-WARNING`.
+`CC-TIDY-CLANG-ANALYZER-UNIX-MALLOC`). A diagnostic without a name is `CC-GCC-WARNING` or `CC-TIDY-WARNING`. The
+rules have `CC-EFFECT-` codes (below).
 
 ### Baseline
 
@@ -94,13 +97,14 @@ other checks would lose the findings of the default ones). The exit code is `2` 
 | Option | |
 |---|---|
 | `-p, --compile-commands PATH` | the compile database: a file or its folder (default: `compile_commands.json` here) |
-| `-t, --tools LIST` | `gcc`, `clang-tidy` or both (default both) |
+| `-t, --tools LIST` | `gcc`, `clang-tidy` and `rules`, comma separated (default all three) |
 | `--checks LIST` | the clang-tidy checks, after those of a `.clang-tidy` file; default below |
 | `-j, --jobs N` | tool runs at once (default 4) |
 | `--timeout SECONDS` | for one tool on one file (default 300); a timeout is a tool error |
 | `-b, --baseline FILE`, `--update-baseline` | see above |
 | `--exclude LIST` | files or folders to skip, comma separated (`src/vendor`, `./gen/a.c`): whole path parts |
 | `--gcc PROGRAM`, `--clang-tidy PROGRAM` | the programs to run, for a versioned name such as `gcc-14` |
+| `--clang PROGRAM` | the clang that dumps the AST for the rules |
 | `--json` | one JSON object |
 
 The default checks are `-*`, `clang-analyzer-core.*`, `clang-analyzer-unix.*` and `clang-analyzer-security.*` (without
@@ -116,9 +120,11 @@ tools that are running (they end by themselves or at the timeout); see
 
 ## Annotations
 
-`include/cchecker.h` defines the macros that later phases read: `CC_SHORT`, `CC_BLOCKING`, `CC_HOT`, `CC_OWNS`,
-`CC_PAIR(set, restore)` and `CC_NO_SYSCALL_UNDER(lock)`. With clang each is
-`__attribute__((annotate("cchecker:...")))`; with any other compiler it is empty.
+`include/cchecker.h` defines the macros that the rules read: `CC_SHORT`, `CC_BLOCKING`, `CC_HOT`, `CC_OWNS`,
+`CC_PAIR(set, restore)` and `CC_NO_SYSCALL_UNDER(lock)` (the last three for later phases). With clang each is
+`__attribute__((annotate("cchecker:...")))`; with any other compiler it is empty. When cchecker dumps the AST it
+defines `CCHECKER_AST`, and the macros become `deprecated("cchecker:...")`: the JSON AST of clang 19 drops the text of
+`annotate` and keeps the message of `deprecated`. The dump runs with `-w`, so this gives no warning.
 
 ```c
 #include "cchecker.h"
@@ -128,10 +134,62 @@ void adopt(CC_OWNS char *name);
 CC_PAIR(mask_signals, restore_signals) int guarded(void);
 ```
 
+An annotation may be on any declaration of the function: a prototype in a header holds for the definition.
+
+## Rules
+
+The `rules` tool runs `clang -Xclang -ast-dump=json -fsyntax-only` on each file with its flags, keeps the declarations
+written in the files under the working directory (for a declaration that a macro writes, where the macro is used), and
+builds one call graph from all the files of the run. A static function is another function in each file. A rule walks
+the graph from each annotated function that the project defines, and its finding is at that function. The message
+names the call that breaks the rule; the printed line and `path` add the shortest call path to it:
+
+```text
+src/ids.c:7:14 CC-EFFECT-SHORT-BLOCKS short function next_id reaches the blocking call read: next_id -> helper -> read
+```
+
+The baseline matches the message, without the path, so a finding stays accepted when its path changes.
+
+| Code | |
+|---|---|
+| `CC-EFFECT-SHORT-BLOCKS` | a `CC_SHORT` function reaches a `CC_BLOCKING` function or a known blocking call |
+| `CC-EFFECT-HOT-ALLOCATES` | a `CC_HOT` function reaches a call that allocates or frees heap memory |
+| `CC-EFFECT-HOT-SYSCALL` | a `CC_HOT` function reaches a system call; a blocking call is one too |
+
+The known calls are those of libc, pthread, libuv, OpenSSL and the Boehm collector that block (`read`, `sleep`,
+`pthread_mutex_lock`, `uv_run`, a `uv_fs_*` call whose last argument, the callback, is `NULL` or 0, as it then runs
+at once), allocate (`malloc`, `free`, `strdup`, `GC_malloc`, `SSL_new`) or enter the kernel (`write`, `mmap`,
+`close`); an unlock or the signal of a condition counts as a system call, as it wakes a waiter with a futex call. The
+lists are in `src/known.agc`. A function the project defines is judged by its body; a library function that is not
+listed has no effect. A known name is known by name alone: a project function named `remove`, `rewind`, `ftell` or
+`dlsym` counts as the libc one in a run that does not read its body.
+
+A call through a function pointer reaches every function the project stores in the same place: a field of a struct or
+a union (by record and field name, in an initializer, designated or not, or an assignment), a variable, or a parameter
+of a function (from the direct calls that pass a function), and every function of a place copied into it
+(`box.handle = handle`). A cast is seen through, so a function kept in a `void *` or an `uintptr_t` is reached by a
+call through it. A variable with `__attribute__((cleanup(f)))` calls `f`. A pointer that comes from anywhere else
+reaches nothing: a return value, the arguments of a variadic function, and a function handed to a library that calls
+it back (`qsort`, a libuv callback). A walk goes only through what the run read, so run
+it on all the files of the project: with a subset of the files, a call into a file that was not run reaches nothing.
+For the baseline, only a full run of a compile database covers the findings of the rules: a run of some files never
+counts them fixed and never drops them on `--update-baseline`.
+
+The AST of a file is tens of MiB with its system headers, more than a process output holds in Agentica (1 MiB):
+`sh` writes it to a file in a private folder under `$TMPDIR`, and cchecker reads it line by line and keeps only the
+declarations of the project. A table of numbers is not kept: an array of a number or character type, or whose first
+item is a number (`const uint8_t ROM[]`); a null pointer item (`0`, `NULL`) is not a number. A declaration of more
+than a million lines of the dump is left out: when it named no function so far (a table of enum values or of structs
+of numbers) it is counted in `skipped_declarations` of `--json` and in a line on standard error (a function past the
+cap is not read), and otherwise it is a tool error, while the rest of the file is checked. A dump that ends early is
+a tool error. The folder is removed at the end of the run, and a run removes the folders that killed runs left there:
+a folder of the same user, private, not a link, holding only dumps, whose process is gone. Runs in different PID
+namespaces that share `$TMPDIR` can remove each other's folders.
+
 ## Development
 
 The tests are Agentica too: BDD features in `specs/` that run cchecker on the C files of `specs/fixtures/`, and unit
-tests in `test/`. They need `gcc`, `clang` and `clang-tidy`.
+tests in `test/`. They need `gcc`, `clang`, `clang-tidy` and `sh`.
 
 ```sh
 make check       # agentica check

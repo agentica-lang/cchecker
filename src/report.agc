@@ -4,13 +4,16 @@ import {Finding, ToolError} from "findings"
 
 ## The result of a run. `findings` are the new ones; `baselined` were accepted by the baseline, and `fixed` are
 ## accepted findings of the tools and files of the run that no tool found this time. `skipped` counts the files that
-## were left out because they are outside the working directory.
+## were left out because they are outside the working directory, and `skipped_declarations` the declarations the rules
+## did not read because they are too large and named no function in the lines read (tables of numbers, mostly; a
+## function past the cap is not seen).
 export struct Report
   findings: List[Finding]
   baselined: Int
   fixed: Int
   errors: List[ToolError]
   skipped: Int
+  skipped_declarations: Int = 0
 end
 
 # The JSON form of a report, which says in `clean` whether the run is clean.
@@ -21,11 +24,12 @@ struct Encoded
   fixed: Int
   errors: List[ToolError]
   skipped: Int
+  skipped_declarations: Int
 end
 
 ## Returns the report for people: one line for each finding, then a summary line.
 export def text(report: Report) -> String
-  lines = report.findings.map do |f| "#{f.file}:#{f.line}:#{f.column} #{f.code} #{f.message}" end
+  lines = report.findings.map do |f| "#{f.file}:#{f.line}:#{f.column} #{f.code} #{f.message}#{path_text(f)}" end
   return lines.push(summary(report)).join("\n")
 end
 
@@ -39,6 +43,7 @@ export def json(report: Report) -> String
       fixed: report.fixed,
       errors: report.errors,
       skipped: report.skipped,
+      skipped_declarations: report.skipped_declarations,
     ),
   )
 end
@@ -46,6 +51,15 @@ end
 ## Returns the lines for standard error: one for each tool error.
 export def error_lines(report: Report) -> List[String]
   return report.errors.map do |e| "cchecker: error: #{e.tool} on #{e.file}: #{e.message}" end
+end
+
+# The call path of a finding of the rules, which the message leaves out.
+def path_text(f: Finding) -> String
+  if f.path.empty?
+    return ""
+  end
+
+  return ": #{f.path.join(" -> ")}"
 end
 
 def summary(report: Report) -> String

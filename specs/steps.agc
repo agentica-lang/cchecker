@@ -2,6 +2,7 @@
 ## and the output.
 
 import BDD from "std/bdd"
+import Paths from "../src/paths"
 
 # The steps run from the folder where `agentica test` runs, the root of the repository.
 # cchecker runs in specs/, as a user would run it in a project.
@@ -17,8 +18,15 @@ RUN_MS = 120_000
 def main() -> Void
   BDD.run([
     BDD.step("the C file {string} holds:", &write_file),
+    BDD.step("the C file {string} holds, with ITEMS as {int} times {string}:", &write_generated),
+    BDD.step("there is a private folder {string} holding {string}", &make_private_folder),
+    BDD.step("there is a folder {string} holding {string}", &make_open_folder),
     BDD.step("I run cchecker with {string}", &run_cchecker),
+    BDD.step("I run cchecker with {string} and TMPDIR {string}", &run_with_tmpdir),
+    BDD.step("the folder {string} is empty", &folder_empty),
     BDD.step("clang dumps the AST of {string}", &dump_ast),
+    BDD.step("clang dumps the JSON AST of {string}", &dump_json_ast),
+    BDD.step("the dump is larger than 1 MiB", &dump_is_large),
     BDD.step("the exit code is {int}", &exit_code_is),
     BDD.step("the output includes:", &output_includes),
     BDD.step("the output does not include:", &output_excludes),
@@ -31,9 +39,42 @@ def main() -> Void
 end
 
 def write_file(ctx: BDD.Context, args: List[String]) -> BDD.Context
+  return write_text(ctx, args[0], BDD.doc_string(ctx))
+end
+
+# A large file, which a doc string would not hold: ITEMS in the doc string is the text repeated.
+def write_generated(ctx: BDD.Context, args: List[String]) -> BDD.Context
+  return write_text(ctx, args[0], BDD.doc_string(ctx).replace("ITEMS", args[2] * args[1].to_i!))
+end
+
+# The file is in the folder of the scenario, in a subfolder of it when the name has one.
+def write_text(ctx: BDD.Context, name: String, text: String) -> BDD.Context
   started = ensure_folder(ctx)
-  path = Path.join([SPECS, folder_of(started), args[0]]).unwrap!
-  return check(started, File.write_text(path, BDD.doc_string(started)))
+  path = Path.join([SPECS, folder_of(started), name]).unwrap!
+  made = check(started, Dir.mkdir(Paths.parent(path)))
+  return check(made, File.write_text(path, text))
+end
+
+# A folder made as cchecker makes its folder of dumps (mode 0700), or with the usual mode, with one empty file in it.
+def make_private_folder(ctx: BDD.Context, args: List[String]) -> BDD.Context
+  return make_folder_with(ctx, args, true)
+end
+
+def make_open_folder(ctx: BDD.Context, args: List[String]) -> BDD.Context
+  return make_folder_with(ctx, args, false)
+end
+
+def make_folder_with(ctx: BDD.Context, args: List[String], private: Bool) -> BDD.Context
+  started = ensure_folder(ctx)
+  path = host_path(started, args[0])
+  made = check(started, Dir.mkdir(Paths.parent(path)))
+  if private
+    made = check(made, Dir.mkdir_private(path))
+  else
+    made = check(made, Dir.mkdir(path))
+  end
+
+  return check(made, File.write_text("#{path}/#{args[1]}", ""))
 end
 
 # $DIR in the words is the folder of the scenario. The words are split at spaces: no argument here has one.
@@ -42,14 +83,41 @@ def run_cchecker(ctx: BDD.Context, args: List[String]) -> BDD.Context
   return run_program(ctx, "agentica", [PROGRAM].concat(words))
 end
 
+# TMPDIR is the folder, made empty first, where the run writes its AST dumps.
+def run_with_tmpdir(ctx: BDD.Context, args: List[String]) -> BDD.Context
+  started = ensure_folder(ctx)
+  folder = args[1].replace("$DIR", folder_of(started))
+  made = check(started, Dir.mkdir("#{SPECS}/#{folder}"))
+  words = args[0].replace("$DIR", folder_of(made)).split(" ").select do |word| word != "" end
+  return run_program(made, "agentica", [PROGRAM].concat(words), {"TMPDIR": folder})
+end
+
+def folder_empty(ctx: BDD.Context, args: List[String]) -> BDD.Context
+  path = host_path(ctx, args[0])
+  case Dir.list(path)
+    ok(names) -> return BDD.assert(ctx, names.empty?, "#{path} holds #{names.join(", ")}")
+    error(message) -> return BDD.assert(ctx, false, message)
+  end
+end
+
 # The text dump, because the JSON dump of clang 19 leaves out the string of an annotate attribute.
 def dump_ast(ctx: BDD.Context, args: List[String]) -> BDD.Context
   return run_program(ctx, "clang", ["-Xclang", "-ast-dump", "-fsyntax-only", "-I../include", args[0]])
 end
 
+# The JSON dump as the rules tool asks for it, to show that a fixture is larger than what `Process.output` holds.
+def dump_json_ast(ctx: BDD.Context, args: List[String]) -> BDD.Context
+  return run_program(ctx, "clang", ["-Xclang", "-ast-dump=json", "-fsyntax-only", "-I../include", args[0]])
+end
+
+def dump_is_large(ctx: BDD.Context, args: List[String]) -> BDD.Context
+  truncated = JSON.bool(BDD.get(ctx, "truncated").unwrap!).unwrap!
+  return BDD.assert(ctx, truncated, "the output of the dump is 1 MiB or less")
+end
+
 # Runs a program in specs/ and keeps its exit code and output for the steps that check them.
-def run_program(ctx: BDD.Context, program: String, args: List[String]) -> BDD.Context
-  process = Process.spawn_captured(program, args, SPECS, RUN_MS).unwrap!
+def run_program(ctx: BDD.Context, program: String, args: List[String], env: Map[String, String] = {}) -> BDD.Context
+  process = Process.spawn_captured(program, args, SPECS, RUN_MS, env).unwrap!
   output = Process.output(process, RUN_MS).unwrap!
   code = Process.wait(process, RUN_MS).unwrap!
   Process.close(process)
@@ -58,6 +126,7 @@ def run_program(ctx: BDD.Context, program: String, args: List[String]) -> BDD.Co
     |> BDD.set("code", JSON.from(code))
     |> BDD.set("stdout", JSON.from(output.stdout))
     |> BDD.set("stderr", JSON.from(output.stderr))
+    |> BDD.set("truncated", JSON.from(output.truncated))
   )
 end
 
@@ -116,9 +185,10 @@ def ended?(pid: String) -> Bool
   end
 end
 
-# A path of a step is relative to specs/, and $DIR is the folder of the scenario.
+# A path of a step is relative to specs/, $DIR is the folder of the scenario and $PID the pid of the steps, a process
+# that runs as long as the scenario.
 def host_path(ctx: BDD.Context, path: String) -> String
-  return "#{SPECS}/#{path.replace("$DIR", folder_of(ctx))}"
+  return "#{SPECS}/#{path.replace("$DIR", folder_of(ctx)).replace("$PID", "#{System.pid()}")}"
 end
 
 def text(ctx: BDD.Context, name: String) -> String

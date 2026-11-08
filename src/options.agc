@@ -18,10 +18,10 @@ DEFAULT_CHECKS = (
   "bugprone-signed-char-misuse,bugprone-misplaced-widening-cast,bugprone-unused-return-value"
 )
 
-TOOLS = ["gcc", "clang-tidy"]
+TOOLS = ["gcc", "clang-tidy", "rules"]
 
 DESCRIPTION = <<~TEXT.strip
-  Runs gcc -fanalyzer and clang-tidy on C files and prints their findings in one format.
+  Runs gcc -fanalyzer, clang-tidy and the rules of the annotations on C files and prints their findings in one format.
   The files come from a compile database (-p, default compile_commands.json) or from the command line:
   cchecker [options] FILE... -- COMPILER-FLAGS...
   Exit codes: 0 no new findings, 1 new findings, 2 usage or tool error.
@@ -29,7 +29,13 @@ TEXT
 
 OPTIONS = [
   Opt(name: "compile-commands", short: "p", metavar: "PATH", help: "compile database: a file or its folder"),
-  Opt(name: "tools", short: "t", default: "gcc,clang-tidy", metavar: "LIST", help: "tools to run, comma separated"),
+  Opt(
+    name: "tools",
+    short: "t",
+    default: "gcc,clang-tidy,rules",
+    metavar: "LIST",
+    help: "tools to run, comma separated",
+  ),
   Opt(
     name: "checks",
     metavar: "LIST",
@@ -42,6 +48,7 @@ OPTIONS = [
   Opt(name: "exclude", metavar: "LIST", help: "comma separated files or folders to skip"),
   Opt(name: "gcc", default: "gcc", metavar: "PROGRAM", help: "the gcc to run"),
   Opt(name: "clang-tidy", default: "clang-tidy", metavar: "PROGRAM", help: "the clang-tidy to run"),
+  Opt(name: "clang", default: "clang", metavar: "PROGRAM", help: "the clang that dumps the AST for the rules"),
   Opt(name: "json", kind: Kind.Flag, help: "print one JSON object"),
 ]
 
@@ -69,6 +76,7 @@ export struct Options
   exclude: List[String]
   gcc: String
   clang_tidy: String
+  clang: String
   json: Bool
 end
 
@@ -96,6 +104,7 @@ export def parse(args: List[String]) -> Result[Options]
     exclude: names(OP.optional_string(parsed, "exclude").unwrap_or("")),
     gcc: OP.string(parsed, "gcc"),
     clang_tidy: OP.string(parsed, "clang-tidy"),
+    clang: OP.string(parsed, "clang"),
     json: OP.flag(parsed, "json"),
   )
 

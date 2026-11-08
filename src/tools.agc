@@ -5,8 +5,11 @@ import Diagnostics from "diagnostics"
 import {Finding, ToolError} from "findings"
 import {Options} from "options"
 import Paths from "paths"
+import Scan from "scan"
 import ToolKind from "tool_kind"
 import {Tool} from "tool_kind"
+import UnitReader from "unit"
+import {Unit} from "unit"
 
 # Flags before the user's: a database made for gcc has flags that clang does not know, and it would stop with an error.
 # clang-tidy turns no warning into an error, whatever the .clang-tidy of the project says: a failed run is a
@@ -26,24 +29,38 @@ NO_ERROR = "-Wno-error"
 # child that outlives its parent would keep running after a timeout.
 KILL_AFTER_S = 2
 
+# The flags of the AST dump for the rules, after those of the build: no warnings (the build may have -Werror), and the
+# annotations of cchecker.h as attributes whose JSON keeps their text (see cchecker.h).
+AST_FLAGS = ["-w", "-DCCHECKER_AST"]
+
+# The JSON AST of a file is tens of MiB, more than `Process.output` holds: a shell writes it to a file.
+DUMP_SCRIPT = "exec \"$0\" \"$@\" > \"$CCHECKER_DUMP\""
+
 # The time a wrapped run has beyond the timeout for the kill and the exit, so `timeout` ends the run before
 # cchecker does.
 WRAPPER_MS = 6_000
 
 ## One tool on one translation unit. `shown` is the path of the file in the report. `wrapped` runs the tool under
-## `timeout`, which stops the children of the tool too.
+## `timeout`, which stops the children of the tool too. A job of the rules writes the AST to `dump` and keeps the
+## declarations of the files under `cwd`.
 export struct Job
   tool: Tool
   entry: Commands.Entry
   options: Options
   shown: String
   wrapped: Bool
+  dump: String = ""
+  cwd: String = ""
 end
 
-## What a job found, and what kept it from finding more.
+## What a job found, and what kept it from finding more. A job of the rules finds nothing alone: it gives the unit
+## that the rules check with the units of the other files, and the count of declarations too large to read that named
+## no function.
 export struct Outcome
   findings: List[Finding]
   errors: List[ToolError]
+  units: List[Unit] = []
+  skipped_declarations: Int = 0
 end
 
 # What a diagnostic of a tool is for cchecker.
@@ -76,13 +93,20 @@ export def run(job: Job) -> Result[Outcome]
   timeout_ms = job.options.timeout_s * 1000
   command = program
   args = arguments(job)
+  env = {"LC_ALL": "C"}
   if job.wrapped
     command = "timeout"
     args = ["--kill-after=#{KILL_AFTER_S}", "#{job.options.timeout_s}", program].concat(args)
     timeout_ms += WRAPPER_MS
   end
 
-  process = try start(command, args, job.entry.directory, timeout_ms, program)
+  if job.tool == Tool.Rules
+    args = ["-c", DUMP_SCRIPT, command].concat(args)
+    command = "sh"
+    env = env.put("CCHECKER_DUMP", job.dump)
+  end
+
+  process = try start(command, args, job.entry.directory, timeout_ms, program, env)
   output = try Process.output(process, timeout_ms)
   code = try Process.wait(process, timeout_ms)
   Process.close(process)
@@ -90,7 +114,15 @@ export def run(job: Job) -> Result[Outcome]
     return error("#{program} printed more than 1 MiB for #{job.entry.file}; narrow the checks or exclude the file")
   end
 
-  return ok(outcome(job, "#{output.stdout}\n#{output.stderr}", code))
+  done = outcome(job, "#{output.stdout}\n#{output.stderr}", code)
+  if job.tool != Tool.Rules
+    return ok(done)
+  end
+
+  # The dump is tens of MiB: it goes as soon as it is read, or when clang failed.
+  read = with_unit(job, done)
+  _ = Path.remove(job.dump)
+  return read
 end
 
 ## Returns the code of a diagnostic: `-Wanalyzer-malloc-leak` of gcc is CC-GCC-ANALYZER-MALLOC-LEAK, and the check
@@ -100,6 +132,8 @@ export def code_of(tool: Tool, option: Optional[String]) -> String
   case tool
     Tool.Gcc -> return "CC-GCC-" + plain_option(option.unwrap_or("-WWARNING")).replace("=", "").upcase
     Tool.ClangTidy -> return "CC-TIDY-" + option.unwrap_or("WARNING").replace(".", "-").upcase
+    # Never asked: the dump of the rules reports no diagnostic of clang, only its errors (see `verdict`).
+    Tool.Rules -> return "CC-CLANG-" + plain_option(option.unwrap_or("-WWARNING")).upcase
   end
 end
 
@@ -140,12 +174,42 @@ def executable(job: Job) -> String
   case job.tool
     Tool.Gcc -> return job.options.gcc
     Tool.ClangTidy -> return job.options.clang_tidy
+    Tool.Rules -> return job.options.clang
   end
 end
 
+# The outcome of a job of the rules with the declarations of the project in its dump, read into a unit, when clang
+# ended well.
+def with_unit(job: Job, done: Outcome) -> Result[Outcome]
+  if not done.errors.empty?
+    return ok(done)
+  end
+
+  dump = try Scan.project_decls(job.dump, job.entry.directory, job.cwd)
+  decls = try JSON.parse(dump.decls)
+  unit = try UnitReader.read(decls)
+  # A declaration too large to keep leaves the graph incomplete: the run says so, and the rest is checked.
+  errors = dump.oversized.map do |name|
+    ToolError(
+      tool: "rules",
+      file: job.entry.file,
+      message: "#{name} is too large to read, so its calls are not followed",
+    )
+  end
+
+  return ok(done.with(units: [unit], errors: done.errors.concat(errors), skipped_declarations: dump.skipped))
+end
+
 # LC_ALL=C keeps the messages in English with plain quotes, so a baseline holds on any machine.
-def start(command: String, args: List[String], directory: String, timeout_ms: Int, program: String) -> Result[Process]
-  case Process.spawn_captured(command, args, directory, timeout_ms, {"LC_ALL": "C"})
+def start(
+  command: String,
+  args: List[String],
+  directory: String,
+  timeout_ms: Int,
+  program: String,
+  env: Map[String, String],
+) -> Result[Process]
+  case Process.spawn_captured(command, args, directory, timeout_ms, env)
     ok(process) -> return ok(process)
     error(message) -> return error("cannot run #{program}: #{message}")
   end
@@ -166,6 +230,13 @@ def arguments(job: Job) -> List[String]
           .concat(CLANG_FLAGS)
           .concat([entry.file, "--"])
           .concat(entry.args)
+      )
+    Tool.Rules ->
+      return (
+        ["-Xclang", "-ast-dump=json", "-fsyntax-only", "-fno-color-diagnostics", "-Wno-unknown-warning-option"]
+          .concat(entry.args)
+          .concat(AST_FLAGS)
+          .concat([entry.file])
       )
   end
 end
@@ -192,12 +263,21 @@ def outcome(job: Job, text: String, code: Int) -> Outcome
   end
 
   if code != 0 and not (code == 1 and (not errors.empty? or (promoted > 0 and treated_as_errors?(text))))
-    errors = errors.push(
-      ToolError(tool: tool, file: job.entry.file, message: failure(job.wrapped, job.options.timeout_s, text, code)),
-    )
+    message = failure(job.wrapped, job.options.timeout_s, text, code)
+    errors = errors.push(ToolError(tool: tool, file: job.entry.file, message: message + hint(job.tool, code)))
   end
 
   return Outcome(findings: findings, errors: errors)
+end
+
+# The shell gives 127 for a program it cannot find. The rules are on by default, so a missing clang says how to go
+# without them.
+def hint(tool: Tool, code: Int) -> String
+  if tool == Tool.Rules and code == 127
+    return " (install clang or name it with --clang, or leave the rules out with --tools gcc,clang-tidy)"
+  end
+
+  return ""
 end
 
 # gcc reports its analyzer only. Its other warnings come from the flags of the build (-Wall), and clang-tidy leaves
@@ -223,6 +303,12 @@ def verdict(tool: Tool, d: Diagnostics.Diagnostic) -> Verdict
       end
 
       return Verdict.Report
+    Tool.Rules ->
+      if failed
+        return Verdict.Failure
+      end
+
+      return Verdict.Ignore
   end
 end
 
