@@ -145,6 +145,8 @@ Feature: Ownership on every path
       int work(char *p);
 
       int f(int n) {
+        if (n < 0)
+          return -1;
         CC_OWNS char *b = malloc(n);
         if (!b)
           return -1;
@@ -158,7 +160,7 @@ Feature: Ownership on every path
     Then the exit code is 1
     And the output includes:
       """
-      "line":6,"column":5,"message":"f does not free or hand on b on every path","path":["7:21 b = malloc","8:8 true","10:7 true","11:5 returns"]
+      "line":6,"column":5,"message":"f does not free or hand on b on every path","path":["9:21 b = malloc","10:8 true","12:7 true","13:5 returns"]
       """
 
   Scenario: The marks of a prototype hold in the definition and in the callers that include it
