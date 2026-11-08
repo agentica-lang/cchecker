@@ -30,7 +30,7 @@ export PAIR_NOT_RESTORED = "CC-PATH-PAIR-NOT-RESTORED"
 MAX_COUNT = 2
 
 # The states the walk of one function may visit, with the conditions and then without them. A function with more
-# paths than this is not checked.
+# paths than this is checked on those it went through only, and counted (`Checked.incomplete`).
 MAX_STATES = 200_000
 
 # The most steps of a path a finding shows: the first ones and the last ones.
@@ -42,11 +42,13 @@ struct State
   facts: Map[String, Bool]
 end
 
-# One step of a path, as the finding shows it, and the key and the text of the lock it took or released ("" for none).
+# One step of a path, as the finding shows it, and the key and the text of the lock it took (`took`) or released (""
+# for none).
 struct Step
   text: String
   lock: String = ""
   shown: String = ""
+  took: Bool = false
 end
 
 struct Item
@@ -81,9 +83,16 @@ struct Walk
   complete: Bool
 end
 
+## The findings of the lock rules, and how many functions had more paths than the walk follows (their findings are
+## those of the paths it went through).
+export struct Checked
+  findings: List[Finding]
+  incomplete: Int
+end
+
 ## Returns the findings of the lock rules on the functions of the units. A function defined in several units (a static
 ## inline function of a header) is checked once.
-export def check(units: List[Unit]) -> List[Finding]
+export def check(units: List[Unit]) -> Checked
   graph = Effects.graph_of(units)
   rules = Held.rules_of(units, graph)
   functions: Map[String, Function] = {}
@@ -93,17 +102,22 @@ export def check(units: List[Unit]) -> List[Finding]
 
   done: Set[String] = Set.new([])
   findings: List[Finding] = []
+  incomplete = 0
   for unit in units
     for body in unit.bodies
       if not done.include?(body.key) and not helper?(functions.get(body.key))
-        findings = findings.concat(checked(body, functions, rules))
+        walk = checked(body, functions, rules)
+        findings = findings.concat(kept_findings(walk, body, functions))
+        if not walk.complete
+          incomplete += 1
+        end
       end
 
       done = done.add(body.key)
     end
   end
 
-  return findings
+  return Checked(findings: findings, incomplete: incomplete)
 end
 
 def helper?(function: Optional[Function]) -> Bool
@@ -112,7 +126,7 @@ def helper?(function: Optional[Function]) -> Bool
 end
 
 # The findings of one function: with the conditions it tests twice, or without them when there are too many paths.
-def checked(body: Body, functions: Map[String, Function], rules: Held.Rules) -> List[Finding]
+def checked(body: Body, functions: Map[String, Function], rules: Held.Rules) -> Walk
   marks = functions.get(body.key).map do |f| f.marks end.unwrap_or([])
   walker = Walker(
     body: body,
@@ -129,6 +143,12 @@ def checked(body: Body, functions: Map[String, Function], rules: Held.Rules) -> 
     walk = walked(walker.with(tracked: Set.new([])))
   end
 
+  return walk
+end
+
+# The findings of a walk, without those of the pairs in the body of the set of its own CC_PAIR.
+def kept_findings(walk: Walk, body: Body, functions: Map[String, Function]) -> List[Finding]
+  marks = functions.get(body.key).map do |f| f.marks end.unwrap_or([])
   if not pair_set?(body.name, marks)
     return walk.findings.values
   end
@@ -236,7 +256,7 @@ def with_breaches(found: Map[String, Finding], walker: Walker, item: Item, event
         .map do |key| held_lock(walker, item, key) end
 
       kept = found
-      for breach in Held.at_call(walker.rules, walker.body.name, held, site, "#{site.line}:#{site.column}")
+      for breach in Held.at_call(walker.rules, walker.body, held, site, "#{site.line}:#{site.column}")
         if not kept.key?(breach.id)
           kept = kept.put(breach.id, located(walker.body, breach.code, breach.message, breach.path))
         end
@@ -249,7 +269,7 @@ end
 
 def held_lock(walker: Walker, item: Item, key: String) -> Held.Held
   lock = walker.locks.get(key).unwrap_or(Lock(key: key, shown: key))
-  steps = from_last(item.path, key).map do |step| step.text end
+  steps = from_last(item.path, key, true).map do |step| step.text end
   return Held.Held(lock: lock, quiet: walker.quiet.include?(key), path: steps)
 end
 
@@ -299,7 +319,9 @@ def after_call(item: Item, site: Site) -> Item
       text = "calls #{site.name}"
     end
 
-    steps = steps.push(Step(text: "#{site.line}:#{site.column} #{text}", lock: lock.key, shown: lock.shown))
+    steps = steps.push(
+      Step(text: "#{site.line}:#{site.column} #{text}", lock: lock.key, shown: lock.shown, took: true),
+    )
   end
 
   for lock in site.drops
@@ -359,8 +381,10 @@ def with_exit(found: Map[String, Finding], walker: Walker, state: State, path: L
   return kept
 end
 
+# The path starts at the last take of the lock for a lock left held (or a pair not restored), at its last release
+# for one not held.
 def finding(body: Body, code: String, key: String, restore: String, path: List[Step]) -> Finding
-  steps = from_last(path, key)
+  steps = from_last(path, key, code != NOT_HELD)
   shown = steps.first.shown
   message = "#{body.name} does not release #{shown} on every path"
   if code == NOT_HELD
@@ -373,11 +397,11 @@ def finding(body: Body, code: String, key: String, restore: String, path: List[S
   return located(body, code, message, steps.map do |step| step.text end)
 end
 
-# The steps of a path from the last one that took or released the lock.
-def from_last(path: List[Step], key: String) -> List[Step]
+# The steps of a path from the last one that took the lock (`took`) or released it.
+def from_last(path: List[Step], key: String, took: Bool) -> List[Step]
   start = 0
   for i in 0...path.size
-    if path[i].lock == key
+    if path[i].lock == key and path[i].took == took
       start = i
     end
   end

@@ -21,10 +21,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Locks on every path: a control flow graph of each function that takes or releases a lock.
   `CC-PATH-LOCK-NOT-RELEASED`: a path returns with a lock the function took; `CC-PATH-LOCK-NOT-HELD`: a path releases
   a lock it did not take. `CC_ACQUIRES(lock)` and `CC_RELEASES(lock)` mark the helpers that take or drop a lock for
-  their caller, and `CC_NORETURN` a function that never comes back.
+  their caller, and `CC_NORETURN` a function that never comes back. A function with more paths than the rules follow
+  is counted in `incomplete_functions` of `--json`; one too large for a graph is an error of the `rules` tool.
 - What runs under a lock: `CC_NO_SYSCALL_UNDER()` on the field of a lock (or `CC_NO_SYSCALL_UNDER(lock)` on a
   function) and `CC-PATH-SYSCALL-UNDER-LOCK` for a system or blocking call made or reached under it;
   `CC_LOCK_LEVEL(n)` and `CC-PATH-LOCK-ORDER` for a lock taken while one of the same or a higher level is held.
+  Calls through function pointers are followed; a lock mark that cannot be read is an error of the `rules` tool.
 - Pairs of calls: `CC_PAIR(set, restore)` on a function (or on `set` itself, for all its callers) and
   `CC-PATH-PAIR-NOT-RESTORED` for a path that returns after `set` without `restore`.
 - `--clang PROGRAM`, the clang that dumps the AST. Under `CCHECKER_AST`, `cchecker.h` writes the annotations as

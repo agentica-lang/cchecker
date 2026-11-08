@@ -16,11 +16,13 @@ enum Effect
 end
 
 ## The call graph of the project. A function is merged from all its declarations: the marks of each, and the place of
-## its definition. A slot holds every function stored in it.
+## its definition. A slot holds every function stored in it. `pointers` are the slots of each call through a pointer,
+## by its caller and place (`caller LINE:COL`).
 export struct Graph
   functions: Map[String, Function]
   edges: Map[String, List[Target]]
   slots: Map[String, List[String]]
+  pointers: Map[String, List[String]] = {}
 end
 
 ## Returns the findings of the rules on the units of a run.
@@ -52,15 +54,18 @@ end
 ## included: [`key`'s name, ..., the call]; none when it makes none. A library function is a path of its own name when
 ## it is a system call.
 export def system_path(graph: Graph, key: String) -> Optional[List[String]]
-  if not defined?(graph, key)
-    if has?(graph, key, Effect.System)
-      return some([name_of(graph, key)])
-    end
-
-    return none
+  # A function of the project marked CC_BLOCKING is one itself, whatever its body does.
+  if has?(graph, key, Effect.System)
+    return some([name_of(graph, key)])
   end
 
   return search(graph, key, Effect.System).map do |path| path.map do |k| name_of(graph, k) end end
+end
+
+## Returns the functions that a call through a pointer at `line`:`column` of `caller` reaches: those stored in its slot.
+export def pointer_targets(graph: Graph, caller: String, line: Int, column: Int) -> List[String]
+  slots = graph.pointers.get("#{caller} #{line}:#{column}").unwrap_or([])
+  return slots.flat_map do |slot| graph.slots.get(slot).unwrap_or([]) end.uniq
 end
 
 ## Returns the functions that a function calls, directly or through a slot.
@@ -85,6 +90,7 @@ end
 export def graph_of(units: List[Unit]) -> Graph
   functions: Map[String, Function] = {}
   edges: Map[String, List[Target]] = {}
+  pointers: Map[String, List[String]] = {}
   stores: List[Store] = []
   for unit in units
     for function in unit.functions
@@ -96,12 +102,19 @@ export def graph_of(units: List[Unit]) -> Graph
       if not known.include?(call.target)
         edges = edges.put(call.caller, known.push(call.target))
       end
+
+      case call.target
+        Target.Slot(slot) if call.line > 0 ->
+          at = "#{call.caller} #{call.line}:#{call.column}"
+          pointers = pointers.put(at, pointers.get(at).unwrap_or([]).push(slot))
+        _ -> next
+      end
     end
 
     stores = stores.concat(unit.stores)
   end
 
-  return Graph(functions: functions, edges: edges, slots: slots_of(stores))
+  return Graph(functions: functions, edges: edges, slots: slots_of(stores), pointers: pointers)
 end
 
 # The functions each slot holds: those stored in it, and those of the slots copied into it, until nothing changes.
