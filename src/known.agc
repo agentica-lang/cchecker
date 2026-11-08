@@ -27,15 +27,21 @@ export PTHREAD_BLOCKING = Set.new([
 ])
 
 ## The calls of libuv that wait. Its file calls run at once, on the calling thread, when they are given no callback:
-## the rules count one as blocking only when its last argument is NULL or 0.
+## the rules count one as blocking only when its last argument is NULL or 0, and only when the libc call it makes
+## blocks (`open`, `read`, `fsync`, `realpath`). The others are in `LIBUV_SYSTEM`.
 export LIBUV_BLOCKING = Set.new([
   "uv_run", "uv_sleep", "uv_thread_join", "uv_mutex_lock", "uv_rwlock_rdlock", "uv_rwlock_wrlock", "uv_cond_wait",
-  "uv_cond_timedwait", "uv_sem_wait", "uv_barrier_wait", "uv_once", "uv_fs_close", "uv_fs_open", "uv_fs_read",
-  "uv_fs_unlink", "uv_fs_write", "uv_fs_copyfile", "uv_fs_mkdir", "uv_fs_mkdtemp", "uv_fs_mkstemp", "uv_fs_rmdir",
-  "uv_fs_opendir", "uv_fs_closedir", "uv_fs_readdir", "uv_fs_scandir", "uv_fs_stat", "uv_fs_fstat", "uv_fs_lstat",
-  "uv_fs_statfs", "uv_fs_rename", "uv_fs_fsync", "uv_fs_fdatasync", "uv_fs_ftruncate", "uv_fs_sendfile",
-  "uv_fs_access", "uv_fs_chmod", "uv_fs_fchmod", "uv_fs_utime", "uv_fs_futime", "uv_fs_lutime", "uv_fs_link",
-  "uv_fs_symlink", "uv_fs_readlink", "uv_fs_realpath", "uv_fs_chown", "uv_fs_fchown", "uv_fs_lchown",
+  "uv_cond_timedwait", "uv_sem_wait", "uv_barrier_wait", "uv_once", "uv_fs_open", "uv_fs_read", "uv_fs_write",
+  "uv_fs_copyfile", "uv_fs_mkstemp", "uv_fs_fsync", "uv_fs_fdatasync", "uv_fs_sendfile", "uv_fs_realpath",
+])
+
+## The file calls of libuv that, run at once (no callback), make a system call that does not wait, as the libc call
+## they make (`close`, `stat`, `unlink`, `mkdir`) is in `SYSTEM`.
+export LIBUV_SYSTEM = Set.new([
+  "uv_fs_close", "uv_fs_unlink", "uv_fs_mkdir", "uv_fs_mkdtemp", "uv_fs_rmdir", "uv_fs_opendir", "uv_fs_closedir",
+  "uv_fs_readdir", "uv_fs_scandir", "uv_fs_stat", "uv_fs_fstat", "uv_fs_lstat", "uv_fs_statfs", "uv_fs_rename",
+  "uv_fs_ftruncate", "uv_fs_access", "uv_fs_chmod", "uv_fs_fchmod", "uv_fs_utime", "uv_fs_futime", "uv_fs_lutime",
+  "uv_fs_link", "uv_fs_symlink", "uv_fs_readlink", "uv_fs_chown", "uv_fs_fchown", "uv_fs_lchown",
 ])
 
 ## The calls of the Boehm GC that wait: a full collection stops the world.
@@ -97,7 +103,7 @@ export SYSTEM = Set.new([
   "getrandom", "getrlimit", "setrlimit", "pthread_create", "pthread_kill", "pthread_cond_signal",
   "pthread_cond_broadcast", "pthread_mutex_unlock", "sem_post", "uv_thread_create", "uv_async_send", "uv_cond_signal",
   "uv_cond_broadcast", "uv_mutex_unlock",
-])
+]).union(LIBUV_SYSTEM)
 
 ## The calls that take the lock of their first argument, and wait for it.
 export TAKES = Set.new([

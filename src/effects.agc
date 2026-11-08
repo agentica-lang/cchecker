@@ -27,6 +27,14 @@ export struct Graph
   pointers: Map[String, List[String]] = {}
 end
 
+# How a rule walks the graph: the families of blocking calls that are on, whether it goes into the functions that never
+# return or are cold, and whether it finds every bad call or stops at the first.
+struct Walk
+  families: List[Known.Family]
+  follow_cold: Bool
+  all: Bool
+end
+
 ## What the rules found: the findings, and the callbacks of libuv calls they could not follow to a function.
 ## `missing_roots` are the names of `[roots]` that no function of the units defines.
 export struct Checked
@@ -44,11 +52,13 @@ end
 
 ## Returns the findings of the rules on the units of a run. A root is a function marked in the C, named in the
 ## `[roots]` of the settings, or, when `infer`, passed as a callback to a libuv call that runs it on the loop. The
-## `[library]` flags that are off take their families out of the blocking calls. `cwd` shortens the paths of the
-## inferred roots and of the unresolved callbacks; one outside it stays absolute.
-export def check(units: List[Unit], config: Config, infer: Bool, cwd: String) -> Checked
+## `[library]` flags that are off take their families out of the blocking calls. A root gives one finding for each
+## rule it breaks, at the nearest bad call, or one for each bad call it reaches when `all_paths`. `cwd` shortens the
+## paths of the inferred roots and of the unresolved callbacks; one outside it stays absolute.
+export def check(units: List[Unit], config: Config, infer: Bool, all_paths: Bool, cwd: String) -> Checked
   graph = graph_of(units)
   families = Known.BLOCKING_FAMILIES.select do |family| not config.off.include?(family.flag) end
+  walk = Walk(families: families, follow_cold: config.follow_cold, all: all_paths)
   inferred = Inferred(roots: {}, unresolved: [])
   if infer and not config.off.include?(Known.CALLBACKS_FLAG)
     inferred = inferred_of(graph, units, cwd)
@@ -58,20 +68,20 @@ export def check(units: List[Unit], config: Config, infer: Bool, cwd: String) ->
   for function in graph.functions.values
     if function.defined
       if function.marks.include?("short") or config.short.include?(function.name)
-        findings = findings.concat(broken(graph, families, function, Effect.Blocks))
+        findings = findings.concat(broken(graph, walk, function, Effect.Blocks))
       elsif inferred.roots.key?(function.key)
         # A marked or listed root needs no inference: the finding stays when the flag is off, so it names no flag.
         root = inferred.roots.get(function.key).unwrap!
         findings = findings.concat(
-          broken(graph, families, function, Effect.Blocks).map do |f|
+          broken(graph, walk, function, Effect.Blocks).map do |f|
             f.with(source: inferred_source(f.source), root: root)
           end,
         )
       end
 
       if function.marks.include?("hot") or config.hot.include?(function.name)
-        findings = findings.concat(broken(graph, families, function, Effect.Allocates))
-        findings = findings.concat(broken(graph, families, function, Effect.System))
+        findings = findings.concat(broken(graph, walk, function, Effect.Allocates))
+        findings = findings.concat(broken(graph, walk, function, Effect.System))
       end
     end
   end
@@ -95,7 +105,15 @@ export def system_path(graph: Graph, key: String) -> Optional[List[String]]
     return some([name_of(graph, key)])
   end
 
-  return search(graph, families, key, Effect.System).map do |path| path.map do |k| name_of(graph, k) end end
+  # The lock rules follow every call, cold ones included: `[effects] follow_cold` is about the roots of the
+  # effect rules.
+  walk = Walk(families: families, follow_cold: true, all: false)
+  paths = search(graph, walk, key, Effect.System)
+  if paths.empty?
+    return none
+  end
+
+  return some(paths.first.map do |k| name_of(graph, k) end)
 end
 
 ## Returns the functions that a call through a pointer at `line`:`column` of `caller` reaches: those stored in its slot.
@@ -249,70 +267,83 @@ def slots_of(stores: List[Store]) -> Map[String, List[String]]
   return slots
 end
 
-# One function from two declarations: the marks of both, at the place of the definition.
+# One function from two declarations: the marks and attributes of both, at the place of the definition.
 def merged(known: Optional[Function], function: Function) -> Function
   case known
     some(before) ->
       marks = before.marks.concat(function.marks).uniq
+      noreturn = before.noreturn or function.noreturn
+      cold = before.cold or function.cold
       if before.defined
-        return before.with(marks: marks)
+        return before.with(marks: marks, noreturn: noreturn, cold: cold)
       end
 
-      return function.with(marks: marks)
+      return function.with(marks: marks, noreturn: noreturn, cold: cold)
     none -> return function
   end
 end
 
-# The finding of a rule on a function, when the function reaches what the rule forbids: the shortest call path.
-def broken(graph: Graph, families: List[Known.Family], function: Function, effect: Effect) -> List[Finding]
-  case search(graph, families, function.key, effect)
-    some(path) ->
-      names = path.map do |key| name_of(graph, key) end
-      # The message has no path, so the baseline holds when the path changes; the report prints the path.
-      return [
-        Finding(
-          code: code_of(effect),
-          tool: TOOL,
-          file: function.file,
-          line: function.line,
-          column: function.column,
-          message: "#{kind_of(function, effect)} reaches #{call_of(effect)} #{names.last}",
-          path: names,
-          source: source_of(graph, families, path.last, effect),
-        ),
-      ]
-    none -> return []
+# The findings of a rule on a function, when the function reaches what the rule forbids: one for each bad call the
+# walk finds, each with its shortest call path.
+def broken(graph: Graph, walk: Walk, function: Function, effect: Effect) -> List[Finding]
+  return search(graph, walk, function.key, effect).map do |path|
+    names = path.map do |key| name_of(graph, key) end
+    # The message has no path, so the baseline holds when the path changes; the report prints the path. It names the
+    # bad call, so each finding of --all-paths has a key of its own, and the first is the one a run without it gives.
+    Finding(
+      code: code_of(effect),
+      tool: TOOL,
+      file: function.file,
+      line: function.line,
+      column: function.column,
+      message: "#{kind_of(function, effect)} reaches #{call_of(effect)} #{names.last}",
+      path: names,
+      source: source_of(graph, walk.families, path.last, effect),
+    )
   end
 end
 
-# A walk of the graph in breadth from `start`, which stops at the first function with the effect, and gives the keys
-# of the path to it. It goes only through the functions that the project defines: one it does not define is a call of
-# a library.
-def search(graph: Graph, families: List[Known.Family], start: String, effect: Effect) -> Optional[List[String]]
+# A walk of the graph in breadth from `start`, which gives the keys of the path to each function with the effect, in
+# the order it reaches them, and stops at the first unless `walk.all`. A function is reached once, by its shortest
+# path, and the walk does not go past one with the effect. It goes only through the functions that the project
+# defines (one it does not define is a call of a library), and not into one that never returns or is cold unless
+# `walk.follow_cold`: that call is an error exit, not the path the rule is about.
+def search(graph: Graph, walk: Walk, start: String, effect: Effect) -> List[List[String]]
   callers: Map[String, String] = {}
   callers = callers.put(start, start)
   queue = [start]
+  found: List[List[String]] = []
   i = 0
   while i < queue.size
     key = queue[i]
     i += 1
     for callee in callees(graph, key)
-      if callers.key?(callee)
+      if callers.key?(callee) or (not walk.follow_cold and skips?(graph, callee))
         next
       end
 
       callers = callers.put(callee, key)
-      if has?(graph, families, callee, effect)
-        return some(path_to(callers, start, callee))
-      end
-
-      if defined?(graph, callee)
+      if has?(graph, walk.families, callee, effect)
+        found = found.push(path_to(callers, start, callee))
+        if not walk.all
+          return found
+        end
+      elsif defined?(graph, callee)
         queue = queue.push(callee)
       end
     end
   end
 
-  return none
+  return found
+end
+
+# A function that never returns or is cold, which the walk does not go into, unless a CC_BLOCKING mark says what it
+# does: the mark wins.
+def skips?(graph: Graph, key: String) -> Bool
+  return graph.functions
+    .get(key)
+    .map do |f| (f.noreturn or f.cold) and not f.marks.include?("blocking") end
+    .unwrap_or(false)
 end
 
 # The path from `start` to `last`. `callers` maps a function to the one that called it first.

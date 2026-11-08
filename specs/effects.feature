@@ -428,6 +428,213 @@ Feature: Effects on the call graph
       | (fs_cb)0 | 1    |
       | opened   | 0    |
 
+  Scenario Outline: A synchronous libuv file call whose libc call blocks is a blocking call (<name>)
+    Given the C file "fs.c" holds:
+      """
+      #define NULL ((void *)0)
+      #include "cchecker.h"
+
+      int <name>();
+      CC_SHORT int on_loop(void) { return <name>(NULL); }
+      """
+    When I run cchecker with "--tools rules --json $DIR/fs.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "path":["on_loop","<name>"]
+      """
+
+    Examples:
+      | name            |
+      | uv_fs_open      |
+      | uv_fs_read      |
+      | uv_fs_write     |
+      | uv_fs_copyfile  |
+      | uv_fs_mkstemp   |
+      | uv_fs_fdatasync |
+      | uv_fs_sendfile  |
+      | uv_fs_realpath  |
+
+  Scenario Outline: A synchronous libuv file call that is a plain system call does not block, but is a system call
+    Given the C file "fs.c" holds:
+      """
+      #define NULL ((void *)0)
+      #include "cchecker.h"
+
+      int <name>();
+      CC_SHORT int on_loop(void) { return <name>(<args>); }
+      CC_HOT int in_hot(void) { return <name>(<args>); }
+      """
+    When I run cchecker with "--tools rules --json $DIR/fs.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "path":["in_hot","<name>"]
+      """
+    And the output does not include:
+      """
+      CC-EFFECT-SHORT-BLOCKS
+      """
+
+    Examples:
+      | name            | args                   |
+      | uv_fs_close     | NULL, NULL, 3, NULL    |
+      | uv_fs_stat      | NULL, NULL, "x", NULL  |
+      | uv_fs_unlink    | NULL, NULL, "x", NULL  |
+      | uv_fs_mkdir     | NULL, NULL, "x", 0, 0  |
+      | uv_fs_ftruncate | NULL, NULL, 3, 0, NULL |
+      | uv_fs_closedir  | NULL, NULL, NULL, NULL |
+
+  Scenario Outline: A walk does not follow a call into a function that never returns or is cold
+    Given the C file "fatal.c" holds:
+      """
+      #include "cchecker.h"
+
+      long write(int fd, const void *buf, unsigned long n);
+      <declaration>
+      <attribute> void fatal(const char *why) { write(2, why, 1); for (;;) {} }
+      <mark> int lookup(int key) { if (key < 0) fatal("bad key"); return key; }
+      """
+    When I run cchecker with "--tools rules $DIR/fatal.c -- -I../include"
+    Then the exit code is 0
+
+    Examples:
+      | mark     | declaration                                                        | attribute                 |
+      | CC_SHORT | _Noreturn void fatal(const char *why);                             |                           |
+      | CC_SHORT | [[noreturn]] void fatal(const char *why);                          |                           |
+      | CC_SHORT |                                                                    | __attribute__((noreturn)) |
+      | CC_SHORT | typedef void nr(const char *) __attribute__((noreturn)); nr fatal; |                           |
+      | CC_SHORT | __attribute__((cold)) void fatal(const char *why);                 |                           |
+      | CC_SHORT | CC_NORETURN void fatal(const char *why);                           |                           |
+      | CC_HOT   |                                                                    | __attribute__((cold))     |
+
+  Scenario Outline: follow_cold in [effects] follows a call into a function that never returns or is cold (<mark>)
+    Given the C file "fatal.c" holds:
+      """
+      #include "cchecker.h"
+
+      long write(int fd, const void *buf, unsigned long n);
+      _Noreturn void fatal(const char *why) { write(2, why, 1); for (;;) {} }
+      <mark> int lookup(int key) { if (key < 0) fatal("bad key"); return key; }
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [effects]
+      follow_cold = true
+      """
+    When I run cchecker in its folder with "--tools rules --json fatal.c -- -I../../../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "path":["lookup","fatal","write"]
+      """
+    Given the file "cchecker.toml" holds:
+      """
+      [effects]
+      follow_cold = false
+      """
+    When I run cchecker in its folder with "--tools rules --json fatal.c -- -I../../../include"
+    Then the exit code is 0
+
+    Examples:
+      | mark     |
+      | CC_SHORT |
+      | CC_HOT   |
+
+  Scenario: A function that takes a pointer to a function that never returns is followed
+    Given the C file "handler.c" holds:
+      """
+      #include "cchecker.h"
+
+      long write(int fd, const void *buf, unsigned long n);
+      void set_handler(void (*h)(void) __attribute__((noreturn))) { (void)h; write(2, "x", 1); }
+      CC_SHORT int install(void) { set_handler(0); return 0; }
+      """
+    When I run cchecker with "--tools rules --json $DIR/handler.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "path":["install","set_handler","write"]
+      """
+
+  Scenario: A CC_BLOCKING mark on a cold function holds
+    Given the C file "cold_wait.c" holds:
+      """
+      #include "cchecker.h"
+
+      CC_BLOCKING __attribute__((cold)) void wait_disk(void);
+      CC_SHORT int entry(int key) { if (key < 0) wait_disk(); return key; }
+      """
+    When I run cchecker with "--tools rules --json $DIR/cold_wait.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "path":["entry","wait_disk"]
+      """
+
+  Scenario: --all-paths gives one finding for each distinct bad call, each with its shortest path
+    Given the C file "serve.c" holds:
+      """
+      #include "cchecker.h"
+
+      unsigned int sleep(unsigned int seconds);
+      long read(int fd, void *buf, unsigned long n);
+      static void nap(void) { sleep(1); }
+      static void doze(void) { sleep(2); }
+      CC_SHORT int serve(int fd, char *buf) { nap(); doze(); return (int)read(fd, buf, 1); }
+      """
+    When I run cchecker with "--tools rules --json $DIR/serve.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "path":["serve","read"]
+      """
+    And the output does not include:
+      """
+      "path":["serve","nap","sleep"]
+      """
+    When I run cchecker with "--tools rules --json --all-paths $DIR/serve.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "path":["serve","read"]
+      """
+    And the output includes:
+      """
+      "path":["serve","nap","sleep"]
+      """
+    And the output does not include:
+      """
+      "path":["serve","doze","sleep"]
+      """
+
+  Scenario: With --all-paths a baselined finding stays baselined, and only the other bad calls are new
+    Given the C file "serve.c" holds:
+      """
+      #include "cchecker.h"
+
+      unsigned int sleep(unsigned int seconds);
+      long read(int fd, void *buf, unsigned long n);
+      static void nap(void) { sleep(1); }
+      CC_SHORT int serve(int fd, char *buf) { nap(); return (int)read(fd, buf, 1); }
+      """
+    When I run cchecker with "--tools rules -b $DIR/base.json --update-baseline $DIR/serve.c -- -I../include"
+    Then the exit code is 0
+    When I run cchecker with "--tools rules --json --all-paths -b $DIR/base.json $DIR/serve.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "path":["serve","nap","sleep"]
+      """
+    And the output includes:
+      """
+      "baselined":1
+      """
+    And the output does not include:
+      """
+      "path":["serve","read"]
+      """
+
   Scenario: A dump that ends early is an error of the rules tool
     When I run cchecker with "--tools rules --clang fixtures/fake_clang_truncated.sh --json fixtures/clean.c"
     Then the exit code is 2

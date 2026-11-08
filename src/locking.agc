@@ -445,8 +445,8 @@ def forgotten(facts: Map[String, Bool], roots: Map[String, List[String]], names:
 end
 
 def stops?(site: Site, functions: Map[String, Function]) -> Bool
-  marked = functions.get(site.key).map do |f| f.marks.include?("noreturn") end.unwrap_or(false)
-  return site.stops or marked
+  noreturn = functions.get(site.key).map do |f| f.noreturn end.unwrap_or(false)
+  return site.stops or noreturn
 end
 
 def truth(fact: Fact) -> String

@@ -13,7 +13,7 @@ import Known from "known"
 # message clang 19 keeps in its JSON AST (it drops the string of an `annotate` attribute).
 MARK_PREFIX = "cchecker:"
 
-# The attributes of a function that never returns.
+# The attributes of a function that never returns (`_Noreturn`, `[[noreturn]]`).
 NORETURN_ATTRS = Set.new(["C11NoReturnAttr", "NoReturnAttr", "CXX11NoReturnAttr"])
 
 # The annotations that name locks, and whether the function takes them.
@@ -41,7 +41,9 @@ TRANSPARENT = Set.new(["ImplicitCastExpr", "CStyleCastExpr", "ParenExpr", "Compo
 
 ## A function of the project, as one translation unit declares it. `key` is its name, and `name@file` for a static
 ## function, which is another function in each file. `marks` are the annotations, as written after `cchecker:`
-## (`short`, `blocking`, `hot`). The place is that of the declaration, of the definition when `defined`.
+## (`short`, `blocking`, `hot`). The place is that of the declaration, of the definition when `defined`. `noreturn`
+## says that the declaration never returns (an attribute, its type, or CC_NORETURN), and `cold` that it is
+## `__attribute__((cold))`: either is an error exit.
 export struct Function
   key: String
   name: String
@@ -50,6 +52,8 @@ export struct Function
   column: Int
   defined: Bool
   marks: List[String]
+  noreturn: Bool = false
+  cold: Bool = false
 end
 
 ## Where a call goes: a function, by key, or a slot.
@@ -235,8 +239,7 @@ def context_of(tables: Tables, nodes: List[Json]) -> Flow.Context
       .flat_map do |mark| annotated(mark, params) end
       .map do |lock| lock.with(class: class_of_text(tables, globals, lock.text, params, types)) end
 
-    attributes = Ast.children(node).map(&Ast.kind)
-    stops = function.marks.include?("noreturn") or attributes.any? do |name| NORETURN_ATTRS.include?(name) end
+    stops = function.noreturn
     if not locks.empty? or stops
       known = callees.get(function.key).unwrap_or(Flow.Callee(locks: [], stops: false))
       callees = callees.put(function.key, Flow.Callee(locks: known.locks.concat(locks), stops: known.stops or stops))
@@ -621,7 +624,14 @@ def function_of(tables: Tables, node: Json) -> Function
     column: place.column,
     defined: Ast.children(node).any? do |child| Ast.kind(child) == "CompoundStmt" end,
     marks: marks,
+    noreturn: marks.include?("noreturn") or noreturn?(node),
+    cold: Ast.children(node).any? do |child| Ast.kind(child) == "ColdAttr" end,
   )
+end
+
+# A declaration that never returns by an attribute, or by its type, as written or behind a typedef (`fatal_fn die;`).
+def noreturn?(node: Json) -> Bool
+  return Ast.children(node).any? do |child| NORETURN_ATTRS.include?(Ast.kind(child)) end or Flow.noreturn_type?(node)
 end
 
 def in_function(tables: Tables, key: String, node: Json, found: Found) -> Found
