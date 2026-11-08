@@ -162,12 +162,134 @@ Feature: Effects on the call graph
       | struct ops T[] = {{"q", quick}};             | T[x].step(x)    |
       | int apply(step_fn f, int x) { return f(x); } | apply(quick, x) |
 
+  Scenario Outline: More ways to store or call a function reach it
+    When I run cchecker with "--tools rules --json fixtures/effects/<file> -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "path":[<path>]
+      """
+
+    Examples:
+      | file                        | path                           |
+      | pointer_conditional.c       | "entry","slow","sleep"         |
+      | pointer_const_table.c       | "entry","slow","sleep"         |
+      | pointer_union.c             | "entry","slow","sleep"         |
+      | pointer_anonymous_union.c   | "entry","slow","sleep"         |
+      | pointer_bitfield.c          | "entry","slow","sleep"         |
+      | cleanup.c                   | "entry","release","sleep"      |
+      | pasted_name.c               | "entry","wait_ready","sleep"   |
+      | pasted_struct.c             | "entry","slow","sleep"         |
+      | deprecated_too.c            | "entry","slow","sleep"         |
+
+  Scenario: Fields of the same name in the anonymous unions of two structs are two places
+    When I run cchecker with "--tools rules fixtures/effects/pointer_anonymous_twin.c -- -I../include"
+    Then the exit code is 0
+
+  Scenario: A static function declared in a shared header is the one each file defines
+    When I run cchecker with "--tools rules fixtures/effects/shared_a.c fixtures/effects/shared_b.c -- -I../include"
+    Then the exit code is 0
+
+  Scenario Outline: The known calls are spelled right
+    Given the C file "known.c" holds:
+      """
+      #include "cchecker.h"
+
+      int <name>();
+      <mark> int entry(void) { return <name>(); }
+      """
+    When I run cchecker with "--tools rules --json $DIR/known.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "code":"<code>"
+      """
+
+    Examples:
+      | name                 | mark     | code                    |
+      | uv_mutex_lock        | CC_SHORT | CC-EFFECT-SHORT-BLOCKS  |
+      | uv_fs_open           | CC_SHORT | CC-EFFECT-SHORT-BLOCKS  |
+      | pthread_cond_wait    | CC_SHORT | CC-EFFECT-SHORT-BLOCKS  |
+      | GC_gcollect          | CC_SHORT | CC-EFFECT-SHORT-BLOCKS  |
+      | free                 | CC_HOT   | CC-EFFECT-HOT-ALLOCATES |
+      | GC_malloc            | CC_HOT   | CC-EFFECT-HOT-ALLOCATES |
+      | SSL_new              | CC_HOT   | CC-EFFECT-HOT-ALLOCATES |
+      | mmap                 | CC_HOT   | CC-EFFECT-HOT-SYSCALL   |
+      | pthread_mutex_unlock | CC_HOT   | CC-EFFECT-HOT-SYSCALL   |
+
+  Scenario: A large table of numbers is left out of the graph, and the rest of the file is checked
+    Given the C file "table.c" holds, with ITEMS as 100000 times "7,":
+      """
+      #include "cchecker.h"
+
+      unsigned int sleep(unsigned int seconds);
+      static const unsigned char TABLE[] = {ITEMS};
+      CC_SHORT int entry(int i) { return TABLE[i] + (int)sleep(1); }
+      """
+    When I run cchecker with "--tools rules --json $DIR/table.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "path":["entry","sleep"]
+      """
+
+  Scenario: A declaration too large to keep is a tool error, and the rest of the file is checked
+    Given the C file "ops.c" holds, with ITEMS as 30000 times "{1, quick},":
+      """
+      #include "cchecker.h"
+
+      unsigned int sleep(unsigned int seconds);
+      static int quick(int x) { return x; }
+      struct op { int n; int (*run)(int); };
+      static const struct op OPS[] = {ITEMS};
+      CC_SHORT int entry(int i) { return OPS[i].run(i) + (int)sleep(1); }
+      """
+    When I run cchecker with "--tools rules --json $DIR/ops.c -- -I../include"
+    Then the exit code is 2
+    And the output includes:
+      """
+      "path":["entry","sleep"]
+      """
+    And the output includes:
+      """
+      "errors":[{"tool":"rules",
+      """
+
+  Scenario: A dump that ends early is an error of the rules tool
+    When I run cchecker with "--tools rules --clang fixtures/fake_clang_truncated.sh --json fixtures/clean.c"
+    Then the exit code is 2
+    And the output includes:
+      """
+      "errors":[{"tool":"rules","file":"fixtures/clean.c",
+      """
+
+  Scenario: The folder of a run that was killed is removed by the next run
+    Given there is a folder "$DIR/tmp/cchecker-999999999-1"
+    When I run cchecker with "--tools rules fixtures/effects/short_blocks.c -- -I../include" and TMPDIR "$DIR/tmp"
+    Then the exit code is 1
+    And the folder "$DIR/tmp" is empty
+
+  Scenario: A relative TMPDIR holds for a compile database whose files are in another folder
+    Given the C file "sub/a.c" holds:
+      """
+      #include "cchecker.h"
+
+      unsigned int sleep(unsigned int seconds);
+      CC_SHORT int entry(void) { return (int)sleep(1); }
+      """
+    And the C file "compile_commands.json" holds:
+      """
+      [{"directory": "sub", "file": "a.c", "arguments": ["cc", "-I../../../../include", "-c", "a.c"]}]
+      """
+    When I run cchecker with "--tools rules -p $DIR" and TMPDIR "$DIR/tmp"
+    Then the exit code is 1
+
   Scenario: The AST dumps are removed at the end of the run
     When I run cchecker with "--tools rules fixtures/effects/short_blocks.c -- -I../include" and TMPDIR "$DIR/tmp"
     Then the exit code is 1
     And the folder "$DIR/tmp" is empty
 
-  Scenario: The findings of the rules go into the baseline like the others
+  Scenario: The findings of the rules go into the baseline, and a run of the whole database counts them fixed
     Given the C file "hot.c" holds:
       """
       #include <stdlib.h>
@@ -175,9 +297,13 @@ Feature: Effects on the call graph
 
       CC_HOT void *grab(size_t n) { return malloc(n); }
       """
-    When I run cchecker with "--tools rules -b $DIR/base.json --update-baseline $DIR/hot.c -- -I../include"
+    And the C file "compile_commands.json" holds:
+      """
+      [{"directory": ".", "file": "hot.c", "arguments": ["cc", "-I../../../include", "-c", "hot.c"]}]
+      """
+    When I run cchecker with "--tools rules -b $DIR/base.json --update-baseline -p $DIR"
     Then the exit code is 0
-    When I run cchecker with "--tools rules -b $DIR/base.json --json $DIR/hot.c -- -I../include"
+    When I run cchecker with "--tools rules -b $DIR/base.json --json -p $DIR"
     Then the exit code is 0
     And the output includes:
       """
@@ -189,11 +315,67 @@ Feature: Effects on the call graph
 
       CC_HOT int grab(int n) { return n; }
       """
-    When I run cchecker with "--tools rules -b $DIR/base.json --json $DIR/hot.c -- -I../include"
+    When I run cchecker with "--tools rules -b $DIR/base.json --json -p $DIR"
     Then the exit code is 0
     And the output includes:
       """
       "findings":[],"baselined":0,"fixed":1
+      """
+
+  Scenario: An update of the baseline on one file of two keeps the findings of the rules
+    Given the C file "a.c" holds:
+      """
+      #include "cchecker.h"
+
+      int helper(void);
+      CC_SHORT int top(void) { return helper(); }
+      """
+    And the C file "b.c" holds:
+      """
+      unsigned int sleep(unsigned int seconds);
+      int helper(void) { return (int)sleep(1); }
+      """
+    When I run cchecker with "--tools rules -b $DIR/base.json --update-baseline $DIR/a.c $DIR/b.c -- -I../include"
+    Then the exit code is 0
+    When I run cchecker with "--tools rules -b $DIR/base.json --json $DIR/a.c -- -I../include"
+    Then the exit code is 0
+    And the output includes:
+      """
+      "fixed":0
+      """
+    When I run cchecker with "--tools rules -b $DIR/base.json --update-baseline $DIR/a.c -- -I../include"
+    Then the exit code is 0
+    When I run cchecker with "--tools rules -b $DIR/base.json --json $DIR/a.c $DIR/b.c -- -I../include"
+    Then the exit code is 0
+    And the output includes:
+      """
+      "baselined":1
+      """
+
+  Scenario: The baseline holds a finding of the rules whose call path changed
+    Given the C file "short.c" holds:
+      """
+      #include "cchecker.h"
+
+      unsigned int sleep(unsigned int seconds);
+      static int helper(void) { return (int)sleep(1); }
+      CC_SHORT int top(void) { return helper(); }
+      """
+    When I run cchecker with "--tools rules -b $DIR/base.json --update-baseline $DIR/short.c -- -I../include"
+    Then the exit code is 0
+    Given the C file "short.c" holds:
+      """
+      #include "cchecker.h"
+
+      unsigned int sleep(unsigned int seconds);
+      static int renamed_helper(void) { return (int)sleep(1); }
+      CC_SHORT int top(void) { return renamed_helper(); }
+      """
+    When I run cchecker with "--tools rules -b $DIR/base.json --json $DIR/short.c -- -I../include"
+    Then the exit code is 0
+    And the output includes:
+      """
+      "baselined":1
       """
 
   Scenario: The rules run by default

@@ -2,6 +2,7 @@
 ## and the output.
 
 import BDD from "std/bdd"
+import Paths from "../src/paths"
 
 # The steps run from the folder where `agentica test` runs, the root of the repository.
 # cchecker runs in specs/, as a user would run it in a project.
@@ -17,6 +18,8 @@ RUN_MS = 120_000
 def main() -> Void
   BDD.run([
     BDD.step("the C file {string} holds:", &write_file),
+    BDD.step("the C file {string} holds, with ITEMS as {int} times {string}:", &write_generated),
+    BDD.step("there is a folder {string}", &make_folder),
     BDD.step("I run cchecker with {string}", &run_cchecker),
     BDD.step("I run cchecker with {string} and TMPDIR {string}", &run_with_tmpdir),
     BDD.step("the folder {string} is empty", &folder_empty),
@@ -35,9 +38,25 @@ def main() -> Void
 end
 
 def write_file(ctx: BDD.Context, args: List[String]) -> BDD.Context
+  return write_text(ctx, args[0], BDD.doc_string(ctx))
+end
+
+# A large file, which a doc string would not hold: ITEMS in the doc string is the text repeated.
+def write_generated(ctx: BDD.Context, args: List[String]) -> BDD.Context
+  return write_text(ctx, args[0], BDD.doc_string(ctx).replace("ITEMS", args[2] * args[1].to_i!))
+end
+
+# The file is in the folder of the scenario, in a subfolder of it when the name has one.
+def write_text(ctx: BDD.Context, name: String, text: String) -> BDD.Context
   started = ensure_folder(ctx)
-  path = Path.join([SPECS, folder_of(started), args[0]]).unwrap!
-  return check(started, File.write_text(path, BDD.doc_string(started)))
+  path = Path.join([SPECS, folder_of(started), name]).unwrap!
+  made = check(started, Dir.mkdir(Paths.parent(path)))
+  return check(made, File.write_text(path, text))
+end
+
+def make_folder(ctx: BDD.Context, args: List[String]) -> BDD.Context
+  started = ensure_folder(ctx)
+  return check(started, Dir.mkdir(host_path(started, args[0])))
 end
 
 # $DIR in the words is the folder of the scenario. The words are split at spaces: no argument here has one.

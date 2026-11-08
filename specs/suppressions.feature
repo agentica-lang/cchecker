@@ -165,7 +165,11 @@ Feature: Suppressions
 
       void *grab(size_t n) { return malloc(n); }
       """
-    When I run cchecker with "--tools rules --json $DIR/hot.c -- -I../include"
+    And the C file "compile_commands.json" holds:
+      """
+      [{"directory": ".", "file": "hot.c", "arguments": ["cc", "-I../../../include", "-c", "hot.c"]}]
+      """
+    When I run cchecker with "--tools rules --json -p $DIR"
     Then the exit code is <code>
     And the output includes:
       """
@@ -176,6 +180,17 @@ Feature: Suppressions
       | ignore                                                         | code | expected                    |
       | CC_IGNORE("CC-EFFECT-HOT-ALLOCATES", "the pool is warm")       | 0    | "reason":"the pool is warm" |
       | CC_IGNORE("CC-EFFECT-HOT-SYSCALL", "never a system call here") | 1    | "code":"CC-UNUSED-IGNORE"   |
+
+  Scenario: A CC_IGNORE that matched nothing in a run of some files is not unused: the run saw part of the graph
+    Given the C file "hot.c" holds:
+      """
+      #include <stdlib.h>
+      #include "cchecker.h"
+
+      CC_IGNORE("CC-EFFECT-HOT-SYSCALL", "never a system call here") CC_HOT int add(int a, int b) { return a + b; }
+      """
+    When I run cchecker with "--tools rules --json $DIR/hot.c -- -I../include"
+    Then the exit code is 0
 
   Scenario: CC_IGNORE without a reason is a usage error
     Given the C file "hot.c" holds:

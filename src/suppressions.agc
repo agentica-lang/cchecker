@@ -72,8 +72,9 @@ export def of_mark(file: String, line: Int, column: Int, mark: String) -> Result
   return ok(some(ignore))
 end
 
-## Takes the suppressed findings out. `ran` holds the pairs of a tool and a file (`Baseline.pair`) whose job ended
-## well: only there is a suppression that matched nothing unused, as a tool that did not run found nothing.
+## Takes the suppressed findings out. `ran` holds the pairs of a tool and a file (`Baseline.pair`) that the run covered
+## (a job that ended well; for the rules, only in a full run): only there is a suppression that matched nothing unused,
+## as a tool that did not run found nothing.
 export def apply(findings: List[Finding], ignores: List[Ignore], ran: Set[String]) -> Applied
   kept: List[Finding] = []
   suppressed: List[Suppressed] = []

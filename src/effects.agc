@@ -23,12 +23,6 @@ struct Graph
   slots: Map[String, List[String]]
 end
 
-# A call from a function to another, directly or through a slot.
-struct Edge
-  to: String
-  via: String
-end
-
 ## Returns the findings of the rules on the units of a run.
 export def check(units: List[Unit]) -> List[Finding]
   graph = graph_of(units)
@@ -118,8 +112,8 @@ end
 def broken(graph: Graph, function: Function, effect: Effect) -> List[Finding]
   case search(graph, function.key, effect)
     some(path) ->
-      names = path.map do |edge| name_of(graph, edge.to) end
-      shown = path.map do |edge| step_text(graph, edge) end.join(" -> ")
+      names = path.map do |key| name_of(graph, key) end
+      # The message has no path, so the baseline holds when the path changes; the report prints the path.
       return [
         Finding(
           code: code_of(effect),
@@ -127,7 +121,7 @@ def broken(graph: Graph, function: Function, effect: Effect) -> List[Finding]
           file: function.file,
           line: function.line,
           column: function.column,
-          message: "#{kind_of(function, effect)} reaches #{call_of(effect)} #{names.last}: #{shown}",
+          message: "#{kind_of(function, effect)} reaches #{call_of(effect)} #{names.last}",
           path: names,
         ),
       ]
@@ -135,28 +129,29 @@ def broken(graph: Graph, function: Function, effect: Effect) -> List[Finding]
   end
 end
 
-# A walk of the graph in breadth from `start`, which stops at the first function with the effect. It goes only
-# through the functions that the project defines: one it does not define is a call of a library.
-def search(graph: Graph, start: String, effect: Effect) -> Optional[List[Edge]]
-  parents: Map[String, Edge] = {}
-  parents = parents.put(start, Edge(to: start, via: ""))
+# A walk of the graph in breadth from `start`, which stops at the first function with the effect, and gives the keys
+# of the path to it. It goes only through the functions that the project defines: one it does not define is a call of
+# a library.
+def search(graph: Graph, start: String, effect: Effect) -> Optional[List[String]]
+  callers: Map[String, String] = {}
+  callers = callers.put(start, start)
   queue = [start]
   i = 0
   while i < queue.size
     key = queue[i]
     i += 1
-    for edge in edges_of(graph, key)
-      if parents.key?(edge.to)
+    for callee in callees(graph, key)
+      if callers.key?(callee)
         next
       end
 
-      parents = parents.put(edge.to, Edge(to: key, via: edge.via))
-      if has?(graph, edge.to, effect)
-        return some(path_to(parents, start, edge.to))
+      callers = callers.put(callee, key)
+      if has?(graph, callee, effect)
+        return some(path_to(callers, start, callee))
       end
 
-      if defined?(graph, edge.to)
-        queue = queue.push(edge.to)
+      if defined?(graph, callee)
+        queue = queue.push(callee)
       end
     end
   end
@@ -164,33 +159,30 @@ def search(graph: Graph, start: String, effect: Effect) -> Optional[List[Edge]]
   return none
 end
 
-def edges_of(graph: Graph, key: String) -> List[Edge]
-  edges: List[Edge] = []
+# The functions a function calls, directly or through a slot.
+def callees(graph: Graph, key: String) -> List[String]
+  found: List[String] = []
   for target in graph.edges.get(key).unwrap_or([])
     case target
-      Target.Direct(to) -> edges = edges.push(Edge(to: to, via: ""))
-      Target.Slot(slot) ->
-        for to in graph.slots.get(slot).unwrap_or([])
-          edges = edges.push(Edge(to: to, via: slot))
-        end
+      Target.Direct(to) -> found = found.push(to)
+      Target.Slot(slot) -> found = found.concat(graph.slots.get(slot).unwrap_or([]))
     end
   end
 
-  return edges
+  return found
 end
 
-# The path from `start` to `last`, each step with the slot it went through. `parents` maps a function to the one that
-# called it first.
-def path_to(parents: Map[String, Edge], start: String, last: String) -> List[Edge]
-  path: List[Edge] = []
+# The path from `start` to `last`. `callers` maps a function to the one that called it first.
+def path_to(callers: Map[String, String], start: String, last: String) -> List[String]
+  path = [last]
   key = last
   while key != start
-    parent = parents.get(key).unwrap!
-    path = [Edge(to: key, via: parent.via)].concat(path)
-    key = parent.to
+    # The walk put the caller of every function it reached before it reached the next one.
+    key = callers.get(key).unwrap!
+    path = [key].concat(path)
   end
 
-  return [Edge(to: start, via: "")].concat(path)
+  return path
 end
 
 def has?(graph: Graph, key: String, effect: Effect) -> Bool
@@ -210,27 +202,6 @@ end
 
 def name_of(graph: Graph, key: String) -> String
   return graph.functions.get(key).map do |f| f.name end.unwrap_or(key)
-end
-
-# A step of the path in the message: the function, and the pointer the call went through.
-def step_text(graph: Graph, edge: Edge) -> String
-  name = name_of(graph, edge.to)
-  if edge.via == ""
-    return name
-  end
-
-  return "#{name} (through #{slot_text(graph, edge.via)})"
-end
-
-# A slot for people: `ops.step`, `parameter 1 of apply`, or the name of a variable.
-def slot_text(graph: Graph, slot: String) -> String
-  parts = slot.split(":")
-  case parts.first
-    "field" -> return parts.drop(1).join(":")
-    "param" -> return "parameter #{parts.last.to_i.unwrap_or(0) + 1} of #{name_of(graph, parts[1])}"
-    "local" -> return parts.last
-    _ -> return parts.drop(1).join(":").split("@").first
-  end
 end
 
 def code_of(effect: Effect) -> String

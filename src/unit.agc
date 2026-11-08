@@ -69,6 +69,12 @@ struct Record
   fields: List[String]
 end
 
+# A record declaration and the name of the record it is declared in ("" at the top level).
+struct Nested
+  node: Json
+  parent: String
+end
+
 # What the walk of the functions needs from the whole unit: the keys of its static functions and variables by name,
 # the slots of the fields by id, and the records by type name.
 struct Tables
@@ -117,16 +123,12 @@ export def read(decls: Json) -> Result[Unit]
 end
 
 def tables_of(nodes: List[Json]) -> Tables
-  static_functions: Map[String, String] = {}
   static_variables: Map[String, String] = {}
   for node in nodes
-    name = text(node, "name")
-    if text(node, "storageClass") == "static"
-      key = "#{name}@#{place_of(node).file}"
-      if kind(node) == "FunctionDecl" and not static_functions.key?(name)
-        static_functions = static_functions.put(name, key)
-      elsif kind(node) == "VarDecl" and not static_variables.key?(name)
-        static_variables = static_variables.put(name, key)
+    if kind(node) == "VarDecl" and text(node, "storageClass") == "static"
+      name = text(node, "name")
+      if not static_variables.key?(name)
+        static_variables = static_variables.put(name, "#{name}@#{place_of(node).file}")
       end
     end
   end
@@ -142,23 +144,49 @@ def tables_of(nodes: List[Json]) -> Tables
   end
 
   return Tables(
-    static_functions: static_functions,
+    static_functions: static_functions_of(nodes),
     static_variables: static_variables,
     field_slots: field_slots,
     records: by_type,
   )
 end
 
+# The keys of the static functions by name. A static function is keyed by the file of its definition, its own file: a
+# header can declare a static function that each file including it defines in its own way.
+def static_functions_of(nodes: List[Json]) -> Map[String, String]
+  keys: Map[String, String] = {}
+  statics = nodes.select do |node| kind(node) == "FunctionDecl" and text(node, "storageClass") == "static" end
+  for node in statics.select(&defines?).concat(statics)
+    name = text(node, "name")
+    if not keys.key?(name)
+      keys = keys.put(name, "#{name}@#{place_of(node).file}")
+    end
+  end
+
+  return keys
+end
+
+def defines?(node: Json) -> Bool
+  return children(node).any? do |child| kind(child) == "CompoundStmt" end
+end
+
 # The records of the unit by id, nested ones included. An anonymous one takes the name of a typedef of it.
 def records_of(nodes: List[Json]) -> Map[String, Record]
   records: Map[String, Record] = {}
-  for node in record_decls(nodes)
+  for nested in record_decls(nodes, "")
+    node = nested.node
     if has_fields?(node)
-      fields = children(node).select do |child| kind(child) == "FieldDecl" end
+      # An unnamed bit-field takes no item of an initializer; the field of an anonymous union or struct does.
+      fields = children(node).select do |child| kind(child) == "FieldDecl" and not unnamed_bit_field?(child) end
+      name = text(node, "name")
+      if name == ""
+        name = nested.parent
+      end
+
       records = records.put(
         text(node, "id"),
         Record(
-          name: text(node, "name"),
+          name: name,
           field_ids: fields.map do |f| text(f, "id") end,
           fields: fields.map do |f| text(f, "name") end,
         ),
@@ -179,16 +207,26 @@ def records_of(nodes: List[Json]) -> Map[String, Record]
   return records
 end
 
-# The records at the top level and those declared in them.
-def record_decls(nodes: List[Json]) -> List[Json]
-  found: List[Json] = []
+# The records at the top level and those declared in them, each with the name of the record it is in. The fields of
+# an anonymous union or struct are read as fields of the record it is in, as C reads them.
+def record_decls(nodes: List[Json], parent: String) -> List[Nested]
+  found: List[Nested] = []
   for node in nodes
     if kind(node) == "RecordDecl"
-      found = found.push(node).concat(record_decls(children(node)))
+      name = text(node, "name")
+      if name == ""
+        name = parent
+      end
+
+      found = found.push(Nested(node: node, parent: parent)).concat(record_decls(children(node), name))
     end
   end
 
   return found
+end
+
+def unnamed_bit_field?(node: Json) -> Bool
+  return text(node, "name") == "" and flag?(node, "isBitfield")
 end
 
 # Every node under the given ones, in order.
@@ -262,6 +300,7 @@ def walk(tables: Tables, scope: Scope, node: Json, found: Found) -> Found
   here = case kind(node)
     "CallExpr" -> with_call(tables, scope, node, found)
     "BinaryOperator" -> with_assignment(tables, scope, node, found)
+    "CleanupAttr" -> with_cleanup(tables, scope, node, found)
     "VarDecl" ->
       with_stores(found, values(node).flat_map do |value| stored(tables, scope, local_slot(scope, node), value) end)
     _ -> found
@@ -300,6 +339,18 @@ def with_call(tables: Tables, scope: Scope, node: Json, found: Found) -> Found
   end
 end
 
+# `__attribute__((cleanup(f)))` on a variable calls f when the variable goes out of scope.
+def with_cleanup(tables: Tables, scope: Scope, node: Json, found: Found) -> Found
+  name = text(JSON.get(node, "cleanup_function").unwrap_or(JSON.from("")), "name")
+  if name == ""
+    return found
+  end
+
+  return found.with(
+    calls: found.calls.push(Call(caller: scope.caller, target: Target.Direct(function_key(tables, name)))),
+  )
+end
+
 def with_assignment(tables: Tables, scope: Scope, node: Json, found: Found) -> Found
   parts = children(node)
   if text(node, "opcode") != "=" or parts.size != 2
@@ -336,6 +387,20 @@ def stored(tables: Tables, scope: Scope, slot: String, value: Json) -> List[Stor
 end
 
 def stored_items(tables: Tables, scope: Scope, slot: String, node: Json) -> List[Store]
+  items = children(node)
+  # The initializer of a union names the field it sets, which need not be the first.
+  case JSON.get(node, "field")
+    ok(field) ->
+      case tables.field_slots.get(text(field, "id"))
+        some(field_slot) -> return items.flat_map do |item| stored(tables, scope, field_slot, item) end
+        none -> return []
+      end
+
+    error(_) -> return stored_fields(tables, scope, slot, node)
+  end
+end
+
+def stored_fields(tables: Tables, scope: Scope, slot: String, node: Json) -> List[Store]
   items = children(node)
   case record_of(tables, node)
     some(record) ->
@@ -392,10 +457,15 @@ def named_slot(tables: Tables, scope: Scope, node: Json) -> Optional[String]
   end
 end
 
-# Whether the type of an expression is a pointer to a function, `int (*)(int)`, also under a typedef.
+# Whether the type of an expression is a pointer to a function, `int (*)(int)` or `int (*const)(int)`, also under a
+# typedef.
 def function_pointer?(node: Json) -> Bool
   type = JSON.get(node, "type").unwrap_or(JSON.from(""))
-  return text(type, "qualType").include?("(*)(") or text(type, "desugaredQualType").include?("(*)(")
+  return pointer_text?(text(type, "qualType")) or pointer_text?(text(type, "desugaredQualType"))
+end
+
+def pointer_text?(type: String) -> Bool
+  return type.include?("(*") and type.include?(")(")
 end
 
 # What a declaration at the top level of the file reads: no parameters and no local variables.
@@ -407,11 +477,12 @@ def local_slot(scope: Scope, node: Json) -> String
   return "local:#{scope.caller}:#{text(node, "name")}"
 end
 
-# The record of an initializer, by its type: `struct ops`, `const struct ops` or a typedef name.
+# The record of the initializer of a struct, by its type: `struct ops`, `const struct ops` or a typedef name. The
+# initializer of a union names its field (`stored_items`).
 def record_of(tables: Tables, node: Json) -> Optional[Record]
   type = JSON.get(node, "type").unwrap_or(JSON.from(""))
   name = text(type, "qualType")
-  for word in ["const ", "volatile ", "struct ", "union "]
+  for word in ["const ", "volatile ", "struct "]
     name = name.replace(word, "")
   end
 
@@ -487,6 +558,13 @@ def text(node: Json, key: String) -> String
   case JSON.get(node, key)
     ok(value) -> return JSON.string(value).unwrap_or("")
     error(_) -> return ""
+  end
+end
+
+def flag?(node: Json, key: String) -> Bool
+  case JSON.get(node, key)
+    ok(value) -> return JSON.bool(value).unwrap_or(false)
+    error(_) -> return false
   end
 end
 

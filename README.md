@@ -107,8 +107,9 @@ q = malloc(n); // cchecker: ignore CC-GCC-ANALYZER-*, CC-TIDY-CLANG-ANALYZER-UNI
 A finding of the rules belongs to a function: `CC_IGNORE("CC-EFFECT-SHORT-BLOCKS", "reason")` on any declaration of
 the function suppresses it (see Annotations). A suppression without a code or a reason is a usage error (exit 2).
 `--json` lists the suppressed findings under `suppressed`, each with its `reason`, and the summary line counts them. A
-suppression that matches no finding is a finding, `CC-UNUSED-IGNORE`, at the comment or the function, once every tool
-of its codes ran on that file: a stale one shows when the code changes or a check gets better. Suppressions apply
+suppression that matches no finding is a finding, `CC-UNUSED-IGNORE`, at the comment or the function, once the run
+covered every tool of its codes on that file, as the baseline does (for the rules, a full run of a compile database):
+a stale one shows when the code changes or a check gets better. Suppressions apply
 before the baseline, so a suppressed finding never goes into it.
 
 ### Options
@@ -159,13 +160,16 @@ An annotation may be on any declaration of the function: a prototype in a header
 ## Rules
 
 The `rules` tool runs `clang -Xclang -ast-dump=json -fsyntax-only` on each file with its flags, keeps the declarations
-of the files under the working directory, and builds one call graph from all the files of the run. A static function is
-another function in each file. A rule walks the graph from each annotated function that the project defines, and its
-finding is at that function, with the shortest call path that breaks the rule in the message and in `path`:
+written in the files under the working directory (for a declaration that a macro writes, where the macro is used), and
+builds one call graph from all the files of the run. A static function is another function in each file. A rule walks
+the graph from each annotated function that the project defines, and its finding is at that function. The message
+names the call that breaks the rule; the printed line and `path` add the shortest call path to it:
 
 ```text
 src/ids.c:7:14 CC-EFFECT-SHORT-BLOCKS short function next_id reaches the blocking call read: next_id -> helper -> read
 ```
+
+The baseline matches the message, without the path, so a finding stays accepted when its path changes.
 
 | Code | |
 |---|---|
@@ -173,21 +177,28 @@ src/ids.c:7:14 CC-EFFECT-SHORT-BLOCKS short function next_id reaches the blockin
 | `CC-EFFECT-HOT-ALLOCATES` | a `CC_HOT` function reaches a call that allocates or frees heap memory |
 | `CC-EFFECT-HOT-SYSCALL` | a `CC_HOT` function reaches a system call; a blocking call is one too |
 
-The known calls are those of libc, pthread and libuv that block (`read`, `sleep`, `pthread_mutex_lock`, `uv_run`),
-allocate (`malloc`, `free`, `strdup`, `GC_malloc`) or enter the kernel (`write`, `mmap`, `close`); the lists are in
-`src/known.agc`. A function the project defines is judged by its body; a library function that is not listed has no
-effect.
+The known calls are those of libc, pthread, libuv, OpenSSL and the Boehm collector that block (`read`, `sleep`,
+`pthread_mutex_lock`, `uv_run`, a `uv_fs_*` call, which runs at once without a callback), allocate (`malloc`, `free`,
+`strdup`, `GC_malloc`, `SSL_new`) or enter the kernel (`write`, `mmap`, `close`); an unlock or the signal of a
+condition counts as a system call, as it wakes a waiter with a futex call. The lists are in `src/known.agc`. A
+function the project defines is judged by its body; a library function that is not listed has no effect.
 
-A call through a function pointer reaches every function the project stores in the same place: a field of a struct (by
-struct and field name, in an initializer or an assignment), a variable, or a parameter of a function (from the direct
-calls that pass a function), and every function of a place copied into it (`box.handle = handle`). A pointer that comes
-from anywhere else (a return value, a library, a cast to another type) reaches nothing. A walk goes only through what
-the run read, so run it on all the files of the project: with a subset of the files, a call into a file that was not
-run reaches nothing.
+A call through a function pointer reaches every function the project stores in the same place: a field of a struct or
+a union (by record and field name, in an initializer, designated or not, or an assignment), a variable, or a parameter
+of a function (from the direct calls that pass a function), and every function of a place copied into it
+(`box.handle = handle`). A variable with `__attribute__((cleanup(f)))` calls `f`. A pointer that comes from anywhere
+else reaches nothing: a return value, a cast to another type, the arguments of a variadic function, and a function
+handed to a library that calls it back (`qsort`, a libuv callback). A walk goes only through what the run read, so run
+it on all the files of the project: with a subset of the files, a call into a file that was not run reaches nothing.
+For the baseline, only a full run of a compile database covers the findings of the rules: a run of some files never
+counts them fixed and never drops them on `--update-baseline`.
 
 The AST of a file is tens of MiB with its system headers, more than a process output holds in Agentica (1 MiB): `sh`
 writes it to a file in a private folder under `$TMPDIR`, and cchecker reads it line by line and keeps only the
-declarations of the project. The folder is removed at the end of the run.
+declarations of the project. A variable whose type holds no function pointer (a table of numbers) is not kept, and a
+declaration of more than a million lines of the dump is a tool error and is left out, while the rest of the file is
+checked. A dump that ends early is a tool error. The folder is removed at the end of the run, and a run removes the
+folders that killed runs of the same user left there.
 
 ## Development
 

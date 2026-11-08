@@ -10,7 +10,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   where the project stores a function in a field, a variable or a parameter. `CC-EFFECT-SHORT-BLOCKS`: a `CC_SHORT`
   function reaches a blocking call (a `CC_BLOCKING` function, or a known blocking call of libc, pthread or libuv).
   `CC-EFFECT-HOT-ALLOCATES` and `CC-EFFECT-HOT-SYSCALL`: a `CC_HOT` function allocates or makes a system call. The
-  message and the new `path` field of `--json` give the call path.
+  printed line and the new `path` field of `--json` give the call path; the baseline matches the message without it.
+- **Breaking:** the default tools are now `gcc,clang-tidy,rules`, so `clang` is needed too; `--tools gcc,clang-tidy`
+  runs without it.
 - Suppressions with a reason: a comment `cchecker: ignore CODE: reason` on the line of a finding or the line above,
   and `CC_IGNORE("CODE", "reason")` on a function for the rules. `--json` lists them under `suppressed`; one that
   matches no finding is `CC-UNUSED-IGNORE`; a suppressed finding never goes into the baseline.
