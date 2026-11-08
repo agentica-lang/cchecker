@@ -48,8 +48,10 @@ cchecker: 2 new findings in 1 file
 ```
 
 `--json` prints one object for tools and agents: `clean`, `findings` (each has `code`, `tool`, `file`, `line`,
-`column`, `message` and `path`, the call path of a finding of the rules), `baselined`, `fixed`, `errors` (a tool that
-did not run or could not compile a file: `tool`, `file` and `message`), `skipped` and `suppressed` (below).
+`column`, `message`, `path`, the call path of a finding of the rules, `source`, the `[library]` flag that made it or
+`""`, and `root`, where an inferred root comes from or `""`), `baselined`, `fixed`, `errors` (a tool that did not run
+or could not compile a file: `tool`, `file` and `message`), `skipped`, `suppressed` (below), `config`, the settings
+file that was read or `"defaults"` (Settings), and `unresolved_callbacks` (Roots).
 
 Exit codes: `0` no new findings, `1` new findings, `2` a usage error or a tool error. A tool error is a tool that
 is missing, ends in a timeout or exits with a non-zero code, except for the `1` of a compiler that found errors in the
@@ -92,8 +94,9 @@ database. `fixed` counts the accepted findings of that scope that no tool found 
 replaces the entries of that scope and keeps the others, so `--tools gcc` or a subset of FILEs updates only what it
 ran. A header that the run did not name keeps the larger count of its entry, as other flags can show other findings in
 it (`#ifdef`); only a full run lowers it. It refuses to write, and leaves the file as it was, when a tool failed, when
-the database has a file that was skipped (outside the working directory), or with `--checks` (a baseline made with
-other checks would lose the findings of the default ones). The exit code is `2` in each case.
+the database has a file that was skipped (outside the working directory), with `--checks` (a baseline made with
+other checks would lose the findings of the default ones), and, when the rules run, with `--no-infer` or a `[library]`
+flag set to false (Settings), for the same reason. The exit code is `2` in each case.
 
 ### Suppressions
 
@@ -133,6 +136,9 @@ suppressed finding never goes into it, and neither does a `CC-UNUSED-IGNORE`: th
 | `--gcc PROGRAM`, `--clang-tidy PROGRAM` | the programs to run, for a versioned name such as `gcc-14` |
 | `--clang PROGRAM` | the clang that dumps the AST for the rules |
 | `--json` | one JSON object |
+| `-c, --config FILE` | the settings file (Settings) |
+| `--no-infer` | no roots inferred from the callbacks of libuv (Roots) |
+| `--all-paths` | a finding of the rules for each bad call that a root reaches, not only the nearest (Rules) |
 
 The default checks are `-*`, `clang-analyzer-core.*`, `clang-analyzer-unix.*` and `clang-analyzer-security.*` (without
 `insecureAPI`), and the bugprone checks `sizeof-expression`, `integer-division`, `suspicious-memory-comparison`,
@@ -164,6 +170,92 @@ CC_PAIR(mask_signals, restore_signals) int guarded(void);
 
 An annotation may be on any declaration of the function: a prototype in a header holds for the definition.
 
+## Settings
+
+cchecker reads its settings from the first of these that it finds:
+
+1. The file of `-c FILE` (`--config FILE`). When it has a `[tool.cchecker]` table (an `agentica.toml` or another
+   manifest), that table; else the whole file. A file that is not there or cannot be read is an error (exit 2).
+2. `cchecker.toml` in the working directory, the project folder.
+3. The `[tool.cchecker]` table of `agentica.toml` in the project folder. An `agentica.toml` without it is skipped.
+4. The defaults: every `[library]` flag on, no `[roots]`, `follow_cold = false`.
+
+The first one wins, and the others are not read. `--json` says which in `config` (`"cchecker.toml"`, the path given to
+`-c`, or `"defaults"`), and a run without `--json` says it in one line on standard error. A key that is not one of
+those below, or a value of the wrong type, is an error (exit 2), so a typo cannot turn a check off.
+
+```toml
+[library]
+libc_blocking = true
+pthread_blocking = true
+libuv_blocking = true
+libgc_blocking = true
+libuv_callbacks_short = true
+
+[roots]
+short = ["io_poll", "on_timer"]
+hot = ["dispatch"]
+
+[effects]
+follow_cold = false
+```
+
+`[library]` turns each family of library knowledge on or off. All are on by default. A finding of the rules says in
+`source` of `--json` the flags that made it, so a project knows which one to turn off: the family of the blocking call
+it reaches (`libc_blocking`), and for an inferred root the inference before it (`libuv_callbacks_short+libc_blocking`).
+`source` is not part of the baseline key. The lists are in `src/known.agc`.
+
+| Flag | What it adds |
+|---|---|
+| `libc_blocking` | the calls of libc and POSIX that wait, to the blocking calls of `CC_SHORT`: files and streams (`read`, `write`, `open`, `fopen`, `fread`, `printf`, `fflush`, `fsync`, ...), sockets (`accept`, `connect`, `recv`, `send`, `getaddrinfo`, ...), waiting (`poll`, `select`, `epoll_wait`, `sleep`, `nanosleep`, `wait`, `waitpid`, `sigwait`, ...), processes (`system`, `popen`), `dlopen`, `dlsym`, POSIX semaphores and message queues, and the C11 threads (`thrd_join`, `mtx_lock`, `cnd_wait`, `call_once`, ...) |
+| `pthread_blocking` | `pthread_join`, `pthread_timedjoin_np`, the locks of `pthread_mutex_`, `pthread_rwlock_` and `pthread_spin_lock`, the waits of `pthread_cond_`, `pthread_barrier_wait` and `pthread_once` |
+| `libuv_blocking` | `uv_run`, `uv_sleep`, `uv_thread_join`, the locks and waits of `uv_mutex_`, `uv_rwlock_`, `uv_cond_`, `uv_sem_`, `uv_barrier_wait`, `uv_once`, and the `uv_fs_*` calls whose libc call blocks (`uv_fs_open`, `uv_fs_read`, `uv_fs_write`, `uv_fs_fsync`, `uv_fs_fdatasync`, `uv_fs_copyfile`, `uv_fs_sendfile`, `uv_fs_mkstemp`, `uv_fs_realpath`) when their callback, the last argument, is `NULL` or 0 |
+| `libgc_blocking` | `GC_gcollect` of the Boehm collector, which stops the world |
+| `libuv_callbacks_short` | a `CC_SHORT` root for each function passed as a callback that libuv runs on the loop thread: the `cb` of `uv_timer_start` (argument 1, from 0), `uv_poll_start` (2), `uv_async_init` (2) and `uv_close` (1), the `alloc_cb` and `read_cb` of `uv_read_start` (1 and 2), the callback of `uv_write` (4), `uv_write2` (5), `uv_shutdown` (2), `uv_tcp_connect` (3), `uv_pipe_connect` (3) and `uv_pipe_connect2` (5), and the `after_work_cb` of `uv_queue_work` (3), never its `work_cb`, which runs on the pool (Roots) |
+
+A flag changes only the blocking calls of `CC_SHORT`: the rules of `CC_HOT` and of `CC_NO_SYSCALL_UNDER` count every
+known blocking call as a system call whatever the flags.
+
+`[effects]` holds how the effect rules walk the project's own functions, so it is not a `[library]` flag, which is a
+fact of a library. `follow_cold = true` makes the walk go into a function that never returns or is cold (below in
+Rules); by default it does not.
+
+`[roots]` names the functions that are `CC_SHORT` (`short`) or `CC_HOT` (`hot`) without a mark in the C, by their name
+(a static function of that name in any file). A finding of a root of `[roots]` is the same as that of the mark, and a
+function both marked and listed is one root. A name that no function of the compile database defines is an error
+(exit 2), so a rename cannot leave a rule that checks nothing. Only a full run of a compile database can tell (a run of
+some files does not see the others), so only it checks the names; another run says on standard error that it did not.
+
+### Roots
+
+A rule starts from its roots, which come from three places. A project leans on them in this order, and adds the next
+one only for what the one before does not cover:
+
+1. Inferred roots: a function passed as a callback to a libuv call that runs it on the loop thread is a `CC_SHORT`
+   root (`libuv_callbacks_short` above), as it runs on the event loop. `--no-infer` or the flag set to false turns it
+   off.
+2. `[roots]` in the settings, which keeps the C as it is.
+3. The marks of `cchecker.h` in the C (Annotations), for what neither covers.
+
+A function that is a root in more than one way is one root. The callback of an inferred root is a function named in
+the call, or a pointer that the rules follow to the functions stored in it (see Rules), such as a parameter that
+callers pass a function to. `NULL` or 0 is no callback. A callback that leads to no function (the return value of a
+call, a parameter that no caller passes a function to) is listed in `unresolved_callbacks` of `--json`, each with
+`call`, `argument` (its place, from 0), `file` and `line` (absolute for a call outside the working directory, such as
+a body that includes a file from outside), and a run without `--json` says how many in one line on standard error, so
+a root is never lost without a word.
+
+A finding of an inferred root has its place in `root` of `--json` (`callback of uv_read_start at src/net.c:41`), and
+the printed line ends with it:
+
+```text
+src/net.c:12:13 CC-EFFECT-SHORT-BLOCKS short function on_read reaches the blocking call write: on_read -> write (root: callback of uv_read_start at src/net.c:41)
+```
+
+The root is not part of the message, as the path is not: the baseline matches the message, and a root that named the
+line of its call would make a finding new each time the code above that call moves. A finding of a marked or listed
+root has no `root` and does not name `libuv_callbacks_short`, as the flag would not turn it off.
+
 ## Rules
 
 The `rules` tool runs `clang -Xclang -ast-dump=json -fsyntax-only` on each file with its flags, keeps the declarations
@@ -178,6 +270,21 @@ src/ids.c:7:14 CC-EFFECT-SHORT-BLOCKS short function next_id reaches the blockin
 
 The baseline matches the message, without the path, so a finding stays accepted when its path changes.
 
+A root gives one finding per code, at the nearest bad call. With `--all-paths` it gives one for each distinct bad call
+it reaches, each with its shortest path, so a project sees them all in one run. The message names the bad call by its
+name, so each finding is keyed in the baseline by the name of its call (code, file and message: `short function serve
+reaches the blocking call sleep`; two static functions of one name in two files share that key, and the baseline
+counts them), and the nearest one is the finding a run without `--all-paths` gives, with the same key. A baseline
+written with `--all-paths` holds the others too, so run CI the same way: a run without it counts them fixed. A bad
+call is reached once, by its shortest path, and the walk does not go past it.
+
+The walk does not go into a function that never returns or is cold: one declared `_Noreturn`, `[[noreturn]]`,
+`CC_NORETURN` or `__attribute__((noreturn))` (in its type too, behind a typedef: `typedef void fatal_fn(const char *)
+__attribute__((noreturn)); fatal_fn die;`), or `__attribute__((cold))`, on any of its declarations. Such a call is an
+error exit (`out_of_memory`, `die`), not the path the rules are about. `[effects] follow_cold = true` follows it. A
+`CC_BLOCKING` mark on such a function wins: it is a blocking call. The lock rules (`CC_NO_SYSCALL_UNDER`) follow every
+call whatever it says.
+
 | Code | |
 |---|---|
 | `CC-EFFECT-SHORT-BLOCKS` | a `CC_SHORT` function reaches a `CC_BLOCKING` function or a known blocking call |
@@ -185,12 +292,14 @@ The baseline matches the message, without the path, so a finding stays accepted 
 | `CC-EFFECT-HOT-SYSCALL` | a `CC_HOT` function reaches a system call; a blocking call is one too |
 
 The known calls are those of libc, pthread, libuv, OpenSSL and the Boehm collector that block (`read`, `sleep`,
-`pthread_mutex_lock`, `uv_run`, a `uv_fs_*` call whose last argument, the callback, is `NULL` or 0, as it then runs
-at once), allocate (`malloc`, `free`, `strdup`, `GC_malloc`, `SSL_new`) or enter the kernel (`write`, `mmap`,
-`close`); an unlock or the signal of a condition counts as a system call, as it wakes a waiter with a futex call. The
-lists are in `src/known.agc`. A function the project defines is judged by its body; a library function that is not
-listed has no effect. A known name is known by name alone: a project function named `remove`, `rewind`, `ftell` or
-`dlsym` counts as the libc one in a run that does not read its body.
+`pthread_mutex_lock`, `uv_run`, a `uv_fs_*` call such as `uv_fs_read` whose last argument, the callback, is `NULL` or
+0, as it then runs at once), allocate (`malloc`, `free`, `strdup`, `GC_malloc`, `SSL_new`) or enter the kernel
+(`write`, `mmap`, `close`); an unlock or the signal of a condition counts as a system call, as it wakes a waiter with a
+futex call. A `uv_fs_*` call run at once whose libc call does not block (`uv_fs_close`, `uv_fs_stat`, `uv_fs_unlink`,
+`uv_fs_mkdir`, ...) is a system call and not a blocking one, as `close` is. The lists are in `src/known.agc`. A
+function the project defines is judged by its body; a library function that is not listed has no effect. A known name
+is known by name alone: a project function named `remove`, `rewind`, `ftell` or `dlsym` counts as the libc one in a run
+that does not read its body.
 
 A call through a function pointer reaches every function the project stores in the same place: a field of a struct or a
 union (by record and field name, in an initializer or an assignment), a variable, or a parameter of a function (from
@@ -199,10 +308,11 @@ of an initializer of a struct or an array counts designated or not (`{[3] = f}`)
 kept in a `void *` or an `uintptr_t` is reached by a call through it, but not one kept in a table whose first item is a
 literal number (`uintptr_t t[] = {0, (uintptr_t)f}`): that is a table of numbers (below). A variable with
 `__attribute__((cleanup(f)))` calls `f`. A pointer that comes from anywhere else reaches nothing: a return value, the
-arguments of a variadic function, and a function handed to a library that calls it back (`qsort`, a libuv callback). A
-walk goes only through what the run read, so run it on all the files of the project: with a subset of the files, a call
-into a file that was not run reaches nothing. For the baseline, only a full run of a compile database covers the
-findings of the rules: a run of some files never counts them fixed and never drops them on `--update-baseline`.
+arguments of a variadic function, and a function handed to a library that calls it back (`qsort`; a libuv callback is a
+root of its own, see Roots). A walk goes only through what the run read, so run it on all the files of the project:
+with a subset of the files, a call into a file that was not run reaches nothing. For the baseline, only a full run of a
+compile database covers the findings of the rules: a run of some files never counts them fixed and never drops them on
+`--update-baseline`.
 
 ### Locks on every path
 
