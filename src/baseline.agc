@@ -143,6 +143,24 @@ export def split(findings: List[Finding], entries: List[Entry], scope: Scope) ->
   return Split(new_findings: new_findings, accepted: matched, fixed: fixed)
 end
 
+## Returns the tool that makes the codes with the prefix of `code`, or "" for none; an entry of no tool is never
+## covered.
+export def tool_of(code: String) -> String
+  if code.start_with?("CC-GCC-")
+    return "gcc"
+  end
+
+  if code.start_with?("CC-TIDY-")
+    return "clang-tidy"
+  end
+
+  if code.start_with?("CC-EFFECT-")
+    return "rules"
+  end
+
+  return ""
+end
+
 def larger(a: Int, b: Int) -> Int
   if a > b
     return a
@@ -159,23 +177,6 @@ def covered?(scope: Scope, entry: Entry) -> Bool
   end
 
   return scope.pairs.include?(pair(tool, entry.file))
-end
-
-# The tool that makes the codes with this prefix; a code of no known tool is never covered.
-def tool_of(code: String) -> String
-  if code.start_with?("CC-GCC-")
-    return "gcc"
-  end
-
-  if code.start_with?("CC-TIDY-")
-    return "clang-tidy"
-  end
-
-  if code.start_with?("CC-EFFECT-")
-    return "rules"
-  end
-
-  return ""
 end
 
 def decode(path: String, text: String) -> Result[Document]

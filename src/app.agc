@@ -8,9 +8,11 @@ import {Finding, ToolError} from "findings"
 import {Options} from "options"
 import Paths from "paths"
 import Report from "report"
+import Suppressions from "suppressions"
 import ToolKind from "tool_kind"
 import {Tool} from "tool_kind"
 import Tools from "tools"
+import Files from "files"
 import {Unit} from "unit"
 
 # The compile database that a run without FILE or -p reads.
@@ -22,11 +24,13 @@ SCRATCH_PREFIX = "cchecker-"
 # The mode of that folder, 0700: only its user can read it.
 PRIVATE_MODE = 448
 
-# What the tools made of all the jobs, before the paths are shortened and the repeats taken out.
+# What the tools made of all the jobs, before the paths are shortened and the repeats taken out. `units` are the
+# translation units of the rules, which also hold the CC_IGNORE of the functions.
 struct Collected
   findings: List[Finding]
   errors: List[ToolError]
   ran: List[String]
+  units: List[Unit]
   skipped_declarations: Int = 0
 end
 
@@ -65,14 +69,18 @@ export def run(options: Options) -> Result[Int]
     )
   end
 
-  findings = (
+  found = (
     collected.findings
     |> localize(cwd, options.exclude)
     |> Findings.unique()
-    |> Findings.sort()
   )
 
+  # A suppression is unused only where the run covered its tool and file, as the baseline counts a fixed finding.
   scope = scope_of(options, plan, collected)
+  ignores = try ignores_of(found, plan, collected.units, cwd)
+  applied = Suppressions.apply(found, ignores, scope.pairs)
+  findings = Findings.sort(applied.findings)
+
   case options.baseline
     some(path) ->
       if options.update_baseline
@@ -90,6 +98,7 @@ export def run(options: Options) -> Result[Int]
             errors: collected.errors,
             skipped: plan.skipped.size,
             skipped_declarations: collected.skipped_declarations,
+            suppressed: applied.suppressed,
           ),
         ),
       )
@@ -104,6 +113,7 @@ export def run(options: Options) -> Result[Int]
             errors: collected.errors,
             skipped: plan.skipped.size,
             skipped_declarations: collected.skipped_declarations,
+            suppressed: applied.suppressed,
           ),
         ),
       )
@@ -138,7 +148,9 @@ def update(
     return ok(finish(options, Report.Report(findings: [], baselined: 0, fixed: 0, errors: errors, skipped: 0)))
   end
 
-  entries = Baseline.merged(accepted, scope, findings)
+  # An unused suppression is fixed by editing its comment, never accepted: the baseline could not tell when it goes.
+  kept = findings.select do |f| f.code != Suppressions.UNUSED end
+  entries = Baseline.merged(accepted, scope, kept)
   try Baseline.write(path, entries)
   puts("cchecker: wrote #{entries.reduce(0) do |total, entry| total + entry.count end} findings to #{path}")
   return ok(0)
@@ -380,8 +392,41 @@ def collect(options: Options, jobs: List[Tools.Job]) -> Collected
     findings: findings.concat(Effects.check(units)),
     errors: errors,
     ran: ran,
+    units: units,
     skipped_declarations: skipped_declarations,
   )
+end
+
+# The suppressions of the run: the comments in the files it ran and in the files of its findings, and the CC_IGNORE of
+# the functions it read. A file that cannot be read has none.
+def ignores_of(
+  findings: List[Finding],
+  plan: Plan,
+  units: List[Unit],
+  cwd: String,
+) -> Result[List[Suppressions.Ignore]]
+  files = findings.map do |f| f.file end.concat(plan.jobs.map do |job| job.shown end).uniq
+  ignores: List[Suppressions.Ignore] = []
+  for file in files
+    case Files.read_all(file)
+      ok(text) -> ignores = ignores.concat(try Suppressions.in_text(file, text))
+      error(_) -> next
+    end
+  end
+
+  for function in Effects.functions(units)
+    shown = Paths.inside(cwd, function.file)
+    if function.defined and shown.some?
+      for mark in function.marks
+        case try Suppressions.of_mark(shown.unwrap!, function.line, function.column, mark)
+          some(ignore) -> ignores = ignores.push(ignore)
+          none -> next
+        end
+      end
+    end
+  end
+
+  return ok(ignores)
 end
 
 # Shortens the paths to be relative to the working directory, and drops what is outside it (system and third-party

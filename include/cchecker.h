@@ -9,6 +9,7 @@
  *   CC_OWNS                     the pointer owns its memory: free it or hand it on on every path
  *   CC_PAIR(set, restore)       the function changes state that `restore` puts back
  *   CC_NO_SYSCALL_UNDER(lock)   the function makes no system call while `lock` is held
+ *   CC_IGNORE("CODE", "reason") a finding of the rules on the function is a false positive, for this reason
  *
  * Put an annotation before the declaration, or before the type of a parameter:
  *
@@ -35,6 +36,8 @@
 #define CC_OWNS CC_ANNOTATE_("owns")
 #define CC_PAIR(...) CC_ANNOTATE_ARGS_("pair", __VA_ARGS__)
 #define CC_NO_SYSCALL_UNDER(...) CC_ANNOTATE_ARGS_("no_syscall_under", __VA_ARGS__)
+/* The code and the reason are string literals: `CC_IGNORE("CC-EFFECT-SHORT-BLOCKS", "...")` is "ignore(CODE: ...)". */
+#define CC_IGNORE(code, reason) CC_ANNOTATE_("ignore(" code ": " reason ")")
 #else
 #define CC_SHORT
 #define CC_BLOCKING
@@ -42,6 +45,7 @@
 #define CC_OWNS
 #define CC_PAIR(...)
 #define CC_NO_SYSCALL_UNDER(...)
+#define CC_IGNORE(code, reason)
 #endif
 
 #endif

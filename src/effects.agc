@@ -43,6 +43,11 @@ export def check(units: List[Unit]) -> List[Finding]
   return findings
 end
 
+## Returns the functions of the units, each merged from all its declarations.
+export def functions(units: List[Unit]) -> List[Function]
+  return graph_of(units).functions.values
+end
+
 def graph_of(units: List[Unit]) -> Graph
   functions: Map[String, Function] = {}
   edges: Map[String, List[Target]] = {}

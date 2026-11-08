@@ -45,8 +45,8 @@ cchecker: 2 new findings in 1 file
 ```
 
 `--json` prints one object for tools and agents: `clean`, `findings` (each has `code`, `tool`, `file`, `line`,
-`column`, `message` and `path`, the call path of a finding of the rules), `baselined`, `fixed` and `errors` (a tool
-that did not run or could not compile a file: `tool`, `file` and `message`).
+`column`, `message` and `path`, the call path of a finding of the rules), `baselined`, `fixed`, `errors` (a tool that
+did not run or could not compile a file: `tool`, `file` and `message`), `skipped` and `suppressed` (below).
 
 Exit codes: `0` no new findings, `1` new findings, `2` a usage error or a tool error. A tool error is a tool that
 is missing, ends in a timeout or exits with a non-zero code, except for the `1` of a compiler that found errors in the
@@ -92,6 +92,30 @@ it (`#ifdef`); only a full run lowers it. It refuses to write, and leaves the fi
 the database has a file that was skipped (outside the working directory), or with `--checks` (a baseline made with
 other checks would lose the findings of the default ones). The exit code is `2` in each case.
 
+### Suppressions
+
+A finding that is a false positive, where the check cannot be made smarter, is suppressed next to the code, with the
+reason. A comment that trails code holds for the findings of its line; a comment alone on its line holds for its line
+and the line below it. Only a comment that starts with `cchecker: ignore` counts (not a string or a comment that
+mentions it). It takes one or more codes, each of a tool (`CC-GCC-`, `CC-TIDY-` or `CC-EFFECT-`), and a code that ends
+with `*` is a prefix:
+
+```c
+/* cchecker: ignore CC-GCC-ANALYZER-MALLOC-LEAK: conn_free frees it through the struct */
+p = malloc(n);
+q = malloc(n); // cchecker: ignore CC-GCC-ANALYZER-*, CC-TIDY-CLANG-ANALYZER-UNIX-MALLOC: same as above
+```
+
+A finding of the rules belongs to a function: `CC_IGNORE("CC-EFFECT-SHORT-BLOCKS", "reason")` on any declaration of
+the function suppresses it (see Annotations). A suppression without a code or a reason, or with a code of no tool, is
+a usage error (exit 2). When two suppressions hold for a finding, the reason of the nearer one is shown, and both count
+as used.
+`--json` lists the suppressed findings under `suppressed`, each with its `reason`, and the summary line counts them. A
+suppression that matches no finding is a finding, `CC-UNUSED-IGNORE`, at the comment or the function, once the run
+covered every tool of its codes on that file, as the baseline does (for the rules, a full run of a compile database):
+a stale one shows when the code changes or a check gets better. Suppressions apply before the baseline, so a
+suppressed finding never goes into it, and neither does a `CC-UNUSED-IGNORE`: the fix is to edit or remove the comment.
+
 ### Options
 
 | Option | |
@@ -121,7 +145,8 @@ tools that are running (they end by themselves or at the timeout); see
 ## Annotations
 
 `include/cchecker.h` defines the macros that the rules read: `CC_SHORT`, `CC_BLOCKING`, `CC_HOT`, `CC_OWNS`,
-`CC_PAIR(set, restore)` and `CC_NO_SYSCALL_UNDER(lock)` (the last three for later phases). With clang each is
+`CC_PAIR(set, restore)`, `CC_NO_SYSCALL_UNDER(lock)` (these three for later phases) and `CC_IGNORE("CODE",
+"reason")` (a suppression). With clang each is
 `__attribute__((annotate("cchecker:...")))`; with any other compiler it is empty. When cchecker dumps the AST it
 defines `CCHECKER_AST`, and the macros become `deprecated("cchecker:...")`: the JSON AST of clang 19 drops the text of
 `annotate` and keeps the message of `deprecated`. The dump runs with `-w`, so this gives no warning.

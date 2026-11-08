@@ -1,12 +1,13 @@
 ## What a run prints.
 
 import {Finding, ToolError} from "findings"
+import {Suppressed} from "suppressions"
 
 ## The result of a run. `findings` are the new ones; `baselined` were accepted by the baseline, and `fixed` are
 ## accepted findings of the tools and files of the run that no tool found this time. `skipped` counts the files that
 ## were left out because they are outside the working directory, and `skipped_declarations` the declarations the rules
 ## did not read because they are too large and named no function in the lines read (tables of numbers, mostly; a
-## function past the cap is not seen).
+## function past the cap is not seen). `suppressed` are the findings that a suppression took out.
 export struct Report
   findings: List[Finding]
   baselined: Int
@@ -14,6 +15,7 @@ export struct Report
   errors: List[ToolError]
   skipped: Int
   skipped_declarations: Int = 0
+  suppressed: List[Suppressed] = []
 end
 
 # The JSON form of a report, which says in `clean` whether the run is clean.
@@ -25,6 +27,7 @@ struct Encoded
   errors: List[ToolError]
   skipped: Int
   skipped_declarations: Int
+  suppressed: List[Suppressed]
 end
 
 ## Returns the report for people: one line for each finding, then a summary line.
@@ -44,6 +47,7 @@ export def json(report: Report) -> String
       errors: report.errors,
       skipped: report.skipped,
       skipped_declarations: report.skipped_declarations,
+      suppressed: report.suppressed,
     ),
   )
 end
@@ -72,6 +76,10 @@ def summary(report: Report) -> String
 
   if report.fixed > 0
     notes = notes.push("#{report.fixed} fixed since the baseline")
+  end
+
+  if not report.suppressed.empty?
+    notes = notes.push("#{report.suppressed.size} suppressed")
   end
 
   tail = ""
