@@ -1,5 +1,6 @@
-## The settings of a project: which families of library knowledge the rules use (`[library]`) and the functions that
-## are CC_SHORT or CC_HOT roots without a mark in the C (`[roots]`).
+## The settings of a project: which families of library knowledge the rules use (`[library]`), the functions that
+## are CC_SHORT or CC_HOT roots without a mark in the C (`[roots]`), and how the effect rules walk the project's own
+## functions (`[effects]`).
 ##
 ## They come from the first of: the file of `-c` (its `[tool.cchecker]` table when it has one, else the whole file),
 ## `cchecker.toml` in the project folder, the `[tool.cchecker]` table of `agentica.toml` there, the defaults. An
@@ -24,12 +25,14 @@ TOOL_TABLE = "tool.cchecker"
 WHOLE_NOTE = " (no [tool.cchecker] table; read as a cchecker file)"
 
 ## The settings of a run. `origin` is the file they were read from, as the user wrote it, or "defaults". `off` holds
-## the `[library]` flags that are false; `short` and `hot` are the names of `[roots]`.
+## the `[library]` flags that are false; `short` and `hot` are the names of `[roots]`. `follow_cold` is
+## `[effects] follow_cold`: the walk goes into the functions that never return or are cold.
 export struct Config
   origin: String
   off: Set[String]
   short: List[String]
   hot: List[String]
+  follow_cold: Bool = false
 end
 
 ## Returns the settings of a run in `folder`, the project folder: those of `explicit` (the file of -c) when given.
@@ -63,6 +66,16 @@ export def from_table(origin: String, prefix: String, table: Toml.Value, note: S
           case name
             "short" -> config = config.with(short: try names_of(origin, path, roots.get(name).unwrap!))
             "hot" -> config = config.with(hot: try names_of(origin, path, roots.get(name).unwrap!))
+            _ -> return error(unknown(origin, path, note))
+          end
+        end
+
+      "effects" ->
+        effects = try table_of(origin, "#{prefix}effects", value)
+        for name in effects.keys
+          path = "#{prefix}effects.#{name}"
+          case name
+            "follow_cold" -> config = config.with(follow_cold: try flag_of(origin, path, effects.get(name).unwrap!))
             _ -> return error(unknown(origin, path, note))
           end
         end
@@ -112,17 +125,19 @@ def library_of(origin: String, path: String, value: Toml.Value, note: String) ->
       return error(unknown(origin, "#{path}.#{flag}", note))
     end
 
-    case entries.get(flag).unwrap!
-      Toml.Value.Bool(on) ->
-        if not on
-          off = off.add(flag)
-        end
-
-      _ -> return error("#{origin}: #{path}.#{flag} must be true or false")
+    if not try flag_of(origin, "#{path}.#{flag}", entries.get(flag).unwrap!)
+      off = off.add(flag)
     end
   end
 
   return ok(off)
+end
+
+def flag_of(origin: String, path: String, value: Toml.Value) -> Result[Bool]
+  case value
+    Toml.Value.Bool(on) -> return ok(on)
+    _ -> return error("#{origin}: #{path} must be true or false")
+  end
 end
 
 def names_of(origin: String, path: String, value: Toml.Value) -> Result[List[String]]

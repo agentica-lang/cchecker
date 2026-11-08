@@ -14,12 +14,18 @@ MARK_PREFIX = "cchecker:"
 # The slot that the argument of a callback is read into, which no other store names: only its sources are kept.
 CALLBACK_SLOT = "callback"
 
+# The attributes of a declaration of a function that never returns (`_Noreturn`, `[[noreturn]]`), and how clang writes
+# the type of one (`__attribute__((noreturn))`, which clang keeps in the type, also behind a typedef).
+NORETURN_ATTRS = Set.new(["C11NoReturnAttr", "NoReturnAttr", "CXX11NoReturnAttr"])
+NORETURN_TYPE = "__attribute__((noreturn))"
+
 # The nodes a function pointer goes through on its way to a call or a store, which do not change where it points.
 TRANSPARENT = Set.new(["ImplicitCastExpr", "CStyleCastExpr", "ParenExpr", "CompoundLiteralExpr"])
 
 ## A function of the project, as one translation unit declares it. `key` is its name, and `name@file` for a static
 ## function, which is another function in each file. `marks` are the annotations, as written after `cchecker:`
-## (`short`, `blocking`, `hot`). The place is that of the declaration, of the definition when `defined`.
+## (`short`, `blocking`, `hot`). The place is that of the declaration, of the definition when `defined`. `noreturn`
+## and `cold` say that the declaration never returns or is `__attribute__((cold))`: an error exit.
 export struct Function
   key: String
   name: String
@@ -28,6 +34,8 @@ export struct Function
   column: Int
   defined: Bool
   marks: List[String]
+  noreturn: Bool = false
+  cold: Bool = false
 end
 
 ## Where a call goes: a function, by key, or a slot.
@@ -292,7 +300,19 @@ def function_of(tables: Tables, node: Json) -> Function
     column: place.column,
     defined: children(node).any? do |child| kind(child) == "CompoundStmt" end,
     marks: marks,
+    noreturn: noreturn?(node),
+    cold: children(node).any? do |child| kind(child) == "ColdAttr" end,
   )
+end
+
+# A declaration that never returns: by an attribute, or by its type, as written or behind a typedef (`fatal_fn die;`).
+def noreturn?(node: Json) -> Bool
+  if children(node).any? do |child| NORETURN_ATTRS.include?(kind(child)) end
+    return true
+  end
+
+  type = JSON.get(node, "type").unwrap_or(JSON.from(""))
+  return "#{text(type, "qualType")} #{text(type, "desugaredQualType")}".include?(NORETURN_TYPE)
 end
 
 def in_function(tables: Tables, key: String, node: Json, found: Found) -> Found

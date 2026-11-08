@@ -429,7 +429,7 @@ def collect(options: Options, config: Config.Config, jobs: List[Tools.Job], cwd:
     end
   end
 
-  checked = Effects.check(units, config, options.infer, cwd)
+  checked = Effects.check(units, config, options.infer, options.all_paths, cwd)
   return Collected(
     findings: findings.concat(checked.findings),
     errors: errors,

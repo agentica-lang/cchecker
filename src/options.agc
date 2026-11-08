@@ -57,6 +57,7 @@ OPTIONS = [
     help: "the settings file (default: cchecker.toml, else [tool.cchecker] of agentica.toml)",
   ),
   Opt(name: "no-infer", kind: Kind.Flag, help: "no CC_SHORT roots from the callbacks of libuv calls"),
+  Opt(name: "all-paths", kind: Kind.Flag, help: "a finding of the rules for each bad call a root reaches, not one"),
 ]
 
 VALUE_LONG = Set.new(OPTIONS.select do |o| o.kind != Kind.Flag end.map do |o| o.name end)
@@ -87,6 +88,7 @@ export struct Options
   json: Bool
   config: Optional[String] = none
   infer: Bool = true
+  all_paths: Bool = false
 end
 
 ## Returns the options of the command line, or the error to print: a usage error, or the help text.
@@ -117,6 +119,7 @@ export def parse(args: List[String]) -> Result[Options]
     json: OP.flag(parsed, "json"),
     config: OP.optional_string(parsed, "config"),
     infer: not OP.flag(parsed, "no-infer"),
+    all_paths: OP.flag(parsed, "all-paths"),
   )
 
   problem = mistake(options)
