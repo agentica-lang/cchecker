@@ -1,6 +1,6 @@
-## The property tests of suppressions: a generated file holds CC_SHORT functions that block or not, and ignore
-## comments and CC_IGNORE marks in random places, with the right code, a prefix, a wrong code, or no reason. An oracle
-## applies the rule of the README (a trailing comment holds for its line, one alone for its line and the next, a
+## The property tests of suppressions: a generated file holds CC_SHORT functions that block or not, and ignore comments
+## and CC_IGNORE marks in random places, with the right code, a prefix, a wrong code, or no reason. An oracle applies
+## the rule of docs/suppressions.md (a trailing comment holds for its line, one alone for its line and the next, a
 ## CC_IGNORE for its function) and cchecker must agree on the findings left, the findings suppressed, the unused
 ## suppressions (CC-UNUSED-IGNORE) and the exit code.
 
@@ -160,7 +160,7 @@ def listed(parsed: Json, key: String) -> List[String]
   return named.sort
 end
 
-# The oracle: the rule of the README applied to the lines.
+# The oracle: the rule of docs/suppressions.md applied to the lines.
 def oracle(lines: List[Line]) -> Outcome
   ignores: List[Ignore] = []
   blocking: List[Int] = []

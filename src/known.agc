@@ -47,7 +47,7 @@ export LIBUV_SYSTEM = Set.new([
 ## The calls of the Boehm GC that wait: a full collection stops the world.
 export LIBGC_BLOCKING = Set.new(["GC_gcollect"])
 
-## The families of blocking calls, in the order of the README.
+## The families of blocking calls, in the order of docs/settings.md.
 export BLOCKING_FAMILIES = [
   Family(flag: "libc_blocking", calls: LIBC_BLOCKING),
   Family(flag: "pthread_blocking", calls: PTHREAD_BLOCKING),
