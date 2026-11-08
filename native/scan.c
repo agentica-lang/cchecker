@@ -284,6 +284,7 @@ static an_term files(an_env *env, int argc, const an_term *argv) {
     values[count].at = seen.len;
     values[count++].n = v.n;
     put(&seen, v.s, v.n);
+    if (seen.failed) break; /* `values` would point past what `seen` holds */
   }
   an_term result;
   if (r.error) {

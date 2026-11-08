@@ -279,44 +279,49 @@ def test_the_scan_in_c_gives_what_the_scan_in_agentica_gives() -> Result[Void]
   return result
 end
 
-# Dumps that clang does not write but a file may hold: CRLF line ends and no final one, and a line longer than the
-# 1 MiB block of the C scan, after which a location holds a `"cc_file": ` line of its own.
+# Dumps that clang does not write but a file may hold: CRLF line ends and no final one, and a location with a line
+# longer than the 1 MiB block of the C scan after its `col`, then a `"cc_file": ` line of its own, which is no place.
 def test_the_scan_in_c_reads_crafted_lines_as_the_scan_in_agentica() -> Result[Void]
-  # The long line is written in parts: one text call writes at most 1 MiB.
-  marker = "XLONGX"
-  next = "      {\n        \"kind\": \"FunctionDecl\",\n        \"loc\": {\n          \"cc_file\": 1,\n"
-  long = "\"name\": \"g\",\n        \"cc_note\": \"#{marker}\"\n      },\n#{next}"
-  long = "#{long}          \"col\": 2\n        },\n        \"name\": \"h\""
-  parts = DUMP.replace("\"name\": \"g\"", long).split(marker)
   folder = "#{System.env("TMPDIR").unwrap_or("/tmp")}/cchecker-crafted-test-#{System.pid()}"
   try Dir.mkdir_private(folder)
-  dumps = ["#{folder}/crlf.json", "#{folder}/long.json"]
-  try File.write_text(dumps[0], DUMP.strip.replace("\n", "\r\n"))
-  try File.write_text(dumps[1], parts[0])
-  for _ in 0...3
-    try File.append_text(dumps[1], "x" * 500_000)
-  end
-
-  try File.append_text(dumps[1], parts[1])
-  result = crafted_scans(dumps)
-  for path in dumps
-    _ = Path.remove(path)
+  # The checks run after the cleanup: a failed assertion ends the test at once.
+  checks = crafted_scans(folder)
+  for name in ["crlf.json", "long.json"]
+    _ = Path.remove("#{folder}/#{name}")
   end
 
   _ = Path.remove(folder)
-  return result
+  return Test.eq(try checks, [true, true, true, true, true, true])
 end
 
-def crafted_scans(dumps: List[String]) -> Result[Void]
-  for path in dumps
-    fast = try Scan.project_decls(path, "/proj", "/proj", false)
-    reference = try Scan.reference_decls(path, "/proj", "/proj")
-    try Test.eq(fast.decls.length > 2, true)
-    try Test.eq(fast.decls, reference.decls)
-    _ = try Scan.project_decls(path, "/proj", "/proj")
+# For each dump: the C scan keeps some declarations and gives the reference text; then the place of each pruned dump.
+def crafted_scans(folder: String) -> Result[List[Bool]]
+  crlf = "#{folder}/crlf.json"
+  long = "#{folder}/long.json"
+  try File.write_text(crlf, DUMP.strip.replace("\n", "\r\n"))
+  # The long line is written in parts: one text call writes at most 1 MiB.
+  marker = "XLONGX"
+  h = "    {\n      \"kind\": \"FunctionDecl\",\n      \"loc\": {\n        \"col\": 2,\n"
+  h = "#{h}        \"tokLen\": \"#{marker}\",\n        \"cc_file\": 1\n      },\n      \"name\": \"h\"\n    },\n"
+  parts = DUMP.replace("\"name\": \"g\"\n    },\n", "\"name\": \"g\"\n    },\n#{h}").split(marker)
+  try File.write_text(long, parts[0])
+  for _ in 0...3
+    try File.append_text(long, "x" * 500_000)
   end
 
-  return ok()
+  try File.append_text(long, parts[1])
+  checks: List[Bool] = []
+  for path in [crlf, long]
+    fast = try Scan.project_decls(path, "/proj", "/proj", false)
+    reference = try Scan.reference_decls(path, "/proj", "/proj")
+    checks = checks.push(fast.decls.length > 2).push(fast.decls == reference.decls)
+  end
+
+  pruned_crlf = try Scan.project_decls(crlf, "/proj", "/proj")
+  # The place of h is that of its own `col` line.
+  pruned_long = try Scan.project_decls(long, "/proj", "/proj")
+  checks = checks.push(pruned_crlf.decls.include?("\"cc_loc\": [\"/proj/src/a.h\", 7, 6]"))
+  return ok(checks.push(pruned_long.decls.include?("\"cc_loc\": [\"/proj/src/a.h\", 7, 2]")))
 end
 
 def same_scans(dumps: List[String], cwd: String) -> Result[Void]
