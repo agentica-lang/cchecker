@@ -3,9 +3,9 @@
 ## A comment that starts with `cchecker: ignore CODE[, CODE...]: reason` and trails code holds for the findings of its
 ## line; one alone on its line holds for its line and the line below. Strings are not read. `CC_IGNORE("CODE",
 ## "reason")` on a function holds for the findings of the rules at that function. A code that ends with `*` is a prefix,
-## and every code names a tool (`CC-GCC-`, `CC-TIDY-` or `CC-EFFECT-`). When several hold for a finding, the nearest
-## gives the reason and all are used. A suppression that matches no finding of a tool that ran on its file is a
-## finding, CC-UNUSED-IGNORE, so a stale one shows.
+## and every code names a tool (`CC-GCC-`, `CC-TIDY-`, `CC-EFFECT-` or `CC-PATH-`). When several hold for a finding,
+## the nearest gives the reason and all are used. A suppression that matches no finding of a tool that ran on its file
+## is a finding, CC-UNUSED-IGNORE, so a stale one shows.
 
 import Baseline from "baseline"
 import {Finding} from "findings"
@@ -19,7 +19,8 @@ BLANKS = Set.new([" ", "\t", "\r"])
 LEADING = Set.new([" ", "\t", "\r", "*"])
 MARK_PREFIX = "ignore("
 USAGE = (
-  "a suppression is `cchecker: ignore CODE[, CODE...]: reason`, with codes that start with CC-GCC-, CC-TIDY- or CC-EFFECT-"
+  "a suppression is `cchecker: ignore CODE[, CODE...]: reason`, " +
+  "with codes that start with CC-GCC-, CC-TIDY-, CC-EFFECT- or CC-PATH-"
 )
 
 ## One suppression. `file` is relative to the working directory. A comment holds for `line`, and for the line below

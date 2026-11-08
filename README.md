@@ -98,8 +98,8 @@ other checks would lose the findings of the default ones). The exit code is `2` 
 A finding that is a false positive, where the check cannot be made smarter, is suppressed next to the code, with the
 reason. A comment that trails code holds for the findings of its line; a comment alone on its line holds for its line
 and the line below it. Only a comment that starts with `cchecker: ignore` counts (not a string or a comment that
-mentions it). It takes one or more codes, each of a tool (`CC-GCC-`, `CC-TIDY-` or `CC-EFFECT-`), and a code that ends
-with `*` is a prefix:
+mentions it). It takes one or more codes, each of a tool (`CC-GCC-`, `CC-TIDY-`, `CC-EFFECT-` or `CC-PATH-`), and a
+code that ends with `*` is a prefix:
 
 ```c
 /* cchecker: ignore CC-GCC-ANALYZER-MALLOC-LEAK: conn_free frees it through the struct */
