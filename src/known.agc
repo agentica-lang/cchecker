@@ -234,8 +234,8 @@ export DROPS = Set.new([
 
 ## The calls that wait on a condition with the lock of their second argument, which they give back while they wait.
 export WAITS = Set.new([
-  "pthread_cond_wait", "pthread_cond_timedwait", "pthread_cond_clockwait", "cnd_wait", "cnd_timedwait",
-  "uv_cond_wait", "uv_cond_timedwait", "SleepConditionVariableCS", "SleepConditionVariableSRW",
+  "pthread_cond_wait", "pthread_cond_timedwait", "pthread_cond_clockwait", "cnd_wait", "cnd_timedwait", "uv_cond_wait",
+  "uv_cond_timedwait", "SleepConditionVariableCS", "SleepConditionVariableSRW",
 ])
 
 ## The calls that never come back, besides those whose type says `noreturn`.
