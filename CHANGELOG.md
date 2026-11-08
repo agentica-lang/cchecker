@@ -9,6 +9,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Under a `CC_NO_SYSCALL_UNDER` lock, a `CC_RELEASES` helper that may make a system call before its own release is
   a finding (`CC-PATH-SYSCALL-UNDER-LOCK`), and a lock taken under it is one finding at its take, no longer a second
   at its release.
+- `libuv_callbacks_short` also infers the callbacks of `uv_listen`, the idle, prepare, check and signal handles,
+  `uv_tcp_close_reset`, UDP, `uv_getaddrinfo`, `uv_getnameinfo`, `uv_random`, the fs event and poll handles, and the
+  `uv_fs_*` requests; the libuv lists match libuv 1.50.
 - The body of a `set` with its own `CC_PAIR` may leave another pair set only on a successful return: a return of a
   negative constant, a null pointer or a false bool that leaves one set is `CC-PATH-PAIR-NOT-RESTORED`.
 - `--update-baseline` with `-c FILE` is refused when the file leaves out a `short` or `hot` name of `[roots]` of the
