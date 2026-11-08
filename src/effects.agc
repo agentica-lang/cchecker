@@ -220,7 +220,8 @@ export def graph_of(units: List[Unit]) -> Graph
         Target.Direct(to) if Known.FLAG_ARGUMENTS.key?(name_of_key(functions, to)) ->
           at = "#{call.caller}>#{to}"
           bit = Known.nonblocking_bit(unit.target, name_of_key(functions, to))
-          if bit == 0 and call.flags >= 0 and not call.named and not unknown.include?(unit.target)
+          # Only a flag value can matter: 0 is no flag at all.
+          if bit == 0 and call.flags > 0 and not call.named and not unknown.include?(unit.target)
             unknown = unknown.push(unit.target)
           end
 

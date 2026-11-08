@@ -854,11 +854,11 @@ def with_call(tables: Tables, scope: Scope, node: Json, found: Found) -> Found
       call = call.with(lock: lock_class(slot_of(tables, scope, parts[1]).unwrap_or("")))
     end
 
-    case Known.FLAG_ARGUMENTS.get(Ast.referenced_name(callee))
-      some(at) if at + 1 < parts.size ->
-        flag = Known.nonblocking_name(Ast.referenced_name(callee))
-        call = call.with(flags: constant(parts[at + 1]), named: names_flag?(parts[at + 1], flag))
-      _ -> call = call
+    # The flags of a call that a flag makes return at once, as the place of its argument says.
+    at = Known.FLAG_ARGUMENTS.get(Ast.referenced_name(callee)).unwrap_or(-1)
+    if at >= 0 and at + 1 < parts.size
+      flag = Known.nonblocking_name(Ast.referenced_name(callee))
+      call = call.with(flags: constant(parts[at + 1]), named: names_flag?(parts[at + 1], flag))
     end
 
     called = noted.with(calls: noted.calls.push(call))
@@ -908,7 +908,7 @@ end
 # The value of an integer constant written with literals, `|` and `+` (`O_RDONLY | O_NONBLOCK` once the macros are
 # expanded), or -1 for any other expression.
 def constant(node: Json) -> Int
-  value = bare(node)
+  value = Flow.see_through(node)
   parts = Ast.children(value)
   case Ast.kind(value)
     "IntegerLiteral" -> return Ast.text(value, "value").to_i.unwrap_or(-1)
@@ -935,7 +935,7 @@ end
 
 # Whether flags joined with `|` or `+` name the constant of an enum `flag` (`MSG_DONTWAIT | MSG_NOSIGNAL`).
 def names_flag?(node: Json, flag: String) -> Bool
-  value = bare(node)
+  value = Flow.see_through(node)
   parts = Ast.children(value)
   case Ast.kind(value)
     "DeclRefExpr" -> return Ast.referenced_kind(value) == "EnumConstantDecl" and Ast.referenced_name(value) == flag

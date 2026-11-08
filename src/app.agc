@@ -93,14 +93,15 @@ export def run(options: Options) -> Result[Int]
   collected = try collect_in_scratch(options, config, plan.jobs, scratch, cwd)
   if not config.off.include?(Known.NONBLOCKING_FLAG)
     for target in collected.unknown_targets
-      shown = target
-      if shown == ""
-        shown = "an unknown target"
+      if target == ""
+        IO.warn(
+          "cchecker: clang printed no target, so the flags of open, recv and send are not read: they count as blocking",
+        )
+      else
+        IO.warn(
+          "cchecker: the flags of #{target} are not known: open, recv and send count as blocking whatever their flags",
+        )
       end
-
-      IO.warn(
-        "cchecker: the flags of #{shown} are not known: open, recv and send count as blocking whatever their flags",
-      )
     end
   end
 
