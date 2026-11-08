@@ -892,8 +892,6 @@ def with_callbacks(found: Found, callbacks: List[Callback]) -> Found
   return found.with(callbacks: found.callbacks.concat(callbacks))
 end
 
-# A call of libuv's file functions with a callback, its last argument, only starts the work: the loop runs it on a
-# thread of its own. Without one (NULL or 0) it runs at once on the calling thread.
 # The class of a lock by its slot: a field (`field:queue.mu`) or a global (`var:big_lock`); "" for a local or a
 # parameter, whose lock the rules do not know.
 def lock_class(slot: String) -> String
@@ -906,6 +904,8 @@ def lock_class(slot: String) -> String
   return ""
 end
 
+# A call of libuv's file functions with a callback, its last argument, only starts the work: the loop runs it on a
+# thread of its own. Without one (NULL or 0) it runs at once on the calling thread.
 def async_fs?(name: String, parts: List[Json]) -> Bool
   if not name.start_with?("uv_fs_") or parts.size < 2
     return false

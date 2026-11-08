@@ -231,7 +231,37 @@ end
 # Whether every call of the lock function `callee` in `key` takes a short lock, so the short rule does not count it.
 def short_takes?(graph: Graph, walk: Walk, key: String, callee: String) -> Bool
   classes = graph.locks.get("#{key}>#{callee}").unwrap_or([])
-  return not classes.empty? and classes.all? do |c| c != "" and walk.short_locks.include?(c) end
+  return not classes.empty? and classes.all? do |c| c != "" and short_lock?(walk.short_locks, c) end
+end
+
+# Whether a class is among the short locks: as it is, or by the name of a static global (`big_lock` for
+# `big_lock@src/a.c`, as `[assume]` names a static function), or by its name and the end of its file (`big_lock@a.c`).
+def short_lock?(short: Set[String], class: String) -> Bool
+  return (
+    short.include?(class) or
+    short.include?(bare_class(class)) or
+    short.to_a.any? do |entry| in_file?(entry, class) end
+  )
+end
+
+# Whether `entry` (`name@file`) names the static global `class` by the end of its file's path.
+def in_file?(entry: String, class: String) -> Bool
+  name = bare_class(entry)
+  if name == entry or name != bare_class(class)
+    return false
+  end
+
+  file = entry.slice(name.length + 1, entry.length - name.length - 1)
+  path = class.slice(name.length + 1, class.length - name.length - 1)
+  return path == file or path.end_with?("/#{file}")
+end
+
+# A class without the file of a static global.
+def bare_class(class: String) -> String
+  case class.index_of("@")
+    some(at) -> return class.slice(0, at)
+    none -> return class
+  end
 end
 
 # The classes of `[assume] short_locks` that no lock of the units has: none taken and none marked, with their key.
@@ -240,14 +270,17 @@ def missing_locks(units: List[Unit], graph: Graph, config: Config) -> List[Strin
     return []
   end
 
-  known = Set.new(
-    graph.locks
-      .values
-      .flat_map do |classes| classes end
-      .concat(units.flat_map do |unit| unit.lock_marks end.map do |m| m.class end),
-  )
+  classes = graph.locks
+    .values
+    .flat_map do |found| found end
+    .concat(units.flat_map do |unit| unit.lock_marks end.map do |m| m.class end)
 
-  return config.short_locks.uniq.select do |c| not known.include?(c) end.map do |c| "#{c} (assume.short_locks)" end
+  known = Set.new(classes.concat(classes.map(&bare_class)))
+  missing = config.short_locks.uniq.select do |c|
+    not known.include?(c) and not classes.any? do |class| in_file?(c, class) end
+  end
+
+  return missing.map do |c| "#{c} (assume.short_locks)" end
 end
 
 # The name of a function by key, or the key itself for one the units do not declare.

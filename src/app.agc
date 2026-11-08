@@ -127,7 +127,7 @@ export def run(options: Options) -> Result[Int]
       IO.warn("cchecker: the names of [assume] were not checked: only a full run of a compile database sees them all")
     elsif not collected.missing_assumed.empty?
       missing = collected.missing_assumed.join(", ")
-      return error("#{config.origin}: no function of the compile database is named #{missing}")
+      return error("#{config.origin}: no function or lock of the compile database is named #{missing}")
     end
   end
 
