@@ -334,7 +334,7 @@ The finding is at the function, once for each code and pointer, and `path` goes 
 (or from the free) to the step that breaks the rule:
 
 ```text
-src/load.c:6:5 CC-OWN-LEAK load does not free or hand on buf on every path: 7:21 buf = malloc -> 8:8 true -> 10:7 true -> 11:5 returns
+src/load.c:6:5 CC-OWN-LEAK load does not free or hand on buf on every path: 9:21 buf = malloc -> 10:8 true -> 12:7 true -> 13:5 returns
 ```
 
 A `malloc` into a local without a mark is not checked: `gcc -fanalyzer` reports those leaks, and the mark makes the
