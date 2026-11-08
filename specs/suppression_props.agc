@@ -35,8 +35,9 @@ ARGUMENTS = "[\"cc\", \"-I../../../include\", \"-c\", \"case.c\"]"
 HEADER = ["#include \"cchecker.h\"", "unsigned int sleep(unsigned int seconds);"]
 
 ## A line of the generated file. `kind` is a function that blocks or not, a comment alone, a blank line, an
-## unrelated line of code (with more code after a trailing `/* */`), or a function that calls the function before it; `attach` what a line of code carries; `code` the index in CODES of the code of its
-## suppression; `reason` is NO_REASON for a comment with no reason.
+## unrelated line of code (with more code after a trailing `/* */`), or a function that calls the function before
+## it; `attach` what a line of code carries; `code` the index in CODES of the code of its suppression; `reason` is
+## NO_REASON for a comment with no reason.
 export struct Line
   kind: Int
   code: Int
@@ -290,7 +291,7 @@ def text_of(line: Line, i: Int, called: Int) -> String
   return code
 end
 
-# A comment that suppresses the code of the line, `//` or `/* */` by turns.
+# A comment that suppresses the code of the line: `/* */` and a line comment (`//`, `///`, `//!`) by turns.
 def comment_of(line: Line, i: Int) -> String
   reason = " generated"
   if line.reason == NO_REASON
@@ -298,9 +299,9 @@ def comment_of(line: Line, i: Int) -> String
   end
 
   text = "cchecker: ignore #{CODES[line.code]}:#{reason}"
-  if i % 2 == 0
-    return "// #{text}"
+  if i % 2 == 1
+    return "/* #{text} */"
   end
 
-  return "/* #{text} */"
+  return "#{["//", "///", "//!"][i / 2 % 3]} #{text}"
 end
