@@ -1,13 +1,14 @@
 ## What a run prints.
 
-import {Finding, ToolError} from "findings"
+import {Finding, ToolError, UnresolvedCallback} from "findings"
 import {Suppressed} from "suppressions"
 
 ## The result of a run. `findings` are the new ones; `baselined` were accepted by the baseline, and `fixed` are
 ## accepted findings of the tools and files of the run that no tool found this time. `skipped` counts the files that
 ## were left out because they are outside the working directory, and `skipped_declarations` the declarations the rules
 ## did not read because they are too large and name no function (tables of numbers, mostly). `suppressed` are the
-## findings that a suppression took out.
+## findings that a suppression took out. `config` is the settings file that was read, or "defaults".
+## `unresolved_callbacks` are the callbacks of libuv calls that the inference of roots could not follow to a function.
 export struct Report
   findings: List[Finding]
   baselined: Int
@@ -16,6 +17,8 @@ export struct Report
   skipped: Int
   skipped_declarations: Int = 0
   suppressed: List[Suppressed] = []
+  config: String = "defaults"
+  unresolved_callbacks: List[UnresolvedCallback] = []
 end
 
 # The JSON form of a report, which says in `clean` whether the run is clean.
@@ -28,6 +31,8 @@ struct Encoded
   skipped: Int
   skipped_declarations: Int
   suppressed: List[Suppressed]
+  config: String
+  unresolved_callbacks: List[UnresolvedCallback]
 end
 
 ## Returns the report for people: one line for each finding, then a summary line.
@@ -48,6 +53,8 @@ export def json(report: Report) -> String
       skipped: report.skipped,
       skipped_declarations: report.skipped_declarations,
       suppressed: report.suppressed,
+      config: report.config,
+      unresolved_callbacks: report.unresolved_callbacks,
     ),
   )
 end
@@ -57,13 +64,39 @@ export def error_lines(report: Report) -> List[String]
   return report.errors.map do |e| "cchecker: error: #{e.tool} on #{e.file}: #{e.message}" end
 end
 
-# The call path of a finding of the rules, which the message leaves out.
+## Returns the line for standard error about the callbacks that the inference of roots could not follow, or none.
+export def unresolved_line(report: Report) -> Optional[String]
+  count = report.unresolved_callbacks.size
+  if count == 0
+    return none
+  end
+
+  first = report.unresolved_callbacks.first
+  return some(
+    "cchecker: #{count} #{plural(count, "callback")} of a libuv call could not be followed to a function, so " +
+    "#{plural_it(count)} no root (first: #{first.call} at #{first.file}:#{first.line}); --json lists them",
+  )
+end
+
+# The call path of a finding of the rules, and the place of an inferred root, which the message leaves out.
 def path_text(f: Finding) -> String
   if f.path.empty?
     return ""
   end
 
+  if f.root != ""
+    return ": #{f.path.join(" -> ")} (root: #{f.root})"
+  end
+
   return ": #{f.path.join(" -> ")}"
+end
+
+def plural_it(n: Int) -> String
+  if n == 1
+    return "it is"
+  end
+
+  return "they are"
 end
 
 def summary(report: Report) -> String

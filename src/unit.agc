@@ -5,9 +5,14 @@
 ## a field of a struct. A call through a slot reaches every function the project stores in that slot anywhere; a slot
 ## that no function is stored in reaches nothing.
 
+import Known from "known"
+
 # The prefix of an annotation of include/cchecker.h. Under CCHECKER_AST the macros are `deprecated` attributes, whose
 # message clang 19 keeps in its JSON AST (it drops the string of an `annotate` attribute).
 MARK_PREFIX = "cchecker:"
+
+# The slot that the argument of a callback is read into, which no other store names: only its sources are kept.
+CALLBACK_SLOT = "callback"
 
 # The nodes a function pointer goes through on its way to a call or a store, which do not change where it points.
 TRANSPARENT = Set.new(["ImplicitCastExpr", "CStyleCastExpr", "ParenExpr", "CompoundLiteralExpr"])
@@ -49,11 +54,23 @@ export struct Store
   source: Source
 end
 
-## The functions, calls and stores of one translation unit.
+## A function pointer passed to a libuv call that runs it on the loop thread (`Known.LOOP_CALLBACKS`): the call, the
+## place of the argument (from 0), the place of the call (`file` absolute), and what the argument holds, which is empty
+## when it is neither a function nor a pointer that the rules follow.
+export struct Callback
+  call: String
+  argument: Int
+  file: String
+  line: Int
+  sources: List[Source]
+end
+
+## The functions, calls and stores of one translation unit, and its callbacks of libuv.
 export struct Unit
   functions: List[Function]
   calls: List[Call]
   stores: List[Store]
+  callbacks: List[Callback] = []
 end
 
 struct Place
@@ -95,6 +112,7 @@ end
 struct Found
   calls: List[Call]
   stores: List[Store]
+  callbacks: List[Callback] = []
 end
 
 ## Returns the unit of the declarations that `Scan` kept, a JSON array.
@@ -119,7 +137,7 @@ export def read(decls: Json) -> Result[Unit]
     end
   end
 
-  return ok(Unit(functions: functions, calls: found.calls, stores: found.stores))
+  return ok(Unit(functions: functions, calls: found.calls, stores: found.stores, callbacks: found.callbacks))
 end
 
 def tables_of(nodes: List[Json]) -> Tables
@@ -329,17 +347,58 @@ def with_call(tables: Tables, scope: Scope, node: Json, found: Found) -> Found
       stores = stores.concat(stored(tables, scope, "param:#{key}:#{i - 1}", parts[i]))
     end
 
+    noted = with_callbacks(found, callbacks_of(tables, scope, node, referenced_name(callee), parts))
     if async_fs?(referenced_name(callee), parts)
-      return with_stores(found, stores)
+      return with_stores(noted, stores)
     end
 
-    called = found.with(calls: found.calls.push(Call(caller: scope.caller, target: Target.Direct(key))))
+    called = noted.with(calls: noted.calls.push(Call(caller: scope.caller, target: Target.Direct(key))))
     return with_stores(called, stores)
   end
 
   case slot_of(tables, scope, callee)
     some(slot) -> return found.with(calls: found.calls.push(Call(caller: scope.caller, target: Target.Slot(slot))))
     none -> return found
+  end
+end
+
+# The callbacks of a call of libuv that runs them on the loop. A null pointer (`NULL`, 0) is no callback.
+def callbacks_of(tables: Tables, scope: Scope, node: Json, name: String, parts: List[Json]) -> List[Callback]
+  places = Known.LOOP_CALLBACKS.get(name).unwrap_or([])
+  if places.empty?
+    return []
+  end
+
+  place = place_of_call(node)
+  found: List[Callback] = []
+  for argument in places
+    if argument + 1 < parts.size and not null?(parts[argument + 1])
+      sources = stored(tables, scope, CALLBACK_SLOT, parts[argument + 1]).map do |store| store.source end
+      found = found.push(
+        Callback(call: name, argument: argument, file: place.file, line: place.line, sources: sources),
+      )
+    end
+  end
+
+  return found
+end
+
+def null?(node: Json) -> Bool
+  value = bare(node)
+  return kind(value) == "IntegerLiteral" and text(value, "value") == "0"
+end
+
+def with_callbacks(found: Found, callbacks: List[Callback]) -> Found
+  return found.with(callbacks: found.callbacks.concat(callbacks))
+end
+
+# The place of a call: where its macro was expanded, when a macro wrote it.
+def place_of_call(node: Json) -> Place
+  range = JSON.get(node, "range").unwrap_or(JSON.from(""))
+  start = JSON.get(range, "begin").unwrap_or(JSON.from(""))
+  case JSON.get(start, "expansionLoc")
+    ok(expansion) -> return place_in(expansion)
+    error(_) -> return place_in(start)
   end
 end
 

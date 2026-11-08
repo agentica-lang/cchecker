@@ -2,9 +2,10 @@
 
 import Baseline from "baseline"
 import Commands from "commands"
+import Config from "config"
 import Effects from "effects"
 import Findings from "findings"
-import {Finding, ToolError} from "findings"
+import {Finding, ToolError, UnresolvedCallback} from "findings"
 import {Options} from "options"
 import Paths from "paths"
 import Report from "report"
@@ -32,6 +33,8 @@ struct Collected
   ran: List[String]
   units: List[Unit]
   skipped_declarations: Int = 0
+  unresolved: List[UnresolvedCallback] = []
+  missing_roots: List[String] = []
 end
 
 # The jobs of a run, the files that were left out because they are outside the working directory, and the entries of
@@ -46,6 +49,19 @@ end
 ## of a tool. A setup error (no files, a bad baseline) is an `error`.
 export def run(options: Options) -> Result[Int]
   cwd = try Paths.working_directory()
+  config = try Config.load(options.config, cwd)
+  # A baseline written with a check off would drop the accepted findings of that check, as --checks would.
+  if options.update_baseline and options.tools.include?(Tool.Rules) and (not options.infer or not config.off.empty?)
+    return error(
+      "--update-baseline needs every check of the rules on: drop --no-infer and the [library] flags set to false " +
+      "(#{config.origin}), or the baseline would lose their findings",
+    )
+  end
+
+  if not options.json
+    IO.warn("cchecker: settings: #{config.origin}")
+  end
+
   accepted = try baseline_entries(options)
   entries = try gather(options)
   scratch = try scratch_path(cwd)
@@ -61,7 +77,7 @@ export def run(options: Options) -> Result[Int]
     end
   end
 
-  collected = try collect_in_scratch(options, plan.jobs, scratch)
+  collected = try collect_in_scratch(options, config, plan.jobs, scratch, cwd)
   if collected.skipped_declarations > 0
     IO.warn(
       "cchecker: skipped #{collected.skipped_declarations} declarations too large to read, which name no function",
@@ -76,6 +92,17 @@ export def run(options: Options) -> Result[Int]
 
   # A suppression is unused only where the run covered its tool and file, as the baseline counts a fixed finding.
   scope = scope_of(options, plan, collected)
+
+  # Only a run of the whole database sees every function: one of some files would miss the roots of the others.
+  if options.tools.include?(Tool.Rules) and not (config.short.empty? and config.hot.empty?)
+    if not scope.full
+      IO.warn("cchecker: the names of [roots] were not checked: only a full run of a compile database sees them all")
+    elsif not collected.missing_roots.empty?
+      missing = collected.missing_roots.join(", ")
+      return error("#{config.origin}: no function of the compile database is named #{missing} ([roots])")
+    end
+  end
+
   ignores = try ignores_of(found, plan, collected.units, cwd)
   applied = Suppressions.apply(found, ignores, scope.pairs)
   findings = Findings.sort(applied.findings)
@@ -98,6 +125,8 @@ export def run(options: Options) -> Result[Int]
             skipped: plan.skipped.size,
             skipped_declarations: collected.skipped_declarations,
             suppressed: applied.suppressed,
+            config: config.origin,
+            unresolved_callbacks: collected.unresolved,
           ),
         ),
       )
@@ -113,6 +142,8 @@ export def run(options: Options) -> Result[Int]
             skipped: plan.skipped.size,
             skipped_declarations: collected.skipped_declarations,
             suppressed: applied.suppressed,
+            config: config.origin,
+            unresolved_callbacks: collected.unresolved,
           ),
         ),
       )
@@ -164,6 +195,11 @@ def finish(options: Options, report: Report.Report) -> Int
 
   for line in Report.error_lines(report)
     IO.warn(line)
+  end
+
+  unresolved = Report.unresolved_line(report)
+  if not options.json and unresolved.some?
+    IO.warn(unresolved.unwrap!)
   end
 
   if not report.errors.empty?
@@ -351,19 +387,25 @@ def stale?(name: String) -> Bool
 end
 
 # Runs the jobs, with the folder of the dumps when the rules run. The rules check the units of all the files at once.
-def collect_in_scratch(options: Options, jobs: List[Tools.Job], folder: String) -> Result[Collected]
+def collect_in_scratch(
+  options: Options,
+  config: Config.Config,
+  jobs: List[Tools.Job],
+  folder: String,
+  cwd: String,
+) -> Result[Collected]
   if not options.tools.include?(Tool.Rules)
-    return ok(collect(options, jobs))
+    return ok(collect(options, config, jobs, cwd))
   end
 
   try Dir.mkdir_private(folder)
   remove_stale(folder)
-  collected = collect(options, jobs)
+  collected = collect(options, config, jobs, cwd)
   _ = Path.remove(folder)
   return ok(collected)
 end
 
-def collect(options: Options, jobs: List[Tools.Job]) -> Collected
+def collect(options: Options, config: Config.Config, jobs: List[Tools.Job], cwd: String) -> Collected
   results = Task.map(jobs, options.jobs, Tools.limit_ms(options), &Tools.run)
   findings: List[Finding] = []
   errors: List[ToolError] = []
@@ -387,12 +429,15 @@ def collect(options: Options, jobs: List[Tools.Job]) -> Collected
     end
   end
 
+  checked = Effects.check(units, config, options.infer, cwd)
   return Collected(
-    findings: findings.concat(Effects.check(units)),
+    findings: findings.concat(checked.findings),
     errors: errors,
     ran: ran,
     units: units,
     skipped_declarations: skipped_declarations,
+    unresolved: checked.unresolved,
+    missing_roots: checked.missing_roots,
   )
 end
 

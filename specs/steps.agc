@@ -18,11 +18,14 @@ RUN_MS = 120_000
 def main() -> Void
   BDD.run([
     BDD.step("the C file {string} holds:", &write_file),
+    BDD.step("the file {string} holds:", &write_file),
     BDD.step("the C file {string} holds, with ITEMS as {int} times {string}:", &write_generated),
     BDD.step("there is a private folder {string} holding {string}", &make_private_folder),
     BDD.step("there is a folder {string} holding {string}", &make_open_folder),
     BDD.step("I run cchecker with {string}", &run_cchecker),
     BDD.step("I run cchecker with {string} and TMPDIR {string}", &run_with_tmpdir),
+    BDD.step("I run cchecker in its folder with {string}", &run_in_folder),
+    BDD.step("I run cchecker in its folder {string} with {string}", &run_in_subfolder),
     BDD.step("the folder {string} is empty", &folder_empty),
     BDD.step("clang dumps the AST of {string}", &dump_ast),
     BDD.step("clang dumps the JSON AST of {string}", &dump_json_ast),
@@ -83,6 +86,23 @@ def run_cchecker(ctx: BDD.Context, args: List[String]) -> BDD.Context
   return run_program(ctx, "agentica", [PROGRAM].concat(words))
 end
 
+# A run whose project folder is the folder of the scenario, for the settings files that cchecker looks for there.
+def run_in_folder(ctx: BDD.Context, args: List[String]) -> BDD.Context
+  return run_in(ctx, ".", args[0])
+end
+
+# The same in a subfolder of the folder of the scenario, for a file outside the project folder.
+def run_in_subfolder(ctx: BDD.Context, args: List[String]) -> BDD.Context
+  return run_in(ctx, args[0], args[1])
+end
+
+def run_in(ctx: BDD.Context, sub: String, line: String) -> BDD.Context
+  started = ensure_folder(ctx)
+  program = Path.resolve(Path.join([SPECS, PROGRAM]).unwrap!).unwrap!
+  words = line.split(" ").select do |word| word != "" end
+  return run_program(started, "agentica", [program].concat(words), {}, "#{SPECS}/#{folder_of(started)}/#{sub}")
+end
+
 # TMPDIR is the folder, made empty first, where the run writes its AST dumps.
 def run_with_tmpdir(ctx: BDD.Context, args: List[String]) -> BDD.Context
   started = ensure_folder(ctx)
@@ -115,9 +135,15 @@ def dump_is_large(ctx: BDD.Context, args: List[String]) -> BDD.Context
   return BDD.assert(ctx, truncated, "the output of the dump is 1 MiB or less")
 end
 
-# Runs a program in specs/ and keeps its exit code and output for the steps that check them.
-def run_program(ctx: BDD.Context, program: String, args: List[String], env: Map[String, String] = {}) -> BDD.Context
-  process = Process.spawn_captured(program, args, SPECS, RUN_MS, env).unwrap!
+# Runs a program in specs/, or in `folder`, and keeps its exit code and output for the steps that check them.
+def run_program(
+  ctx: BDD.Context,
+  program: String,
+  args: List[String],
+  env: Map[String, String] = {},
+  folder: String = SPECS,
+) -> BDD.Context
+  process = Process.spawn_captured(program, args, folder, RUN_MS, env).unwrap!
   output = Process.output(process, RUN_MS).unwrap!
   code = Process.wait(process, RUN_MS).unwrap!
   Process.close(process)

@@ -14,10 +14,10 @@ import Paths from "paths"
 # The longest line the scan reads. A line of the dump is short, except a string literal of the source, which is one.
 LINE_BYTES = 16_777_216
 
-# The most lines the scan keeps of one declaration, so that a generated table cannot take all the memory. The largest
-# function of the Agentica VM has 190 thousand. A declaration over it is an error when it names a function, before the
-# cap or past it, since its calls are lost; one that names none (a table of enum values or of structs of numbers) is
-# skipped and counted. Past the cap the scan keeps no line and reads on only for a function.
+# The most lines the scan keeps of one declaration, so that a generated table cannot take all the memory. A large
+# function of an interpreter loop has some 190 thousand. A declaration over it is an error when it names a function,
+# before the cap or past it, since its calls are lost; one that names none (a table of enum values or of structs of
+# numbers) is skipped and counted. Past the cap the scan keeps no line and reads on only for a function.
 MAX_DECL_LINES = 1_000_000
 
 DECL_START = "    {"
