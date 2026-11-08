@@ -21,6 +21,7 @@ src/              one module per topic (`ls src/`): the compile database, runnin
                   (the settings: -c, cchecker.toml, [tool.cchecker] of agentica.toml); suppressions
                   (`cchecker: ignore`, CC_IGNORE)
 include/          cchecker.h: the annotation macros that the rules read (CC_SHORT, ...)
+docs/             the reference by topic (usage, suppressions, settings, rules, ownership); README.md is the short guide
 specs/            .feature files (BDD through the CLI) and steps.agc; props.agc (tables of function pointers),
                   lock_props.agc (the lock walk against an oracle of all paths) and suppression_props.agc (ignore
                   comments and CC_IGNORE against the rule), the generators and laws of the property tests;
@@ -75,7 +76,8 @@ test/             unit tests of the pure helpers (the parsers, the scan of the A
 - No C parser of our own: the rules read clang's AST as JSON. The dump is far larger than 1 MiB: it goes to a file
   and is read line by line (`src/scan.agc`), never through `Process.output`.
 - Style: `agentica-code-guidelines` (lines up to 119, `blank_line_after_end`). Public code gets a short `##` doc.
-- A change that a user sees adds a line under `## [Unreleased]` in `CHANGELOG.md`. Update the README with it.
+- A change that a user sees adds a line under `## [Unreleased]` in `CHANGELOG.md`. Update the README, or the file of
+  docs/ for its topic, with it.
 - A PR is about 2k lines at most and holds its own tests and docs; do not leave validation or conventions to the next
   PR.
 - Commits carry no attribution lines.
