@@ -1,6 +1,7 @@
 ## The lock rules on the paths of each function: a lock that a function takes is released on every path that returns,
 ## and a lock that it releases is one it holds. The set of a CC_PAIR is a lock too, which its restore releases; a
-## restore with no set before it does nothing. A function with CC_ACQUIRES or CC_RELEASES is a helper that takes or
+## restore with no set before it does nothing. The body of a set with its own CC_PAIR is how the pair works, and may
+## leave another pair set for its caller. A function with CC_ACQUIRES or CC_RELEASES is a helper that takes or
 ## drops a lock for its callers: its body is how the lock works (a count of nested takes, a spin before the wait), and
 ## the rules trust it and check its callers.
 ##
@@ -128,7 +129,16 @@ def checked(body: Body, functions: Map[String, Function], rules: Held.Rules) -> 
     walk = walked(walker.with(tracked: Set.new([])))
   end
 
-  return walk.findings.values
+  if not pair_set?(body.name, marks)
+    return walk.findings.values
+  end
+
+  return walk.findings.values.select do |f| f.code != PAIR_NOT_RESTORED end
+end
+
+# Whether a function is the set of a CC_PAIR on its own declaration: `pair(name, ...)`.
+def pair_set?(name: String, marks: List[String]) -> Bool
+  return marks.any? do |mark| mark.start_with?("pair(#{name},") end
 end
 
 # The keys of the locks of a mark `no_syscall_under(a, b)` of the function itself.
