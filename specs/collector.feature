@@ -11,7 +11,7 @@ Feature: Values of the collector kept where it sees them
       #include "stdlib.h"
       #include "cchecker.h"
 
-      struct CC_GC obj { int n; }; CC_GC typedef struct { struct obj *o; } value_t; struct holder { value_t v; };
+      struct CC_GC obj { int n; }; CC_GC typedef struct { struct obj *o; } value_t; struct holder { value_t v; }; typedef struct obj obj_t;
       CC_GC_ALLOC void *gc_alloc(size_t n); void *GC_malloc(size_t n); struct queue { CC_OWNS value_t *owned; void *any; };
 
       <code>
@@ -36,6 +36,9 @@ Feature: Values of the collector kept where it sees them
       | behind a CC_OWNS parameter  | void f(CC_OWNS value_t *a, value_t v) { a[1] = v; free(a); }                            |
       | through a cast              | void f(struct obj *o) { void **a = malloc(8); a[0] = (void *)o; free(a); }              |
       | from realloc                | void f(value_t v) { value_t *a = realloc(NULL, 8 * sizeof *a); a[0] = v; free(a); }     |
+      | at an offset                | void f(value_t v) { value_t *a = malloc(8 * sizeof *a); *(a + 1) = v; free(a); }        |
+      | either side of ?:           | void f(int n) { void **a = malloc(8); a[0] = n ? gc_alloc(n) : NULL; free(a); }         |
+      | a typedef of a marked type  | void f(obj_t *o) { obj_t **a = malloc(8); a[0] = o; free(a); }                          |
 
   Scenario Outline: A value of the collector stored in a static is a finding at the function (<case>)
     Given the C file "gc.c" holds:
