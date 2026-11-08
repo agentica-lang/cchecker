@@ -560,10 +560,16 @@ def kind(node: Json) -> String
   return text(node, "kind")
 end
 
+# The nodes under a node. clang 19 writes the items of an array initializer with a filler (designated items, or fewer
+# items than the array holds) under `array_filler` instead of `inner`, as one list: the filler first, then the items.
 def children(node: Json) -> List[Json]
+  return list_at(node, "inner").concat(list_at(node, "array_filler"))
+end
+
+def list_at(node: Json, key: String) -> List[Json]
   empty: List[Json] = []
-  case JSON.get(node, "inner")
-    ok(inner) -> return JSON.list(inner).unwrap_or(empty)
+  case JSON.get(node, key)
+    ok(nodes) -> return JSON.list(nodes).unwrap_or(empty)
     error(_) -> return empty
   end
 end

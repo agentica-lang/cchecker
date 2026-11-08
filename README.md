@@ -189,27 +189,28 @@ lists are in `src/known.agc`. A function the project defines is judged by its bo
 listed has no effect. A known name is known by name alone: a project function named `remove`, `rewind`, `ftell` or
 `dlsym` counts as the libc one in a run that does not read its body.
 
-A call through a function pointer reaches every function the project stores in the same place: a field of a struct or
-a union (by record and field name, in an initializer, designated or not, or an assignment), a variable, or a parameter
-of a function (from the direct calls that pass a function), and every function of a place copied into it
-(`box.handle = handle`). A cast is seen through, so a function kept in a `void *` or an `uintptr_t` is reached by a
-call through it. A variable with `__attribute__((cleanup(f)))` calls `f`. A pointer that comes from anywhere else
-reaches nothing: a return value, the arguments of a variadic function, and a function handed to a library that calls
-it back (`qsort`, a libuv callback). A walk goes only through what the run read, so run
-it on all the files of the project: with a subset of the files, a call into a file that was not run reaches nothing.
-For the baseline, only a full run of a compile database covers the findings of the rules: a run of some files never
-counts them fixed and never drops them on `--update-baseline`.
+A call through a function pointer reaches every function the project stores in the same place: a field of a struct or a
+union (by record and field name, in an initializer or an assignment), a variable, or a parameter of a function (from
+the direct calls that pass a function), and every function of a place copied into it (`box.handle = handle`). An item
+of an initializer of a struct or an array counts designated or not (`{[3] = f}`). A cast is seen through, so a function
+kept in a `void *` or an `uintptr_t` is reached by a call through it, but not one kept in a table whose first item is a
+literal number (`uintptr_t t[] = {0, (uintptr_t)f}`): that is a table of numbers (below). A variable with
+`__attribute__((cleanup(f)))` calls `f`. A pointer that comes from anywhere else reaches nothing: a return value, the
+arguments of a variadic function, and a function handed to a library that calls it back (`qsort`, a libuv callback). A
+walk goes only through what the run read, so run it on all the files of the project: with a subset of the files, a call
+into a file that was not run reaches nothing. For the baseline, only a full run of a compile database covers the
+findings of the rules: a run of some files never counts them fixed and never drops them on `--update-baseline`.
 
 The AST of a file is tens of MiB with its system headers, more than a process output holds in Agentica (1 MiB):
-`sh` writes it to a file in a private folder under `$TMPDIR`, and cchecker reads it line by line and keeps only the
-declarations of the project. A table of numbers is not kept: an array of a number or character type, or whose first
-item is a number (`const uint8_t ROM[]`); a null pointer item (`0`, `NULL`) is not a number. A declaration of more
-than a million lines of the dump is left out: when it named no function so far (a table of enum values or of structs
-of numbers) it is counted in `skipped_declarations` of `--json` and in a line on standard error (a function past the
-cap is not read), and otherwise it is a tool error, while the rest of the file is checked. A dump that ends early is
-a tool error. The folder is removed at the end of the run, and a run removes the folders that killed runs left there:
-a folder of the same user, private, not a link, holding only dumps, whose process is gone. Runs in different PID
-namespaces that share `$TMPDIR` can remove each other's folders.
+`sh` writes it to a file in a private folder under `$TMPDIR`, and cchecker reads it line by line and keeps
+only the declarations of the project. A table of numbers is not kept: an array of a number or character type,
+or whose first item is a number (`const uint8_t ROM[]`); a number cast to a pointer (`0`, `NULL`, or `1` under
+`-Wno-int-conversion`) is not a number. A declaration of more than a million lines of the dump is left out: when it
+names a function, before or past that cap, it is a tool error, and otherwise (a table of enum values or of structs
+of numbers) it is counted in `skipped_declarations` of `--json` and in a line on standard error, while the rest
+of the file is checked. A dump that ends early is a tool error. The folder is removed at the end of the run, and a
+run removes the folders that killed runs left there: a folder of the same user, private, not a link, holding only
+dumps, whose process is gone. Runs in different PID namespaces that share `$TMPDIR` can remove each other's folders.
 
 ## Development
 
