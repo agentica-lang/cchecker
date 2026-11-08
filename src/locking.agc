@@ -1,5 +1,7 @@
 ## The lock rules on the paths of each function: a lock that a function takes is released on every path that returns,
-## and a lock that it releases is one it holds. A function with CC_ACQUIRES or CC_RELEASES is a helper that takes or
+## and a lock that it releases is one it holds. The set of a CC_PAIR is a lock too, which its restore releases; a
+## restore with no set before it does nothing. The body of a set with its own CC_PAIR is how the pair works, and may
+## leave another pair set for its caller. A function with CC_ACQUIRES or CC_RELEASES is a helper that takes or
 ## drops a lock for its callers: its body is how the lock works (a count of nested takes, a spin before the wait), and
 ## the rules trust it and check its callers.
 ##
@@ -13,13 +15,16 @@ import {Finding} from "findings"
 import Flow from "flow"
 import {Body, Event, Fact, Lock, Mark, Site} from "flow"
 import Held from "held"
-import {Function, Unit} from "unit"
+import {Function, PAIR_MARK, Unit} from "unit"
 
 ## The code of a path that returns with a lock that the function took.
 export NOT_RELEASED = "CC-PATH-LOCK-NOT-RELEASED"
 
 ## The code of a path that releases a lock that the function did not take.
 export NOT_HELD = "CC-PATH-LOCK-NOT-HELD"
+
+## The code of a path that returns after a call of the set of a CC_PAIR and no call of its restore.
+export PAIR_NOT_RESTORED = "CC-PATH-PAIR-NOT-RESTORED"
 
 # A lock taken or released more times than this on one path counts as this many, so a loop ends.
 MAX_COUNT = 2
@@ -102,7 +107,7 @@ export def check(units: List[Unit]) -> Checked
     for body in unit.bodies
       if not done.include?(body.key) and not helper?(functions.get(body.key))
         walk = checked(body, functions, rules)
-        findings = findings.concat(walk.findings.values)
+        findings = findings.concat(kept_findings(walk, body, functions))
         if not walk.complete
           incomplete += 1
         end
@@ -139,6 +144,21 @@ def checked(body: Body, functions: Map[String, Function], rules: Held.Rules) -> 
   end
 
   return walk
+end
+
+# The findings of a walk, without those of the pairs in the body of the set of its own CC_PAIR.
+def kept_findings(walk: Walk, body: Body, functions: Map[String, Function]) -> List[Finding]
+  marks = functions.get(body.key).map do |f| f.marks end.unwrap_or([])
+  if not pair_set?(body.name, marks)
+    return walk.findings.values
+  end
+
+  return walk.findings.values.select do |f| f.code != PAIR_NOT_RESTORED end
+end
+
+# Whether a function is the set of a CC_PAIR on its own declaration: `pair(name, ...)`.
+def pair_set?(name: String, marks: List[String]) -> Bool
+  return marks.any? do |mark| mark.start_with?("#{PAIR_MARK}#{name},") end
 end
 
 # The keys of the locks of a mark `no_syscall_under(a, b)` of the function itself.
@@ -209,7 +229,7 @@ def walked(walker: Walker) -> Walk
     node = body.nodes[item.node]
     found = with_breaches(found, walker, item, node.event)
     case stepped(walker, node.event, item)
-      Moved.Ended(path) -> found = with_exit(found, body, item.state, path)
+      Moved.Ended(path) -> found = with_exit(found, walker, item.state, path)
       Moved.Stopped -> next
       Moved.Went(moved) ->
         for after in node.next
@@ -288,22 +308,33 @@ def marked(mark: Mark) -> Step
   return Step(text: "#{mark.line}:#{mark.column} #{mark.word}")
 end
 
-# The state and the path after a call: the locks it takes and releases.
+# The state and the path after a call: the locks it takes and releases. The step of a pair names the call.
 def after_call(item: Item, site: Site) -> Item
   held = item.state.held
   steps = item.path
   for lock in site.takes
     held = counted(held, lock.key, 1)
+    text = "takes #{lock.shown}"
+    if lock.pair != ""
+      text = "calls #{site.name}"
+    end
+
     steps = steps.push(
-      Step(text: "#{site.line}:#{site.column} takes #{lock.shown}", lock: lock.key, shown: lock.shown, took: true),
+      Step(text: "#{site.line}:#{site.column} #{text}", lock: lock.key, shown: lock.shown, took: true),
     )
   end
 
   for lock in site.drops
-    held = counted(held, lock.key, -1)
-    steps = steps.push(
-      Step(text: "#{site.line}:#{site.column} releases #{lock.shown}", lock: lock.key, shown: lock.shown),
-    )
+    text = "releases #{lock.shown}"
+    if lock.pair != ""
+      text = "calls #{site.name}"
+    end
+
+    if lock.pair == "" or held.get(lock.key, 0) > 0
+      held = counted(held, lock.key, -1)
+    end
+
+    steps = steps.push(Step(text: "#{site.line}:#{site.column} #{text}", lock: lock.key, shown: lock.shown))
   end
 
   return item.with(state: item.state.with(held: held), path: steps)
@@ -329,31 +360,38 @@ end
 
 # The findings of a path that ends: each lock it holds that it took, and each it released and did not take. One finding
 # for each code and lock: the first path, which is a shortest one.
-def with_exit(found: Map[String, Finding], body: Body, state: State, path: List[Step]) -> Map[String, Finding]
+def with_exit(found: Map[String, Finding], walker: Walker, state: State, path: List[Step]) -> Map[String, Finding]
   kept = found
   for key in state.held.keys
     count = state.held[key]
+    restore = walker.locks.get(key).map do |lock| lock.pair end.unwrap_or("")
     code = NOT_RELEASED
-    if count < 0
+    if restore != ""
+      code = PAIR_NOT_RESTORED
+    elsif count < 0
       code = NOT_HELD
     end
 
     id = "#{code} #{key}"
     if not kept.key?(id)
-      kept = kept.put(id, finding(body, code, key, path))
+      kept = kept.put(id, finding(walker.body, code, key, restore, path))
     end
   end
 
   return kept
 end
 
-# The path starts at the last take of the lock for a lock left held, at its last release for one not held.
-def finding(body: Body, code: String, key: String, path: List[Step]) -> Finding
-  steps = from_last(path, key, code == NOT_RELEASED)
+# The path starts at the last take of the lock for a lock left held (or a pair not restored), at its last release
+# for one not held.
+def finding(body: Body, code: String, key: String, restore: String, path: List[Step]) -> Finding
+  steps = from_last(path, key, code != NOT_HELD)
   shown = steps.first.shown
   message = "#{body.name} does not release #{shown} on every path"
   if code == NOT_HELD
     message = "#{body.name} releases #{shown}, which it does not hold, on a path"
+  elsif code == PAIR_NOT_RESTORED
+    set = key.slice(Flow.PAIR_PREFIX.length, key.length - Flow.PAIR_PREFIX.length).split(":").first
+    message = "#{body.name} calls #{set} and does not call #{restore} after it on every path"
   end
 
   return located(body, code, message, steps.map do |step| step.text end)

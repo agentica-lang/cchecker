@@ -7,7 +7,8 @@
  *   CC_BLOCKING                 the function may block
  *   CC_HOT                      the function never allocates and makes no system call
  *   CC_OWNS                     the pointer owns its memory: free it or hand it on on every path
- *   CC_PAIR(set, restore)       the function changes state that `restore` puts back
+ *   CC_PAIR(set, restore)       in the function, a call of `set` is followed by a call of `restore` on every path;
+ *                               on `set` itself, in every function that calls it
  *   CC_NO_SYSCALL_UNDER(lock)   the function makes no system call while `lock` is held; on the field of a lock (or a
  *                               global lock), CC_NO_SYSCALL_UNDER() says it of every function that holds that lock
  *   CC_LOCK_LEVEL(n)            on the field of a lock (or a global lock), n a decimal number: take it only while
