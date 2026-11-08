@@ -149,3 +149,40 @@ Feature: Values of the collector kept where it sees them
       """
       "line":6,"column":8,"message":"table stores a value of the collector in memory from malloc: items[i]","path":["9:5 stores gc_alloc in items[i]"]
       """
+
+  Scenario: The allocators of the Boehm collector are the family libgc_alloc of [library], which can be turned off
+    Given the C file "boehm.c" holds:
+      """
+      #include <stdlib.h>
+      #include "cchecker.h"
+
+      void *GC_malloc(size_t n);
+      CC_GC_ALLOC void *gc_alloc(size_t n);
+
+      void f(int n) { void **a = malloc(8); a[0] = GC_malloc(n); a[1] = gc_alloc(n); free(a); }
+      """
+    When I run cchecker in its folder with "--tools rules --json boehm.c -- -I../../../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      in memory from malloc: a[0]","path":["7:39 stores GC_malloc in a[0]"],"source":"libgc_alloc"
+      """
+    And the output includes:
+      """
+      in memory from malloc: a[1]","path":["7:60 stores gc_alloc in a[1]"],"source":""
+      """
+    Given the file "cchecker.toml" holds:
+      """
+      [library]
+      libgc_alloc = false
+      """
+    When I run cchecker in its folder with "--tools rules --json boehm.c -- -I../../../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      in memory from malloc: a[1]"
+      """
+    And the output does not include:
+      """
+      a[0]
+      """
