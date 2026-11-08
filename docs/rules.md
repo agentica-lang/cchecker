@@ -232,12 +232,33 @@ when there is one: `13:3 calls bump: bump -> pthread_mutex_lock`.
 followed by a call of `restore` on every path that returns, as a lock is by its
 unlock (the same graph and the same walk). On a declaration of `set` itself it
 says so in every function that calls `set`. The two are functions, by name,
-whatever their arguments: a cleanup function counts as a call. A `restore` with
-no `set` before it on the path does nothing, so restoring twice is no finding; a
-`set` twice needs two restores. `set` and `restore` are two functions (a pair of
-one function, such as `umask`, never gives a finding). The body of a `set` that
-carries its own `CC_PAIR` is how the pair works (a wrapper of `GC_disable`), so
-it may leave another pair set for its caller.
+whatever their arguments: a cleanup function counts as a call. `set` and
+`restore` are two functions (a pair of one function, such as `umask`, never
+gives a finding); a `set` twice needs two restores.
+
+A `restore` with no `set` before it on the path is a finding in a function that
+calls `set` on some path (`gc_pause(); gc_resume(); gc_resume();`), and does
+nothing in one that never calls it. That includes a restore that a path reaches
+around the set (`if (bad) goto out; gc_pause(); ... out: gc_resume();`). A
+restore of two pairs is a finding only when it restores neither. A set made more
+than twice on a path counts as twice, and a restore that then finds the count at
+zero is no finding.
+
+The walk does not tie a variable to the set it records, so `if (big) {
+gc_pause(); paused = 1; } ... if (paused) gc_resume();` and a toggle (`if (on)
+set(); else restore();`) give findings. A restore reached without the set is
+reported even when the restore is harmless to repeat: `CC_PAIR` is opt-in, so
+leave it off such a pair.
+
+The body of a `set` that carries its own `CC_PAIR` is how the pair works (a
+wrapper of `GC_disable`), so it may leave another pair set for its caller, but
+not on a return of an error value, after which the caller does not call
+`restore`: a negative constant (`return -1`, `return -EINVAL`, a negated enum
+constant), a null pointer (`NULL`, `(void *)0`, `nullptr`), or a false bool,
+read through typedefs. Any other value, `0` of an `int` included, counts as a
+success, and a returned variable is not followed (`rc = -1; goto out; out:
+return rc;` is a success). A `set` whose `NULL`, `false` or negative return
+means success gets a finding on that return.
 
 ```c
 CC_PAIR(mask_signals, restore_signals) void mask_signals(sigset_t *old);   /* in every caller */
@@ -247,6 +268,7 @@ CC_PAIR(gc_pause, gc_resume) int copy_out(struct heap *h);                  /* i
 | Code | |
 |---|---|
 | `CC-PATH-PAIR-NOT-RESTORED` | a path returns after a call of `set` and no call of `restore` after it |
+| `CC-PATH-PAIR-NOT-SET` | a path calls `restore` with no call of `set` before it, in a function that calls `set` |
 
 The path goes from the call of `set` to the return: `7:3 calls mask_signals ->
 8:7 true -> 9:5 returns`.

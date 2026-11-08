@@ -104,6 +104,7 @@ these:
 | `CC-PATH-SYSCALL-UNDER-LOCK` | a call under a `CC_NO_SYSCALL_UNDER` lock is or reaches a system call |
 | `CC-PATH-LOCK-ORDER` | a lock with a level is taken under one of the same or a higher level |
 | `CC-PATH-PAIR-NOT-RESTORED` | a path returns after a call of `set` of a `CC_PAIR` and no call of `restore` |
+| `CC-PATH-PAIR-NOT-SET` | a path calls `restore` of a `CC_PAIR` with no call of `set` before it |
 | `CC-OWN-LEAK` | a path returns, or gives a pointer a new value, while it still owns |
 | `CC-OWN-DOUBLE-FREE` | a path frees a pointer that it already freed or handed on |
 | `CC-OWN-USE-AFTER-FREE` | a path uses a pointer after it freed it or handed it on |

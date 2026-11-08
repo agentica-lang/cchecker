@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The body of a `set` with its own `CC_PAIR` may leave another pair set only on a successful return: a return of a
+  negative constant, a null pointer or a false bool that leaves one set is `CC-PATH-PAIR-NOT-RESTORED`.
 - `--update-baseline` with `-c FILE` is refused when the file leaves out a `short` or `hot` name of `[roots]` of the
   project settings, and the refusal names only its causes.
 - The `first:` unresolved callback shown is one inside the working directory when there is one.
@@ -24,6 +26,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `CC-PATH-PAIR-NOT-SET`: a `restore` of a `CC_PAIR` with no `set` before it on a path, in a function that calls `set`
+  (a double restore).
 - Assumptions of a project: `CC_ASSUME_SHORT` and `[assume] short` name a function that counts as fine for
   `CC_SHORT` (the short rule does not walk into it); `CC_STOP` and `[assume] stop` one that no rule walks into. A name
   of `[assume]` that no function of the compile database declares is an error.
