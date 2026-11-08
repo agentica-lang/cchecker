@@ -320,15 +320,13 @@ def after_give(body: Body, item: Item, give: Give) -> Outcome
   end
 end
 
-# A new value of a pointer: a pointer that still owns loses what it owned, unless the value is a realloc of it.
+# A new value of a pointer: one that still owns loses what it owned. (A realloc of it moved it first.)
 def after_assign(body: Body, item: Item, assign: Assign) -> Outcome
   at = "#{assign.line}:#{assign.column}"
   step = Step(text: "#{at} #{assign.name} = #{assign.shown}", name: assign.name, origin: true)
   breaches: List[Breach] = []
   state = item.state
-  in_place = assign.value == "resized" and owner(state, assign.from) == assign.name
-  owning = state.owns.get(assign.name).map do |own| own == OWNED end.unwrap_or(false)
-  if owning and not state.aliases.key?(assign.name) and not in_place
+  if state.owns.get(assign.name).map do |own| own == OWNED end.unwrap_or(false)
     message = "#{body.name} does not free or hand on #{assign.name} on every path"
     path = from_last(item.path, assign.name, true).push(step)
     breaches = breaches.push(Breach(code: LEAK, name: assign.name, message: message, path: path))
@@ -362,12 +360,7 @@ end
 # The result of a realloc owns; the pointer it moved owns again where the result is null.
 def resized(state: State, assign: Assign) -> State
   owned = state.with(owns: state.owns.put(assign.name, OWNED))
-  source = owner(state, assign.from)
-  if source == assign.name
-    return owned
-  end
-
-  return owned.with(links: owned.links.put(assign.name, source))
+  return owned.with(links: owned.links.put(assign.name, owner(state, assign.from)))
 end
 
 # Each pointer that still owns at the end of a path is a leak.
