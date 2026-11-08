@@ -1,8 +1,9 @@
 Feature: What the project assumes of its functions
   A project can say once what cchecker cannot see in the C: that a function counts as fine for CC_SHORT (it runs
   inline on the right thread only, or reads a descriptor that never blocks), or that no walk goes into a function at
-  all (a trace call behind a runtime flag). CC_ASSUME_SHORT and CC_STOP say it in the C, `[assume] short` and
-  `[assume] stop` in the settings. A name of `[assume]` that no function of the compile database has is an error.
+  all (a trace call behind a runtime flag), or that a lock is held for a few instructions only. CC_ASSUME_SHORT, CC_STOP
+  and CC_NO_SYSCALL_UNDER() say it in the C, `[assume] short`, `stop` and `short_locks` in the settings. A name of
+  `[assume]` that no function or lock of the compile database has is an error.
 
   Scenario Outline: A function trusted for CC_SHORT is not walked into by the short rule only (<case>)
     Given the C file "short.c" holds:
@@ -118,6 +119,91 @@ Feature: What the project assumes of its functions
       | a root assumed short       |                             | (void)write(fd, "x", 1);  | short = ["tick"] |
       | a stopped root             |                             | (void)write(fd, "x", 1);  | stop = ["tick"]  |
       | blocking and assumed short | CC_BLOCKING CC_ASSUME_SHORT | wait_disk(fd);            |                  |
+
+  Scenario Outline: Taking a short lock is not blocking for CC_SHORT (<case>)
+    Given the C file "lock.c" holds:
+      """
+      #include "pthread.h" /* found in the system folders */
+      #include "cchecker.h"
+
+      struct queue { <mark> pthread_mutex_t mu; pthread_mutex_t big; int n; }; pthread_mutex_t shared; static pthread_mutex_t mine;
+      CC_ASSUME_SHORT CC_ACQUIRES(q->big) void lock_big(struct queue *q) { pthread_mutex_lock(&q->big); }
+      CC_SHORT void tick(struct queue *q) { <take> q->n++; }
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [assume]
+      <list>
+      """
+    When I run cchecker in its folder with "--tools rules --json lock.c -- -I../../../include"
+    Then the exit code is <exit>
+
+    Examples:
+      | case               | mark                  | take                                                                                      | list                       | exit |
+      | no mark            |                       | pthread_mutex_lock(&q->mu); pthread_mutex_unlock(&q->mu);                                 |                            | 1    |
+      | marked             | CC_NO_SYSCALL_UNDER() | pthread_mutex_lock(&q->mu); pthread_mutex_unlock(&q->mu);                                 |                            | 0    |
+      | listed             |                       | pthread_mutex_lock(&q->mu); pthread_mutex_unlock(&q->mu);                                 | short_locks = ["queue.mu"] | 0    |
+      | another lock       | CC_NO_SYSCALL_UNDER() | pthread_mutex_lock(&q->big); pthread_mutex_unlock(&q->big);                               |                            | 1    |
+      | a short and a long | CC_NO_SYSCALL_UNDER() | pthread_mutex_lock(&q->mu); pthread_mutex_unlock(&q->mu); pthread_mutex_lock(&q->big); pthread_mutex_unlock(&q->big); | | 1 |
+      | a listed global    |                       | pthread_mutex_lock(&shared); pthread_mutex_unlock(&shared);                               | short_locks = ["shared"]   | 0    |
+      | a listed static    |                       | pthread_mutex_lock(&mine); pthread_mutex_unlock(&mine);                                   | short_locks = ["mine"]     | 0    |
+      | a static by file   |                       | pthread_mutex_lock(&mine); pthread_mutex_unlock(&mine);                                   | short_locks = ["mine@lock.c"] | 0  |
+      | a wrapper assumed  |                       | lock_big(q); pthread_mutex_unlock(&q->big);                                               |                            | 0    |
+
+  Scenario Outline: A short lock leaves the other rules and the other locks as they are (<case>)
+    Given the C file "rest.c" holds:
+      """
+      #include "pthread.h" /* found in the system folders */
+      #include "unistd.h"
+      #include "cchecker.h"
+      struct queue { CC_NO_SYSCALL_UNDER() pthread_mutex_t mu; pthread_mutex_t big; int fd; };
+      void take_big(struct queue *q) { pthread_mutex_lock(&q->big); pthread_mutex_unlock(&q->big); }
+      void lock_it(pthread_mutex_t *m) { pthread_mutex_lock(m); pthread_mutex_unlock(m); }
+      <code>
+      """
+    When I run cchecker in its folder with "--tools rules --json rest.c -- -I../../../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "<found>"
+      """
+
+    Examples:
+      | case                     | found                      | code                                                                                                             |
+      | through a parameter      | CC-EFFECT-SHORT-BLOCKS     | CC_SHORT void tick(struct queue *q) { lock_it(&q->mu); }                                                         |
+      | and a long lock below    | CC-EFFECT-SHORT-BLOCKS     | CC_SHORT void tick(struct queue *q) { pthread_mutex_lock(&q->mu); pthread_mutex_unlock(&q->mu); take_big(q); }   |
+      | a system call under it   | CC-PATH-SYSCALL-UNDER-LOCK | void push(struct queue *q) { pthread_mutex_lock(&q->mu); (void)write(q->fd, "x", 1); pthread_mutex_unlock(&q->mu); } |
+      | hot                      | CC-EFFECT-HOT-SYSCALL      | CC_HOT void hot(struct queue *q) { pthread_mutex_lock(&q->mu); pthread_mutex_unlock(&q->mu); }                   |
+
+  Scenario: A lock of [assume] short_locks that no lock of the compile database has is an error
+    Given the C file "lock.c" holds:
+      """
+      #include <pthread.h>
+      struct queue { pthread_mutex_t mu; int n; };
+      void bump(struct queue *q) { pthread_mutex_lock(&q->mu); q->n++; pthread_mutex_unlock(&q->mu); }
+      """
+    And the file "compile_commands.json" holds:
+      """
+      [{"directory": ".", "file": "lock.c", "arguments": ["cc", "-c", "lock.c"]}]
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [assume]
+      short_locks = ["queue.mu"]
+      """
+    When I run cchecker in its folder with "--tools rules"
+    Then the exit code is 0
+    Given the file "cchecker.toml" holds:
+      """
+      [assume]
+      short_locks = ["queue.mu", "queue.mux"]
+      """
+    When I run cchecker in its folder with "--tools rules"
+    Then the exit code is 2
+    And the errors include:
+      """
+      no function or lock of the compile database is named queue.mux (assume.short_locks)
+      """
 
   Scenario: A name of [assume] holds for the static functions of that name in every file
     Given the C file "a.c" holds:

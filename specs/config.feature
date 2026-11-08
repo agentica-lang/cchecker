@@ -159,6 +159,7 @@ Feature: The settings of a project
       | [effects] | follow_cold = 1       | effects.follow_cold   |
       | [assume]  | shrot = ["tick"]      | assume.shrot          |
       | [assume]  | stop = "tick"         | assume.stop           |
+      | [assume]  | short_locks = [1]     | assume.short_locks    |
 
   Scenario Outline: Each family of library knowledge can be turned off
     Given the C file "family.c" holds:

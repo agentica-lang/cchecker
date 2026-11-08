@@ -121,12 +121,13 @@ export def run(options: Options) -> Result[Int]
     end
   end
 
-  if options.tools.include?(Tool.Rules) and not (config.trusted.empty? and config.stops.empty?)
+  assumes = not (config.trusted.empty? and config.stops.empty? and config.short_locks.empty?)
+  if options.tools.include?(Tool.Rules) and assumes
     if not scope.full
       IO.warn("cchecker: the names of [assume] were not checked: only a full run of a compile database sees them all")
     elsif not collected.missing_assumed.empty?
       missing = collected.missing_assumed.join(", ")
-      return error("#{config.origin}: no function of the compile database is named #{missing}")
+      return error("#{config.origin}: no function or lock of the compile database is named #{missing}")
     end
   end
 
