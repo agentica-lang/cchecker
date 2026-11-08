@@ -21,7 +21,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Locks on every path: a control flow graph of each function that takes or releases a lock.
   `CC-PATH-LOCK-NOT-RELEASED`: a path returns with a lock the function took; `CC-PATH-LOCK-NOT-HELD`: a path releases
   a lock it did not take. `CC_ACQUIRES(lock)` and `CC_RELEASES(lock)` mark the helpers that take or drop a lock for
-  their caller, and `CC_NORETURN` a function that never comes back.
+  their caller, and `CC_NORETURN` a function that never comes back. A function with more paths than the rules follow
+  is counted in `incomplete_functions` of `--json`; one too large for a graph is an error of the `rules` tool.
 - `--clang PROGRAM`, the clang that dumps the AST. Under `CCHECKER_AST`, `cchecker.h` writes the annotations as
   `deprecated` attributes, whose text clang 19 keeps in its JSON AST.
 

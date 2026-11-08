@@ -23,7 +23,7 @@ export NOT_HELD = "CC-PATH-LOCK-NOT-HELD"
 MAX_COUNT = 2
 
 # The states the walk of one function may visit, with the conditions and then without them. A function with more
-# paths than this is not checked.
+# paths than this is checked on those it went through only, and counted (`Checked.incomplete`).
 MAX_STATES = 200_000
 
 # The most steps of a path a finding shows: the first ones and the last ones.
@@ -35,11 +35,13 @@ struct State
   facts: Map[String, Bool]
 end
 
-# One step of a path, as the finding shows it, and the key and the text of the lock it took or released ("" for none).
+# One step of a path, as the finding shows it, and the key and the text of the lock it took (`took`) or released (""
+# for none).
 struct Step
   text: String
   lock: String = ""
   shown: String = ""
+  took: Bool = false
 end
 
 struct Item
@@ -62,9 +64,16 @@ struct Walk
   complete: Bool
 end
 
+## The findings of the lock rules, and how many functions had more paths than the walk follows (their findings are
+## those of the paths it went through).
+export struct Checked
+  findings: List[Finding]
+  incomplete: Int
+end
+
 ## Returns the findings of the lock rules on the functions of the units. A function defined in several units (a static
 ## inline function of a header) is checked once.
-export def check(units: List[Unit]) -> List[Finding]
+export def check(units: List[Unit]) -> Checked
   functions: Map[String, Function] = {}
   for function in Effects.functions(units)
     functions = functions.put(function.key, function)
@@ -72,17 +81,22 @@ export def check(units: List[Unit]) -> List[Finding]
 
   done: Set[String] = Set.new([])
   findings: List[Finding] = []
+  incomplete = 0
   for unit in units
     for body in unit.bodies
       if not done.include?(body.key) and not helper?(functions.get(body.key))
-        findings = findings.concat(checked(body, functions))
+        walk = checked(body, functions)
+        findings = findings.concat(walk.findings.values)
+        if not walk.complete
+          incomplete += 1
+        end
       end
 
       done = done.add(body.key)
     end
   end
 
-  return findings
+  return Checked(findings: findings, incomplete: incomplete)
 end
 
 def helper?(function: Optional[Function]) -> Bool
@@ -91,13 +105,13 @@ def helper?(function: Optional[Function]) -> Bool
 end
 
 # The findings of one function: with the conditions it tests twice, or without them when there are too many paths.
-def checked(body: Body, functions: Map[String, Function]) -> List[Finding]
+def checked(body: Body, functions: Map[String, Function]) -> Walk
   walk = walked(body, functions, tracked_of(body))
   if not walk.complete
     walk = walked(body, functions, Set.new([]))
   end
 
-  return walk.findings.values
+  return walk
 end
 
 # The conditions that the function tests in two places or more: only those can make a path impossible.
@@ -198,7 +212,7 @@ def after_call(item: Item, site: Site) -> Item
   for lock in site.takes
     held = counted(held, lock.key, 1)
     steps = steps.push(
-      Step(text: "#{site.line}:#{site.column} takes #{lock.shown}", lock: lock.key, shown: lock.shown),
+      Step(text: "#{site.line}:#{site.column} takes #{lock.shown}", lock: lock.key, shown: lock.shown, took: true),
     )
   end
 
@@ -250,10 +264,11 @@ def with_exit(found: Map[String, Finding], body: Body, state: State, path: List[
   return kept
 end
 
+# The path starts at the last take of the lock for a lock left held, at its last release for one not held.
 def finding(body: Body, code: String, key: String, path: List[Step]) -> Finding
   start = 0
   for i in 0...path.size
-    if path[i].lock == key
+    if path[i].lock == key and path[i].took == (code == NOT_RELEASED)
       start = i
     end
   end

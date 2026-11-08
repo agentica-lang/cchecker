@@ -205,9 +205,10 @@ counts them fixed and never drops them on `--update-baseline`.
 
 The rules build a control flow graph of each function that takes or releases a lock, and follow every path through
 it: `if`, `switch` with its fallthrough and without a `default`, loops with `break` and `continue`, `goto` (a computed
-one may go to any label), `return`, `&&`, `||`, `?:` and statement expressions. A path ends at a `return`, at the end
-of the body, or at a call that never comes back (`abort`, a `_Noreturn` or `noreturn` function, or one marked
-`CC_NORETURN`, such as a function that jumps out with `longjmp`); a lock held there is not a finding. The cleanup
+one may go to any label), `return`, `&&`, `||`, `?:`, `x ?: y` and statement expressions. A path ends at a `return`,
+at the end of the body, or at a call that never comes back (`abort`, a `_Noreturn` or `noreturn` function, through a
+typedef or a function pointer too, or one marked `CC_NORETURN`, such as a function that jumps out with `longjmp`); a
+lock held there is not a finding. The cleanup
 function of a variable with `__attribute__((cleanup(f)))` runs on every way out of its block.
 
 | Code | |
@@ -216,7 +217,8 @@ function of a variable with `__attribute__((cleanup(f)))` runs on every way out 
 | `CC-PATH-LOCK-NOT-HELD` | a path releases a lock that the function did not take |
 
 The finding is at the function, once for each code and lock, and `path` is a shortest path that breaks the rule, from
-the call that took (or released) the lock to the end: `7:7 true` is the condition at line 7, column 7, taken as true.
+the last call that took the lock (or released it, for `NOT-HELD`) to the end: `7:7 true` is the condition at line 7,
+column 7, taken as true.
 
 ```text
 src/queue.c:5:5 CC-PATH-LOCK-NOT-RELEASED pop does not release q->mu on every path: 6:3 takes q->mu -> 7:7 true -> 8:5 returns
@@ -231,8 +233,13 @@ is a condition compared with 0, on the side where it gave 0: `if (pthread_mutex_
 on a condition (`pthread_cond_wait(&cv, &q->mu)`) gives the lock back before it returns, so it changes nothing.
 
 A path does not go where a condition that the function tests twice would have to be true and false, so `if (locked)
-lock(); ...; if (locked) unlock();` passes; a write to a variable of the condition forgets its value. A function whose
-paths would take more than 200 000 states to follow is checked without these conditions.
+lock(); ...; if (locked) unlock();` passes; a write to a variable of the condition, or a call given its address
+(`f(&locked)`), forgets its value; a call given `&q->mu` does not change `q`. A function whose paths would take more
+than 200 000 states to follow is walked again without these conditions; when that is not enough either, its findings
+are those of the paths followed, and the run counts it in `incomplete_functions` of `--json` and says so on standard
+error (the exit code does not change). A function whose AST has more than 20 000 nodes (about four times the largest
+of the Agentica VM) gets no graph: that is an error of the `rules` tool on its file, so the exit code is 2, and the
+rest of the run is checked.
 
 A function that takes a lock for its caller, or releases the caller's lock, says so on its prototype:
 `CC_ACQUIRES(lock)` or `CC_RELEASES(lock)`, with the lock written in the names of its parameters (or a global). A call
@@ -243,6 +250,11 @@ returns with it is a finding, so a forgotten unlock never passes for a helper. P
 the callers include: a caller sees the declarations of its own file. A function that takes or releases a lock only on
 some of its returns (`false` when it dropped the lock) is beyond these rules: suppress its findings with `CC_IGNORE`,
 with the reason. A call through a function pointer does nothing to the locks.
+
+Limits: a lock is counted by its text, so a lock taken in a loop over several objects (`lock(&a[i]->mu)`), locks
+taken hand over hand, or a pointer that is set again between the lock and the unlock (`q = q->next`) can give false
+findings; the result of a lock stored before the test (`r = trylock(&q->mu); if (r == 0)`) takes nothing; a global
+that a called function changes keeps the value the path knew.
 
 The AST of a file is tens of MiB with its system headers, more than a process output holds in Agentica (1 MiB):
 `sh` writes it to a file in a private folder under `$TMPDIR`, and cchecker reads it line by line and keeps only the

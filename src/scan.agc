@@ -314,9 +314,11 @@ def close(state: State) -> State
   return state.with(phase: Phase.Between, lines: [])
 end
 
+# A line is kept without its indent: a deep expression (a chain of `else if` or of `||`) is indented by its depth on
+# every line, which would make the text grow with the square of the chain. No string of the dump spans two lines.
 def keep(state: State, line: String) -> State
   if state.phase == Phase.Open or state.phase == Phase.Kept
-    return state.with(lines: state.lines.push(line))
+    return state.with(lines: state.lines.push(line.strip))
   end
 
   return state
