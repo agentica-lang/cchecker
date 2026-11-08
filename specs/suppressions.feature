@@ -99,7 +99,48 @@ Feature: Suppressions
       | CC-GCC-ANALYZER-*, CC-TIDY-CLANG-ANALYZER-*                     | 0    |
       | CC-GCC-ANALYZER-MALLOC-LEAK                                     | 1    |
 
-  Scenario Outline: A suppression without a reason or a code is a usage error
+  Scenario: A trailing comment holds for its own line only, and each one gets its finding
+    Given the C file "leaks.c" holds:
+      """
+      #include <stdlib.h>
+      void f1(void) { char *x = malloc(1); } // cchecker: ignore CC-GCC-ANALYZER-MALLOC-LEAK: one
+      void f2(void) { char *x = malloc(1); } // cchecker: ignore CC-GCC-ANALYZER-MALLOC-LEAK: two
+      """
+    When I run cchecker with "--tools gcc --json $DIR/leaks.c"
+    Then the exit code is 0
+    And the output includes:
+      """
+      "line":3,"column":
+      """
+    And the output includes:
+      """
+      "reason":"two"}]
+      """
+    Given the C file "leaks.c" holds:
+      """
+      #include <stdlib.h>
+      void f1(void) { char *x = malloc(1); } // cchecker: ignore CC-GCC-ANALYZER-MALLOC-LEAK: one
+      void f2(void) { char *x = malloc(1); }
+      """
+    When I run cchecker with "--tools gcc --json $DIR/leaks.c"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "line":3,"column":38,"message":"leak of 'x'","path":[]}]
+      """
+
+  Scenario: The marker in a string or in a comment that only mentions it is no suppression
+    Given the C file "notes.c" holds:
+      """
+      #include <stdio.h>
+
+      /* Write "cchecker: ignore CODE: reason" next to a false positive. */
+      void hint(void) { puts("cchecker: ignore CODE: reason"); }
+      """
+    When I run cchecker with "--tools gcc --json $DIR/notes.c"
+    Then the exit code is 0
+
+  Scenario Outline: A suppression without a reason, a code or a code of a tool is a usage error
     Given the C file "leak.c" holds:
       """
       #include "stdlib.h" /* found in the system folders */
@@ -123,6 +164,8 @@ Feature: Suppressions
       | /* cchecker: ignore CC-GCC-ANALYZER-MALLOC-LEAK */           | 2    |
       | /* cchecker: ignore CC-GCC-ANALYZER-MALLOC-LEAK: */          | 2    |
       | /* cchecker: ignore : a reason */                            | 2    |
+      | /* cchecker: ignore    CC-GCC-ANALYZER-MALLOC-LEAK: spaces */ | 0    |
+      | /* cchecker: ignore CC-GCCC-ANALYZER-MALLOC-LEAK: a reason */ | 2    |
 
   Scenario: A suppression that matches no finding is a finding
     Given the C file "clean.c" holds:
@@ -251,6 +294,27 @@ Feature: Suppressions
       """
     When I run cchecker with "--tools gcc -b $DIR/base.json --json $DIR/leak.c"
     Then the exit code is 1
+    And the output includes:
+      """
+      "baselined":0
+      """
+
+  Scenario: An unused suppression never goes into the baseline
+    Given the C file "clean.c" holds:
+      """
+      int add(int a, int b) {
+        /* cchecker: ignore CC-GCC-ANALYZER-MALLOC-LEAK: left from an old version */
+        return a + b;
+      }
+      """
+    When I run cchecker with "--tools gcc -b $DIR/base.json --update-baseline $DIR/clean.c"
+    Then the exit code is 0
+    When I run cchecker with "--tools gcc -b $DIR/base.json --json $DIR/clean.c"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "code":"CC-UNUSED-IGNORE"
+      """
     And the output includes:
       """
       "baselined":0

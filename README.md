@@ -95,8 +95,10 @@ other checks would lose the findings of the default ones). The exit code is `2` 
 ### Suppressions
 
 A finding that is a false positive, where the check cannot be made smarter, is suppressed next to the code, with the
-reason. A comment holds for the findings of its line and of the line below it; it takes one or more codes, and a code
-that ends with `*` is a prefix:
+reason. A comment that trails code holds for the findings of its line; a comment alone on its line holds for its line
+and the line below it. Only a comment that starts with `cchecker: ignore` counts (not a string or a comment that
+mentions it). It takes one or more codes, each of a tool (`CC-GCC-`, `CC-TIDY-` or `CC-EFFECT-`), and a code that ends
+with `*` is a prefix:
 
 ```c
 /* cchecker: ignore CC-GCC-ANALYZER-MALLOC-LEAK: conn_free frees it through the struct */
@@ -105,12 +107,14 @@ q = malloc(n); // cchecker: ignore CC-GCC-ANALYZER-*, CC-TIDY-CLANG-ANALYZER-UNI
 ```
 
 A finding of the rules belongs to a function: `CC_IGNORE("CC-EFFECT-SHORT-BLOCKS", "reason")` on any declaration of
-the function suppresses it (see Annotations). A suppression without a code or a reason is a usage error (exit 2).
+the function suppresses it (see Annotations). A suppression without a code or a reason, or with a code of no tool, is
+a usage error (exit 2). When two suppressions hold for a finding, the reason of the nearer one is shown, and both count
+as used.
 `--json` lists the suppressed findings under `suppressed`, each with its `reason`, and the summary line counts them. A
 suppression that matches no finding is a finding, `CC-UNUSED-IGNORE`, at the comment or the function, once the run
 covered every tool of its codes on that file, as the baseline does (for the rules, a full run of a compile database):
-a stale one shows when the code changes or a check gets better. Suppressions apply
-before the baseline, so a suppressed finding never goes into it.
+a stale one shows when the code changes or a check gets better. Suppressions apply before the baseline, so a
+suppressed finding never goes into it, and neither does a `CC-UNUSED-IGNORE`: the fix is to edit or remove the comment.
 
 ### Options
 
