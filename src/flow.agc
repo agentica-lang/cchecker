@@ -8,8 +8,8 @@
 import Ast from "ast"
 import Known from "known"
 
-## The start of the key of the lock that stands for a CC_PAIR(set, restore): `pair:set`, which the calls of `set` take
-## and the calls of `restore` release: no lock expression of the code looks like it.
+## The start of the key of the lock that stands for a CC_PAIR(set, restore): `pair:set:restore`, which the calls of
+## `set` take and the calls of `restore` release: no lock expression of the code looks like it.
 export PAIR_PREFIX = "pair:"
 
 # The nodes that do not change the value of the expression inside them.

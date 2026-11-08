@@ -314,6 +314,13 @@ CC_PAIR(gc_pause, gc_resume) int copy_out(struct heap *h);                  /* i
 
 The path goes from the call of `set` to the return: `7:3 calls mask_signals -> 8:7 true -> 9:5 returns`.
 
+Two pairs on one `set` are two pairs (both restores are needed), and one `restore` of two sets restores both; the
+same pair written twice counts once. A pair holds in the files that see its declaration, as the lock annotations do.
+A `CC_PAIR` that names a function the file does not declare does nothing. A `set` that can fail (and so needs no
+`restore` when it failed) is beyond the rule, as a trylock helper is: suppress the finding with `CC_IGNORE`. When the
+restore happens in a function that the code calls (`finish(ctx)` calls `restore_signals`), name that function:
+`CC_PAIR(mask_signals, finish)`.
+
 The AST of a file is tens of MiB with its system headers, more than a process output holds in Agentica (1 MiB):
 `sh` writes it to a file in a private folder under `$TMPDIR`, and cchecker reads it line by line and keeps only the
 declarations of the project. A table of numbers is not kept: an array of a number or character type, or whose first
