@@ -8,6 +8,7 @@ import Findings from "findings"
 import {Finding, ToolError, UnresolvedCallback} from "findings"
 import Locking from "locking"
 import {Options} from "options"
+import Ownership from "ownership"
 import Paths from "paths"
 import Report from "report"
 import Suppressions from "suppressions"
@@ -442,13 +443,19 @@ def collect(options: Options, config: Config.Config, jobs: List[Tools.Job], cwd:
 
   checked = Effects.check(units, config, options.infer, options.all_paths, cwd)
   locked = Locking.check(units)
+  owned = Ownership.check(units)
   return Collected(
-    findings: findings.concat(checked.findings).concat(locked.findings),
+    findings: (
+      findings.concat(checked.findings)
+        .concat(locked.findings)
+        .concat(owned.findings)
+        .concat(units.flat_map do |unit| unit.collected end.select do |f| not config.off.include?(f.source) end)
+    ),
     errors: errors,
     ran: ran,
     units: units,
     skipped_declarations: skipped_declarations,
-    incomplete_functions: locked.incomplete,
+    incomplete_functions: locked.incomplete + owned.incomplete,
     unresolved: checked.unresolved,
     missing_roots: checked.missing_roots,
   )

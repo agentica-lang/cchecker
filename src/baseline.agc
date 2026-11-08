@@ -154,7 +154,7 @@ export def tool_of(code: String) -> String
     return "clang-tidy"
   end
 
-  if code.start_with?("CC-EFFECT-") or code.start_with?("CC-PATH-")
+  if code.start_with?("CC-EFFECT-") or code.start_with?("CC-PATH-") or code.start_with?("CC-OWN-")
     return "rules"
   end
 

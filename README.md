@@ -9,8 +9,9 @@ The rules read clang's JSON AST and the annotations of `include/cchecker.h`. Thi
 graph (a `CC_SHORT` function never reaches a blocking call, and a `CC_HOT` function never allocates or makes a system
 call) and locks on every path of a function: a lock taken is released, a lock released is held, no system call runs
 under a lock marked `CC_NO_SYSCALL_UNDER`, locks are taken in the order of their `CC_LOCK_LEVEL`, and the set of a
-`CC_PAIR` is restored. Ownership comes in a later phase; the plan is in
-[issue 1](https://github.com/agentica-lang/cchecker/issues/1).
+`CC_PAIR` is restored. It also checks ownership on every path: a pointer marked `CC_OWNS` is freed or handed on, not
+freed twice and not used after; and a value of the collector (`CC_GC`, `CC_GC_ALLOC`) is never stored in memory from
+`malloc` or in a static. The plan is in [issue 1](https://github.com/agentica-lang/cchecker/issues/1).
 
 ## Install
 
@@ -74,7 +75,7 @@ A code is stable: a baseline holds it. `CC-GCC-` is followed by the gcc warning 
 (`-Wanalyzer-malloc-leak` is `CC-GCC-ANALYZER-MALLOC-LEAK`, also when `-Werror` made it
 `-Werror=analyzer-malloc-leak`), and `CC-TIDY-` by the clang-tidy check (`clang-analyzer-unix.Malloc` is
 `CC-TIDY-CLANG-ANALYZER-UNIX-MALLOC`). A diagnostic without a name is `CC-GCC-WARNING` or `CC-TIDY-WARNING`. The
-rules have `CC-EFFECT-` and `CC-PATH-` codes (below).
+rules have `CC-EFFECT-`, `CC-PATH-` and `CC-OWN-` codes (below).
 
 ### Baseline
 
@@ -102,8 +103,8 @@ flag set to false (Settings), for the same reason. The exit code is `2` in each 
 A finding that is a false positive, where the check cannot be made smarter, is suppressed next to the code, with the
 reason. A comment that trails code holds for the findings of its line; a comment alone on its line holds for its line
 and the line below it. Only a comment that starts with `cchecker: ignore` counts (not a string or a comment that
-mentions it). It takes one or more codes, each of a tool (`CC-GCC-`, `CC-TIDY-`, `CC-EFFECT-` or `CC-PATH-`), and a
-code that ends with `*` is a prefix:
+mentions it). It takes one or more codes, each of a tool (`CC-GCC-`, `CC-TIDY-`, `CC-EFFECT-`, `CC-PATH-` or
+`CC-OWN-`), and a code that ends with `*` is a prefix:
 
 ```c
 /* cchecker: ignore CC-GCC-ANALYZER-MALLOC-LEAK: conn_free frees it through the struct */
@@ -154,7 +155,7 @@ tools that are running (they end by themselves or at the timeout); see
 
 `include/cchecker.h` defines the macros that the rules read: `CC_SHORT`, `CC_BLOCKING`, `CC_HOT`, `CC_ACQUIRES(lock)`,
 `CC_RELEASES(lock)`, `CC_NORETURN`, `CC_NO_SYSCALL_UNDER(lock)`, `CC_LOCK_LEVEL(n)`, `CC_PAIR(set, restore)`,
-`CC_OWNS` (for a later phase) and `CC_IGNORE("CODE", "reason")` (a suppression). With clang each is
+`CC_OWNS`, `CC_FREES`, `CC_GC`, `CC_GC_ALLOC` and `CC_IGNORE("CODE", "reason")` (a suppression). With clang each is
 `__attribute__((annotate("cchecker:...")))`; with any other compiler it is empty. When cchecker dumps the AST it
 defines `CCHECKER_AST`, and the macros become `deprecated("cchecker:...")`: the JSON AST of clang 19 drops the text of
 `annotate` and keeps the message of `deprecated`. The dump runs with `-w`, so this gives no warning.
@@ -190,6 +191,7 @@ pthread_blocking = true
 libuv_blocking = true
 libgc_blocking = true
 libuv_callbacks_short = true
+libgc_alloc = true
 
 [roots]
 short = ["io_poll", "on_timer"]
@@ -211,9 +213,10 @@ it reaches (`libc_blocking`), and for an inferred root the inference before it (
 | `libuv_blocking` | `uv_run`, `uv_sleep`, `uv_thread_join`, the locks and waits of `uv_mutex_`, `uv_rwlock_`, `uv_cond_`, `uv_sem_`, `uv_barrier_wait`, `uv_once`, and the `uv_fs_*` calls whose libc call blocks (`uv_fs_open`, `uv_fs_read`, `uv_fs_write`, `uv_fs_fsync`, `uv_fs_fdatasync`, `uv_fs_copyfile`, `uv_fs_sendfile`, `uv_fs_mkstemp`, `uv_fs_realpath`) when their callback, the last argument, is `NULL` or 0 |
 | `libgc_blocking` | `GC_gcollect` of the Boehm collector, which stops the world |
 | `libuv_callbacks_short` | a `CC_SHORT` root for each function passed as a callback that libuv runs on the loop thread: the `cb` of `uv_timer_start` (argument 1, from 0), `uv_poll_start` (2), `uv_async_init` (2) and `uv_close` (1), the `alloc_cb` and `read_cb` of `uv_read_start` (1 and 2), the callback of `uv_write` (4), `uv_write2` (5), `uv_shutdown` (2), `uv_tcp_connect` (3), `uv_pipe_connect` (3) and `uv_pipe_connect2` (5), and the `after_work_cb` of `uv_queue_work` (3), never its `work_cb`, which runs on the pool (Roots) |
+| `libgc_alloc` | the allocators of the Boehm collector (`GC_malloc`, `GC_malloc_atomic`, `GC_realloc`, `GC_strdup`, their `GC_debug_` forms, ...) to the allocators of `CC_GC_ALLOC`, in the rule on values of the collector (`source` `libgc_alloc`) |
 
-A flag changes only the blocking calls of `CC_SHORT`: the rules of `CC_HOT` and of `CC_NO_SYSCALL_UNDER` count every
-known blocking call as a system call whatever the flags.
+A blocking flag changes only the blocking calls of `CC_SHORT`: the rules of `CC_HOT` and of `CC_NO_SYSCALL_UNDER`
+count every known blocking call as a system call whatever the flags.
 
 `[effects]` holds how the effect rules walk the project's own functions, so it is not a `[library]` flag, which is a
 fact of a library. `follow_cold = true` makes the walk go into a function that never returns or is cold (below in
@@ -431,6 +434,89 @@ A `CC_PAIR` that names a function the file does not declare does nothing. A `set
 `restore` when it failed) is beyond the rule, as a trylock helper is: suppress the finding with `CC_IGNORE`. When the
 restore happens in a function that the code calls (`finish(ctx)` calls `restore_signals`), name that function:
 `CC_PAIR(mask_signals, finish)`.
+
+### Ownership on every path
+
+`CC_OWNS` says that a place owns the memory its pointer points to, which is freed once, with `free` or with a
+function of the project marked `CC_FREES`:
+
+```c
+CC_OWNS char *read_name(int fd);            /* returns a pointer that the caller owns */
+void adopt(CC_OWNS char *name);             /* takes what the caller passes */
+void conn_free(CC_FREES struct conn *c);    /* frees what the caller passes */
+struct conn { CC_OWNS char *buf; };         /* a store into the field hands the pointer on */
+
+int load(int n) {
+  CC_OWNS char *buf = malloc(n);            /* the local owns its value */
+```
+
+The rules follow every path of a function that has a pointer that owns, with the graph and the walk of the locks and
+their limits (a function with too many paths counts in `incomplete_functions`, once for each walk). A parameter marked
+`CC_OWNS` or `CC_FREES` owns from the entry, a local marked `CC_OWNS` owns the value it gets (other than `NULL`), and a
+local that gets the value of a `CC_OWNS` function owns it without a mark. On every path that returns, each one is freed
+or handed on: returned, stored in a `CC_OWNS` field (or an item of one, `q->items[i] = p`, or a `CC_OWNS` global), or
+passed to a `CC_OWNS` parameter. Stored anywhere else or passed to another parameter, it is lent and still owns. A
+condition that tells that a pointer is null (`if (!p)`, `if ((p = malloc(n)) == NULL)`) leaves it owning nothing on
+that side.
+
+A local without a mark that gets a pointer that owns (`char *c = p`) stands for it: freeing `c` frees `p`. A local
+marked `CC_OWNS` that gets one takes it over, and `p` owns no more. `t = realloc(p, n)` moves `p` to `t`, and `p` owns
+again where `t` is null; `p = realloc(p, n)` keeps `p` owning. A pointer lent to be set (`fill(&p)`) owns what the
+call left in it, which the rules do not know: no finding says it leaks. The marks of the parameters of a prototype
+hold in the definition and in every caller that includes it.
+
+| Code | |
+|---|---|
+| `CC-OWN-LEAK` | a path returns, or gives a pointer a new value, while it still owns; or drops the value of a `CC_OWNS` function (kept nowhere: not in a local, a `CC_OWNS` place, a return or a parameter that takes it) |
+| `CC-OWN-DOUBLE-FREE` | a path frees a pointer that it already freed or handed on |
+| `CC-OWN-USE-AFTER-FREE` | a path reads, returns or hands on a pointer after it freed it or handed it on |
+
+The finding is at the function, once for each code and pointer, and `path` goes from where the pointer got its value
+(or from the free) to the step that breaks the rule:
+
+```text
+src/load.c:6:5 CC-OWN-LEAK load does not free or hand on buf on every path: 9:21 buf = malloc -> 10:8 true -> 12:7 true -> 13:5 returns
+```
+
+A `malloc` into a local without a mark is not checked: `gcc -fanalyzer` reports those leaks, and the mark makes the
+contract part of the code. The rules do not follow a pointer into a struct or an array (a store into a `CC_OWNS` field
+is where they stop), through a function pointer, or out through a parameter (`int open_buf(char **out)`: the caller
+lends `&p` to be set). Two locals of the same name in one function are one pointer.
+
+### Values of the collector
+
+A collector frees what no pointer that it sees points to. It scans its own heap and its roots (the stacks, and the
+statics for some), never memory from `malloc`: a pointer kept there, or in a static that it does not scan, does not
+keep the value alive. The rule keeps them out of both. `CC_GC` on a struct, a union or a typedef says that the
+collector manages its values, and `CC_GC_ALLOC` on a function that it returns memory of the collector; the allocators
+of the Boehm collector (`GC_malloc`, `GC_malloc_atomic`, `GC_realloc`, ...) are known (`[library]` `libgc_alloc`).
+
+```c
+struct CC_GC object { ... };                     /* a struct object, or a pointer to one */
+typedef struct { uint64_t bits; } value CC_GC;   /* a value, or a pointer to one */
+CC_GC_ALLOC void *gc_alloc(size_t size);         /* the memory it returns */
+```
+
+A value of the collector is a value of a marked type, a pointer to one, a struct that holds one (by value or by
+pointer), the value of an allocator of the collector, or a local that got one of those; a cast does not hide it. The
+rule reads each store of a function (`a[i] = v`, `p->f = v`, `*p = v`, `x = v`):
+
+| Code | |
+|---|---|
+| `CC-OWN-GC-IN-MALLOC` | a value of the collector is stored in memory from `malloc`: what a pointer points to when it got the value of `malloc`, `calloc`, `realloc`, `strdup` or a `CC_OWNS` function, or is marked `CC_OWNS` (a local, a parameter, a field or a global) |
+| `CC-OWN-GC-IN-STATIC` | a value of the collector is stored in a variable of static storage (a global, a static local, or a field or an item of one), or such a variable has a collector type |
+
+The finding of a store is at the function, once for each code and target, with the store as its path:
+
+```text
+src/table.c:6:8 CC-OWN-GC-IN-MALLOC table stores a value of the collector in memory from malloc: items[i]: 9:5 stores gc_alloc in items[i]
+```
+
+A variable of static storage of a collector type is a finding at the variable (a global or a file static, at its
+definition, not at an `extern`), and at the function for a static local. The rule does not follow the paths: a local
+that got memory from `malloc` anywhere in the function points to it everywhere in it. Memory it cannot tell (a
+parameter that is not marked, a field that is not `CC_OWNS`) is not reported, nor is a copy that is no store
+(`memcpy`, a value passed to a function that stores it).
 
 The AST of a file is tens of MiB with its system headers, more than a process output holds in Agentica (1 MiB):
 `sh` writes it to a file in a private folder under `$TMPDIR`, and cchecker reads it line by line and keeps

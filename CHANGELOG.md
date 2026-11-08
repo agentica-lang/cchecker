@@ -48,6 +48,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Calls through function pointers are followed; a lock mark that cannot be read is an error of the `rules` tool.
 - Pairs of calls: `CC_PAIR(set, restore)` on a function (or on `set` itself, for all its callers) and
   `CC-PATH-PAIR-NOT-RESTORED` for a path that returns after `set` without `restore`.
+- Ownership on every path: `CC_OWNS` on a local, a parameter, a function (it returns an owned pointer) or a field,
+  and `CC_FREES` on a parameter. `CC-OWN-LEAK`: a path returns while a pointer still owns, overwrites it, or drops the
+  value of a `CC_OWNS` function; `CC-OWN-DOUBLE-FREE` and `CC-OWN-USE-AFTER-FREE`.
+- Values of the collector: `CC_GC` on a type and `CC_GC_ALLOC` on an allocator (the Boehm allocators are known,
+  `[library]` `libgc_alloc`).
+  `CC-OWN-GC-IN-MALLOC` and `CC-OWN-GC-IN-STATIC`: such a value stored in memory from `malloc` or in a static, or a
+  static of a collector type.
 - `--clang PROGRAM`, the clang that dumps the AST. Under `CCHECKER_AST`, `cchecker.h` writes the annotations as
   `deprecated` attributes, whose text clang 19 keeps in its JSON AST.
 

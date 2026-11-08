@@ -14,8 +14,10 @@ src/              one module per topic (`ls src/`): the compile database, runnin
                   out of the AST dump), ast (reading its nodes), unit (functions, calls, pointer stores), effects
                   (the call graph and its rules), known (the blocking, allocating, system and lock calls by family,
                   the libuv callbacks that are roots), flow (the control flow graph of a function), locking (the
-                  lock and CC_PAIR rules on its paths), held (what runs while a lock is held); config (the settings:
-                  -c, cchecker.toml, [tool.cchecker] of agentica.toml); suppressions (`cchecker: ignore`, CC_IGNORE)
+                  lock and CC_PAIR rules on its paths), held (what runs while a lock is held), ownership (the CC_OWNS
+                  rules on its paths), collector (values of the collector out of malloc memory and statics); config
+                  (the settings: -c, cchecker.toml, [tool.cchecker] of agentica.toml); suppressions
+                  (`cchecker: ignore`, CC_IGNORE)
 include/          cchecker.h: the annotation macros that the rules read (CC_SHORT, ...)
 specs/            .feature files (BDD through the CLI) and steps.agc; specs/fixtures/ holds the small C files and a
                   compile_commands.json for them

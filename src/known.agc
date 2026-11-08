@@ -146,6 +146,29 @@ export NORETURN = Set.new([
   "__assert_fail", "__builtin_unreachable", "__builtin_trap", "err", "errx", "verr", "verrx",
 ])
 
+## The calls that return memory of the heap for the caller to free: a pointer that owns gets a new value from them.
+export OWNED = Set.new([
+  "malloc", "calloc", "realloc", "reallocarray", "aligned_alloc", "memalign", "valloc", "pvalloc", "strdup", "strndup",
+])
+
+## The calls that free the memory of their first argument.
+export FREES = Set.new(["free"])
+
+## The calls that move the memory of their first argument to the pointer they return; when that pointer is null, the
+## first argument still owns it.
+export RESIZES = Set.new(["realloc", "reallocarray"])
+
+## The `[library]` flag of the allocators of the Boehm collector (`LIBGC_ALLOC`) in the collector rule.
+export LIBGC_ALLOC_FLAG = "libgc_alloc"
+
+## The allocators of the Boehm collector whose memory it manages (not the uncollectable ones, which are roots).
+export LIBGC_ALLOC = Set.new([
+  "GC_malloc", "GC_malloc_atomic", "GC_realloc", "GC_strdup", "GC_strndup", "GC_malloc_ignore_off_page",
+  "GC_malloc_atomic_ignore_off_page", "GC_debug_malloc", "GC_debug_malloc_atomic", "GC_debug_realloc",
+  "GC_debug_strdup", "GC_debug_strndup", "GC_debug_malloc_ignore_off_page", "GC_debug_malloc_atomic_ignore_off_page",
+  "GC_memalign",
+])
+
 ## A family of library knowledge: the flag of `[library]` that turns it on or off, and the calls it says block.
 export struct Family
   flag: String

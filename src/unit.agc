@@ -6,6 +6,8 @@
 ## that no function is stored in reaches nothing.
 
 import Ast from "ast"
+import Collector from "collector"
+import {Finding} from "findings"
 import Flow from "flow"
 import Known from "known"
 
@@ -21,6 +23,14 @@ LOCK_MARKS = {"acquires": true, "releases": false}
 
 ## The start of the mark of CC_PAIR(set, restore).
 export PAIR_MARK = "pair("
+
+# The marks of ownership.
+OWNS = "owns"
+FREES = "frees"
+
+# The marks of the collector rule.
+GC = "gc"
+GC_ALLOC = "gc_alloc"
 
 # The most nodes of the AST of a function that the path rules build a graph for, about four times the largest function
 # of the Agentica VM. A larger function is an error of the tool, so a run never runs out of memory on one.
@@ -109,8 +119,9 @@ export struct Callback
 end
 
 ## The functions, calls and stores of one translation unit, its callbacks of libuv, the graphs of its functions that
-## take or release a lock, and the annotations of its locks. `too_large` names the functions too large for a graph
-## (`MAX_BODY_NODES`), and `mark_errors` says what is wrong with the lock marks that cannot be read.
+## take or release a lock or own a pointer, the annotations of its locks, and the findings of the collector rule, which
+## reads one unit. `too_large` names the functions too large for a graph (`MAX_BODY_NODES`), and `mark_errors` says
+## what is wrong with the lock marks that cannot be read.
 export struct Unit
   functions: List[Function]
   calls: List[Call]
@@ -120,6 +131,7 @@ export struct Unit
   too_large: List[String] = []
   mark_errors: List[String] = []
   callbacks: List[Callback] = []
+  collected: List[Finding] = []
 end
 
 # A struct or union: its name (a typedef name for an anonymous one) and the ids and names of its fields.
@@ -149,6 +161,7 @@ struct Tables
   static_variables: Map[String, String]
   field_slots: Map[String, String]
   records: Map[String, Record]
+  record_ids: Map[String, Record]
 end
 
 # The function a walk is in: its key, its parameters by name and the names of its local variables.
@@ -170,8 +183,10 @@ export def read(decls: Json) -> Result[Unit]
   nodes = try JSON.list(decls)
   tables = tables_of(nodes)
   ctx = context_of(tables, nodes)
+  marks = collector_marks(tables, nodes)
   functions: List[Function] = []
   bodies: List[Flow.Body] = []
+  collected = Collector.statics(marks, nodes)
   too_large: List[String] = []
   found = Found(calls: [], stores: [])
   for node in nodes
@@ -181,12 +196,17 @@ export def read(decls: Json) -> Result[Unit]
         functions = functions.push(function)
         found = in_function(tables, function.key, node, found)
         own = paired(ctx, tables, function)
-        if function.defined and Flow.locks?(own, node)
+        if function.defined and (Flow.locks?(own, node) or Flow.owns?(own, function.key, node))
           if Ast.size_of(node, MAX_BODY_NODES) > MAX_BODY_NODES
             too_large = too_large.push(function.name)
           else
             bodies = bodies.push(Flow.body_of(own, function.key, node))
           end
+        end
+
+        if function.defined
+          params = owned_params(ctx, function.key, node)
+          collected = collected.concat(Collector.stores(marks, ctx, function.name, Ast.place_of(node), params, node))
         end
 
       "VarDecl" ->
@@ -210,6 +230,7 @@ export def read(decls: Json) -> Result[Unit]
       too_large: too_large,
       mark_errors: marked.errors,
       callbacks: found.callbacks,
+      collected: collected,
     ),
   )
 end
@@ -261,7 +282,138 @@ def context_of(tables: Tables, nodes: List[Json]) -> Flow.Context
     fields = fields.put(id, tables.field_slots[id].replace("field:", ""))
   end
 
-  return Flow.Context(callees: callees, statics: tables.static_functions, fields: fields, globals: global_ids)
+  return Flow.Context(
+    callees: callees,
+    statics: tables.static_functions,
+    fields: fields,
+    globals: global_ids,
+    owning: owning_of(tables, nodes),
+  )
+end
+
+# What the declarations of the unit say about ownership: CC_OWNS on a function (it returns an owned pointer), on a
+# parameter (it takes what the caller passes), on a field or a global (a store into it hands a pointer on), and
+# CC_FREES on a parameter. The marks of the parameters of all the declarations of a function hold, by index.
+def owning_of(tables: Tables, nodes: List[Json]) -> Flow.Owning
+  returns: Set[String] = Set.new([])
+  takes: Map[String, List[Int]] = {}
+  frees: Map[String, List[Int]] = {}
+  declarations = nodes.select do |n| Ast.kind(n) == "FunctionDecl" end
+  for node in declarations
+    key = function_key(tables, Ast.text(node, "name"))
+    if own_marks(node).include?(OWNS)
+      returns = returns.add(key)
+    end
+
+    parameters = Ast.children(node).select do |child| Ast.kind(child) == "ParmVarDecl" end
+    for i in 0...parameters.size
+      marks = own_marks(parameters[i])
+      if marks.include?(OWNS) and not takes.get(key, []).include?(i)
+        takes = takes.put(key, takes.get(key, []).push(i))
+      end
+
+      if marks.include?(FREES) and not frees.get(key, []).include?(i)
+        frees = frees.put(key, frees.get(key, []).push(i))
+      end
+    end
+  end
+
+  fields: Set[String] = Set.new([])
+  for nested in record_decls(nodes, "")
+    record_fields = Ast.children(nested.node).select do |child| Ast.kind(child) == "FieldDecl" end
+    for field in record_fields
+      if own_marks(field).include?(OWNS)
+        fields = fields.add(Ast.text(field, "id"))
+      end
+    end
+  end
+
+  globals = nodes.select do |n| Ast.kind(n) == "VarDecl" and own_marks(n).include?(OWNS) end
+    .map do |n| Ast.text(n, "name") end
+
+  return Flow.Owning(returns: returns, takes: takes, frees: frees, fields: fields, globals: Set.new(globals))
+end
+
+# What the collector rule needs from the unit: the types marked CC_GC (a struct or a union by its name, a typedef by
+# its name and the name of the record it names, and a typedef of a marked record), the records that hold a value of
+# one of them (by value or by pointer, directly or in a record they hold), the allocators marked CC_GC_ALLOC, and the
+# variables of static storage declared at the top of the file.
+def collector_marks(tables: Tables, nodes: List[Json]) -> Collector.Marks
+  types: Set[String] = Set.new([])
+  for nested in record_decls(nodes, "")
+    if own_marks(nested.node).include?(GC)
+      types = types.add(tables.record_ids.get(Ast.text(nested.node, "id")).map do |r| r.name end.unwrap_or(""))
+    end
+  end
+
+  allocators: Set[String] = Set.new([])
+  statics: Set[String] = Set.new([])
+  for node in nodes
+    marks = own_marks(node)
+    case Ast.kind(node)
+      "TypedefDecl" ->
+        # A typedef of a marked record is marked too: clang does not desugar the pointee of `obj_t *`.
+        named = tables.record_ids.get(own_record_id(node)).map do |r| r.name end.unwrap_or("")
+        if marks.include?(GC) or types.include?(named)
+          types = types.add(Ast.text(node, "name")).add(named)
+        end
+
+      "FunctionDecl" ->
+        if marks.include?(GC_ALLOC)
+          allocators = allocators.add(function_key(tables, Ast.text(node, "name")))
+        end
+
+      "VarDecl" -> statics = statics.add(Ast.text(node, "id"))
+      _ -> next
+    end
+  end
+
+  start = Collector.Marks(types: types.delete(""), holders: Set.new([]), allocators: allocators, statics: statics)
+  return with_holders(start, tables)
+end
+
+# The marks with the records that hold a value of the collector, until no more are found.
+def with_holders(marks: Collector.Marks, tables: Tables) -> Collector.Marks
+  grown = marks
+  grew = true
+  while grew
+    grew = false
+    for record in tables.record_ids.values
+      if not grown.holders.include?(record.name) and record.types.any? do |t| Collector.collector_type?(grown, t) end
+        grown = grown.with(holders: grown.holders.add(record.name))
+        grew = true
+      end
+    end
+  end
+
+  return grown
+end
+
+# The record that a typedef names itself (`typedef struct obj obj_t`), not one in a pointer or a function type
+# (`typedef value (*make_fn)(void)`); "" for none.
+def own_record_id(node: Json) -> String
+  types = Ast.children(node).select do |child| not Ast.kind(child).end_with?("Attr") end
+  if types.empty?
+    return ""
+  end
+
+  type = types.first
+  if Ast.kind(type) == "ElaboratedType" and not Ast.children(type).empty?
+    type = Ast.children(type).first
+  end
+
+  if Ast.kind(type) != "RecordType"
+    return ""
+  end
+
+  return Ast.text(JSON.get(type, "decl").unwrap_or(JSON.from("")), "id")
+end
+
+# The names of the parameters of a function that own what the caller passes (CC_OWNS or CC_FREES).
+def owned_params(ctx: Flow.Context, key: String, node: Json) -> List[String]
+  names = params_of(node)
+  indices = ctx.owning.takes.get(key, []).concat(ctx.owning.frees.get(key, []))
+  return indices.select do |i| i < names.size end.map do |i| names[i] end
 end
 
 # The context of the body of a function: CC_PAIR(set, restore) on a function other than `set` holds in its body only.
@@ -494,6 +646,7 @@ def tables_of(nodes: List[Json]) -> Tables
     static_variables: static_variables,
     field_slots: field_slots,
     records: by_type,
+    record_ids: records,
   )
 end
 

@@ -6,7 +6,13 @@
  *   CC_SHORT                    the function never blocks and does bounded work
  *   CC_BLOCKING                 the function may block
  *   CC_HOT                      the function never allocates and makes no system call
- *   CC_OWNS                     the pointer owns its memory: free it or hand it on on every path
+ *   CC_OWNS                     the place owns the memory its pointer points to: a local variable or a parameter
+ *                               frees it or hands it on on every path; a function returns an owned pointer; a
+ *                               store into a CC_OWNS field (or global) hands it on
+ *   CC_FREES                    on a parameter: the function frees what the caller passes there
+ *   CC_GC                       on a struct, a union or a typedef: the collector manages its values; a value of the
+ *                               type, or a pointer to it, is never stored in memory from malloc or in a static
+ *   CC_GC_ALLOC                 the function returns memory that the collector manages, under the same rule
  *   CC_PAIR(set, restore)       in the function, a call of `set` is followed by a call of `restore` on every path;
  *                               on `set` itself, in every function that calls it
  *   CC_NO_SYSCALL_UNDER(lock)   the function makes no system call while `lock` is held; on the field of a lock (or a
@@ -22,6 +28,8 @@
  *
  *   CC_SHORT int next_id(void);
  *   void adopt(CC_OWNS char *name);
+ *   CC_OWNS char *name = malloc(n);
+ *   struct CC_GC object { ... };
  *
  * A lock is an expression of the parameters, or of a global: CC_ACQUIRES(q->mu) on `void lock_queue(struct queue *q)`
  * is the lock `x->mu` for a call `lock_queue(x)`.
@@ -44,6 +52,9 @@
 #define CC_BLOCKING CC_ANNOTATE_("blocking")
 #define CC_HOT CC_ANNOTATE_("hot")
 #define CC_OWNS CC_ANNOTATE_("owns")
+#define CC_FREES CC_ANNOTATE_("frees")
+#define CC_GC CC_ANNOTATE_("gc")
+#define CC_GC_ALLOC CC_ANNOTATE_("gc_alloc")
 #define CC_PAIR(...) CC_ANNOTATE_ARGS_("pair", __VA_ARGS__)
 #define CC_NO_SYSCALL_UNDER(...) CC_ANNOTATE_ARGS_("no_syscall_under", __VA_ARGS__)
 #define CC_ACQUIRES(...) CC_ANNOTATE_ARGS_("acquires", __VA_ARGS__)
@@ -57,6 +68,9 @@
 #define CC_BLOCKING
 #define CC_HOT
 #define CC_OWNS
+#define CC_FREES
+#define CC_GC
+#define CC_GC_ALLOC
 #define CC_PAIR(...)
 #define CC_NO_SYSCALL_UNDER(...)
 #define CC_ACQUIRES(...)
