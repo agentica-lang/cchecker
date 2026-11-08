@@ -33,9 +33,9 @@ export struct ToolError
   message: String
 end
 
-## Returns the findings in the order of the report: by file, line, column and code.
+## Returns the findings in the order of the report: by file, line, column, code and message.
 export def sort(findings: List[Finding]) -> List[Finding]
-  return findings.sort_by do |f| "#{f.file}\n#{pad(f.line)}:#{pad(f.column)}\n#{f.code}" end
+  return findings.sort_by do |f| "#{f.file}\n#{pad(f.line)}:#{pad(f.column)}\n#{f.code}\n#{f.message}" end
 end
 
 ## Returns the findings without the repeats of one place: a header reached by several files is reported by each.

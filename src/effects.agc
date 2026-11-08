@@ -318,7 +318,7 @@ def search(graph: Graph, walk: Walk, start: String, effect: Effect) -> List[List
     key = queue[i]
     i += 1
     for callee in callees(graph, key)
-      if callers.key?(callee) or (not walk.follow_cold and cold?(graph, callee))
+      if callers.key?(callee) or (not walk.follow_cold and skips?(graph, callee))
         next
       end
 
@@ -337,8 +337,13 @@ def search(graph: Graph, walk: Walk, start: String, effect: Effect) -> List[List
   return found
 end
 
-def cold?(graph: Graph, key: String) -> Bool
-  return graph.functions.get(key).map do |f| f.noreturn or f.cold end.unwrap_or(false)
+# A function that never returns or is cold, which the walk does not go into, unless a CC_BLOCKING mark says what it
+# does: the mark wins.
+def skips?(graph: Graph, key: String) -> Bool
+  return graph.functions
+    .get(key)
+    .map do |f| (f.noreturn or f.cold) and not f.marks.include?("blocking") end
+    .unwrap_or(false)
 end
 
 # The path from `start` to `last`. `callers` maps a function to the one that called it first.

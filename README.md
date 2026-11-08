@@ -270,17 +270,19 @@ src/ids.c:7:14 CC-EFFECT-SHORT-BLOCKS short function next_id reaches the blockin
 The baseline matches the message, without the path, so a finding stays accepted when its path changes.
 
 A root gives one finding per code, at the nearest bad call. With `--all-paths` it gives one for each distinct bad call
-it reaches, each with its shortest path, so a project sees them all in one run. The message names the bad call, so
-each finding has a key of its own in the baseline (code, file and message: `short function serve reaches the blocking
-call sleep`), and the nearest one is the finding a run without `--all-paths` gives, with the same key. A baseline
+it reaches, each with its shortest path, so a project sees them all in one run. The message names the bad call by its
+name, so each finding is keyed in the baseline by the name of its call (code, file and message: `short function serve
+reaches the blocking call sleep`; two static functions of one name in two files share that key, and the baseline
+counts them), and the nearest one is the finding a run without `--all-paths` gives, with the same key. A baseline
 written with `--all-paths` holds the others too, so run CI the same way: a run without it counts them fixed. A bad
 call is reached once, by its shortest path, and the walk does not go past it.
 
 The walk does not go into a function that never returns or is cold: one declared `_Noreturn`, `[[noreturn]]`,
 `CC_NORETURN` or `__attribute__((noreturn))` (in its type too, behind a typedef: `typedef void fatal_fn(const char *)
 __attribute__((noreturn)); fatal_fn die;`), or `__attribute__((cold))`, on any of its declarations. Such a call is an
-error exit (`out_of_memory`, `die`), not the path the rules are about. `[effects] follow_cold = true` follows it. The
-lock rules (`CC_NO_SYSCALL_UNDER`) follow every call whatever it says.
+error exit (`out_of_memory`, `die`), not the path the rules are about. `[effects] follow_cold = true` follows it. A
+`CC_BLOCKING` mark on such a function wins: it is a blocking call. The lock rules (`CC_NO_SYSCALL_UNDER`) follow every
+call whatever it says.
 
 | Code | |
 |---|---|

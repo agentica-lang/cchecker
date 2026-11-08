@@ -287,10 +287,14 @@ export def shown_of(lock: String) -> String
 end
 
 ## Returns whether the type of a node (a function, or a pointer to one) says that it never returns, as clang writes it
-## or without its typedefs, so a `noreturn` behind a typedef shows.
+## or without its typedefs, so a `noreturn` behind a typedef shows. clang writes the attribute at the end of the type
+## it belongs to, so one inside (a parameter that points to a function that does not return) does not count.
 export def noreturn_type?(node: Json) -> Bool
   type = JSON.get(node, "type").unwrap_or(JSON.from(""))
-  return "#{Ast.text(type, "qualType")} #{Ast.text(type, "desugaredQualType")}".include?(NORETURN_TYPE)
+  return (
+    Ast.text(type, "qualType").end_with?(NORETURN_TYPE) or
+    Ast.text(type, "desugaredQualType").end_with?(NORETURN_TYPE)
+  )
 end
 
 def identifier_char?(c: String) -> Bool
