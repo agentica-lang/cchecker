@@ -445,15 +445,11 @@ export def variable_name(node: Json) -> String
   return ""
 end
 
-## Returns every node under the given ones.
+## Returns every node under the given ones, each before the nodes inside it.
 export def descendants(nodes: List[Json]) -> List[Json]
   found: List[Json] = []
-  pending = nodes.reverse
-  while not pending.empty?
-    node = pending.last
-    pending = pending.take(pending.size - 1)
-    found = found.push(node)
-    pending = pending.concat(Ast.children(node).reverse)
+  for node in nodes
+    found = with_descendants(found, node)
   end
 
   return found
@@ -1756,4 +1752,14 @@ def link(b: Builder, froms: List[Int], to: Int) -> Builder
   end
 
   return b.with(nodes: nodes)
+end
+
+# `found` with the node and every node inside it, in order. Only pushes, so the list is never copied.
+def with_descendants(found: List[Json], node: Json) -> List[Json]
+  all = found.push(node)
+  for child in Ast.children(node)
+    all = with_descendants(all, child)
+  end
+
+  return all
 end
