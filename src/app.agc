@@ -5,6 +5,7 @@ import Commands from "commands"
 import Effects from "effects"
 import Findings from "findings"
 import {Finding, ToolError} from "findings"
+import Locking from "locking"
 import {Options} from "options"
 import Paths from "paths"
 import Report from "report"
@@ -350,7 +351,8 @@ def collect(options: Options, jobs: List[Tools.Job]) -> Collected
     end
   end
 
-  return Collected(findings: findings.concat(Effects.check(units)), errors: errors, ran: ran, units: units)
+  rules = Effects.check(units).concat(Locking.check(units))
+  return Collected(findings: findings.concat(rules), errors: errors, ran: ran, units: units)
 end
 
 # The suppressions of the run: the comments in the files it ran and in the files of its findings, and the CC_IGNORE of

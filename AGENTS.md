@@ -11,9 +11,10 @@ agentica.toml     the package (name, [style])
 cchecker.agc      main: the options, the run, the exit code
 src/              one module per topic (`ls src/`): the compile database, running the tools, parsing their
                   output, the findings, the baseline, the report; for the rules: scan (the project's declarations
-                  out of the AST dump), unit (functions, calls, pointer stores), effects (the call graph and its
-                  rules), known (the blocking, allocating and system calls); suppressions (`cchecker: ignore`,
-                  CC_IGNORE)
+                  out of the AST dump), ast (reading its nodes), unit (functions, calls, pointer stores), effects
+                  (the call graph and its rules), known (the blocking, allocating, system and lock calls), flow (the
+                  control flow graph of a function), locking (the lock rules on its paths); suppressions (`cchecker:
+                  ignore`, CC_IGNORE)
 include/          cchecker.h: the annotation macros that the rules read (CC_SHORT, ...)
 specs/            .feature files (BDD through the CLI) and steps.agc; specs/fixtures/ holds the small C files and a
                   compile_commands.json for them

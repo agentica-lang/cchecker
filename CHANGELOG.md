@@ -16,6 +16,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Suppressions with a reason: a comment `cchecker: ignore CODE: reason` on the line of a finding or the line above,
   and `CC_IGNORE("CODE", "reason")` on a function for the rules. `--json` lists them under `suppressed`; one that
   matches no finding is `CC-UNUSED-IGNORE`; a suppressed finding never goes into the baseline.
+- Locks on every path: a control flow graph of each function that takes or releases a lock.
+  `CC-PATH-LOCK-NOT-RELEASED`: a path returns with a lock the function took; `CC-PATH-LOCK-NOT-HELD`: a path releases
+  a lock it did not take. `CC_ACQUIRES(lock)` and `CC_RELEASES(lock)` mark the helpers that take or drop a lock for
+  their caller, and `CC_NORETURN` a function that never comes back.
 - `--clang PROGRAM`, the clang that dumps the AST. Under `CCHECKER_AST`, `cchecker.h` writes the annotations as
   `deprecated` attributes, whose text clang 19 keeps in its JSON AST.
 

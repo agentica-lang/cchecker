@@ -9,12 +9,18 @@
  *   CC_OWNS                     the pointer owns its memory: free it or hand it on on every path
  *   CC_PAIR(set, restore)       the function changes state that `restore` puts back
  *   CC_NO_SYSCALL_UNDER(lock)   the function makes no system call while `lock` is held
+ *   CC_ACQUIRES(lock)           the function returns with `lock` held, for its caller to release
+ *   CC_RELEASES(lock)           the function releases `lock`, which its caller took
+ *   CC_NORETURN                 a call of the function never comes back (it jumps out or ends the thread)
  *   CC_IGNORE("CODE", "reason") a finding of the rules on the function is a false positive, for this reason
  *
  * Put an annotation before the declaration, or before the type of a parameter:
  *
  *   CC_SHORT int next_id(void);
  *   void adopt(CC_OWNS char *name);
+ *
+ * A lock is an expression of the parameters, or of a global: CC_ACQUIRES(q->mu) on `void lock_queue(struct queue *q)`
+ * is the lock `x->mu` for a call `lock_queue(x)`.
  */
 #ifndef CCHECKER_H
 #define CCHECKER_H
@@ -36,6 +42,9 @@
 #define CC_OWNS CC_ANNOTATE_("owns")
 #define CC_PAIR(...) CC_ANNOTATE_ARGS_("pair", __VA_ARGS__)
 #define CC_NO_SYSCALL_UNDER(...) CC_ANNOTATE_ARGS_("no_syscall_under", __VA_ARGS__)
+#define CC_ACQUIRES(...) CC_ANNOTATE_ARGS_("acquires", __VA_ARGS__)
+#define CC_RELEASES(...) CC_ANNOTATE_ARGS_("releases", __VA_ARGS__)
+#define CC_NORETURN CC_ANNOTATE_("noreturn")
 /* The code and the reason are string literals: `CC_IGNORE("CC-EFFECT-SHORT-BLOCKS", "...")` is "ignore(CODE: ...)". */
 #define CC_IGNORE(code, reason) CC_ANNOTATE_("ignore(" code ": " reason ")")
 #else
@@ -45,6 +54,9 @@
 #define CC_OWNS
 #define CC_PAIR(...)
 #define CC_NO_SYSCALL_UNDER(...)
+#define CC_ACQUIRES(...)
+#define CC_RELEASES(...)
+#define CC_NORETURN
 #define CC_IGNORE(code, reason)
 #endif
 

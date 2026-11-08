@@ -5,9 +5,18 @@
 ## a field of a struct. A call through a slot reaches every function the project stores in that slot anywhere; a slot
 ## that no function is stored in reaches nothing.
 
+import Ast from "ast"
+import Flow from "flow"
+
 # The prefix of an annotation of include/cchecker.h. Under CCHECKER_AST the macros are `deprecated` attributes, whose
 # message clang 19 keeps in its JSON AST (it drops the string of an `annotate` attribute).
 MARK_PREFIX = "cchecker:"
+
+# The attributes of a function that never returns.
+NORETURN_ATTRS = Set.new(["C11NoReturnAttr", "NoReturnAttr", "CXX11NoReturnAttr"])
+
+# The annotations that name locks, and whether the function takes them.
+LOCK_MARKS = {"acquires": true, "releases": false}
 
 # The nodes a function pointer goes through on its way to a call or a store, which do not change where it points.
 TRANSPARENT = Set.new(["ImplicitCastExpr", "CStyleCastExpr", "ParenExpr", "CompoundLiteralExpr"])
@@ -49,17 +58,13 @@ export struct Store
   source: Source
 end
 
-## The functions, calls and stores of one translation unit.
+## The functions, calls and stores of one translation unit, and the graphs of its functions that take or release a
+## lock.
 export struct Unit
   functions: List[Function]
   calls: List[Call]
   stores: List[Store]
-end
-
-struct Place
-  file: String
-  line: Int
-  column: Int
+  bodies: List[Flow.Body] = []
 end
 
 # A struct or union: its name (a typedef name for an anonymous one) and the ids and names of its fields.
@@ -101,16 +106,22 @@ end
 export def read(decls: Json) -> Result[Unit]
   nodes = try JSON.list(decls)
   tables = tables_of(nodes)
+  ctx = context_of(tables, nodes)
   functions: List[Function] = []
+  bodies: List[Flow.Body] = []
   found = Found(calls: [], stores: [])
   for node in nodes
-    case kind(node)
+    case Ast.kind(node)
       "FunctionDecl" ->
         function = function_of(tables, node)
         functions = functions.push(function)
         found = in_function(tables, function.key, node, found)
+        if function.defined and Flow.locks?(ctx, node)
+          bodies = bodies.push(Flow.body_of(ctx, function.key, node))
+        end
+
       "VarDecl" ->
-        slot = "var:#{variable_key(tables, text(node, "name"))}"
+        slot = "var:#{variable_key(tables, Ast.text(node, "name"))}"
         for value in values(node)
           found = with_stores(found, stored(tables, file_scope(), slot, value))
         end
@@ -119,16 +130,75 @@ export def read(decls: Json) -> Result[Unit]
     end
   end
 
-  return ok(Unit(functions: functions, calls: found.calls, stores: found.stores))
+  return ok(Unit(functions: functions, calls: found.calls, stores: found.stores, bodies: bodies))
+end
+
+# What the functions of the unit say about locks, from all their declarations: the locks of CC_ACQUIRES and
+# CC_RELEASES, with the names of the parameters of the declaration that carries them, and whether they never return
+# (`_Noreturn`, `__attribute__((noreturn))`, CC_NORETURN).
+def context_of(tables: Tables, nodes: List[Json]) -> Flow.Context
+  callees: Map[String, Flow.Callee] = {}
+  declarations = nodes.select do |node| Ast.kind(node) == "FunctionDecl" end
+  for node in declarations
+    function = function_of(tables, node)
+    params = params_of(node)
+    # A definition inherits the annotations of the prototype before it, in the names of the prototype's parameters:
+    # only the declaration that wrote an annotation knows what its names are.
+    locks = own_marks(node).flat_map do |mark| annotated(mark, params) end
+    attributes = Ast.children(node).map(&Ast.kind)
+    stops = function.marks.include?("noreturn") or attributes.any? do |name| NORETURN_ATTRS.include?(name) end
+    if not locks.empty? or stops
+      known = callees.get(function.key).unwrap_or(Flow.Callee(locks: [], stops: false))
+      callees = callees.put(function.key, Flow.Callee(locks: known.locks.concat(locks), stops: known.stops or stops))
+    end
+  end
+
+  return Flow.Context(callees: callees, statics: tables.static_functions)
+end
+
+# The locks of an annotation `acquires(a, b)` or `releases(a)`; none for another one.
+def annotated(mark: String, params: List[String]) -> List[Flow.Annotated]
+  for word in LOCK_MARKS.keys
+    if mark.start_with?("#{word}(") and mark.end_with?(")")
+      inside = mark.slice(word.length + 1, mark.length - word.length - 2)
+      texts = inside.split(",").map do |text| text.strip end.select do |text| text != "" end
+      return texts.map do |text| Flow.Annotated(text: text, params: params, takes: LOCK_MARKS[word]) end
+    end
+  end
+
+  return []
+end
+
+def own_marks(node: Json) -> List[String]
+  written = Ast.children(node).select do |child|
+    Ast.kind(child) == "DeprecatedAttr" and not Ast.flag?(child, "inherited")
+  end
+
+  return written.map(&mark_of).select do |mark| mark != "" end
+end
+
+# The text of an annotation after `cchecker:`, or "" for another `deprecated` attribute.
+def mark_of(attribute: Json) -> String
+  message = Ast.text(attribute, "message")
+  if not message.start_with?(MARK_PREFIX)
+    return ""
+  end
+
+  return message.slice(MARK_PREFIX.length, message.length - MARK_PREFIX.length)
+end
+
+def params_of(node: Json) -> List[String]
+  parameters = Ast.children(node).select do |child| Ast.kind(child) == "ParmVarDecl" end
+  return parameters.map do |child| Ast.text(child, "name") end
 end
 
 def tables_of(nodes: List[Json]) -> Tables
   static_variables: Map[String, String] = {}
   for node in nodes
-    if kind(node) == "VarDecl" and text(node, "storageClass") == "static"
-      name = text(node, "name")
+    if Ast.kind(node) == "VarDecl" and Ast.text(node, "storageClass") == "static"
+      name = Ast.text(node, "name")
       if not static_variables.key?(name)
-        static_variables = static_variables.put(name, "#{name}@#{place_of(node).file}")
+        static_variables = static_variables.put(name, "#{name}@#{Ast.place_of(node).file}")
       end
     end
   end
@@ -155,11 +225,11 @@ end
 # header can declare a static function that each file including it defines in its own way.
 def static_functions_of(nodes: List[Json]) -> Map[String, String]
   keys: Map[String, String] = {}
-  statics = nodes.select do |node| kind(node) == "FunctionDecl" and text(node, "storageClass") == "static" end
+  statics = nodes.select do |node| Ast.kind(node) == "FunctionDecl" and Ast.text(node, "storageClass") == "static" end
   for node in statics.select(&defines?).concat(statics)
-    name = text(node, "name")
+    name = Ast.text(node, "name")
     if not keys.key?(name)
-      keys = keys.put(name, "#{name}@#{place_of(node).file}")
+      keys = keys.put(name, "#{name}@#{Ast.place_of(node).file}")
     end
   end
 
@@ -167,7 +237,7 @@ def static_functions_of(nodes: List[Json]) -> Map[String, String]
 end
 
 def defines?(node: Json) -> Bool
-  return children(node).any? do |child| kind(child) == "CompoundStmt" end
+  return Ast.children(node).any? do |child| Ast.kind(child) == "CompoundStmt" end
 end
 
 # The records of the unit by id, nested ones included. An anonymous one takes the name of a typedef of it.
@@ -177,28 +247,31 @@ def records_of(nodes: List[Json]) -> Map[String, Record]
     node = nested.node
     if has_fields?(node)
       # An unnamed bit-field takes no item of an initializer; the field of an anonymous union or struct does.
-      fields = children(node).select do |child| kind(child) == "FieldDecl" and not unnamed_bit_field?(child) end
-      name = text(node, "name")
+      fields = Ast.children(node).select do |child|
+        Ast.kind(child) == "FieldDecl" and not unnamed_bit_field?(child)
+      end
+
+      name = Ast.text(node, "name")
       if name == ""
         name = nested.parent
       end
 
       records = records.put(
-        text(node, "id"),
+        Ast.text(node, "id"),
         Record(
           name: name,
-          field_ids: fields.map do |f| text(f, "id") end,
-          fields: fields.map do |f| text(f, "name") end,
+          field_ids: fields.map do |f| Ast.text(f, "id") end,
+          fields: fields.map do |f| Ast.text(f, "name") end,
         ),
       )
     end
   end
 
   for node in nodes
-    if kind(node) == "TypedefDecl"
+    if Ast.kind(node) == "TypedefDecl"
       case records.get(record_id_of(node))
         some(record) if record.name == "" ->
-          records = records.put(record_id_of(node), record.with(name: text(node, "name")))
+          records = records.put(record_id_of(node), record.with(name: Ast.text(node, "name")))
         _ -> next
       end
     end
@@ -212,13 +285,13 @@ end
 def record_decls(nodes: List[Json], parent: String) -> List[Nested]
   found: List[Nested] = []
   for node in nodes
-    if kind(node) == "RecordDecl"
-      name = text(node, "name")
+    if Ast.kind(node) == "RecordDecl"
+      name = Ast.text(node, "name")
       if name == ""
         name = parent
       end
 
-      found = found.push(Nested(node: node, parent: parent)).concat(record_decls(children(node), name))
+      found = found.push(Nested(node: node, parent: parent)).concat(record_decls(Ast.children(node), name))
     end
   end
 
@@ -226,29 +299,29 @@ def record_decls(nodes: List[Json], parent: String) -> List[Nested]
 end
 
 def unnamed_bit_field?(node: Json) -> Bool
-  return text(node, "name") == "" and flag?(node, "isBitfield")
+  return Ast.text(node, "name") == "" and Ast.flag?(node, "isBitfield")
 end
 
 # Every node under the given ones, in order.
 def all_nodes(nodes: List[Json]) -> List[Json]
   found: List[Json] = []
   for node in nodes
-    found = found.push(node).concat(all_nodes(children(node)))
+    found = found.push(node).concat(all_nodes(Ast.children(node)))
   end
 
   return found
 end
 
 def has_fields?(node: Json) -> Bool
-  return children(node).any? do |child| kind(child) == "FieldDecl" end
+  return Ast.children(node).any? do |child| Ast.kind(child) == "FieldDecl" end
 end
 
 # The record that a typedef names: the `decl` of the RecordType in its type.
 def record_id_of(node: Json) -> String
-  for child in all_nodes(children(node))
-    if kind(child) == "RecordType"
+  for child in all_nodes(Ast.children(node))
+    if Ast.kind(child) == "RecordType"
       case JSON.get(child, "decl")
-        ok(decl) -> return text(decl, "id")
+        ok(decl) -> return Ast.text(decl, "id")
         error(_) -> next
       end
     end
@@ -258,12 +331,12 @@ def record_id_of(node: Json) -> String
 end
 
 def function_of(tables: Tables, node: Json) -> Function
-  name = text(node, "name")
-  place = place_of(node)
-  marks = children(node)
-    .select do |child| kind(child) == "DeprecatedAttr" and text(child, "message").start_with?(MARK_PREFIX) end
+  name = Ast.text(node, "name")
+  place = Ast.place_of(node)
+  marks = Ast.children(node)
+    .select do |child| Ast.kind(child) == "DeprecatedAttr" and Ast.text(child, "message").start_with?(MARK_PREFIX) end
     .map do |child|
-      text(child, "message").slice(MARK_PREFIX.length, text(child, "message").length - MARK_PREFIX.length)
+      Ast.text(child, "message").slice(MARK_PREFIX.length, Ast.text(child, "message").length - MARK_PREFIX.length)
     end
 
   return Function(
@@ -272,20 +345,20 @@ def function_of(tables: Tables, node: Json) -> Function
     file: place.file,
     line: place.line,
     column: place.column,
-    defined: children(node).any? do |child| kind(child) == "CompoundStmt" end,
+    defined: Ast.children(node).any? do |child| Ast.kind(child) == "CompoundStmt" end,
     marks: marks,
   )
 end
 
 def in_function(tables: Tables, key: String, node: Json, found: Found) -> Found
   params: Map[String, Int] = {}
-  parameters = children(node).select do |child| kind(child) == "ParmVarDecl" end
+  parameters = Ast.children(node).select do |child| Ast.kind(child) == "ParmVarDecl" end
   for i in 0...parameters.size
-    params = params.put(text(parameters[i], "name"), i)
+    params = params.put(Ast.text(parameters[i], "name"), i)
   end
 
-  bodies = children(node).select do |child| kind(child) == "CompoundStmt" end
-  locals = Set.new(all_nodes(bodies).select do |n| kind(n) == "VarDecl" end.map do |n| text(n, "name") end)
+  bodies = Ast.children(node).select do |child| Ast.kind(child) == "CompoundStmt" end
+  locals = Set.new(all_nodes(bodies).select do |n| Ast.kind(n) == "VarDecl" end.map do |n| Ast.text(n, "name") end)
   scope = Scope(caller: key, params: params, locals: locals)
   walked = found
   for body in bodies
@@ -297,7 +370,7 @@ end
 
 # Records the calls and the stores of a node and of everything in it.
 def walk(tables: Tables, scope: Scope, node: Json, found: Found) -> Found
-  here = case kind(node)
+  here = case Ast.kind(node)
     "CallExpr" -> with_call(tables, scope, node, found)
     "BinaryOperator" -> with_assignment(tables, scope, node, found)
     "CleanupAttr" -> with_cleanup(tables, scope, node, found)
@@ -307,7 +380,7 @@ def walk(tables: Tables, scope: Scope, node: Json, found: Found) -> Found
   end
 
   walked = here
-  for child in children(node)
+  for child in Ast.children(node)
     walked = walk(tables, scope, child, walked)
   end
 
@@ -316,14 +389,14 @@ end
 
 # A direct call also stores the functions it passes in the parameters of the callee.
 def with_call(tables: Tables, scope: Scope, node: Json, found: Found) -> Found
-  parts = children(node)
+  parts = Ast.children(node)
   if parts.empty?
     return found
   end
 
   callee = bare(parts.first)
-  if kind(callee) == "DeclRefExpr" and referenced_kind(callee) == "FunctionDecl"
-    key = function_key(tables, referenced_name(callee))
+  if Ast.kind(callee) == "DeclRefExpr" and Ast.referenced_kind(callee) == "FunctionDecl"
+    key = function_key(tables, Ast.referenced_name(callee))
     stores: List[Store] = []
     for i in 1...parts.size
       stores = stores.concat(stored(tables, scope, "param:#{key}:#{i - 1}", parts[i]))
@@ -341,7 +414,7 @@ end
 
 # `__attribute__((cleanup(f)))` on a variable calls f when the variable goes out of scope.
 def with_cleanup(tables: Tables, scope: Scope, node: Json, found: Found) -> Found
-  name = text(JSON.get(node, "cleanup_function").unwrap_or(JSON.from("")), "name")
+  name = Ast.text(JSON.get(node, "cleanup_function").unwrap_or(JSON.from("")), "name")
   if name == ""
     return found
   end
@@ -352,8 +425,8 @@ def with_cleanup(tables: Tables, scope: Scope, node: Json, found: Found) -> Foun
 end
 
 def with_assignment(tables: Tables, scope: Scope, node: Json, found: Found) -> Found
-  parts = children(node)
-  if text(node, "opcode") != "=" or parts.size != 2
+  parts = Ast.children(node)
+  if Ast.text(node, "opcode") != "=" or parts.size != 2
     return found
   end
 
@@ -371,27 +444,28 @@ end
 # a struct go to the slots of its fields, and those of an array to the slot of the array.
 def stored(tables: Tables, scope: Scope, slot: String, value: Json) -> List[Store]
   node = bare(value)
-  case kind(node)
+  case Ast.kind(node)
     "InitListExpr" -> return stored_items(tables, scope, slot, node)
     "DeclRefExpr" ->
-      if referenced_kind(node) == "FunctionDecl"
-        return [Store(slot: slot, source: Source.Function(function_key(tables, referenced_name(node))))]
+      if Ast.referenced_kind(node) == "FunctionDecl"
+        return [Store(slot: slot, source: Source.Function(function_key(tables, Ast.referenced_name(node))))]
       end
 
       return copied(tables, scope, slot, node)
     "MemberExpr" -> return copied(tables, scope, slot, node)
     "ArraySubscriptExpr" -> return copied(tables, scope, slot, node)
-    "ConditionalOperator" -> return children(node).drop(1).flat_map do |branch| stored(tables, scope, slot, branch) end
+    "ConditionalOperator" ->
+      return Ast.children(node).drop(1).flat_map do |branch| stored(tables, scope, slot, branch) end
     _ -> return []
   end
 end
 
 def stored_items(tables: Tables, scope: Scope, slot: String, node: Json) -> List[Store]
-  items = children(node)
+  items = Ast.children(node)
   # The initializer of a union names the field it sets, which need not be the first.
   case JSON.get(node, "field")
     ok(field) ->
-      case tables.field_slots.get(text(field, "id"))
+      case tables.field_slots.get(Ast.text(field, "id"))
         some(field_slot) -> return items.flat_map do |item| stored(tables, scope, field_slot, item) end
         none -> return []
       end
@@ -401,7 +475,7 @@ def stored_items(tables: Tables, scope: Scope, slot: String, node: Json) -> List
 end
 
 def stored_fields(tables: Tables, scope: Scope, slot: String, node: Json) -> List[Store]
-  items = children(node)
+  items = Ast.children(node)
   case record_of(tables, node)
     some(record) ->
       stores: List[Store] = []
@@ -429,11 +503,11 @@ end
 # The slot that an expression reads or writes: a parameter, a variable, a field, or an item of one of them.
 def slot_of(tables: Tables, scope: Scope, expression: Json) -> Optional[String]
   node = bare(expression)
-  case kind(node)
+  case Ast.kind(node)
     "DeclRefExpr" -> return named_slot(tables, scope, node)
-    "MemberExpr" -> return tables.field_slots.get(text(node, "referencedMemberDecl"))
+    "MemberExpr" -> return tables.field_slots.get(Ast.text(node, "referencedMemberDecl"))
     "ArraySubscriptExpr" ->
-      parts = children(node)
+      parts = Ast.children(node)
       if parts.empty?
         return none
       end
@@ -444,8 +518,8 @@ def slot_of(tables: Tables, scope: Scope, expression: Json) -> Optional[String]
 end
 
 def named_slot(tables: Tables, scope: Scope, node: Json) -> Optional[String]
-  name = referenced_name(node)
-  case referenced_kind(node)
+  name = Ast.referenced_name(node)
+  case Ast.referenced_kind(node)
     "ParmVarDecl" -> return scope.params.get(name).map do |i| "param:#{scope.caller}:#{i}" end
     "VarDecl" ->
       if scope.locals.include?(name)
@@ -461,7 +535,7 @@ end
 # typedef.
 def function_pointer?(node: Json) -> Bool
   type = JSON.get(node, "type").unwrap_or(JSON.from(""))
-  return pointer_text?(text(type, "qualType")) or pointer_text?(text(type, "desugaredQualType"))
+  return pointer_text?(Ast.text(type, "qualType")) or pointer_text?(Ast.text(type, "desugaredQualType"))
 end
 
 def pointer_text?(type: String) -> Bool
@@ -474,14 +548,14 @@ def file_scope() -> Scope
 end
 
 def local_slot(scope: Scope, node: Json) -> String
-  return "local:#{scope.caller}:#{text(node, "name")}"
+  return "local:#{scope.caller}:#{Ast.text(node, "name")}"
 end
 
 # The record of the initializer of a struct, by its type: `struct ops`, `const struct ops` or a typedef name. The
 # initializer of a union names its field (`stored_items`).
 def record_of(tables: Tables, node: Json) -> Optional[Record]
   type = JSON.get(node, "type").unwrap_or(JSON.from(""))
-  name = text(type, "qualType")
+  name = Ast.text(type, "qualType")
   for word in ["const ", "volatile ", "struct "]
     name = name.replace(word, "")
   end
@@ -491,16 +565,16 @@ end
 
 # The expression without the casts, parentheses, `&` and `*` around it, which do not change the function it names.
 def bare(node: Json) -> Json
-  parts = children(node)
+  parts = Ast.children(node)
   if parts.empty?
     return node
   end
 
-  if TRANSPARENT.include?(kind(node))
+  if TRANSPARENT.include?(Ast.kind(node))
     return bare(parts.first)
   end
 
-  if kind(node) == "UnaryOperator" and (text(node, "opcode") == "&" or text(node, "opcode") == "*")
+  if Ast.kind(node) == "UnaryOperator" and (Ast.text(node, "opcode") == "&" or Ast.text(node, "opcode") == "*")
     return bare(parts.first)
   end
 
@@ -509,7 +583,7 @@ end
 
 # The value of a variable: its children that are no attribute.
 def values(node: Json) -> List[Json]
-  return children(node).select do |child| not kind(child).end_with?("Attr") end
+  return Ast.children(node).select do |child| not Ast.kind(child).end_with?("Attr") end
 end
 
 def function_key(tables: Tables, name: String) -> String
@@ -518,59 +592,4 @@ end
 
 def variable_key(tables: Tables, name: String) -> String
   return tables.static_variables.get(name).unwrap_or(name)
-end
-
-# The place of a declaration: where its macro was expanded, when it comes from one.
-def place_of(node: Json) -> Place
-  loc = JSON.get(node, "loc").unwrap_or(JSON.from(""))
-  case JSON.get(loc, "expansionLoc")
-    ok(expansion) -> return place_in(expansion)
-    error(_) -> return place_in(loc)
-  end
-end
-
-def place_in(loc: Json) -> Place
-  return Place(file: text(loc, "cc_file"), line: number(loc, "cc_line"), column: number(loc, "col"))
-end
-
-def referenced_kind(node: Json) -> String
-  return text(JSON.get(node, "referencedDecl").unwrap_or(JSON.from("")), "kind")
-end
-
-def referenced_name(node: Json) -> String
-  return text(JSON.get(node, "referencedDecl").unwrap_or(JSON.from("")), "name")
-end
-
-def kind(node: Json) -> String
-  return text(node, "kind")
-end
-
-def children(node: Json) -> List[Json]
-  empty: List[Json] = []
-  case JSON.get(node, "inner")
-    ok(inner) -> return JSON.list(inner).unwrap_or(empty)
-    error(_) -> return empty
-  end
-end
-
-# A missing key or another kind of value reads as "" or 0: the dump of a node leaves out what it does not have.
-def text(node: Json, key: String) -> String
-  case JSON.get(node, key)
-    ok(value) -> return JSON.string(value).unwrap_or("")
-    error(_) -> return ""
-  end
-end
-
-def flag?(node: Json, key: String) -> Bool
-  case JSON.get(node, key)
-    ok(value) -> return JSON.bool(value).unwrap_or(false)
-    error(_) -> return false
-  end
-end
-
-def number(node: Json, key: String) -> Int
-  case JSON.get(node, key)
-    ok(value) -> return JSON.int(value).unwrap_or(0)
-    error(_) -> return 0
-  end
 end
