@@ -23,6 +23,7 @@ def main() -> Void
     BDD.step("there is a folder {string} holding {string}", &make_open_folder),
     BDD.step("I run cchecker with {string}", &run_cchecker),
     BDD.step("I run cchecker with {string} and TMPDIR {string}", &run_with_tmpdir),
+    BDD.step("I run cchecker with {string} in at most {int} MiB", &run_capped),
     BDD.step("the folder {string} is empty", &folder_empty),
     BDD.step("clang dumps the AST of {string}", &dump_ast),
     BDD.step("clang dumps the JSON AST of {string}", &dump_json_ast),
@@ -81,6 +82,14 @@ end
 def run_cchecker(ctx: BDD.Context, args: List[String]) -> BDD.Context
   words = args[0].replace("$DIR", folder_of(ctx)).split(" ").select do |word| word != "" end
   return run_program(ctx, "agentica", [PROGRAM].concat(words))
+end
+
+# The run under `ulimit -v`: a run that needs more memory fails instead of taking the machine's.
+def run_capped(ctx: BDD.Context, args: List[String]) -> BDD.Context
+  words = args[0].replace("$DIR", folder_of(ctx)).split(" ").select do |word| word != "" end
+  limit = args[1].to_i! * 1024
+  script = "ulimit -v #{limit} && exec agentica \"$@\""
+  return run_program(ctx, "sh", ["-c", script, "sh", PROGRAM].concat(words))
 end
 
 # TMPDIR is the folder, made empty first, where the run writes its AST dumps.
