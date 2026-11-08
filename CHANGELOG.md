@@ -6,10 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- `CC_HOT` counts `link`, `linkat`, `symlink`, `symlinkat`, `lchown`, `utime`, `utimes`, `statfs`, `fstatfs` and
-  `mkdtemp` as system calls, as it does their `uv_fs_*` forms.
-- The lock of a `CC_ACQUIRES` or `CC_RELEASES` parameter is classed through `_Atomic`,
-  `__restrict__` and the nullability qualifiers (`struct pool *_Atomic p`).
+- `link`, `linkat`, `symlink`, `symlinkat`, `lchown`, `utime`, `utimes`, `statfs`, `fstatfs` and `mkdtemp` are system
+  calls, as their `uv_fs_*` forms are: for `CC_HOT`, and under a `CC_NO_SYSCALL_UNDER` lock (a `CC_RELEASES` helper
+  included).
+- The lock of a `CC_ACQUIRES` or `CC_RELEASES` parameter is classed through `_Atomic`, `__restrict__` and the
+  nullability qualifiers (`struct pool *_Atomic p`).
 - Under a `CC_NO_SYSCALL_UNDER` lock, a `CC_RELEASES` helper that may make a system call before it releases that
   lock is a finding (`CC-PATH-SYSCALL-UNDER-LOCK`), as is one that releases a lock taken under it and makes any. A
   lock taken under it is one finding at its take, no longer a second at its release.

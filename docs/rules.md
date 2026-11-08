@@ -86,8 +86,9 @@ block (`uv_fs_close`, `uv_fs_stat`, `uv_fs_unlink`, `uv_fs_mkdir`, ...) is a
 system call and not a blocking one, as `close` is. The lists are in
 `src/known.agc`. A function the project defines is judged by its body; a library
 function that is not listed has no effect. A known name is known by name alone:
-a project function named `remove`, `rewind`, `ftell` or `dlsym` counts as the
-libc one in a run that does not read its body.
+a project function named `remove`, `rewind`, `ftell`, `dlsym` or `link` counts
+as the libc one in a run that does not read its body, as when the run only sees
+its declaration and its body is in a file left out.
 
 A call through a function pointer reaches every function the project stores in
 the same place: a field of a struct or a union (by record and field name, in an
@@ -156,14 +157,16 @@ write to a variable of the condition, or a call given its address
 (`f(&locked)`), forgets its value; a call given `&q->mu`, or the address of any
 other field (`atomic_store(&q->ready, 0)`, `f(&q->count)`), does not change `q`:
 the values of the conditions are kept by variable, not by field, so a condition
-on `q->ready` keeps its value after `atomic_store(&q->ready, 0)`. A function
-whose paths would take more than 200 000 states to follow is walked again
-without these conditions; when that is not enough either, its findings are those
-of the paths followed, and the run counts it in `incomplete_functions` of
-`--json` and says so on standard error (the exit code does not change). A
-function whose AST has more than 20 000 nodes (about four times the largest of
-the Agentica VM) gets no graph: that is an error of the `rules` tool on its
-file, so the exit code is 2, and the rest of the run is checked.
+on `q->ready` keeps its value after `atomic_store(&q->ready, 0)`; copy the field
+to a local first and test the local (`int ready = q->ready; if (ready) ...`)
+when the call may change it. A function whose paths would take more than 200 000
+states to follow is walked again without these conditions; when that is not
+enough either, its findings are those of the paths followed, and the run counts
+it in `incomplete_functions` of `--json` and says so on standard error (the exit
+code does not change). A function whose AST has more than 20 000 nodes (about
+four times the largest of the Agentica VM) gets no graph: that is an error of
+the `rules` tool on its file, so the exit code is 2, and the rest of the run is
+checked.
 
 A function that takes a lock for its caller, or releases the caller's lock, says
 so on its prototype: `CC_ACQUIRES(lock)` or `CC_RELEASES(lock)`, with the lock
