@@ -83,10 +83,9 @@ the baseline. The file holds a count for each kind, so a second finding of a kin
 | `--gcc PROGRAM`, `--clang-tidy PROGRAM` | the programs to run, for a versioned name such as `gcc-14` |
 | `--json` | one JSON object |
 
-The default checks are `-*`, `clang-analyzer-core.*`, `-unix.*`, `-security.*` (without `insecureAPI`) and `-deadcode.*`,
-and the bugprone checks `sizeof-expression`, `integer-division`, `suspicious-memory-comparison`,
-`not-null-terminated-result`, `signed-char-misuse`, `misplaced-widening-cast`, `multi-level-implicit-pointer-conversion`
-and `unused-return-value`. The tools run with `LC_ALL=C`, so the messages are in English on any machine.
+The default checks are `-*`, `clang-analyzer-core.*`, `-unix.*` and `-security.*` (without `insecureAPI`), and the
+bugprone checks `sizeof-expression`, `integer-division`, `suspicious-memory-comparison`, `signed-char-misuse`,
+`misplaced-widening-cast` and `unused-return-value`. The tools run with `LC_ALL=C`, so the messages are in English on any machine.
 
 ## Annotations
 

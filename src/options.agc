@@ -4,13 +4,16 @@ import OP from "std/option_parser"
 import {Opt, Kind} from "std/option_parser"
 
 # The clang-tidy checks of a run without --checks: the path-sensitive analyzer families that find real bugs in C, and a
-# few bugprone checks that are about C itself. The insecureAPI checks are off: they ask for strlcpy in code that
-# bounds its copies already. A .clang-tidy file of the project is applied first, and these checks come after it.
+# few bugprone checks that are about C itself. Off because they only made noise on the Agentica VM and agentica-db (see
+# the PR of phase 0): the insecureAPI checks (they ask for strlcpy in code that bounds its copies), deadcode (dead
+# stores), bugprone-not-null-terminated-result (a length-based buffer is not a C string) and
+# bugprone-multi-level-implicit-pointer-conversion (void ** into void * in FFI code). A .clang-tidy file of the
+# project is
+# applied first, and these checks come after it.
 DEFAULT_CHECKS = (
   "-*,clang-analyzer-core.*,clang-analyzer-unix.*,clang-analyzer-security.*,-clang-analyzer-security.insecureAPI.*," +
-  "clang-analyzer-deadcode.*,bugprone-sizeof-expression,bugprone-integer-division,bugprone-suspicious-memory-comparison," +
-  "bugprone-not-null-terminated-result,bugprone-signed-char-misuse,bugprone-misplaced-widening-cast," +
-  "bugprone-multi-level-implicit-pointer-conversion,bugprone-unused-return-value"
+  "bugprone-sizeof-expression,bugprone-integer-division,bugprone-suspicious-memory-comparison," +
+  "bugprone-signed-char-misuse,bugprone-misplaced-widening-cast,bugprone-unused-return-value"
 )
 
 TOOLS = ["gcc", "clang-tidy"]
