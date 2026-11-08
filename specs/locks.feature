@@ -42,6 +42,7 @@ Feature: Locks on every path
       | elvis         | 5      | int pop(struct queue *q) { pthread_mutex_lock(&q->mu); return q->n ?: (pthread_mutex_unlock(&q->mu), 0); }                                                                                              |
       | flag by address | 23   | int flip(int *x); int pop(struct queue *q, int locked) { if (locked) pthread_mutex_lock(&q->mu); flip(&locked); if (locked) pthread_mutex_unlock(&q->mu); return 0; }                                  |
       | nested break  | 5      | int pop(struct queue *q) { for (;;) { for (int i = 0; i < q->n; i++) { pthread_mutex_lock(&q->mu); if (work(q)) break; pthread_mutex_unlock(&q->mu); } return 0; } }                                      |
+      | freed by address | 34  | void zap(CC_FREES char **p); int pop(struct queue *q) { CC_OWNS char *b = malloc(8); if (b) pthread_mutex_lock(&q->mu); zap(&b); if (b) pthread_mutex_unlock(&q->mu); return 0; } |
 
   Scenario Outline: A lock released on every path passes (<case>)
     Given the C file "pop.c" holds:

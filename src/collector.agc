@@ -108,7 +108,7 @@ export def stores(
   scope = grown(start.with(library: Known.LIBGC_ALLOC), written)
   found: Map[String, Finding] = {}
   for decl in static_locals
-    if collector_type?(marks, type_of(decl)) and not constant?(type_of(decl))
+    if declared_collector?(marks, decl)
       local = Ast.text(decl, "name")
       message = "#{name} stores a value of the collector in a static: #{local}"
       found = found.put("#{IN_STATIC} #{local}", at(place, IN_STATIC, message, []))
@@ -160,7 +160,7 @@ export def statics(marks: Marks, nodes: List[Json]) -> List[Finding]
   found: List[Finding] = []
   for node in nodes
     if Ast.kind(node) == "VarDecl" and Ast.text(node, "storageClass") != "extern"
-      if collector_type?(marks, type_of(node)) and not constant?(type_of(node))
+      if declared_collector?(marks, node)
         name = Ast.text(node, "name")
         message = "#{name} is a static that holds a value of the collector"
         found = found.push(at(Ast.place_of(node), IN_STATIC, message, []))
@@ -169,6 +169,12 @@ export def statics(marks: Marks, nodes: List[Json]) -> List[Finding]
   end
 
   return found
+end
+
+# Whether a variable is declared with a collector type, as written or behind a typedef (`obj_ref`), and may change.
+def declared_collector?(marks: Marks, decl: Json) -> Bool
+  type = type_of(decl)
+  return (collector_type?(marks, type) or collector_type?(marks, desugared_type_of(decl))) and not constant?(type)
 end
 
 # The scope with the locals that point to memory from malloc and those that hold a value of the collector, through
@@ -197,8 +203,17 @@ end
 # Whether an expression is a value of the collector: by its type or the type of a cast in it, a call of an allocator
 # of the collector, a local that got one, or either side of `?:`.
 def collected?(scope: Scope, node: Json) -> Bool
+  # A null pointer is no value: clang gives the cast of `NULL` or `0` the type of the target.
+  if Flow.zero?(node)
+    return false
+  end
+
   bare = node
   while true
+    if Ast.text(bare, "castKind") == "NullToPointer"
+      return false
+    end
+
     if collector_type?(scope.marks, type_of(bare)) or collector_type?(scope.marks, desugared_type_of(bare))
       return true
     end

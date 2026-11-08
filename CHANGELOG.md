@@ -78,3 +78,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Exit codes: 0 no new findings, 1 new findings, 2 usage or tool error.
 - `include/cchecker.h`: the annotation macros `CC_SHORT`, `CC_BLOCKING`, `CC_HOT`, `CC_OWNS`, `CC_PAIR` and
   `CC_NO_SYSCALL_UNDER`, an `annotate` attribute for clang and empty for other compilers.
+
+### Fixed
+
+- Ownership: a `CC_FREES` parameter that points to the pointer (`release(CC_FREES char **p)`) frees, tests and nulls
+  it through `*p` with no false `CC-OWN-USE-AFTER-FREE` or `CC-OWN-LEAK`; each side of `?:` and the last expression
+  of a statement expression give their own value; a local without a mark does not own what `malloc` gives it after it
+  stood for an owner.
+- Values of the collector: a store of `NULL` or `0` is not reported, and a typedef of a pointer to a marked type is
+  read through in statics, static locals and the fields of a struct.
