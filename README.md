@@ -45,9 +45,10 @@ cchecker: 2 new findings in 1 file
 ```
 
 `--json` prints one object for tools and agents: `clean`, `findings` (each has `code`, `tool`, `file`, `line`,
-`column`, `message`, `path`, the call path of a finding of the rules, and `source`, the `[library]` flag that made it
-or `""`), `baselined`, `fixed`, `errors` (a tool that did not run or could not compile a file: `tool`, `file` and
-`message`), `skipped`, `suppressed` (below) and `config`, the settings file that was read or `"defaults"` (Settings).
+`column`, `message`, `path`, the call path of a finding of the rules, `source`, the `[library]` flag that made it or
+`""`, and `root`, where an inferred root comes from or `""`), `baselined`, `fixed`, `errors` (a tool that did not run
+or could not compile a file: `tool`, `file` and `message`), `skipped`, `suppressed` (below), `config`, the settings
+file that was read or `"defaults"` (Settings), and `unresolved_callbacks` (Roots).
 
 Exit codes: `0` no new findings, `1` new findings, `2` a usage error or a tool error. A tool error is a tool that
 is missing, ends in a timeout or exits with a non-zero code, except for the `1` of a compiler that found errors in the
@@ -132,6 +133,7 @@ suppressed finding never goes into it, and neither does a `CC-UNUSED-IGNORE`: th
 | `--clang PROGRAM` | the clang that dumps the AST for the rules |
 | `--json` | one JSON object |
 | `-c, --config FILE` | the settings file (Settings) |
+| `--no-infer` | no roots inferred from the callbacks of libuv (Roots) |
 
 The default checks are `-*`, `clang-analyzer-core.*`, `clang-analyzer-unix.*` and `clang-analyzer-security.*` (without
 `insecureAPI`), and the bugprone checks `sizeof-expression`, `integer-division`, `suspicious-memory-comparison`,
@@ -183,6 +185,7 @@ libc_blocking = true
 pthread_blocking = true
 libuv_blocking = true
 libgc_blocking = true
+libuv_callbacks_short = true
 
 [roots]
 short = ["io_poll", "on_timer"]
@@ -190,8 +193,8 @@ hot = ["dispatch"]
 ```
 
 `[library]` turns each family of library knowledge on or off. All are on by default. A finding of the rules says in
-`source` of `--json` the flag whose family made the call it reaches blocking, so a project knows which one to turn off.
-The lists are in `src/known.agc`.
+`source` of `--json` the flag that made it: that of the inferred root it starts from, else the family of the blocking
+call it reaches, so a project knows which one to turn off. The lists are in `src/known.agc`.
 
 | Flag | What it adds |
 |---|---|
@@ -199,6 +202,7 @@ The lists are in `src/known.agc`.
 | `pthread_blocking` | `pthread_join`, `pthread_timedjoin_np`, the locks of `pthread_mutex_`, `pthread_rwlock_` and `pthread_spin_lock`, the waits of `pthread_cond_`, `pthread_barrier_wait` and `pthread_once` |
 | `libuv_blocking` | `uv_run`, `uv_sleep`, `uv_thread_join`, the locks and waits of `uv_mutex_`, `uv_rwlock_`, `uv_cond_`, `uv_sem_`, `uv_barrier_wait`, `uv_once`, and every `uv_fs_*` call whose callback, its last argument, is `NULL` or 0 |
 | `libgc_blocking` | `GC_gcollect` of the Boehm collector, which stops the world |
+| `libuv_callbacks_short` | a `CC_SHORT` root for each function passed as a callback that libuv runs on the loop thread: the `cb` of `uv_timer_start` (argument 1, from 0), `uv_poll_start` (2), `uv_async_init` (2) and `uv_close` (1), the `alloc_cb` and `read_cb` of `uv_read_start` (1 and 2), the callback of `uv_write` (4), `uv_write2` (5), `uv_shutdown` (2), `uv_tcp_connect` (3), `uv_pipe_connect` (3) and `uv_pipe_connect2` (5), and the `after_work_cb` of `uv_queue_work` (3), never its `work_cb`, which runs on the pool (Roots) |
 
 A flag changes only the blocking calls of `CC_SHORT`: the rules of `CC_HOT` count every known blocking call as a
 system call whatever the flags.
@@ -209,8 +213,34 @@ function both marked and listed is one root. A name that no function of the comp
 (exit 2), so a rename cannot leave a rule that checks nothing. Only a full run of a compile database can tell (a run of
 some files does not see the others), so only it checks the names.
 
-A project names its roots in this order of preference: `[roots]` in the settings, which keeps the C as it is, then the
-marks of `cchecker.h` in the C, for a project that wants the contract next to the code.
+### Roots
+
+A rule starts from its roots, which come from three places. A project leans on them in this order, and adds the next
+one only for what the one before does not cover:
+
+1. Inferred roots: a function passed as a callback to a libuv call that runs it on the loop thread is a `CC_SHORT`
+   root (`libuv_callbacks_short` above), as it runs on the event loop. `--no-infer` or the flag set to false turns it
+   off.
+2. `[roots]` in the settings, which keeps the C as it is.
+3. The marks of `cchecker.h` in the C (Annotations), for what neither covers.
+
+A function that is a root in more than one way is one root. The callback of an inferred root is a function named in
+the call, or a pointer that the rules follow to the functions stored in it (see Rules), such as a parameter that
+callers pass a function to. `NULL` or 0 is no callback. A callback that leads to no function (the return value of a
+call, a parameter that no caller passes a function to) is listed in `unresolved_callbacks` of `--json`, each with
+`call`, `argument` (its place, from 0), `file` and `line`, and a run without `--json` says how many in one line on
+standard error, so a root is never lost without a word.
+
+A finding of an inferred root has its place in `root` of `--json` (`callback of uv_read_start at src/net.c:41`), and
+the printed line ends with it:
+
+```text
+src/net.c:12:13 CC-EFFECT-SHORT-BLOCKS short function on_read reaches the blocking call write: on_read -> write (root: callback of uv_read_start at src/net.c:41)
+```
+
+The root is not part of the message, as the path is not: the baseline matches the message, and a root that named the
+line of its call would make a finding new each time the code above that call moves. A finding of a marked or listed
+root has no `root` and does not name `libuv_callbacks_short`, as the flag would not turn it off.
 
 ## Rules
 
@@ -246,7 +276,7 @@ of a function (from the direct calls that pass a function), and every function o
 (`box.handle = handle`). A cast is seen through, so a function kept in a `void *` or an `uintptr_t` is reached by a
 call through it. A variable with `__attribute__((cleanup(f)))` calls `f`. A pointer that comes from anywhere else
 reaches nothing: a return value, the arguments of a variadic function, and a function handed to a library that calls
-it back (`qsort`, a libuv callback). A walk goes only through what the run read, so run
+it back (`qsort`; a libuv callback is a root of its own, see Roots). A walk goes only through what the run read, so run
 it on all the files of the project: with a subset of the files, a call into a file that was not run reaches nothing.
 For the baseline, only a full run of a compile database covers the findings of the rules: a run of some files never
 counts them fixed and never drops them on `--update-baseline`.

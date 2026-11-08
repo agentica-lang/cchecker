@@ -2,9 +2,10 @@
 ## function never allocates or makes a system call.
 
 import {Config} from "config"
-import {Finding} from "findings"
+import {Finding, UnresolvedCallback} from "findings"
 import Known from "known"
-import {Function, Source, Store, Target, Unit} from "unit"
+import Paths from "paths"
+import {Callback, Function, Source, Store, Target, Unit} from "unit"
 
 ## The tool name of the findings of the rules.
 export TOOL = "rules"
@@ -24,16 +25,44 @@ struct Graph
   slots: Map[String, List[String]]
 end
 
-## Returns the findings of the rules on the units of a run. A root is a function marked in the C or named in the
-## `[roots]` of the settings; the `[library]` flags that are off take their families out of the blocking calls.
-export def check(units: List[Unit], config: Config) -> List[Finding]
+## What the rules found: the findings, and the callbacks of libuv calls they could not follow to a function.
+export struct Checked
+  findings: List[Finding]
+  unresolved: List[UnresolvedCallback]
+end
+
+# The CC_SHORT roots inferred from the callbacks of libuv, by function key, each with the call that made it, and the
+# callbacks that name no function.
+struct Inferred
+  roots: Map[String, String]
+  unresolved: List[UnresolvedCallback]
+end
+
+## Returns the findings of the rules on the units of a run. A root is a function marked in the C, named in the
+## `[roots]` of the settings, or, when `infer`, passed as a callback to a libuv call that runs it on the loop. The
+## `[library]` flags that are off take their families out of the blocking calls. `cwd` shortens the paths of the
+## inferred roots and of the unresolved callbacks; those outside it are left out, as findings are.
+export def check(units: List[Unit], config: Config, infer: Bool, cwd: String) -> Checked
   graph = graph_of(units)
   families = Known.BLOCKING_FAMILIES.select do |family| not config.off.include?(family.flag) end
+  inferred = Inferred(roots: {}, unresolved: [])
+  if infer and not config.off.include?(Known.CALLBACKS_FLAG)
+    inferred = inferred_of(graph, units, cwd)
+  end
+
   findings: List[Finding] = []
   for function in graph.functions.values
     if function.defined
       if function.marks.include?("short") or config.short.include?(function.name)
         findings = findings.concat(broken(graph, families, function, Effect.Blocks))
+      elsif inferred.roots.key?(function.key)
+        # A marked or listed root needs no inference: the finding stays when the flag is off, so it names no flag.
+        root = inferred.roots.get(function.key).unwrap!
+        findings = findings.concat(
+          broken(graph, families, function, Effect.Blocks).map do |f|
+            f.with(source: Known.CALLBACKS_FLAG, root: root)
+          end,
+        )
       end
 
       if function.marks.include?("hot") or config.hot.include?(function.name)
@@ -43,7 +72,7 @@ export def check(units: List[Unit], config: Config) -> List[Finding]
     end
   end
 
-  return findings
+  return Checked(findings: findings, unresolved: inferred.unresolved)
 end
 
 ## Returns the names of `[roots]` that no function the units define has.
@@ -55,6 +84,61 @@ end
 ## Returns the functions of the units, each merged from all its declarations.
 export def functions(units: List[Unit]) -> List[Function]
   return graph_of(units).functions.values
+end
+
+# The callbacks in the order of their places, so that the root of a function passed at several places is the first.
+def inferred_of(graph: Graph, units: List[Unit], cwd: String) -> Inferred
+  callbacks = units.flat_map do |unit| unit.callbacks end
+    .sort_by do |c| "#{c.file}\n#{padded(c.line)}:#{c.argument}" end
+
+  roots: Map[String, String] = {}
+  unresolved: List[UnresolvedCallback] = []
+  for callback in callbacks
+    case Paths.inside(cwd, callback.file)
+      some(shown) ->
+        # A library function (`free`) leads somewhere too, but has no body to check: it is no root.
+        keys = callback.sources.flat_map do |source| keys_of(graph, source) end
+
+        # A header reached by several files holds the same call once for each.
+        if keys.empty? and not unresolved.any? do |u| same?(u, callback, shown) end
+          unresolved = unresolved.push(
+            UnresolvedCallback(call: callback.call, argument: callback.argument, file: shown, line: callback.line),
+          )
+        end
+
+        for key in keys
+          if defined?(graph, key) and not roots.key?(key)
+            roots = roots.put(key, "callback of #{callback.call} at #{shown}:#{callback.line}")
+          end
+        end
+
+      none -> next
+    end
+  end
+
+  return Inferred(roots: roots, unresolved: unresolved)
+end
+
+# Zero-padded, so that the text order is the order of the numbers.
+def padded(n: Int) -> String
+  digits = n.to_s
+  return "0" * (9 - digits.length) + digits
+end
+
+def same?(known: UnresolvedCallback, callback: Callback, shown: String) -> Bool
+  return (
+    known.file == shown and
+    known.line == callback.line and
+    known.call == callback.call and
+    known.argument == callback.argument
+  )
+end
+
+def keys_of(graph: Graph, source: Source) -> List[String]
+  case source
+    Source.Function(key) -> return [key]
+    Source.Copy(from) -> return graph.slots.get(from).unwrap_or([])
+  end
 end
 
 def graph_of(units: List[Unit]) -> Graph

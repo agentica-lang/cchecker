@@ -10,6 +10,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `[tool.cchecker]` table of `agentica.toml`, and the defaults; `config` in `--json` says which. `[library]` turns the
   families of blocking calls off one by one (`libc_blocking`, `pthread_blocking`, `libuv_blocking`, `libgc_blocking`),
   and `source` in `--json` names the one of a finding. `[roots]` names `CC_SHORT` and `CC_HOT` roots without a mark.
+- Inferred roots: a function passed as a callback to a libuv call that runs it on the loop thread is a `CC_SHORT` root
+  (`libuv_callbacks_short`, `--no-infer`). Its finding gives the call in `root`; a callback that leads to no function
+  is listed in `unresolved_callbacks` of `--json`.
 - The `rules` tool (on by default): one call graph of the project from clang's JSON AST, function pointers included
   where the project stores a function in a field, a variable or a parameter. `CC-EFFECT-SHORT-BLOCKS`: a `CC_SHORT`
   function reaches a blocking call (a `CC_BLOCKING` function, or a known blocking call of libc, pthread or libuv).

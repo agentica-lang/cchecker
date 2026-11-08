@@ -5,7 +5,7 @@ import Commands from "commands"
 import Config from "config"
 import Effects from "effects"
 import Findings from "findings"
-import {Finding, ToolError} from "findings"
+import {Finding, ToolError, UnresolvedCallback} from "findings"
 import {Options} from "options"
 import Paths from "paths"
 import Report from "report"
@@ -33,6 +33,7 @@ struct Collected
   ran: List[String]
   units: List[Unit]
   skipped_declarations: Int = 0
+  unresolved: List[UnresolvedCallback] = []
 end
 
 # The jobs of a run, the files that were left out because they are outside the working directory, and the entries of
@@ -67,7 +68,7 @@ export def run(options: Options) -> Result[Int]
     end
   end
 
-  collected = try collect_in_scratch(options, config, plan.jobs, scratch)
+  collected = try collect_in_scratch(options, config, plan.jobs, scratch, cwd)
   if collected.skipped_declarations > 0
     IO.warn(
       "cchecker: skipped #{collected.skipped_declarations} declarations too large to read; " +
@@ -113,6 +114,7 @@ export def run(options: Options) -> Result[Int]
             skipped_declarations: collected.skipped_declarations,
             suppressed: applied.suppressed,
             config: config.origin,
+            unresolved_callbacks: collected.unresolved,
           ),
         ),
       )
@@ -129,6 +131,7 @@ export def run(options: Options) -> Result[Int]
             skipped_declarations: collected.skipped_declarations,
             suppressed: applied.suppressed,
             config: config.origin,
+            unresolved_callbacks: collected.unresolved,
           ),
         ),
       )
@@ -180,6 +183,11 @@ def finish(options: Options, report: Report.Report) -> Int
 
   for line in Report.error_lines(report)
     IO.warn(line)
+  end
+
+  unresolved = Report.unresolved_line(report)
+  if not options.json and unresolved.some?
+    IO.warn(unresolved.unwrap!)
   end
 
   if not report.errors.empty?
@@ -372,19 +380,20 @@ def collect_in_scratch(
   config: Config.Config,
   jobs: List[Tools.Job],
   folder: String,
+  cwd: String,
 ) -> Result[Collected]
   if not options.tools.include?(Tool.Rules)
-    return ok(collect(options, config, jobs))
+    return ok(collect(options, config, jobs, cwd))
   end
 
   try Dir.mkdir_private(folder)
   remove_stale(folder)
-  collected = collect(options, config, jobs)
+  collected = collect(options, config, jobs, cwd)
   _ = Path.remove(folder)
   return ok(collected)
 end
 
-def collect(options: Options, config: Config.Config, jobs: List[Tools.Job]) -> Collected
+def collect(options: Options, config: Config.Config, jobs: List[Tools.Job], cwd: String) -> Collected
   results = Task.map(jobs, options.jobs, Tools.limit_ms(options), &Tools.run)
   findings: List[Finding] = []
   errors: List[ToolError] = []
@@ -408,12 +417,14 @@ def collect(options: Options, config: Config.Config, jobs: List[Tools.Job]) -> C
     end
   end
 
+  checked = Effects.check(units, config, options.infer, cwd)
   return Collected(
-    findings: findings.concat(Effects.check(units, config)),
+    findings: findings.concat(checked.findings),
     errors: errors,
     ran: ran,
     units: units,
     skipped_declarations: skipped_declarations,
+    unresolved: checked.unresolved,
   )
 end
 

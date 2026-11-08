@@ -52,6 +52,27 @@ export BLOCKING_FAMILIES = [
 ## Every call that can block, whatever the settings: each enters the kernel, which the CC_HOT rule forbids.
 export BLOCKING = LIBC_BLOCKING.union(PTHREAD_BLOCKING).union(LIBUV_BLOCKING).union(LIBGC_BLOCKING)
 
+## The `[library]` flag of the roots inferred from `LOOP_CALLBACKS`.
+export CALLBACKS_FLAG = "libuv_callbacks_short"
+
+## The libuv calls that run a callback on the loop thread, and the places of those callbacks among their arguments
+## (from 0). Such a callback runs on the event loop, so it is a CC_SHORT root. The `work_cb` of `uv_queue_work`
+## (place 2) runs on a thread of the pool and is not one; its `after_work_cb` is.
+export LOOP_CALLBACKS: Map[String, List[Int]] = {
+  "uv_timer_start": [1],
+  "uv_poll_start": [2],
+  "uv_async_init": [2],
+  "uv_close": [1],
+  "uv_read_start": [1, 2],
+  "uv_write": [4],
+  "uv_write2": [5],
+  "uv_shutdown": [2],
+  "uv_tcp_connect": [3],
+  "uv_pipe_connect": [3],
+  "uv_pipe_connect2": [5],
+  "uv_queue_work": [3],
+}
+
 ## The calls that take or give back memory of the heap.
 export ALLOCATING = Set.new([
   "malloc", "calloc", "realloc", "reallocarray", "free", "aligned_alloc", "posix_memalign", "memalign", "valloc",
