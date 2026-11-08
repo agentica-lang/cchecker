@@ -1,11 +1,11 @@
 ## Suppressions: a finding that a comment or a CC_IGNORE marks as a false positive, with a reason, leaves the report.
 ##
-## A comment that starts with `cchecker: ignore CODE[, CODE...]: reason` and trails code holds for the findings of its
-## line; one alone on its line holds for its line and the line below. Strings are not read. `CC_IGNORE("CODE",
-## "reason")` on a function holds for the findings of the rules at that function. A code that ends with `*` is a prefix,
-## and every code names a tool (`CC-GCC-`, `CC-TIDY-`, `CC-EFFECT-`, `CC-PATH-` or `CC-OWN-`). When several hold for
-## a finding, the nearest gives the reason and all are used. A suppression that matches no finding of a tool that ran
-## on its file is a finding, CC-UNUSED-IGNORE, so a stale one shows.
+## A comment (or a line of a block comment) that starts with `cchecker: ignore CODE[, CODE...]: reason` and trails
+## code holds for the findings of its line; one alone on its line holds for its line and the line below. Strings are
+## not read. `CC_IGNORE("CODE", "reason")` on a function holds for the findings of the rules at that function. A code
+## that ends with `*` is a prefix, and every code names a tool (`CC-GCC-`, `CC-TIDY-`, `CC-EFFECT-`, `CC-PATH-` or
+## `CC-OWN-`). When several hold for a finding, the nearest gives the reason and all are used. A suppression that
+## matches no finding of a tool that ran on its file is a finding, CC-UNUSED-IGNORE, so a stale one shows.
 
 import Baseline from "baseline"
 import {Finding} from "findings"
@@ -16,7 +16,11 @@ export UNUSED = "CC-UNUSED-IGNORE"
 MARKER = "cchecker:"
 WORD = "ignore"
 BLANKS = Set.new([" ", "\t", "\r"])
-LEADING = Set.new([" ", "\t", "\r", "*"])
+# What may stand before the marker in a comment: blanks, the `*` of a block comment's line, and the third `/` or the
+# `!` of a doc comment (`///`, `//!`, `/**`, `/*!`).
+LEADING = Set.new([" ", "\t", "\r", "*", "/", "!"])
+# The directives whose text is not made of tokens, so a `'` or a `"` there opens no literal (`#error it's`).
+TEXT_DIRECTIVES = ["error", "warning"]
 MARK_PREFIX = "ignore("
 USAGE = (
   "a suppression is `cchecker: ignore CODE[, CODE...]: reason`, " +
@@ -151,6 +155,7 @@ def lexed_line(line: String, in_block: Bool) -> Lexed
   comments: List[Comment] = []
   code = false
   block = in_block
+  prose = not in_block and text_directive?(line)
   i = 0
   while i < n
     if block
@@ -182,6 +187,12 @@ def lexed_line(line: String, in_block: Bool) -> Lexed
     elsif c == "/" and following == "*"
       block = true
       i += 2
+    elsif c == "'" and (prose or separator?(chars, i))
+      code = true
+      i += 1
+    elsif c == "\"" and prose
+      code = true
+      i += 1
     elsif c == "\"" or c == "'"
       code = true
       i += 1
@@ -206,9 +217,32 @@ def lexed_line(line: String, in_block: Bool) -> Lexed
   return Lexed(comments: comments, code: code, in_block: block)
 end
 
+# Whether the `'` at `i` is a digit separator of C23 (`1'000`, `0xff'ff`): it stands inside a number, a token that
+# starts with a digit.
+def separator?(chars: List[String], i: Int) -> Bool
+  start = i
+  while start > 0 and (identifier_char?(chars[start - 1]) or chars[start - 1] == "'")
+    start -= 1
+  end
+
+  return start < i and "0123456789".include?(chars[start])
+end
+
+def identifier_char?(c: String) -> Bool
+  return c == "_" or "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ".include?(c)
+end
+
+# Whether the line is an `#error` or `#warning` directive.
+def text_directive?(line: String) -> Bool
+  words = line.strip.replace("#", "# ").split(" ").select do |word| word != "" end
+  return words.size >= 2 and words[0] == "#" and TEXT_DIRECTIVES.include?(words[1])
+end
+
 # The text after `cchecker: ignore` in a comment, and where the marker starts in it; none when the comment does not
-# start with the marker (after blanks, and the `*` of a doc comment), so a comment that only mentions it is no
-# suppression. Any blanks may stand between `cchecker:`, `ignore` and the codes, but at least one after `ignore`.
+# start with the marker (after blanks, the `*` of a block comment's line, or the `/` or `!` of a doc comment), so a
+# comment that only mentions it is no suppression. Any blanks may stand between `cchecker:`, `ignore` and the codes,
+# but at least one after `ignore`: a word that only starts with it (`ignore:`, `ignore,X`, `ignored`) gives an empty
+# body, a usage error, so the marker the user meant is not dropped.
 def body_of(text: String) -> Optional[Comment]
   at = skipped(text, LEADING)
   if not text.slice(at, text.length - at).start_with?(MARKER)
@@ -224,7 +258,7 @@ def body_of(text: String) -> Optional[Comment]
   codes = word + WORD.length
   blanks = skipped(text.slice(codes, text.length - codes), BLANKS)
   if blanks == 0 and codes < text.length
-    return none
+    return some(Comment(start: at, text: ""))
   end
 
   return some(Comment(start: at, text: text.slice(codes + blanks, text.length - codes - blanks)))
@@ -244,15 +278,21 @@ end
 def parsed(file: String, line: Int, column: Int, text: String, function: Bool) -> Result[Ignore]
   case text.index_of(":")
     some(at) ->
-      codes = text.slice(0, at).replace(",", " ").split(" ").select do |code| code != "" end
+      spaced = text.slice(0, at).replace(",", " ").replace("\t", " ").replace("\r", " ")
+      codes = spaced.split(" ").select do |code| code != "" end
       reason = text.slice(at + 1, text.length - at - 1).strip
-      if codes.empty? or reason == "" or not codes.all? do |code| tool_of(code) != "" end
+      if codes.empty? or reason == "" or not codes.all? do |code| known_code?(code) end
         return error("#{file}:#{line}: #{USAGE}")
       end
 
       return ok(Ignore(file: file, line: line, column: column, codes: codes, reason: reason, function: function))
     none -> return error("#{file}:#{line}: #{USAGE}")
   end
+end
+
+# A code of a tool, with a `*` only at its end.
+def known_code?(code: String) -> Bool
+  return tool_of(code) != "" and not code.slice(0, code.length - 1).include?("*")
 end
 
 # The suppression among `matching` nearest to the finding: one on its line before one on the line above.

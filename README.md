@@ -107,8 +107,10 @@ flag set to false (Settings), for the same reason. The exit code is `2` in each 
 A finding that is a false positive, where the check cannot be made smarter, is suppressed next to the code, with the
 reason. A comment that trails code holds for the findings of its line; a comment alone on its line holds for its line
 and the line below it. Only a comment that starts with `cchecker: ignore` counts (not a string or a comment that
-mentions it). It takes one or more codes, each of a tool (`CC-GCC-`, `CC-TIDY-`, `CC-EFFECT-`, `CC-PATH-` or
-`CC-OWN-`), and a code that ends with `*` is a prefix:
+mentions it); a doc comment (`///`, `//!`, `/**`) and a line inside a block comment that starts with it count too, as
+the line of that comment. It takes one or more codes, separated by commas or blanks, each of a tool (`CC-GCC-`,
+`CC-TIDY-`, `CC-EFFECT-`, `CC-PATH-` or `CC-OWN-`), and a code that ends with `*` is a prefix (a `*` anywhere else is a
+usage error, and so is a word that only starts with `ignore`, such as `ignore:` or `ignored`):
 
 ```c
 /* cchecker: ignore CC-GCC-ANALYZER-MALLOC-LEAK: conn_free frees it through the struct */
