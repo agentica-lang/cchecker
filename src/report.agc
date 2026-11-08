@@ -25,7 +25,7 @@ end
 
 ## Returns the report for people: one line for each finding, then a summary line.
 export def text(report: Report) -> String
-  lines = report.findings.map do |f| "#{f.file}:#{f.line}:#{f.column} #{f.code} #{f.message}" end
+  lines = report.findings.map do |f| "#{f.file}:#{f.line}:#{f.column} #{f.code} #{f.message}#{path_text(f)}" end
   return lines.push(summary(report)).join("\n")
 end
 
@@ -46,6 +46,15 @@ end
 ## Returns the lines for standard error: one for each tool error.
 export def error_lines(report: Report) -> List[String]
   return report.errors.map do |e| "cchecker: error: #{e.tool} on #{e.file}: #{e.message}" end
+end
+
+# The call path of a finding of the rules, which the message leaves out.
+def path_text(f: Finding) -> String
+  if f.path.empty?
+    return ""
+  end
+
+  return ": #{f.path.join(" -> ")}"
 end
 
 def summary(report: Report) -> String

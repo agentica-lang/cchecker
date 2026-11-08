@@ -16,6 +16,9 @@ import {Unit} from "unit"
 # The compile database that a run without FILE or -p reads.
 DEFAULT_DATABASE = "compile_commands.json"
 
+# The start of the name of the folder of the AST dumps of a run, in $TMPDIR.
+SCRATCH_PREFIX = "cchecker-"
+
 # What the tools made of all the jobs, before the paths are shortened and the repeats taken out.
 struct Collected
   findings: List[Finding]
@@ -37,7 +40,7 @@ export def run(options: Options) -> Result[Int]
   cwd = try Paths.working_directory()
   accepted = try baseline_entries(options)
   entries = try gather(options)
-  scratch = scratch_path()
+  scratch = try scratch_path(cwd)
   plan = try plan_for(options, entries, cwd, scratch)
   if plan.jobs.empty?
     return error("no C files to check")
@@ -230,28 +233,76 @@ end
 
 # What the run covered, for the baseline: its tools, the files each tool ended well on, and every file when it ran all
 # the files of a database and every job ended well.
+#
+# A finding of the rules comes from the call graph of all the files, so only a full run covers one: a run of some of
+# the files sees part of the graph, and what it does not find is not fixed.
 def scope_of(options: Options, plan: Plan, collected: Collected) -> Baseline.Scope
+  full = (
+    options.files.empty? and
+    options.exclude.empty? and
+    plan.skipped.empty? and
+    plan.ignored.empty? and
+    collected.errors.empty?
+  )
+
+  rules = Baseline.pair(ToolKind.name(Tool.Rules), "")
   return Baseline.Scope(
     tools: Set.new(options.tools.map do |tool| ToolKind.name(tool) end),
-    pairs: Set.new(collected.ran),
-    full: (
-      options.files.empty? and
-      options.exclude.empty? and
-      plan.skipped.empty? and
-      plan.ignored.empty? and
-      collected.errors.empty?
-    ),
+    pairs: Set.new(collected.ran.select do |pair| full or not pair.start_with?(rules) end),
+    full: full,
   )
 end
 
-# The folder of the AST dumps of a run: only this run uses it, and it is removed when the jobs end.
-def scratch_path() -> String
+# The folder of the AST dumps of a run: only this run uses it, and it is removed when the jobs end. It is absolute, as
+# clang runs in the folder of each file.
+def scratch_path(cwd: String) -> Result[String]
   base = System.env("TMPDIR").unwrap_or("/tmp")
   if base == ""
     base = "/tmp"
   end
 
-  return "#{base}/cchecker-#{System.pid()}-#{Time.now_ms()}"
+  folder = try Paths.absolute(cwd, base)
+  return ok("#{folder}/#{SCRATCH_PREFIX}#{System.pid()}-#{Time.now_ms()}")
+end
+
+# Removes the folders that runs which were killed left next to `folder`: those of this user whose process is gone. A
+# process is known to be gone only where /proc lists the running ones.
+def remove_stale(folder: String) -> Void
+  if not File.stat("/proc/self").ok?
+    return
+  end
+
+  base = Paths.parent(folder)
+  user = owner(folder)
+  nothing: List[String] = []
+  for name in Dir.list(base).unwrap_or(nothing)
+    path = "#{base}/#{name}"
+    if path != folder and stale?(name) and owner(path) == user
+      _ = Path.remove(path)
+    end
+  end
+end
+
+# The user id of a file, not following a link, or -1.
+def owner(path: String) -> Int
+  case File.lstat(path)
+    ok(info) -> return info.user_id
+    error(_) -> return -1
+  end
+end
+
+# Whether a name is that of a scratch folder, `cchecker-PID-MS`, whose process is gone.
+def stale?(name: String) -> Bool
+  if not name.start_with?(SCRATCH_PREFIX)
+    return false
+  end
+
+  parts = name.slice(SCRATCH_PREFIX.length, name.length - SCRATCH_PREFIX.length).split("-")
+  if parts.size != 2 or not parts[0].to_i.ok? or not parts[1].to_i.ok?
+    return false
+  end
+
+  return not File.stat("/proc/#{parts[0]}").ok?
 end
 
 # Runs the jobs, with the folder of the dumps when the rules run. The rules check the units of all the files at once.
@@ -261,6 +312,7 @@ def collect_in_scratch(options: Options, jobs: List[Tools.Job], folder: String) 
   end
 
   try Dir.mkdir_private(folder)
+  remove_stale(folder)
   collected = collect(options, jobs)
   _ = Path.remove(folder)
   return ok(collected)

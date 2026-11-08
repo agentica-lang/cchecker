@@ -183,10 +183,19 @@ def with_unit(job: Job, done: Outcome) -> Result[Outcome]
     return ok(done)
   end
 
-  text = try Scan.project_decls(job.dump, job.entry.directory, job.cwd)
-  decls = try JSON.parse(text)
+  dump = try Scan.project_decls(job.dump, job.entry.directory, job.cwd)
+  decls = try JSON.parse(dump.decls)
   unit = try UnitReader.read(decls)
-  return ok(done.with(units: [unit]))
+  # A declaration too large to keep leaves the graph incomplete: the run says so, and the rest is checked.
+  errors = dump.oversized.map do |name|
+    ToolError(
+      tool: "rules",
+      file: job.entry.file,
+      message: "#{name} is too large to read, so its calls are not followed",
+    )
+  end
+
+  return ok(done.with(units: [unit], errors: done.errors.concat(errors)))
 end
 
 # LC_ALL=C keeps the messages in English with plain quotes, so a baseline holds on any machine.
@@ -252,12 +261,21 @@ def outcome(job: Job, text: String, code: Int) -> Outcome
   end
 
   if code != 0 and not (code == 1 and (not errors.empty? or (promoted > 0 and treated_as_errors?(text))))
-    errors = errors.push(
-      ToolError(tool: tool, file: job.entry.file, message: failure(job.wrapped, job.options.timeout_s, text, code)),
-    )
+    message = failure(job.wrapped, job.options.timeout_s, text, code)
+    errors = errors.push(ToolError(tool: tool, file: job.entry.file, message: message + hint(job.tool, code)))
   end
 
   return Outcome(findings: findings, errors: errors)
+end
+
+# The shell gives 127 for a program it cannot find. The rules are on by default, so a missing clang says how to go
+# without them.
+def hint(tool: Tool, code: Int) -> String
+  if tool == Tool.Rules and code == 127
+    return " (install clang or name it with --clang, or leave the rules out with --tools gcc,clang-tidy)"
+  end
+
+  return ""
 end
 
 # gcc reports its analyzer only. Its other warnings come from the flags of the build (-Wall), and clang-tidy leaves
