@@ -307,6 +307,55 @@ Feature: Effects on the call graph
       | static fn table[] = {NULL, slow};             | table[i](i)       |
       | static void *table[] = {0, (void *)slow};     | ((fn)table[i])(i) |
 
+  Scenario Outline: A table of functions whose first item is an integer cast to a pointer is followed
+    Given the C file "ints.c" holds:
+      """
+      #include "cchecker.h"
+
+      unsigned int sleep(unsigned int seconds);
+      typedef int (*fn)(int);
+      static int slow(int x) { sleep(1); return x; }
+      <table>
+      CC_SHORT int entry(int i) { return <call>; }
+      """
+    When I run cchecker with "--tools rules --json $DIR/ints.c -- -I../include -Wno-int-conversion"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "path":["entry","slow","sleep"]
+      """
+
+    Examples:
+      | table                                     | call              |
+      | static fn table[] = {1, slow};            | table[i](i)       |
+      | static void *table[] = {1, (void *)slow}; | ((fn)table[i])(i) |
+
+  Scenario Outline: A table of functions with designated or missing items is followed
+    Given the C file "designated.c" holds:
+      """
+      #include "cchecker.h"
+
+      unsigned int sleep(unsigned int seconds);
+      typedef int (*fn)(int);
+      struct op { int n; fn run; };
+      static int slow(int x) { sleep(1); return x; }
+      <table>
+      CC_SHORT int entry(int i) { return <call>; }
+      """
+    When I run cchecker with "--tools rules --json $DIR/designated.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "path":["entry","slow","sleep"]
+      """
+
+    Examples:
+      | table                                         | call            |
+      | static fn table[] = {[3] = slow};             | table[i](i)     |
+      | static fn table[4] = {[0] = slow};            | table[i](i)     |
+      | static fn table[4] = {slow};                  | table[i](i)     |
+      | static struct op table[] = {[3] = {1, slow}}; | table[i].run(i) |
+
   Scenario Outline: A declaration too large to keep that names no function is skipped and counted
     Given the C file "big.c" holds, with ITEMS as <count> times "<item>":
       """
@@ -333,6 +382,32 @@ Feature: Effects on the call graph
       | type         | count | item    |
       | enum color   | 60000 | GREEN,  |
       | struct point | 30000 | {1, 2}, |
+
+  Scenario: A declaration too large to keep that names a function past the cap is a tool error
+    Given the C file "late.c" holds, with ITEMS as 13000 times "{1, 0},":
+      """
+      #include "cchecker.h"
+
+      unsigned int sleep(unsigned int seconds);
+      static int slow(int x) { sleep(1); return x; }
+      struct op { int n; int (*run)(int); };
+      static const struct op OPS[] = {ITEMS {1, slow}};
+      CC_SHORT int entry(int i) { return OPS[i].run(i) + (int)sleep(1); }
+      """
+    When I run cchecker with "--tools rules --json $DIR/late.c -- -I../include"
+    Then the exit code is 2
+    And the output includes:
+      """
+      "path":["entry","sleep"]
+      """
+    And the output includes:
+      """
+      "errors":[{"tool":"rules",
+      """
+    And the output includes:
+      """
+      "skipped_declarations":0
+      """
 
   Scenario Outline: A call of libuv's file functions blocks when it has no callback
     Given the C file "fs.c" holds:

@@ -18,7 +18,8 @@ NORETURN_ATTRS = Set.new(["C11NoReturnAttr", "NoReturnAttr", "CXX11NoReturnAttr"
 # The annotations that name locks, and whether the function takes them.
 LOCK_MARKS = {"acquires": true, "releases": false}
 
-PAIR_MARK = "pair("
+## The start of the mark of CC_PAIR(set, restore).
+export PAIR_MARK = "pair("
 
 # The marks of ownership.
 OWNS = "owns"
@@ -307,17 +308,19 @@ def paired(ctx: Flow.Context, tables: Tables, function: Function) -> Flow.Contex
   return ctx.with(callees: callees)
 end
 
-# The callees with the lock of a pair: `set` takes it and `restore` releases it. The lock names no parameter, so a call
-# passes nothing to it. A pair marked twice gives `set` two takes and `restore` two releases, which cancel the
-# same way.
+# The callees with the lock of a pair, `pair:set:restore`: `set` takes it and `restore` releases it, so two pairs on
+# one set, or one restore of two sets, are two locks. The lock names no parameter, so a call passes nothing to it. A
+# pair written twice (on two declarations, or on `set` and on its caller) counts once.
 def with_pair(callees: Map[String, Flow.Callee], tables: Tables, pair: Pair) -> Map[String, Flow.Callee]
-  text = "#{Flow.PAIR_PREFIX}#{pair.set}"
+  text = "#{Flow.PAIR_PREFIX}#{pair.set}:#{pair.restore}"
   added = callees
   for side in [pair.set, pair.restore]
     lock = Flow.Annotated(text: text, params: [], takes: side == pair.set, pair: pair.restore)
     key = function_key(tables, side)
     known = added.get(key).unwrap_or(Flow.Callee(locks: [], stops: false))
-    added = added.put(key, known.with(locks: known.locks.push(lock)))
+    if not known.locks.include?(lock)
+      added = added.put(key, known.with(locks: known.locks.push(lock)))
+    end
   end
 
   return added

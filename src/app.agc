@@ -67,8 +67,7 @@ export def run(options: Options) -> Result[Int]
   collected = try collect_in_scratch(options, plan.jobs, scratch)
   if collected.skipped_declarations > 0
     IO.warn(
-      "cchecker: skipped #{collected.skipped_declarations} declarations too large to read; " +
-      "they named no function in their first million lines, but may name one past it",
+      "cchecker: skipped #{collected.skipped_declarations} declarations too large to read, which name no function",
     )
   end
 

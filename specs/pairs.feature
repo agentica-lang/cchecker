@@ -11,7 +11,7 @@ Feature: Pairs of calls restored on every path
       #include "stdlib.h"
       #include "cchecker.h"
 
-      void mask_signals(void); void restore_signals(void); int work(int n);
+      void mask_signals(void); void restore_signals(void); void log_restore(void); int work(int n);
 
       <code>
       """
@@ -29,6 +29,9 @@ Feature: Pairs of calls restored on every path
       | set twice     | 44     | CC_PAIR(mask_signals, restore_signals) int guarded(int n) { mask_signals(); mask_signals(); restore_signals(); return n; }                                 |
       | restore first | 44     | CC_PAIR(mask_signals, restore_signals) int guarded(int n) { restore_signals(); mask_signals(); return n; }                                                 |
       | set form      | 69     | CC_PAIR(mask_signals, restore_signals) void mask_signals(void); int guarded(int n) { mask_signals(); if (work(n)) return -1; restore_signals(); return 0; } |
+      | marked twice  | 133    | CC_PAIR(mask_signals, restore_signals) void mask_signals(void); CC_PAIR(mask_signals, restore_signals) void mask_signals(void); int guarded(int n) { mask_signals(); mask_signals(); restore_signals(); return n; } |
+      | both forms    | 108    | CC_PAIR(mask_signals, restore_signals) void mask_signals(void); CC_PAIR(mask_signals, restore_signals) int guarded(int n) { mask_signals(); mask_signals(); restore_signals(); return n; } |
+      | two pairs on a set | 79     | CC_PAIR(mask_signals, restore_signals) CC_PAIR(mask_signals, log_restore) int guarded(int n) { mask_signals(); log_restore(); log_restore(); return n; } |
 
   Scenario Outline: A set restored on every path passes (<case>)
     Given the C file "guard.c" holds:
@@ -36,7 +39,7 @@ Feature: Pairs of calls restored on every path
       #include "stdlib.h"
       #include "cchecker.h"
 
-      void mask_signals(void); void restore_signals(void); int work(int n);
+      void mask_signals(void); void restore_signals(void); void log_restore(void); int work(int n);
 
       <code>
       """

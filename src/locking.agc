@@ -15,7 +15,7 @@ import {Finding} from "findings"
 import Flow from "flow"
 import {Body, Event, Fact, Lock, Mark, Site} from "flow"
 import Held from "held"
-import {Function, Unit} from "unit"
+import {Function, PAIR_MARK, Unit} from "unit"
 
 ## The code of a path that returns with a lock that the function took.
 export NOT_RELEASED = "CC-PATH-LOCK-NOT-RELEASED"
@@ -235,7 +235,7 @@ end
 
 # Whether a function is the set of a CC_PAIR on its own declaration: `pair(name, ...)`.
 def pair_set?(name: String, marks: List[String]) -> Bool
-  return marks.any? do |mark| mark.start_with?("pair(#{name},") end
+  return marks.any? do |mark| mark.start_with?("#{PAIR_MARK}#{name},") end
 end
 
 # The keys of the locks of a mark `no_syscall_under(a, b)` of the function itself.
@@ -446,7 +446,7 @@ def finding(body: Body, code: String, key: String, restore: String, path: List[S
   if code == NOT_HELD
     message = "#{body.name} releases #{shown}, which it does not hold, on a path"
   elsif code == PAIR_NOT_RESTORED
-    set = key.slice(Flow.PAIR_PREFIX.length, key.length - Flow.PAIR_PREFIX.length)
+    set = key.slice(Flow.PAIR_PREFIX.length, key.length - Flow.PAIR_PREFIX.length).split(":").first
     message = "#{body.name} calls #{set} and does not call #{restore} after it on every path"
   end
 
