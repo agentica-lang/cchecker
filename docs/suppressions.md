@@ -23,9 +23,11 @@ flags can show other findings in it (`#ifdef`); only a full run lowers it. It
 refuses to write, and leaves the file as it was, when a tool failed, when the
 database has a file that was skipped (outside the working directory), with
 `--checks` (a baseline made with other checks would lose the findings of the
-default ones), and, when the rules run, with `--no-infer` or a `[library]` flag
-set to false (see [Settings](settings.md)), for the same reason. The exit code
-is `2` in each case.
+default ones), and, when the rules run, with `--no-infer`, a `[library]` flag
+set to false (see [Settings](settings.md)), or a file of `-c` that leaves out a
+name of `short` or `hot` of `[roots]` of the project's settings, for the same
+reason (only `[roots]` is compared: `follow_cold` and `[assume]` are not). The
+exit code is `2` in each case.
 
 ## Suppressions
 
@@ -73,6 +75,7 @@ puts it: gcc reports one inside a macro at the line of the `#define`, so the
 comment goes there, not at the use. A suppression in a block that a
 configuration leaves out (`#ifdef` of a macro that is not defined) is reported
 unused on a run of that configuration; a project that checks several
-configurations sees it reported in those that skip the block. A `//` comment
-that ends with `\` goes on to the next line, and that line counts as a line of
-the comment.
+configurations sees it reported in those that skip the block. A suppression in a
+header is never reported unused: a header is read through the files that include
+it, each with its own configuration. A `//` comment that ends with `\` goes on
+to the next line, and that line counts as a line of the comment.
