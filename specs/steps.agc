@@ -117,14 +117,15 @@ def exit_code_is(ctx: BDD.Context, args: List[String]) -> BDD.Context
   return BDD.assert(ctx, code == args[0].to_i!, "exit code #{code}, stderr: #{text(ctx, "stderr")}")
 end
 
+# $DIR in the text is the folder of the scenario, as the report shows it.
 def output_includes(ctx: BDD.Context, args: List[String]) -> BDD.Context
-  expected = BDD.doc_string(ctx).strip
+  expected = BDD.doc_string(ctx).strip.replace("$DIR", folder_of(ctx))
   shown = text(ctx, "stdout")
   return BDD.assert(ctx, shown.include?(expected), "the output does not include #{expected}: #{shown}")
 end
 
 def output_excludes(ctx: BDD.Context, args: List[String]) -> BDD.Context
-  unwanted = BDD.doc_string(ctx).strip
+  unwanted = BDD.doc_string(ctx).strip.replace("$DIR", folder_of(ctx))
   shown = text(ctx, "stdout")
   return BDD.assert(ctx, not shown.include?(unwanted), "the output includes #{unwanted}: #{shown}")
 end
