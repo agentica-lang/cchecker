@@ -10,11 +10,13 @@ agentica-lang/cchecker`). No C code of ours except the annotation header and the
 agentica.toml     the package (name, [style])
 cchecker.agc      main: the options, the run, the exit code
 src/              one module per topic (`ls src/`): the compile database, running the tools, parsing their
-                  output, the findings, the baseline, the report
-include/          cchecker.h: the annotation macros that the rules of later phases read (CC_SHORT, ...)
+                  output, the findings, the baseline, the report; for the rules: scan (the project's declarations
+                  out of the AST dump), unit (functions, calls, pointer stores), effects (the call graph and its
+                  rules), known (the blocking, allocating and system calls)
+include/          cchecker.h: the annotation macros that the rules read (CC_SHORT, ...)
 specs/            .feature files (BDD through the CLI) and steps.agc; specs/fixtures/ holds the small C files and a
                   compile_commands.json for them
-test/             unit tests of the pure helpers (the parsers)
+test/             unit tests of the pure helpers (the parsers, the scan of the AST dump)
 .github/          CI
 ```
 
@@ -25,8 +27,8 @@ test/             unit tests of the pure helpers (the parsers)
 - `make check`: `agentica check`. `make fmt-check`: `agentica fmt --check` (`agentica fmt` fixes it). `make test`:
   `agentica test --jobs 4` (the features and the unit tests). `agentica test --only TEXT` runs the scenarios whose name
   contains `TEXT`.
-- The tests need `gcc`, `clang`, `clang-tidy` and `timeout` (coreutils) on PATH. CI installs them and fails if one is
-  missing; a local run without one fails the scenarios too.
+- The tests need `gcc`, `clang`, `clang-tidy`, `sh` and `timeout` (coreutils) on PATH. CI installs them and fails if
+  one is missing; a local run without one fails the scenarios too.
 - `agentica cchecker.agc [options] FILE... -- FLAGS...` runs the tool; `agentica compile cchecker.agc -o cchecker.agcb`
   builds it.
 
@@ -48,7 +50,8 @@ test/             unit tests of the pure helpers (the parsers)
   a code: baselines of users hold them.
 - Exit codes: 0 no new findings, 1 new findings, 2 usage or tool error (a missing tool, a timeout, a file that does not
   compile).
-- No C parser of our own: the rules read clang's AST as JSON.
+- No C parser of our own: the rules read clang's AST as JSON. The dump is far larger than 1 MiB: it goes to a file
+  and is read line by line (`src/scan.agc`), never through `Process.output`.
 - Style: `agentica-code-guidelines` (lines up to 119, `blank_line_after_end`). Public code gets a short `##` doc.
 - A change that a user sees adds a line under `## [Unreleased]` in `CHANGELOG.md`. Update the README with it.
 - A PR is about 2k lines at most and holds its own tests and docs; do not leave validation or conventions to the next

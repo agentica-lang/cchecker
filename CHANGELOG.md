@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- The `rules` tool (on by default): one call graph of the project from clang's JSON AST, function pointers included
+  where the project stores a function in a field, a variable or a parameter. `CC-EFFECT-SHORT-BLOCKS`: a `CC_SHORT`
+  function reaches a blocking call (a `CC_BLOCKING` function, or a known blocking call of libc, pthread or libuv).
+  `CC-EFFECT-HOT-ALLOCATES` and `CC-EFFECT-HOT-SYSCALL`: a `CC_HOT` function allocates or makes a system call. The
+  message and the new `path` field of `--json` give the call path.
+- `--clang PROGRAM`, the clang that dumps the AST. Under `CCHECKER_AST`, `cchecker.h` writes the annotations as
+  `deprecated` attributes, whose text clang 19 keeps in its JSON AST.
+
 - `cchecker`: runs `gcc -fanalyzer` and `clang-tidy` on the C files of a compile database (or of the command line) in
   parallel, and prints their findings in one format with stable `CC-GCC-` and `CC-TIDY-` codes, as lines or `--json`.
 - A baseline file (`--baseline`, `--update-baseline`) that accepts findings by code, file and message, not by line. An

@@ -1,0 +1,47 @@
+## The library functions whose effects the rules know: those that block, allocate or make a system call. A function
+## of the project is judged by its body (or by its annotation), and a library function not listed here by nothing:
+## it has no effect.
+
+## The calls that can wait without a bound: on a file, a socket, a child, a lock, a condition or the clock.
+export BLOCKING = Set.new([
+  "accept", "accept4", "connect", "recv", "recvfrom", "recvmsg", "send", "sendto", "sendmsg", "sendmmsg", "recvmmsg",
+  "read", "write", "pread", "pwrite", "readv", "writev", "preadv", "pwritev", "open", "openat", "creat", "fsync",
+  "fdatasync", "sync", "syncfs", "msync", "flock", "lockf", "poll", "ppoll", "select", "pselect", "epoll_wait",
+  "epoll_pwait", "sleep", "usleep", "nanosleep", "clock_nanosleep", "pause", "sigsuspend", "sigwait", "sigwaitinfo",
+  "sigtimedwait", "wait", "waitpid", "waitid", "wait3", "wait4", "system", "popen", "pclose", "fopen", "fdopen",
+  "freopen", "fclose", "fflush", "fread", "fwrite", "fgets", "fgetc", "getc", "getchar", "fputs", "fputc", "putc",
+  "putchar", "puts", "printf", "fprintf", "vprintf", "vfprintf", "scanf", "fscanf", "getline", "getdelim", "perror",
+  "getaddrinfo", "gethostbyname", "gethostbyaddr", "getnameinfo", "dlopen", "msgrcv", "msgsnd", "semop", "semtimedop",
+  "mq_receive", "mq_send", "mq_timedreceive", "mq_timedsend", "sem_wait", "sem_timedwait", "sem_clockwait",
+  "pthread_join", "pthread_timedjoin_np", "pthread_mutex_lock", "pthread_mutex_timedlock", "pthread_mutex_clocklock",
+  "pthread_rwlock_rdlock", "pthread_rwlock_wrlock", "pthread_rwlock_timedrdlock", "pthread_rwlock_timedwrlock",
+  "pthread_cond_wait", "pthread_cond_timedwait", "pthread_cond_clockwait", "pthread_barrier_wait", "pthread_spin_lock",
+  "pthread_once", "thrd_join", "thrd_sleep", "mtx_lock", "mtx_timedlock", "cnd_wait", "cnd_timedwait", "call_once",
+  "uv_run", "uv_sleep", "uv_thread_join", "uv_mutex_lock", "uv_rwlock_rdlock", "uv_rwlock_wrlock", "uv_cond_wait",
+  "uv_cond_timedwait", "uv_sem_wait", "uv_barrier_wait", "uv_once",
+])
+
+## The calls that take or give back memory of the heap.
+export ALLOCATING = Set.new([
+  "malloc", "calloc", "realloc", "reallocarray", "free", "aligned_alloc", "posix_memalign", "memalign", "valloc",
+  "pvalloc", "strdup", "strndup", "asprintf", "vasprintf", "getline", "getdelim", "open_memstream", "GC_malloc",
+  "GC_malloc_atomic", "GC_malloc_uncollectable", "GC_malloc_atomic_uncollectable", "GC_realloc", "GC_free",
+  "GC_strdup", "GC_strndup", "GC_debug_malloc", "GC_debug_malloc_atomic", "GC_debug_realloc", "GC_debug_free",
+  "uv_malloc", "uv_calloc", "uv_realloc", "uv_free",
+])
+
+## The calls that enter the kernel, besides the blocking ones (which all do).
+export SYSTEM = Set.new([
+  "close", "lseek", "stat", "fstat", "lstat", "fstatat", "statx", "access", "faccessat", "readlink", "unlink",
+  "unlinkat", "rename", "renameat", "mkdir", "mkdirat", "rmdir", "chdir", "fchdir", "getcwd", "truncate", "ftruncate",
+  "fallocate", "chmod", "fchmod", "chown", "fchown", "utimensat", "opendir", "readdir", "closedir", "mmap", "munmap",
+  "mremap", "mprotect", "madvise", "mlock", "munlock", "brk", "sbrk", "ioctl", "fcntl", "dup", "dup2", "dup3", "pipe",
+  "pipe2", "socket", "socketpair", "bind", "listen", "shutdown", "setsockopt", "getsockopt", "getsockname",
+  "getpeername", "epoll_create", "epoll_create1", "epoll_ctl", "eventfd", "timerfd_create", "timerfd_settime",
+  "signalfd", "inotify_init", "inotify_init1", "inotify_add_watch", "kill", "tgkill", "raise", "sigaction", "signal",
+  "sigprocmask", "pthread_sigmask", "sigaltstack", "fork", "vfork", "execve", "execv", "execvp", "execl", "execlp",
+  "posix_spawn", "posix_spawnp", "_exit", "getpid", "getppid", "gettid", "syscall", "sched_yield", "prctl", "uname",
+  "getrandom", "getrlimit", "setrlimit", "pthread_create", "pthread_kill", "pthread_cond_signal",
+  "pthread_cond_broadcast", "pthread_mutex_unlock", "sem_post", "uv_thread_create", "uv_async_send", "uv_cond_signal",
+  "uv_cond_broadcast", "uv_mutex_unlock",
+])

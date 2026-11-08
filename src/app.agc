@@ -2,13 +2,16 @@
 
 import Baseline from "baseline"
 import Commands from "commands"
+import Effects from "effects"
 import Findings from "findings"
 import {Finding, ToolError} from "findings"
 import {Options} from "options"
 import Paths from "paths"
 import Report from "report"
 import ToolKind from "tool_kind"
+import {Tool} from "tool_kind"
 import Tools from "tools"
+import {Unit} from "unit"
 
 # The compile database that a run without FILE or -p reads.
 DEFAULT_DATABASE = "compile_commands.json"
@@ -34,7 +37,8 @@ export def run(options: Options) -> Result[Int]
   cwd = try Paths.working_directory()
   accepted = try baseline_entries(options)
   entries = try gather(options)
-  plan = try plan_for(options, entries, cwd)
+  scratch = scratch_path()
+  plan = try plan_for(options, entries, cwd, scratch)
   if plan.jobs.empty?
     return error("no C files to check")
   end
@@ -46,7 +50,7 @@ export def run(options: Options) -> Result[Int]
     end
   end
 
-  collected = collect(options, plan.jobs)
+  collected = try collect_in_scratch(options, plan.jobs, scratch)
   findings = (
     collected.findings
     |> localize(cwd, options.exclude)
@@ -168,7 +172,7 @@ end
 # its name; any other file of the database is ignored).
 # Excluded files are not run. Files outside the working directory are not run either, as their findings would be
 # dropped, and the report says so.
-def plan_for(options: Options, entries: List[Commands.Entry], cwd: String) -> Result[Plan]
+def plan_for(options: Options, entries: List[Commands.Entry], cwd: String, scratch: String) -> Result[Plan]
   wrapped = Tools.timeout_available?()
   jobs: List[Tools.Job] = []
   skipped: List[String] = []
@@ -185,13 +189,33 @@ def plan_for(options: Options, entries: List[Commands.Entry], cwd: String) -> Re
       some(shown) ->
         if not Paths.excluded?(cwd, shown, options.exclude)
           for tool in options.tools
-            jobs = jobs.push(Tools.Job(tool: tool, entry: entry, options: options, shown: shown, wrapped: wrapped))
+            dump = dump_path(tool, scratch, jobs.size)
+            jobs = jobs.push(
+              Tools.Job(
+                tool: tool,
+                entry: entry,
+                options: options,
+                shown: shown,
+                wrapped: wrapped,
+                dump: dump,
+                cwd: cwd,
+              ),
+            )
           end
         end
     end
   end
 
   return ok(Plan(jobs: jobs, skipped: skipped, ignored: ignored))
+end
+
+# The file where a job of the rules writes the AST; the other tools write none.
+def dump_path(tool: Tool, scratch: String, n: Int) -> String
+  if tool == Tool.Rules
+    return "#{scratch}/#{n}.json"
+  end
+
+  return ""
 end
 
 def skipped_line(skipped: List[String]) -> String
@@ -220,17 +244,41 @@ def scope_of(options: Options, plan: Plan, collected: Collected) -> Baseline.Sco
   )
 end
 
+# The folder of the AST dumps of a run: only this run uses it, and it is removed when the jobs end.
+def scratch_path() -> String
+  base = System.env("TMPDIR").unwrap_or("/tmp")
+  if base == ""
+    base = "/tmp"
+  end
+
+  return "#{base}/cchecker-#{System.pid()}-#{Time.now_ms()}"
+end
+
+# Runs the jobs, with the folder of the dumps when the rules run. The rules check the units of all the files at once.
+def collect_in_scratch(options: Options, jobs: List[Tools.Job], folder: String) -> Result[Collected]
+  if not options.tools.include?(Tool.Rules)
+    return ok(collect(options, jobs))
+  end
+
+  try Dir.mkdir_private(folder)
+  collected = collect(options, jobs)
+  _ = Path.remove(folder)
+  return ok(collected)
+end
+
 def collect(options: Options, jobs: List[Tools.Job]) -> Collected
   results = Task.map(jobs, options.jobs, Tools.limit_ms(options), &Tools.run)
   findings: List[Finding] = []
   errors: List[ToolError] = []
   ran: List[String] = []
+  units: List[Unit] = []
   for i in 0...jobs.size
     job = jobs[i]
     case results[i]
       ok(outcome) ->
         findings = findings.concat(outcome.findings)
         errors = errors.concat(outcome.errors)
+        units = units.concat(outcome.units)
         if outcome.errors.empty?
           ran = ran.push(Baseline.pair(ToolKind.name(job.tool), job.shown))
         end
@@ -240,7 +288,7 @@ def collect(options: Options, jobs: List[Tools.Job]) -> Collected
     end
   end
 
-  return Collected(findings: findings, errors: errors, ran: ran)
+  return Collected(findings: findings.concat(Effects.check(units)), errors: errors, ran: ran)
 end
 
 # Shortens the paths to be relative to the working directory, and drops what is outside it (system and third-party
