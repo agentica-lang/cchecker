@@ -1,4 +1,5 @@
 import Scan from "../src/scan"
+import Paths from "../src/paths"
 
 # A dump as clang writes it: a location leaves out the file and the line when they are those of the location before
 # it, and `includedFrom` names the file that included it, which is not the file of the location.
@@ -246,4 +247,65 @@ def test_a_null_pointer_first_item_is_no_number() -> Result[Void]
   state = NULLS.split("\n").reduce(Scan.start("/proj", "/proj"), &Scan.step)
   dump = try JSON.decode("{\"decls\": #{Scan.finish(state)}}", Names)
   return Test.eq(dump.decls.map do |d| d.name end, ["table"])
+end
+
+# The scan in C (native/scan.c) gives what the scan in Agentica gives, on the dumps above and on clang's dumps of the C
+# fixtures, which hold the system headers.
+def test_the_scan_in_c_gives_what_the_scan_in_agentica_gives() -> Result[Void]
+  cwd = try Paths.working_directory()
+  folder = "#{System.env("TMPDIR").unwrap_or("/tmp")}/cchecker-scan-test-#{System.pid()}"
+  try Dir.mkdir_private(folder)
+  dumps: List[String] = []
+  for text in [DUMP, TABLES, NULLS]
+    path = "#{folder}/#{dumps.size}.json"
+    try File.write_text(path, text)
+    dumps = dumps.push(path)
+  end
+
+  # The reference scan is slow: a few fixtures, which include system headers.
+  for name in ["specs/fixtures/annotated.c", "specs/fixtures/leak.c", "specs/fixtures/effects/cast_integer.c"]
+    path = "#{folder}/#{dumps.size}.json"
+    try clang_dump(name, path)
+    dumps = dumps.push(path)
+  end
+
+  result = same_scans(dumps, cwd)
+  for path in dumps
+    _ = Path.remove(path)
+  end
+
+  _ = Path.remove(folder)
+  return result
+end
+
+def same_scans(dumps: List[String], cwd: String) -> Result[Void]
+  for k in 0...dumps.size
+    path = dumps[k]
+    root = cwd
+    if k < 3
+      root = "/proj"
+    end
+
+    fast = try Scan.project_decls(path, root, root)
+    reference = try Scan.reference_decls(path, root, root)
+    try Test.eq(fast.decls.length > 2, true)
+    try Test.eq(fast.decls, reference.decls)
+    try Test.eq(fast.oversized, reference.oversized)
+    try Test.eq(fast.skipped, reference.skipped)
+  end
+
+  return ok()
+end
+
+# The dump of a C file as the rules ask clang for it.
+def clang_dump(source: String, path: String) -> Result[Void]
+  script = "exec clang \"$@\" > \"$CCHECKER_DUMP\""
+  args = [
+    "-c", script, "clang", "-w", "-DCCHECKER_AST", "-Iinclude", "-fsyntax-only", "-Xclang", "-ast-dump=json", source,
+  ]
+
+  process = try Process.spawn_captured("sh", args, ".", 30_000, {"CCHECKER_DUMP": path})
+  code = try Process.wait(process, 30_000)
+  Process.close(process)
+  return Test.eq(code, 0)
 end
