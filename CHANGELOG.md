@@ -21,6 +21,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `CC-PATH-LOCK-NOT-RELEASED`: a path returns with a lock the function took; `CC-PATH-LOCK-NOT-HELD`: a path releases
   a lock it did not take. `CC_ACQUIRES(lock)` and `CC_RELEASES(lock)` mark the helpers that take or drop a lock for
   their caller, and `CC_NORETURN` a function that never comes back.
+- What runs under a lock: `CC_NO_SYSCALL_UNDER()` on the field of a lock (or `CC_NO_SYSCALL_UNDER(lock)` on a
+  function) and `CC-PATH-SYSCALL-UNDER-LOCK` for a system or blocking call made or reached under it;
+  `CC_LOCK_LEVEL(n)` and `CC-PATH-LOCK-ORDER` for a lock taken while one of the same or a higher level is held.
 - `--clang PROGRAM`, the clang that dumps the AST. Under `CCHECKER_AST`, `cchecker.h` writes the annotations as
   `deprecated` attributes, whose text clang 19 keeps in its JSON AST.
 

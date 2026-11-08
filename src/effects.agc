@@ -15,9 +15,9 @@ enum Effect
   System
 end
 
-# The call graph of the project. A function is merged from all its declarations: the marks of each, and the place of
-# its definition. A slot holds every function stored in it.
-struct Graph
+## The call graph of the project. A function is merged from all its declarations: the marks of each, and the place of
+## its definition. A slot holds every function stored in it.
+export struct Graph
   functions: Map[String, Function]
   edges: Map[String, List[Target]]
   slots: Map[String, List[String]]
@@ -48,7 +48,41 @@ export def functions(units: List[Unit]) -> List[Function]
   return graph_of(units).functions.values
 end
 
-def graph_of(units: List[Unit]) -> Graph
+## Returns the names of the shortest call path from a function of the project to a system call, a blocking one
+## included: [`key`'s name, ..., the call]; none when it makes none. A library function is a path of its own name when
+## it is a system call.
+export def system_path(graph: Graph, key: String) -> Optional[List[String]]
+  if not defined?(graph, key)
+    if has?(graph, key, Effect.System)
+      return some([name_of(graph, key)])
+    end
+
+    return none
+  end
+
+  return search(graph, key, Effect.System).map do |path| path.map do |k| name_of(graph, k) end end
+end
+
+## Returns the functions that a function calls, directly or through a slot.
+export def callees(graph: Graph, key: String) -> List[String]
+  found: List[String] = []
+  for target in graph.edges.get(key).unwrap_or([])
+    case target
+      Target.Direct(to) -> found = found.push(to)
+      Target.Slot(slot) -> found = found.concat(graph.slots.get(slot).unwrap_or([]))
+    end
+  end
+
+  return found
+end
+
+## Returns whether the project defines the function.
+export def defined?(graph: Graph, key: String) -> Bool
+  return graph.functions.get(key).map do |f| f.defined end.unwrap_or(false)
+end
+
+## Returns the call graph of the units.
+export def graph_of(units: List[Unit]) -> Graph
   functions: Map[String, Function] = {}
   edges: Map[String, List[Target]] = {}
   stores: List[Store] = []
@@ -159,19 +193,6 @@ def search(graph: Graph, start: String, effect: Effect) -> Optional[List[String]
   return none
 end
 
-# The functions a function calls, directly or through a slot.
-def callees(graph: Graph, key: String) -> List[String]
-  found: List[String] = []
-  for target in graph.edges.get(key).unwrap_or([])
-    case target
-      Target.Direct(to) -> found = found.push(to)
-      Target.Slot(slot) -> found = found.concat(graph.slots.get(slot).unwrap_or([]))
-    end
-  end
-
-  return found
-end
-
 # The path from `start` to `last`. `callers` maps a function to the one that called it first.
 def path_to(callers: Map[String, String], start: String, last: String) -> List[String]
   path = [last]
@@ -194,10 +215,6 @@ def has?(graph: Graph, key: String, effect: Effect) -> Bool
     Effect.Allocates -> return library and Known.ALLOCATING.include?(name)
     Effect.System -> return marked or (library and (Known.SYSTEM.include?(name) or Known.BLOCKING.include?(name)))
   end
-end
-
-def defined?(graph: Graph, key: String) -> Bool
-  return graph.functions.get(key).map do |f| f.defined end.unwrap_or(false)
 end
 
 def name_of(graph: Graph, key: String) -> String

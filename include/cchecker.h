@@ -8,7 +8,10 @@
  *   CC_HOT                      the function never allocates and makes no system call
  *   CC_OWNS                     the pointer owns its memory: free it or hand it on on every path
  *   CC_PAIR(set, restore)       the function changes state that `restore` puts back
- *   CC_NO_SYSCALL_UNDER(lock)   the function makes no system call while `lock` is held
+ *   CC_NO_SYSCALL_UNDER(lock)   the function makes no system call while `lock` is held; on the field of a lock (or a
+ *                               global lock), CC_NO_SYSCALL_UNDER() says it of every function that holds that lock
+ *   CC_LOCK_LEVEL(n)            on the field of a lock (or a global lock): take it only while the locks held have a
+ *                               lower level
  *   CC_ACQUIRES(lock)           the function returns with `lock` held, for its caller to release
  *   CC_RELEASES(lock)           the function releases `lock`, which its caller took
  *   CC_NORETURN                 a call of the function never comes back (it jumps out or ends the thread)
@@ -45,6 +48,7 @@
 #define CC_ACQUIRES(...) CC_ANNOTATE_ARGS_("acquires", __VA_ARGS__)
 #define CC_RELEASES(...) CC_ANNOTATE_ARGS_("releases", __VA_ARGS__)
 #define CC_NORETURN CC_ANNOTATE_("noreturn")
+#define CC_LOCK_LEVEL(...) CC_ANNOTATE_ARGS_("lock_level", __VA_ARGS__)
 /* The code and the reason are string literals: `CC_IGNORE("CC-EFFECT-SHORT-BLOCKS", "...")` is "ignore(CODE: ...)". */
 #define CC_IGNORE(code, reason) CC_ANNOTATE_("ignore(" code ": " reason ")")
 #else
@@ -57,6 +61,7 @@
 #define CC_ACQUIRES(...)
 #define CC_RELEASES(...)
 #define CC_NORETURN
+#define CC_LOCK_LEVEL(...)
 #define CC_IGNORE(code, reason)
 #endif
 

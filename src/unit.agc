@@ -58,13 +58,21 @@ export struct Store
   source: Source
 end
 
-## The functions, calls and stores of one translation unit, and the graphs of its functions that take or release a
-## lock.
+## An annotation of a lock: a field (`queue.mu`, by struct and field name) or a global variable, and the mark
+## (`no_syscall_under()`, `lock_level(2)`).
+export struct LockMark
+  class: String
+  mark: String
+end
+
+## The functions, calls and stores of one translation unit, the graphs of its functions that take or release a lock,
+## and the annotations of its locks.
 export struct Unit
   functions: List[Function]
   calls: List[Call]
   stores: List[Store]
   bodies: List[Flow.Body] = []
+  lock_marks: List[LockMark] = []
 end
 
 # A struct or union: its name (a typedef name for an anonymous one) and the ids and names of its fields.
@@ -72,6 +80,7 @@ struct Record
   name: String
   field_ids: List[String]
   fields: List[String]
+  types: List[String] = []
 end
 
 # A record declaration and the name of the record it is declared in ("" at the top level).
@@ -130,7 +139,15 @@ export def read(decls: Json) -> Result[Unit]
     end
   end
 
-  return ok(Unit(functions: functions, calls: found.calls, stores: found.stores, bodies: bodies))
+  return ok(
+    Unit(
+      functions: functions,
+      calls: found.calls,
+      stores: found.stores,
+      bodies: bodies,
+      lock_marks: lock_marks_of(tables, nodes),
+    ),
+  )
 end
 
 # What the functions of the unit say about locks, from all their declarations: the locks of CC_ACQUIRES and
@@ -138,13 +155,18 @@ end
 # (`_Noreturn`, `__attribute__((noreturn))`, CC_NORETURN).
 def context_of(tables: Tables, nodes: List[Json]) -> Flow.Context
   callees: Map[String, Flow.Callee] = {}
+  globals = Set.new(nodes.select do |node| Ast.kind(node) == "VarDecl" end.map do |node| Ast.text(node, "name") end)
   declarations = nodes.select do |node| Ast.kind(node) == "FunctionDecl" end
   for node in declarations
     function = function_of(tables, node)
     params = params_of(node)
+    types = param_types_of(node)
     # A definition inherits the annotations of the prototype before it, in the names of the prototype's parameters:
     # only the declaration that wrote an annotation knows what its names are.
-    locks = own_marks(node).flat_map do |mark| annotated(mark, params) end
+    locks = own_marks(node)
+      .flat_map do |mark| annotated(mark, params) end
+      .map do |lock| lock.with(class: class_of_text(tables, globals, lock.text, params, types)) end
+
     attributes = Ast.children(node).map(&Ast.kind)
     stops = function.marks.include?("noreturn") or attributes.any? do |name| NORETURN_ATTRS.include?(name) end
     if not locks.empty? or stops
@@ -153,7 +175,87 @@ def context_of(tables: Tables, nodes: List[Json]) -> Flow.Context
     end
   end
 
-  return Flow.Context(callees: callees, statics: tables.static_functions)
+  fields: Map[String, String] = {}
+  for id in tables.field_slots.keys
+    fields = fields.put(id, tables.field_slots[id].replace("field:", ""))
+  end
+
+  return Flow.Context(callees: callees, statics: tables.static_functions, fields: fields, globals: globals)
+end
+
+# The class of the lock of an annotation, through the types of the parameters: `vm->rt->sync` of `agc_vm *vm` is
+# `agc_runtime.sync`; a global is its name. "" when a type on the way is not a struct of the project.
+def class_of_text(
+  tables: Tables,
+  globals: Set[String],
+  text: String,
+  params: List[String],
+  types: List[String],
+) -> String
+  path = Flow.shown_of(text).replace("*", "").replace("->", ".").split(".")
+  at = -1
+  for i in 0...params.size
+    if params[i] == path.first
+      at = i
+    end
+  end
+
+  if at < 0
+    if path.size == 1 and globals.include?(path.first)
+      return path.first
+    end
+
+    return ""
+  end
+
+  type = types[at]
+  for j in 1...path.size
+    case tables.records.get(type_name(type))
+      some(record) ->
+        for k in 0...record.fields.size
+          if record.fields[k] == path[j]
+            if j == path.size - 1
+              return "#{record.name}.#{path[j]}"
+            end
+
+            type = record.types[k]
+          end
+        end
+
+      none -> return ""
+    end
+  end
+
+  return ""
+end
+
+# The name of the struct of a type as clang writes it: `struct agc_vm *` and `const agc_vm *` are `agc_vm`.
+def type_name(type: String) -> String
+  name = type
+  for word in ["const ", "volatile ", "struct ", "union ", "restrict", "*"]
+    name = name.replace(word, "")
+  end
+
+  return name.strip
+end
+
+# The marks of the fields and the global variables of the unit, by their class.
+def lock_marks_of(tables: Tables, nodes: List[Json]) -> List[LockMark]
+  found: List[LockMark] = []
+  for nested in record_decls(nodes, "")
+    fields = Ast.children(nested.node).select do |child| Ast.kind(child) == "FieldDecl" end
+    for field in fields
+      class = tables.field_slots.get(Ast.text(field, "id")).unwrap_or("").replace("field:", "")
+      found = found.concat(own_marks(field).map do |mark| LockMark(class: class, mark: mark) end)
+    end
+  end
+
+  variables = nodes.select do |node| Ast.kind(node) == "VarDecl" end
+  for node in variables
+    found = found.concat(own_marks(node).map do |mark| LockMark(class: Ast.text(node, "name"), mark: mark) end)
+  end
+
+  return found.select do |mark| mark.class != "" end
 end
 
 # The locks of an annotation `acquires(a, b)` or `releases(a)`; none for another one.
@@ -187,6 +289,11 @@ def mark_of(attribute: Json) -> String
   return message.slice(MARK_PREFIX.length, message.length - MARK_PREFIX.length)
 end
 
+def param_types_of(node: Json) -> List[String]
+  parameters = Ast.children(node).select do |child| Ast.kind(child) == "ParmVarDecl" end
+  return parameters.map do |child| Ast.text(JSON.get(child, "type").unwrap_or(JSON.from("")), "qualType") end
+end
+
 def params_of(node: Json) -> List[String]
   parameters = Ast.children(node).select do |child| Ast.kind(child) == "ParmVarDecl" end
   return parameters.map do |child| Ast.text(child, "name") end
@@ -210,6 +317,16 @@ def tables_of(nodes: List[Json]) -> Tables
     by_type = by_type.put(record.name, record)
     for i in 0...record.fields.size
       field_slots = field_slots.put(record.field_ids[i], "field:#{record.name}.#{record.fields[i]}")
+    end
+  end
+
+  # A typedef of a named struct (`typedef struct runtime runtime_t`) is another name of its type.
+  for node in nodes
+    if Ast.kind(node) == "TypedefDecl"
+      case records.get(record_id_of(node))
+        some(record) -> by_type = by_type.put(Ast.text(node, "name"), record)
+        none -> next
+      end
     end
   end
 
@@ -262,6 +379,7 @@ def records_of(nodes: List[Json]) -> Map[String, Record]
           name: name,
           field_ids: fields.map do |f| Ast.text(f, "id") end,
           fields: fields.map do |f| Ast.text(f, "name") end,
+          types: fields.map do |f| Ast.text(JSON.get(f, "type").unwrap_or(JSON.from("")), "qualType") end,
         ),
       )
     end
