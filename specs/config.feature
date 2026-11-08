@@ -1,0 +1,238 @@
+Feature: The settings of a project
+  cchecker reads its settings from the first of: the file of -c (its [tool.cchecker] table when it has one, else the
+  whole file), cchecker.toml in the project folder, the [tool.cchecker] table of agentica.toml there, the defaults.
+  `[library]` turns the families of library knowledge on and off, and `[roots]` names CC_SHORT and CC_HOT roots
+  without a mark in the C. --json says which settings were read, and a run for people says it on standard error.
+
+  Background:
+    Given the C file "blocks.c" holds:
+      """
+      #include "cchecker.h"
+
+      unsigned int sleep(unsigned int seconds);
+      CC_SHORT int tick(void) { return (int)sleep(1); }
+      """
+
+  Scenario: With no settings file the defaults hold, and every family is on
+    When I run cchecker in its folder with "--tools rules --json blocks.c -- -I../../../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "source":"libc_blocking"
+      """
+    And the output includes:
+      """
+      "config":"defaults"
+      """
+    When I run cchecker in its folder with "--tools rules blocks.c -- -I../../../include"
+    Then the exit code is 1
+    And the errors include:
+      """
+      cchecker: settings: defaults
+      """
+
+  Scenario: cchecker.toml in the project folder is read
+    Given the file "cchecker.toml" holds:
+      """
+      [library]
+      libc_blocking = false
+      """
+    When I run cchecker in its folder with "--tools rules --json blocks.c -- -I../../../include"
+    Then the exit code is 0
+    And the output includes:
+      """
+      "config":"cchecker.toml"
+      """
+
+  Scenario: The [tool.cchecker] table of agentica.toml is read when there is no cchecker.toml
+    Given the file "agentica.toml" holds:
+      """
+      name = "demo"
+
+      [tool.cchecker.library]
+      libc_blocking = false
+      """
+    When I run cchecker in its folder with "--tools rules --json blocks.c -- -I../../../include"
+    Then the exit code is 0
+    And the output includes:
+      """
+      "config":"agentica.toml"
+      """
+
+  Scenario: cchecker.toml comes before agentica.toml
+    Given the file "cchecker.toml" holds:
+      """
+      [library]
+      libc_blocking = true
+      """
+    And the file "agentica.toml" holds:
+      """
+      name = "demo"
+
+      [tool.cchecker.library]
+      libc_blocking = false
+      """
+    When I run cchecker in its folder with "--tools rules --json blocks.c -- -I../../../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "config":"cchecker.toml"
+      """
+
+  Scenario: An agentica.toml without a [tool.cchecker] table is skipped
+    Given the file "agentica.toml" holds:
+      """
+      name = "demo"
+
+      [style]
+      blank_line_after_end = true
+      """
+    When I run cchecker in its folder with "--tools rules --json blocks.c -- -I../../../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "config":"defaults"
+      """
+
+  Scenario: The file of -c comes before cchecker.toml
+    Given the file "cchecker.toml" holds:
+      """
+      [library]
+      libc_blocking = true
+      """
+    And the file "ci.toml" holds:
+      """
+      [library]
+      libc_blocking = false
+      """
+    When I run cchecker in its folder with "--tools rules --json -c ci.toml blocks.c -- -I../../../include"
+    Then the exit code is 0
+    And the output includes:
+      """
+      "config":"ci.toml"
+      """
+
+  Scenario: The file of --config is read through its [tool.cchecker] table when it has one
+    Given the file "sub/agentica.toml" holds:
+      """
+      name = "demo"
+
+      [tool.cchecker.library]
+      libc_blocking = false
+      """
+    When I run cchecker in its folder with "-t rules --json --config sub/agentica.toml blocks.c -- -I../../../include"
+    Then the exit code is 0
+    And the output includes:
+      """
+      "config":"sub/agentica.toml"
+      """
+
+  Scenario: A file of -c that is not there is an error
+    When I run cchecker in its folder with "--tools rules -c missing.toml blocks.c -- -I../../../include"
+    Then the exit code is 2
+    And the errors include:
+      """
+      missing.toml
+      """
+
+  Scenario Outline: An unknown key or a value of the wrong type is an error, so a typo turns nothing off
+    Given the file "cchecker.toml" holds:
+      """
+      <table>
+      <line>
+      """
+    When I run cchecker in its folder with "--tools rules blocks.c -- -I../../../include"
+    Then the exit code is 2
+    And the errors include:
+      """
+      cchecker.toml: <key>
+      """
+
+    Examples:
+      | table     | line                  | key                   |
+      | [librray] |                       | librray               |
+      | [library] | libc_blockng = false  | library.libc_blockng  |
+      | [library] | libc_blocking = "no"  | library.libc_blocking |
+      | [roots]   | short = "tick"        | roots.short           |
+      | [roots]   | short = [1]           | roots.short           |
+
+  Scenario Outline: Each family of library knowledge can be turned off
+    Given the C file "family.c" holds:
+      """
+      #include "cchecker.h"
+
+      int <call>();
+      CC_SHORT int tick(void) { return <call>(); }
+      """
+    When I run cchecker in its folder with "--tools rules --json family.c -- -I../../../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "source":"<flag>"
+      """
+    Given the file "cchecker.toml" holds:
+      """
+      [library]
+      <flag> = false
+      """
+    When I run cchecker in its folder with "--tools rules --json family.c -- -I../../../include"
+    Then the exit code is 0
+
+    Examples:
+      | call               | flag             |
+      | sleep              | libc_blocking    |
+      | pthread_mutex_lock | pthread_blocking |
+      | uv_run             | libuv_blocking   |
+      | GC_gcollect        | libgc_blocking   |
+
+  Scenario Outline: A function named in [roots] gives the same finding as its mark
+    Given the C file "roots.c" holds:
+      """
+      #include "cchecker.h"
+
+      unsigned int sleep(unsigned int seconds);
+      void *malloc(unsigned long size);
+      <mark> int entry(void) { return (int)sleep(1) + (malloc(1) != 0); }
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [roots]
+      <list>
+      """
+    When I run cchecker in its folder with "--tools rules --json roots.c -- -I../../../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      {"code":"<code>","tool":"rules","file":"roots.c","line":5,"column":<column>,
+      """
+
+    Examples:
+      | mark     | list              | code                    | column |
+      | CC_SHORT |                   | CC-EFFECT-SHORT-BLOCKS  | 14     |
+      |          | short = ["entry"] | CC-EFFECT-SHORT-BLOCKS  | 6      |
+      | CC_HOT   |                   | CC-EFFECT-HOT-ALLOCATES | 12     |
+      |          | hot = ["entry"]   | CC-EFFECT-HOT-ALLOCATES | 6      |
+
+  Scenario: A name of [roots] that no function of the compile database has is an error
+    Given the file "compile_commands.json" holds:
+      """
+      [{"directory": ".", "file": "blocks.c", "arguments": ["cc", "-I../../../include", "-c", "blocks.c"]}]
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [roots]
+      short = ["tick"]
+      """
+    When I run cchecker in its folder with "--tools rules"
+    Then the exit code is 1
+    Given the file "cchecker.toml" holds:
+      """
+      [roots]
+      short = ["tick", "tock"]
+      """
+    When I run cchecker in its folder with "--tools rules"
+    Then the exit code is 2
+    And the errors include:
+      """
+      tock
+      """

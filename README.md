@@ -45,8 +45,9 @@ cchecker: 2 new findings in 1 file
 ```
 
 `--json` prints one object for tools and agents: `clean`, `findings` (each has `code`, `tool`, `file`, `line`,
-`column`, `message` and `path`, the call path of a finding of the rules), `baselined`, `fixed`, `errors` (a tool that
-did not run or could not compile a file: `tool`, `file` and `message`), `skipped` and `suppressed` (below).
+`column`, `message`, `path`, the call path of a finding of the rules, and `source`, the `[library]` flag that made it
+or `""`), `baselined`, `fixed`, `errors` (a tool that did not run or could not compile a file: `tool`, `file` and
+`message`), `skipped`, `suppressed` (below) and `config`, the settings file that was read or `"defaults"` (Settings).
 
 Exit codes: `0` no new findings, `1` new findings, `2` a usage error or a tool error. A tool error is a tool that
 is missing, ends in a timeout or exits with a non-zero code, except for the `1` of a compiler that found errors in the
@@ -130,6 +131,7 @@ suppressed finding never goes into it, and neither does a `CC-UNUSED-IGNORE`: th
 | `--gcc PROGRAM`, `--clang-tidy PROGRAM` | the programs to run, for a versioned name such as `gcc-14` |
 | `--clang PROGRAM` | the clang that dumps the AST for the rules |
 | `--json` | one JSON object |
+| `-c, --config FILE` | the settings file (Settings) |
 
 The default checks are `-*`, `clang-analyzer-core.*`, `clang-analyzer-unix.*` and `clang-analyzer-security.*` (without
 `insecureAPI`), and the bugprone checks `sizeof-expression`, `integer-division`, `suspicious-memory-comparison`,
@@ -160,6 +162,55 @@ CC_PAIR(mask_signals, restore_signals) int guarded(void);
 ```
 
 An annotation may be on any declaration of the function: a prototype in a header holds for the definition.
+
+## Settings
+
+cchecker reads its settings from the first of these that it finds:
+
+1. The file of `-c FILE` (`--config FILE`). When it has a `[tool.cchecker]` table (an `agentica.toml` or another
+   manifest), that table; else the whole file. A file that is not there or cannot be read is an error (exit 2).
+2. `cchecker.toml` in the working directory, the project folder.
+3. The `[tool.cchecker]` table of `agentica.toml` in the project folder. An `agentica.toml` without it is skipped.
+4. The defaults: every `[library]` flag on, no `[roots]`.
+
+The first one wins, and the others are not read. `--json` says which in `config` (`"cchecker.toml"`, the path given to
+`-c`, or `"defaults"`), and a run without `--json` says it in one line on standard error. A key that is not one of
+those below, or a value of the wrong type, is an error (exit 2), so a typo cannot turn a check off.
+
+```toml
+[library]
+libc_blocking = true
+pthread_blocking = true
+libuv_blocking = true
+libgc_blocking = true
+
+[roots]
+short = ["io_poll", "on_timer"]
+hot = ["dispatch"]
+```
+
+`[library]` turns each family of library knowledge on or off. All are on by default. A finding of the rules says in
+`source` of `--json` the flag whose family made the call it reaches blocking, so a project knows which one to turn off.
+The lists are in `src/known.agc`.
+
+| Flag | What it adds |
+|---|---|
+| `libc_blocking` | the calls of libc and POSIX that wait, to the blocking calls of `CC_SHORT`: files and streams (`read`, `write`, `open`, `fopen`, `fread`, `printf`, `fflush`, `fsync`, ...), sockets (`accept`, `connect`, `recv`, `send`, `getaddrinfo`, ...), waiting (`poll`, `select`, `epoll_wait`, `sleep`, `nanosleep`, `wait`, `waitpid`, `sigwait`, ...), processes (`system`, `popen`), `dlopen`, `dlsym`, POSIX semaphores and message queues, and the C11 threads (`thrd_join`, `mtx_lock`, `cnd_wait`, `call_once`, ...) |
+| `pthread_blocking` | `pthread_join`, `pthread_timedjoin_np`, the locks of `pthread_mutex_`, `pthread_rwlock_` and `pthread_spin_lock`, the waits of `pthread_cond_`, `pthread_barrier_wait` and `pthread_once` |
+| `libuv_blocking` | `uv_run`, `uv_sleep`, `uv_thread_join`, the locks and waits of `uv_mutex_`, `uv_rwlock_`, `uv_cond_`, `uv_sem_`, `uv_barrier_wait`, `uv_once`, and every `uv_fs_*` call whose callback, its last argument, is `NULL` or 0 |
+| `libgc_blocking` | `GC_gcollect` of the Boehm collector, which stops the world |
+
+A flag changes only the blocking calls of `CC_SHORT`: the rules of `CC_HOT` count every known blocking call as a
+system call whatever the flags.
+
+`[roots]` names the functions that are `CC_SHORT` (`short`) or `CC_HOT` (`hot`) without a mark in the C, by their name
+(a static function of that name in any file). A finding of a root of `[roots]` is the same as that of the mark, and a
+function both marked and listed is one root. A name that no function of the compile database defines is an error
+(exit 2), so a rename cannot leave a rule that checks nothing. Only a full run of a compile database can tell (a run of
+some files does not see the others), so only it checks the names.
+
+A project names its roots in this order of preference: `[roots]` in the settings, which keeps the C as it is, then the
+marks of `cchecker.h` in the C, for a project that wants the contract next to the code.
 
 ## Rules
 

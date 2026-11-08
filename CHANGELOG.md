@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Settings, read from the first of `-c FILE` (its `[tool.cchecker]` table when it has one), `cchecker.toml`, the
+  `[tool.cchecker]` table of `agentica.toml`, and the defaults; `config` in `--json` says which. `[library]` turns the
+  families of blocking calls off one by one (`libc_blocking`, `pthread_blocking`, `libuv_blocking`, `libgc_blocking`),
+  and `source` in `--json` names the one of a finding. `[roots]` names `CC_SHORT` and `CC_HOT` roots without a mark.
 - The `rules` tool (on by default): one call graph of the project from clang's JSON AST, function pointers included
   where the project stores a function in a field, a variable or a parameter. `CC-EFFECT-SHORT-BLOCKS`: a `CC_SHORT`
   function reaches a blocking call (a `CC_BLOCKING` function, or a known blocking call of libc, pthread or libuv).

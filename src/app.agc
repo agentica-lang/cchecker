@@ -2,6 +2,7 @@
 
 import Baseline from "baseline"
 import Commands from "commands"
+import Config from "config"
 import Effects from "effects"
 import Findings from "findings"
 import {Finding, ToolError} from "findings"
@@ -46,6 +47,11 @@ end
 ## of a tool. A setup error (no files, a bad baseline) is an `error`.
 export def run(options: Options) -> Result[Int]
   cwd = try Paths.working_directory()
+  config = try Config.load(options.config, cwd)
+  if not options.json
+    IO.warn("cchecker: settings: #{config.origin}")
+  end
+
   accepted = try baseline_entries(options)
   entries = try gather(options)
   scratch = try scratch_path(cwd)
@@ -61,7 +67,7 @@ export def run(options: Options) -> Result[Int]
     end
   end
 
-  collected = try collect_in_scratch(options, plan.jobs, scratch)
+  collected = try collect_in_scratch(options, config, plan.jobs, scratch)
   if collected.skipped_declarations > 0
     IO.warn(
       "cchecker: skipped #{collected.skipped_declarations} declarations too large to read; " +
@@ -77,6 +83,13 @@ export def run(options: Options) -> Result[Int]
 
   # A suppression is unused only where the run covered its tool and file, as the baseline counts a fixed finding.
   scope = scope_of(options, plan, collected)
+
+  # Only a run of the whole database sees every function: one of some files would miss the roots of the others.
+  missing = Effects.missing_roots(collected.units, config)
+  if scope.full and options.tools.include?(Tool.Rules) and not missing.empty?
+    return error("#{config.origin}: no function of the compile database is named #{missing.join(", ")} ([roots])")
+  end
+
   ignores = try ignores_of(found, plan, collected.units, cwd)
   applied = Suppressions.apply(found, ignores, scope.pairs)
   findings = Findings.sort(applied.findings)
@@ -99,6 +112,7 @@ export def run(options: Options) -> Result[Int]
             skipped: plan.skipped.size,
             skipped_declarations: collected.skipped_declarations,
             suppressed: applied.suppressed,
+            config: config.origin,
           ),
         ),
       )
@@ -114,6 +128,7 @@ export def run(options: Options) -> Result[Int]
             skipped: plan.skipped.size,
             skipped_declarations: collected.skipped_declarations,
             suppressed: applied.suppressed,
+            config: config.origin,
           ),
         ),
       )
@@ -352,19 +367,24 @@ def stale?(name: String) -> Bool
 end
 
 # Runs the jobs, with the folder of the dumps when the rules run. The rules check the units of all the files at once.
-def collect_in_scratch(options: Options, jobs: List[Tools.Job], folder: String) -> Result[Collected]
+def collect_in_scratch(
+  options: Options,
+  config: Config.Config,
+  jobs: List[Tools.Job],
+  folder: String,
+) -> Result[Collected]
   if not options.tools.include?(Tool.Rules)
-    return ok(collect(options, jobs))
+    return ok(collect(options, config, jobs))
   end
 
   try Dir.mkdir_private(folder)
   remove_stale(folder)
-  collected = collect(options, jobs)
+  collected = collect(options, config, jobs)
   _ = Path.remove(folder)
   return ok(collected)
 end
 
-def collect(options: Options, jobs: List[Tools.Job]) -> Collected
+def collect(options: Options, config: Config.Config, jobs: List[Tools.Job]) -> Collected
   results = Task.map(jobs, options.jobs, Tools.limit_ms(options), &Tools.run)
   findings: List[Finding] = []
   errors: List[ToolError] = []
@@ -389,7 +409,7 @@ def collect(options: Options, jobs: List[Tools.Job]) -> Collected
   end
 
   return Collected(
-    findings: findings.concat(Effects.check(units)),
+    findings: findings.concat(Effects.check(units, config)),
     errors: errors,
     ran: ran,
     units: units,

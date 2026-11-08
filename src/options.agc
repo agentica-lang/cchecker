@@ -8,7 +8,7 @@ import {Tool} from "tool_kind"
 # The clang-tidy checks of a run without --checks: the path-sensitive analyzer families that find real bugs in C, and a
 # few bugprone checks that are about C itself.
 # A .clang-tidy file of the project is applied first, and these checks come after it.
-# Left out because they only made noise on the Agentica VM and on agentica-db (the PR of phase 0 has the numbers):
+# Left out because they only made noise on the large C projects this was tried on (the PR of phase 0 has the numbers):
 # the insecureAPI checks ask for strlcpy in code that bounds its copies; deadcode reports dead stores;
 # bugprone-not-null-terminated-result flags a buffer that is built by length and is no C string;
 # bugprone-multi-level-implicit-pointer-conversion flags void ** passed as void * in FFI code.
@@ -50,6 +50,12 @@ OPTIONS = [
   Opt(name: "clang-tidy", default: "clang-tidy", metavar: "PROGRAM", help: "the clang-tidy to run"),
   Opt(name: "clang", default: "clang", metavar: "PROGRAM", help: "the clang that dumps the AST for the rules"),
   Opt(name: "json", kind: Kind.Flag, help: "print one JSON object"),
+  Opt(
+    name: "config",
+    short: "c",
+    metavar: "FILE",
+    help: "the settings file (default: cchecker.toml, else [tool.cchecker] of agentica.toml)",
+  ),
 ]
 
 VALUE_LONG = Set.new(OPTIONS.select do |o| o.kind != Kind.Flag end.map do |o| o.name end)
@@ -78,6 +84,7 @@ export struct Options
   clang_tidy: String
   clang: String
   json: Bool
+  config: Optional[String] = none
 end
 
 ## Returns the options of the command line, or the error to print: a usage error, or the help text.
@@ -106,6 +113,7 @@ export def parse(args: List[String]) -> Result[Options]
     clang_tidy: OP.string(parsed, "clang-tidy"),
     clang: OP.string(parsed, "clang"),
     json: OP.flag(parsed, "json"),
+    config: OP.optional_string(parsed, "config"),
   )
 
   problem = mistake(options)

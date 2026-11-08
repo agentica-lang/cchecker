@@ -126,7 +126,7 @@ Feature: Suppressions
     Then the exit code is 1
     And the output includes:
       """
-      "line":3,"column":38,"message":"leak of 'x'","path":[]}]
+      "line":3,"column":38,"message":"leak of 'x'","path":[],"source":""}]
       """
 
   Scenario: The marker in a string or in a comment that only mentions it is no suppression

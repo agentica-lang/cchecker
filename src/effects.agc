@@ -1,6 +1,7 @@
 ## The effect rules on the call graph of the project: a CC_SHORT function never reaches a blocking call, and a CC_HOT
 ## function never allocates or makes a system call.
 
+import {Config} from "config"
 import {Finding} from "findings"
 import Known from "known"
 import {Function, Source, Store, Target, Unit} from "unit"
@@ -23,24 +24,32 @@ struct Graph
   slots: Map[String, List[String]]
 end
 
-## Returns the findings of the rules on the units of a run.
-export def check(units: List[Unit]) -> List[Finding]
+## Returns the findings of the rules on the units of a run. A root is a function marked in the C or named in the
+## `[roots]` of the settings; the `[library]` flags that are off take their families out of the blocking calls.
+export def check(units: List[Unit], config: Config) -> List[Finding]
   graph = graph_of(units)
+  families = Known.BLOCKING_FAMILIES.select do |family| not config.off.include?(family.flag) end
   findings: List[Finding] = []
   for function in graph.functions.values
     if function.defined
-      if function.marks.include?("short")
-        findings = findings.concat(broken(graph, function, Effect.Blocks))
+      if function.marks.include?("short") or config.short.include?(function.name)
+        findings = findings.concat(broken(graph, families, function, Effect.Blocks))
       end
 
-      if function.marks.include?("hot")
-        findings = findings.concat(broken(graph, function, Effect.Allocates))
-        findings = findings.concat(broken(graph, function, Effect.System))
+      if function.marks.include?("hot") or config.hot.include?(function.name)
+        findings = findings.concat(broken(graph, families, function, Effect.Allocates))
+        findings = findings.concat(broken(graph, families, function, Effect.System))
       end
     end
   end
 
   return findings
+end
+
+## Returns the names of `[roots]` that no function the units define has.
+export def missing_roots(units: List[Unit], config: Config) -> List[String]
+  defined = Set.new(functions(units).select do |f| f.defined end.map do |f| f.name end)
+  return config.short.concat(config.hot).uniq.select do |name| not defined.include?(name) end
 end
 
 ## Returns the functions of the units, each merged from all its declarations.
@@ -109,8 +118,8 @@ def merged(known: Optional[Function], function: Function) -> Function
 end
 
 # The finding of a rule on a function, when the function reaches what the rule forbids: the shortest call path.
-def broken(graph: Graph, function: Function, effect: Effect) -> List[Finding]
-  case search(graph, function.key, effect)
+def broken(graph: Graph, families: List[Known.Family], function: Function, effect: Effect) -> List[Finding]
+  case search(graph, families, function.key, effect)
     some(path) ->
       names = path.map do |key| name_of(graph, key) end
       # The message has no path, so the baseline holds when the path changes; the report prints the path.
@@ -123,6 +132,7 @@ def broken(graph: Graph, function: Function, effect: Effect) -> List[Finding]
           column: function.column,
           message: "#{kind_of(function, effect)} reaches #{call_of(effect)} #{names.last}",
           path: names,
+          source: source_of(graph, families, path.last, effect),
         ),
       ]
     none -> return []
@@ -132,7 +142,7 @@ end
 # A walk of the graph in breadth from `start`, which stops at the first function with the effect, and gives the keys
 # of the path to it. It goes only through the functions that the project defines: one it does not define is a call of
 # a library.
-def search(graph: Graph, start: String, effect: Effect) -> Optional[List[String]]
+def search(graph: Graph, families: List[Known.Family], start: String, effect: Effect) -> Optional[List[String]]
   callers: Map[String, String] = {}
   callers = callers.put(start, start)
   queue = [start]
@@ -146,7 +156,7 @@ def search(graph: Graph, start: String, effect: Effect) -> Optional[List[String]
       end
 
       callers = callers.put(callee, key)
-      if has?(graph, callee, effect)
+      if has?(graph, families, callee, effect)
         return some(path_to(callers, start, callee))
       end
 
@@ -185,15 +195,32 @@ def path_to(callers: Map[String, String], start: String, last: String) -> List[S
   return path
 end
 
-def has?(graph: Graph, key: String, effect: Effect) -> Bool
+def has?(graph: Graph, families: List[Known.Family], key: String, effect: Effect) -> Bool
   name = name_of(graph, key)
   marked = graph.functions.get(key).map do |f| f.marks.include?("blocking") end.unwrap_or(false)
   library = not defined?(graph, key)
   case effect
-    Effect.Blocks -> return marked or (library and Known.BLOCKING.include?(name))
+    Effect.Blocks -> return marked or (library and families.any? do |family| family.calls.include?(name) end)
     Effect.Allocates -> return library and Known.ALLOCATING.include?(name)
     Effect.System -> return marked or (library and (Known.SYSTEM.include?(name) or Known.BLOCKING.include?(name)))
   end
+end
+
+# The `[library]` flag whose family made the last call of a path blocking, or "" when a mark did, or for the rules of
+# CC_HOT, which no flag turns off.
+def source_of(graph: Graph, families: List[Known.Family], key: String, effect: Effect) -> String
+  if effect != Effect.Blocks or defined?(graph, key)
+    return ""
+  end
+
+  name = name_of(graph, key)
+  for family in families
+    if family.calls.include?(name)
+      return family.flag
+    end
+  end
+
+  return ""
 end
 
 def defined?(graph: Graph, key: String) -> Bool

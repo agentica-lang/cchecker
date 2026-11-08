@@ -7,7 +7,8 @@ import {Suppressed} from "suppressions"
 ## accepted findings of the tools and files of the run that no tool found this time. `skipped` counts the files that
 ## were left out because they are outside the working directory, and `skipped_declarations` the declarations the rules
 ## did not read because they are too large and named no function in the lines read (tables of numbers, mostly; a
-## function past the cap is not seen). `suppressed` are the findings that a suppression took out.
+## function past the cap is not seen). `suppressed` are the findings that a suppression took out. `config` is the
+## settings file that was read, or "defaults".
 export struct Report
   findings: List[Finding]
   baselined: Int
@@ -16,6 +17,7 @@ export struct Report
   skipped: Int
   skipped_declarations: Int = 0
   suppressed: List[Suppressed] = []
+  config: String = "defaults"
 end
 
 # The JSON form of a report, which says in `clean` whether the run is clean.
@@ -28,6 +30,7 @@ struct Encoded
   skipped: Int
   skipped_declarations: Int
   suppressed: List[Suppressed]
+  config: String
 end
 
 ## Returns the report for people: one line for each finding, then a summary line.
@@ -48,6 +51,7 @@ export def json(report: Report) -> String
       skipped: report.skipped,
       skipped_declarations: report.skipped_declarations,
       suppressed: report.suppressed,
+      config: report.config,
     ),
   )
 end
