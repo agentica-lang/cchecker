@@ -433,8 +433,8 @@ end
 
 # Removes the folders that runs which were killed left next to `folder`: those whose process is gone, and which look
 # like a folder that cchecker made: a directory (not a link) of this user, private (mode 0700), with nothing in it but
-# dumps (`N.json`). Anything else of that name is left alone. A process is known to be gone only where /proc lists the
-# running ones.
+# dumps (`N.json`) and their FIFOs (`N.fifo`). Anything else of that name is left alone. A process is known to be
+# gone only where /proc lists the running ones.
 def remove_stale(folder: String) -> Void
   if not File.stat("/proc/self").ok?
     return
@@ -451,7 +451,8 @@ def remove_stale(folder: String) -> Void
   end
 end
 
-# Whether a path is a folder of dumps of the user: a private directory, not a link, that holds only `N.json` files.
+# Whether a path is a folder of dumps of the user: a private directory, not a link, that holds only `N.json` and
+# `N.fifo` files.
 def scratch?(path: String, user: Int) -> Bool
   case File.lstat(path)
     ok(info) ->
@@ -466,8 +467,9 @@ def scratch?(path: String, user: Int) -> Bool
   return Dir.list(path).unwrap_or(nothing).all? do |name| dump_name?(name) end
 end
 
+# A dump `N.json`, or the FIFO `N.fifo` that clang writes it into.
 def dump_name?(name: String) -> Bool
-  return name.end_with?(".json") and name.slice(0, name.length - 5).to_i.ok?
+  return (name.end_with?(".json") or name.end_with?(".fifo")) and name.slice(0, name.length - 5).to_i.ok?
 end
 
 # The user id of a file, not following a link, or -1.

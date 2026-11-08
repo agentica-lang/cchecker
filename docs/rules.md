@@ -263,9 +263,11 @@ happens in a function that the code calls (`finish(ctx)` calls
 ## The AST dump
 
 The AST of a file is tens of MiB with its system headers, more than a process
-output holds in Agentica (1 MiB): `sh` writes it to a file in a private folder
-under `$TMPDIR`, and cchecker reads it line by line and keeps only the
-declarations of the project. A table of numbers is not kept: an array of a
+output holds in Agentica (1 MiB): `sh` writes it into a FIFO in a private folder
+under `$TMPDIR`, cchecker copies it to a file there with the indent of each line
+cut short (clang indents each level of nesting, so a deeply nested function,
+such as a chain of 3000 else-if, gives gigabytes of spaces), and reads that file
+line by line, keeping only the declarations of the project. A table of numbers is not kept: an array of a
 number or character type, or whose first item is a number (`const uint8_t
 ROM[]`); a number cast to a pointer (`0`, `NULL`, or `1` under
 `-Wno-int-conversion`) is not a number. A declaration of more than a million
@@ -275,5 +277,5 @@ numbers) it is counted in `skipped_declarations` of `--json` and in a line on
 standard error, while the rest of the file is checked. A dump that ends early is
 a tool error. The folder is removed at the end of the run, and a run removes the
 folders that killed runs left there: a folder of the same user, private, not a
-link, holding only dumps, whose process is gone. Runs in different PID
+link, holding only dumps and their FIFOs, whose process is gone. Runs in different PID
 namespaces that share `$TMPDIR` can remove each other's folders.

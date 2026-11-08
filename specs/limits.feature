@@ -20,6 +20,26 @@ Feature: Time and memory on large generated inputs
     When I run cchecker with "--tools rules --json $DIR/chain.c" in at most 1500 MiB and 20 seconds
     Then the exit code is 0
 
+  Scenario: A chain of 3000 else-if branches, over the guard of 20 000 nodes, stays in its bounds
+    Given the C file "chain.c" holds, with ITEMS as 3000 times " else if (q->n == 7) work(7);":
+      """
+      #include <pthread.h>
+      struct queue { pthread_mutex_t mu; int n; };
+      int work(int n);
+      int pop(struct queue *q) {
+        pthread_mutex_lock(&q->mu);
+        if (q->n == 0) work(0);ITEMS
+        pthread_mutex_unlock(&q->mu);
+        return 0;
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/chain.c" in at most 1500 MiB and 20 seconds
+    Then the exit code is 2
+    And the output includes:
+      """
+      "errors":[{"tool":"rules","file":"$DIR/chain.c",
+      """
+
   Scenario: A condition of 1000 terms joined by || under a lock stays in its bounds
     Given the C file "or.c" holds, with ITEMS as 1000 times " || q->n == 7":
       """
@@ -34,6 +54,25 @@ Feature: Time and memory on large generated inputs
       """
     When I run cchecker with "--tools rules --json $DIR/or.c" in at most 1500 MiB and 20 seconds
     Then the exit code is 0
+
+  Scenario: A condition of 3000 terms joined by || under a lock stays in its bounds
+    Given the C file "or.c" holds, with ITEMS as 3000 times " || q->n == 7":
+      """
+      #include <pthread.h>
+      struct queue { pthread_mutex_t mu; int n; };
+      int pop(struct queue *q) {
+        pthread_mutex_lock(&q->mu);
+        int r = q->n == 0ITEMS;
+        pthread_mutex_unlock(&q->mu);
+        return r;
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/or.c" in at most 1500 MiB and 20 seconds
+    Then the exit code is 2
+    And the output includes:
+      """
+      "errors":[{"tool":"rules","file":"$DIR/or.c",
+      """
 
   Scenario: A declaration of 16 million lines of the dump, far over the cap, is skipped in its bounds
     Given the C file "big.c" holds, with ITEMS as 320000 times "GREEN,":

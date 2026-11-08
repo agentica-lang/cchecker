@@ -645,6 +645,7 @@ Feature: Effects on the call graph
 
   Scenario: The folder of a run that was killed is removed by the next run
     Given there is a private folder "$DIR/tmp/cchecker-999999999-1" holding "0.json"
+    And there is a private folder "$DIR/tmp/cchecker-999999999-2" holding "0.fifo"
     When I run cchecker with "--tools rules fixtures/effects/short_blocks.c -- -I../include" and TMPDIR "$DIR/tmp"
     Then the exit code is 1
     And the folder "$DIR/tmp" is empty

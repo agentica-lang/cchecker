@@ -316,6 +316,17 @@ Feature: Running the analyzers on C files
       | fake_gcc_hang.sh              |
       | fake_gcc_ignores_term.sh      |
 
+  Scenario: A clang of the rules that does not end in time is stopped, and its dump and FIFO are removed
+    Given the file "scratch/hang.pid" is removed
+    When I run cchecker with "--json --tools rules --clang fixtures/fake_gcc_hang.sh --timeout 1 fixtures/clean.c" and TMPDIR "$DIR/tmp"
+    Then the exit code is 2
+    And the output includes:
+      """
+      "errors":[{"tool":"rules","file":"fixtures/clean.c"
+      """
+    And the process written in "scratch/hang.pid" has ended
+    And the folder "$DIR/tmp" is empty
+
   Scenario: A database with a file outside the working directory is reported as skipped
     When I run cchecker with "--json --tools gcc -p fixtures/outside"
     Then the exit code is 1

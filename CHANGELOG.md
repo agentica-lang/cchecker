@@ -16,6 +16,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The rules run 2.6 times faster with 44% less memory (the 84 files of the VM of Agentica at -j 2: 47.0 s and 732 MB
   before, 17.9 s and 411 MB now): a native module in C scans clang's AST. `-j` defaults to the number of cores, and
   the jobs of the largest files start first.
+- A deeply nested function no longer makes the rules slow: a chain of 3000 else-if took 104 s and 1 GB, and now 4 s
+  and 170 MB. clang writes the AST into a FIFO, which cchecker copies with the indents cut short.
 - A `uv_fs_*` call run at once whose libc call does not block (`uv_fs_close`, `uv_fs_stat`,
   `uv_fs_unlink`, `uv_fs_mkdir`, ...) is a system call (`CC-EFFECT-HOT-SYSCALL`), no longer a blocking call
   (`CC-EFFECT-SHORT-BLOCKS`): a baseline that holds such a finding counts it fixed.
