@@ -279,6 +279,31 @@ def test_the_scan_in_c_gives_what_the_scan_in_agentica_gives() -> Result[Void]
   return result
 end
 
+# A FIFO that no writer opens (a clang that never started, or was killed before its redirect) ends the copy at its
+# timeout, and holds no thread of the compute pool for the rest of the run; a failure before a writer says so.
+def test_the_copy_of_a_fifo_that_no_one_opens_ends_at_its_timeout() -> Result[Void]
+  folder = "#{System.env("TMPDIR").unwrap_or("/tmp")}/cchecker-fifo-test-#{System.pid()}"
+  try Dir.mkdir_private(folder)
+  fifo = "#{folder}/0.fifo"
+  made = Scan.fifo(fifo)
+  copied = Scan.compact(fifo, "#{folder}/0.json", 200)
+  # A copy that cannot be written fails at once, before a writer: the caller then stops clang.
+  unwritten = Scan.compact(fifo, "#{folder}/missing/0.json", 10_000)
+  _ = Path.remove(fifo)
+  _ = Path.remove("#{folder}/0.json")
+  _ = Path.remove(folder)
+  try made
+  try Test.eq(error_of(copied), Scan.TIMED_OUT)
+  return Test.eq(error_of(unwritten).start_with?(Scan.UNSTARTED), true)
+end
+
+def error_of(copied: Result[List[String]]) -> String
+  case copied
+    ok(_) -> return "copied"
+    error(message) -> return message
+  end
+end
+
 # Dumps that clang does not write but a file may hold: CRLF line ends and no final one, and a location with a line
 # longer than the 1 MiB block of the C scan after its `col`, then a `"cc_file": ` line of its own, which is no place.
 def test_the_scan_in_c_reads_crafted_lines_as_the_scan_in_agentica() -> Result[Void]
@@ -291,10 +316,11 @@ def test_the_scan_in_c_reads_crafted_lines_as_the_scan_in_agentica() -> Result[V
   end
 
   _ = Path.remove(folder)
-  return Test.eq(try checks, [true, true, true, true, true, true])
+  return Test.eq(try checks, [true, true, true, true, true, true, true, true])
 end
 
-# For each dump: the C scan keeps some declarations and gives the reference text; then the place of each pruned dump.
+# For each dump: the C scan keeps some declarations, gives the reference text and reads its compacted copy the same;
+# then the place of each pruned dump.
 def crafted_scans(folder: String) -> Result[List[Bool]]
   crlf = "#{folder}/crlf.json"
   long = "#{folder}/long.json"
@@ -315,6 +341,7 @@ def crafted_scans(folder: String) -> Result[List[Bool]]
     fast = try Scan.project_decls(path, "/proj", "/proj", false)
     reference = try Scan.reference_decls(path, "/proj", "/proj")
     checks = checks.push(fast.decls.length > 2).push(fast.decls == reference.decls)
+    checks = checks.push(try same_copy(path, "/proj"))
   end
 
   pruned_crlf = try Scan.project_decls(crlf, "/proj", "/proj")
@@ -344,9 +371,22 @@ def same_scans(dumps: List[String], cwd: String) -> Result[Void]
     full_unit = try UnitReader.read(try JSON.parse(fast.decls))
     pruned_unit = try UnitReader.read(try JSON.parse(pruned.decls))
     try Test.eq(pruned_unit, full_unit)
+    try Test.eq(try same_copy(path, root), true)
   end
 
   return ok()
+end
+
+# Whether the copy of a dump by `Scan.compact`, with its indents cut short, scans as the dump, pruned and not.
+def same_copy(path: String, root: String) -> Result[Bool]
+  copy = "#{path}.copy"
+  raws = try Scan.compact(path, copy, 10_000)
+  copied = Scan.decls_in(copy, raws, root, root, false)
+  copied_pruned = Scan.decls_in(copy, raws, root, root)
+  _ = Path.remove(copy)
+  fast = try Scan.project_decls(path, root, root, false)
+  pruned = try Scan.project_decls(path, root, root)
+  return ok(try copied == fast and try copied_pruned == pruned)
 end
 
 # The dump of a C file as the rules ask clang for it.

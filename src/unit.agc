@@ -731,23 +731,13 @@ def unnamed_bit_field?(node: Json) -> Bool
   return Ast.text(node, "name") == "" and Ast.flag?(node, "isBitfield")
 end
 
-# Every node under the given ones, in order.
-def all_nodes(nodes: List[Json]) -> List[Json]
-  found: List[Json] = []
-  for node in nodes
-    found = found.push(node).concat(all_nodes(Ast.children(node)))
-  end
-
-  return found
-end
-
 def has_fields?(node: Json) -> Bool
   return Ast.children(node).any? do |child| Ast.kind(child) == "FieldDecl" end
 end
 
 # The record that a typedef names: the `decl` of the RecordType in its type.
 def record_id_of(node: Json) -> String
-  for child in all_nodes(Ast.children(node))
+  for child in Flow.descendants(Ast.children(node))
     if Ast.kind(child) == "RecordType"
       case JSON.get(child, "decl")
         ok(decl) -> return Ast.text(decl, "id")
@@ -794,7 +784,10 @@ def in_function(tables: Tables, key: String, node: Json, found: Found) -> Found
   end
 
   bodies = Ast.children(node).select do |child| Ast.kind(child) == "CompoundStmt" end
-  locals = Set.new(all_nodes(bodies).select do |n| Ast.kind(n) == "VarDecl" end.map do |n| Ast.text(n, "name") end)
+  locals = Set.new(
+    Flow.descendants(bodies).select do |n| Ast.kind(n) == "VarDecl" end.map do |n| Ast.text(n, "name") end,
+  )
+
   scope = Scope(caller: key, params: params, locals: locals)
   walked = found
   for body in bodies

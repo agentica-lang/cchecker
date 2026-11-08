@@ -14,6 +14,12 @@ import Paths from "paths"
 # The longest line the scan reads. A line of the dump is short, except a string literal of the source, which is one.
 LINE_BYTES = 16_777_216
 
+## The error of `compact` past its timeout: the text of `Process.output` on one.
+export TIMED_OUT = "process: operation timed out"
+
+## The start of an error of `compact` that came before clang opened the FIFO, which it may then wait on for good.
+export UNSTARTED = "before clang wrote its dump: "
+
 # The most lines the scan keeps of one declaration, so that a generated table cannot take all the memory. A large
 # function of an interpreter loop has some 190 thousand. A declaration over it is an error when it names a function,
 # before the cap or past it, since its calls are lost; one that names none (a table of enum values or of structs of
@@ -113,7 +119,17 @@ end
 ## `reference_decls` gives, in C; with `prune` (the default) without the keys that no rule reads, which hold a third
 ## of the text.
 export def project_decls(path: String, directory: String, cwd: String, prune: Bool = true) -> Result[Dump]
-  raws = try files(path)
+  return decls_in(path, try files(path), directory, cwd, prune)
+end
+
+## Returns what `project_decls` returns, for a dump whose `"file": ` values `raws` are known (`compact` gives them).
+export def decls_in(
+  path: String,
+  raws: List[String],
+  directory: String,
+  cwd: String,
+  prune: Bool = true,
+) -> Result[Dump]
   places = raws.map do |raw|
     located = place_of(directory, cwd, raw)
     Place(raw: raw, encoded: located.encoded, inside: located.inside)
@@ -209,6 +225,14 @@ end
 # `"file": ` lines, which are resolved below, and `scan` takes them. Both read the dump, so they run on the compute
 # pool.
 extern module "cchecker_scan"
+  ## Makes the FIFO at `path` that clang writes its dump into, for `compact`.
+  export compute def fifo(path: String) -> Result[Bool]
+  ## Copies the dump that clang writes into the FIFO `from` to the file `to`, until clang closes it, with the indent of
+  ## each line cut short, and gives the values of its `"file": ` lines for `decls_in`. clang indents a node two spaces
+  ## per level, so the dump of a deep tree (a chain of else-if) is gigabytes of spaces; the copy scans as the dump
+  ## would, and stays the size of the tree. Past `timeout_ms` from the start of the call (a writer that never opens
+  ## the FIFO included) it gives the error TIMED_OUT; another error before a writer opened it starts with UNSTARTED.
+  export compute def compact(from: String, to: String, timeout_ms: Int) -> Result[List[String]]
   compute def files(path: String) -> Result[List[String]]
   compute def scan(path: String, places: List[Place], prune: Bool) -> Result[NativeDump]
 end

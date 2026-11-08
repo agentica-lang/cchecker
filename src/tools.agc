@@ -37,8 +37,9 @@ TARGET_PAIRS = Set.new(["-target", "--target", "-arch"])
 # annotations of cchecker.h as attributes whose JSON keeps their text (see cchecker.h).
 AST_FLAGS = ["-w", "-DCCHECKER_AST"]
 
-# The JSON AST of a file is tens of MiB, more than `Process.output` holds: a shell writes it to a file.
-DUMP_SCRIPT = "exec \"$0\" \"$@\" > \"$CCHECKER_DUMP\""
+# The JSON AST of a file is tens of MiB, more than `Process.output` holds: a shell writes it into a FIFO, which
+# `Scan.compact` copies to the dump file (see there).
+DUMP_SCRIPT = "exec \"$0\" \"$@\" > \"$CCHECKER_FIFO\""
 
 # How gcc and clang end the message of an `#include` they did not find.
 GCC_MISSING = ": No such file or directory"
@@ -171,14 +172,51 @@ export def run(job: Job) -> Result[Outcome]
     timeout_ms += WRAPPER_MS
   end
 
+  fifo = ""
+  raws: List[String] = []
+  copy_error = ""
   if job.tool == Tool.Rules
+    fifo = fifo_path(job.dump)
     args = ["-c", DUMP_SCRIPT, command].concat(args)
     command = "sh"
-    env = env.put("CCHECKER_DUMP", job.dump)
+    env = env.put("CCHECKER_FIFO", fifo)
+    try Scan.fifo(fifo)
   end
 
-  process = try start(command, args, job.entry.directory, timeout_ms, program, env)
-  output = try Profile.measure("clang") do Process.output(process, timeout_ms) end
+  started = start(command, args, job.entry.directory, timeout_ms, program, env)
+  if job.tool == Tool.Rules and not started.ok?
+    _ = Path.remove(fifo)
+  end
+
+  process = try started
+  if job.tool == Tool.Rules
+    # The copy runs while clang writes. Its deadline starts with the call, so a wait for a thread of the compute
+    # pool does not count. Past it, or on an error before clang opened the FIFO (where it may wait for good), clang
+    # is stopped before the FIFO goes. On another error clang has the FIFO closed under it and ends by itself: its
+    # own outcome is still read, and its failure comes first.
+    copied = Profile.measure("clang") do Scan.compact(fifo, job.dump, timeout_ms) end
+    case copied
+      ok(found) -> raws = found
+      error(message) ->
+        _ = Path.remove(job.dump)
+        if message == Scan.TIMED_OUT or message.start_with?(Scan.UNSTARTED)
+          Process.close(process)
+          _ = Path.remove(fifo)
+          return error(message)
+        end
+
+        copy_error = message
+    end
+
+    _ = Path.remove(fifo)
+  end
+
+  read_output = Profile.measure("clang") do Process.output(process, timeout_ms) end
+  if not read_output.ok?
+    Process.close(process)
+  end
+
+  output = try read_output
   code = try Process.wait(process, timeout_ms)
   Process.close(process)
   if output.truncated
@@ -190,6 +228,11 @@ export def run(job: Job) -> Result[Outcome]
     return ok(done)
   end
 
+  if copy_error != ""
+    copy_failed = ToolError(tool: "rules", file: job.entry.file, message: copy_error)
+    return ok(done.with(errors: done.errors.push(copy_failed)))
+  end
+
   # The dump of a file whose header is not found is the part before the #include: nothing to read.
   if not done.unchecked.empty?
     _ = Path.remove(job.dump)
@@ -197,7 +240,7 @@ export def run(job: Job) -> Result[Outcome]
   end
 
   # The dump is tens of MiB: it goes as soon as it is read, or when clang failed.
-  read = with_unit(job, done)
+  read = with_unit(job, done, raws)
   _ = Path.remove(job.dump)
   return read
 end
@@ -247,6 +290,11 @@ export def first_line(text: String) -> String
   return lines.first
 end
 
+## Returns the path of the FIFO that clang writes the dump into: the dump's, `N.fifo` for `N.json`.
+export def fifo_path(dump: String) -> String
+  return "#{dump.slice(0, dump.length - ".json".length)}.fifo"
+end
+
 def executable(job: Job) -> String
   case job.tool
     Tool.Gcc -> return job.options.gcc
@@ -256,13 +304,13 @@ def executable(job: Job) -> String
 end
 
 # The outcome of a job of the rules with the declarations of the project in its dump, read into a unit, when clang
-# ended well.
-def with_unit(job: Job, done: Outcome) -> Result[Outcome]
+# ended well. `raws` are the files that the dump names.
+def with_unit(job: Job, done: Outcome, raws: List[String]) -> Result[Outcome]
   if not done.errors.empty?
     return ok(done)
   end
 
-  scanned = Profile.measure("scan") do Scan.project_decls(job.dump, job.entry.directory, job.cwd) end
+  scanned = Profile.measure("scan") do Scan.decls_in(job.dump, raws, job.entry.directory, job.cwd) end
   dump = try scanned
   share = 0
   timeout_ms = job.options.timeout_s * 1000

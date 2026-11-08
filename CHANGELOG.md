@@ -9,6 +9,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `libuv_callbacks_short` also infers the callbacks of `uv_listen`, the idle, prepare, check and signal handles,
   `uv_tcp_close_reset`, UDP, `uv_getaddrinfo`, `uv_getnameinfo`, `uv_random`, the fs event and poll handles, and the
   `uv_fs_*` requests; the libuv lists match libuv 1.50.
+- The body of a `set` with its own `CC_PAIR` may leave another pair set only on a successful return: a return of a
+  negative constant, a null pointer or a false bool that leaves one set is `CC-PATH-PAIR-NOT-RESTORED`.
 - `--update-baseline` with `-c FILE` is refused when the file leaves out a `short` or `hot` name of `[roots]` of the
   project settings, and the refusal names only its causes.
 - The `first:` unresolved callback shown is one inside the working directory when there is one.
@@ -19,12 +21,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The rules run 2.6 times faster with 44% less memory (the 84 files of the VM of Agentica at -j 2: 47.0 s and 732 MB
   before, 17.9 s and 411 MB now): a native module in C scans clang's AST. `-j` defaults to the number of cores, and
   the jobs of the largest files start first.
+- A deeply nested function no longer makes the rules slow: a chain of 3000 else-if took 104 s and 1 GB, and now 4 s
+  and 170 MB. clang writes the AST into a FIFO, which cchecker copies with the indents cut short.
 - A `uv_fs_*` call run at once whose libc call does not block (`uv_fs_close`, `uv_fs_stat`,
   `uv_fs_unlink`, `uv_fs_mkdir`, ...) is a system call (`CC-EFFECT-HOT-SYSCALL`), no longer a blocking call
   (`CC-EFFECT-SHORT-BLOCKS`): a baseline that holds such a finding counts it fixed.
 
 ### Added
 
+- `CC-PATH-PAIR-NOT-SET`: a `restore` of a `CC_PAIR` with no `set` before it on a path, in a function that calls `set`
+  (a double restore).
 - Assumptions of a project: `CC_ASSUME_SHORT` and `[assume] short` name a function that counts as fine for
   `CC_SHORT` (the short rule does not walk into it); `CC_STOP` and `[assume] stop` one that no rule walks into. A name
   of `[assume]` that no function of the compile database declares is an error.

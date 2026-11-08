@@ -1,8 +1,18 @@
 /* The scan of src/scan.agc in C: the same state machine over the lines of clang's JSON AST, at the speed of a read.
  * src/scan.agc stays the reference (test/scan_test.agc compares both on real dumps); keep the two in step.
  *
- * Two calls, both dirty (`compute def`): they read a file of tens of MiB, some hundred milliseconds, which would hold
- * a scheduler and the tasks queued on it (the readers of clang's pipes among them).
+ * clang writes the dump into a FIFO (`fifo`), and `compact` copies it to a file with the indent of each line cut to
+ * INDENT_CAP spaces: clang indents a node two spaces per level of nesting, so a deep tree (a chain of else-if) has a
+ * dump of a size quadratic in its depth, gigabytes for a chain of 2000, while the copy stays linear.
+ *
+ * The calls that read are dirty (`compute def`): they read a file of tens of MiB, some hundred milliseconds, which
+ * would hold a scheduler and the tasks queued on it (the readers of clang's pipes among them).
+ *   fifo(path)         makes the FIFO at `path` (dirty too: a call to the file system can wait).
+ *   compact(from, to, timeout_ms)
+ *                      copies the lines of `from` (the FIFO, until its writer closes it, or an error TIMED_OUT
+ *                      timeout_ms after the call starts) to `to`, each indent cut to INDENT_CAP spaces, and gives
+ *                      what `files` gives, in the same pass. The scan reads no indent
+ *                      deeper than 10 spaces, so it reads the copy as it would read the dump.
  *   files(path)        the distinct values of the `"file": ` lines, as written (JSON text), for the caller to resolve
  *                      with Paths: where a file is and whether it is in the project stay Agentica's.
  *   scan(path, places, prune)
@@ -16,16 +26,26 @@
  * call returns; the returned terms are the VM's. A line is at most LINE_BYTES (as File.foreach reads it); a longer
  * one, a line that is not UTF-8, or a failed read is an error result. */
 
+/* F_SETPIPE_SZ of Linux. */
+#define _GNU_SOURCE
+#include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <time.h>
+#include <unistd.h>
 
 #include "agentica_native.h"
 
 #define LINE_BYTES 16777216
 #define MAX_DECL_LINES 1000000
+/* Above the deepest indent that `step` tells apart (10 spaces). */
+#define INDENT_CAP 12
 
 enum { NATIVE_DUMP, PLACE };
 enum phase { BETWEEN, OPEN, KEPT, DROPPED, OVERSIZED };
@@ -126,15 +146,67 @@ static bool utf8(const unsigned char *s, size_t n) {
 #define BLOCK_BYTES ((size_t)1 << 20)
 
 typedef struct {
-  FILE *f;
+  FILE *f;  /* a file, or NULL for the FIFO at `fd` */
+  int fd;
+  int64_t deadline_ms; /* of the FIFO, on CLOCK_MONOTONIC */
   char *data;
   size_t cap, start, end;
   bool eof;
+  bool connected; /* a writer opened the FIFO: a read of it gave bytes or its end */
   bool any_bytes; /* files() checks only the values it keeps: it leaves the rest of the UTF-8 check to scan() */
   const char *error;
 } lines;
 
 static const char not_utf8[] = "the AST dump is not UTF-8";
+/* The text of the error of `Process.output` on a timeout, which src/scan.agc checks for (TIMED_OUT). */
+static const char timed_out[] = "process: operation timed out";
+/* The start of the error of `compact` when it failed before a writer opened the FIFO (UNSTARTED): clang may then wait
+ * in its open for good, and the caller stops it. */
+static const char unstarted[] = "before clang wrote its dump: ";
+
+/* An error result: `message`, after `unstarted` when no writer opened the FIFO of `r`. */
+static an_term copy_error(an_env *env, const lines *r, const char *message) {
+  if (r->connected || message == timed_out) return an_error(env, message, strlen(message));
+  char text[200];
+  int n = snprintf(text, sizeof text, "%s%s", unstarted, message);
+  return an_error(env, text, n < 0 ? 0 : (size_t)n < sizeof text ? (size_t)n : sizeof text - 1);
+}
+
+static int64_t now_ms(void) {
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  return (int64_t)t.tv_sec * 1000 + t.tv_nsec / 1000000;
+}
+
+/* Reads at most n bytes into `at`: 0 at the end, or on a failure with `error` set. The FIFO is read without blocking,
+ * after a poll that ends at the deadline. Before a writer opens it, Linux reports nothing on it (no POLLHUP), so a
+ * writer that never comes is a timeout too. */
+static size_t fill(lines *r, char *at, size_t n) {
+  if (r->f) {
+    size_t got = fread(at, 1, n, r->f);
+    if (got == 0 && ferror(r->f)) r->error = "the AST dump could not be read";
+    return got;
+  }
+  for (;;) {
+    int64_t left = r->deadline_ms - now_ms();
+    if (left <= 0) {
+      r->error = timed_out;
+      return 0;
+    }
+    struct pollfd p = {r->fd, POLLIN, 0};
+    int ready = poll(&p, 1, left > INT32_MAX ? INT32_MAX : (int)left);
+    if (ready == 0 || (ready < 0 && errno == EINTR)) continue;
+    if (ready < 0) break;
+    ssize_t got = read(r->fd, at, n);
+    if (got >= 0) {
+      r->connected = true;
+      return (size_t)got;
+    }
+    if (errno != EAGAIN && errno != EINTR) break;
+  }
+  r->error = "the AST dump could not be read";
+  return 0;
+}
 
 /* Gives the next line in *line, or *done at the end. On false, `error` says why. */
 static bool next_line(lines *r, slice *line, bool *done) {
@@ -179,13 +251,10 @@ static bool next_line(lines *r, slice *line, bool *done) {
         r->data = grown;
         r->cap = cap;
       }
-      size_t got = fread(r->data + r->end, 1, r->cap - r->end, r->f);
+      size_t got = fill(r, r->data + r->end, r->cap - r->end);
       r->end += got;
       if (got == 0) {
-        if (ferror(r->f)) {
-          r->error = "the AST dump could not be read";
-          return false;
-        }
+        if (r->error) return false;
         r->eof = true;
       }
       continue;
@@ -204,32 +273,52 @@ static bool next_line(lines *r, slice *line, bool *done) {
   }
 }
 
-static bool open_lines(an_env *env, an_term path_term, lines *r, an_term *failure) {
+/* A copy of the String term `term`, NUL-terminated, in malloc memory; NULL when out of memory. */
+static char *c_path(an_env *env, an_term term, bool *bad) {
   const char *data;
   size_t len;
-  memset(r, 0, sizeof *r);
-  if (!an_get_string(env, path_term, &data, &len)) {
-    *failure = an_badarg(env, 0);
-    return false;
-  }
+  *bad = !an_get_string(env, term, &data, &len);
+  if (*bad) return NULL;
   char *path = malloc(len + 1);
-  if (!path) {
-    *failure = an_raise(env, "out of memory");
-    return false;
-  }
+  if (!path) return NULL;
   memcpy(path, data, len);
   path[len] = '\0';
-  r->f = fopen(path, "rb");
+  return path;
+}
+
+/* Opens the file at `path_term`, or with `timeout_ms` >= 0 the FIFO there, read until that many milliseconds from
+ * now. A FIFO opened without blocking does not wait for its writer. */
+static bool open_lines_until(an_env *env, an_term path_term, int64_t timeout_ms, lines *r, an_term *failure) {
+  memset(r, 0, sizeof *r);
+  r->fd = -1;
+  bool bad;
+  char *path = c_path(env, path_term, &bad);
+  if (bad || !path) {
+    *failure = bad ? an_badarg(env, 0) : an_raise(env, "out of memory");
+    return false;
+  }
+  bool opened;
+  if (timeout_ms < 0) {
+    r->f = fopen(path, "rb");
+    opened = r->f != NULL;
+  } else {
+    int64_t now = now_ms();
+    r->deadline_ms = timeout_ms > INT64_MAX - now ? INT64_MAX : now + timeout_ms;
+    r->fd = open(path, O_RDONLY | O_NONBLOCK);
+    opened = r->fd >= 0;
+  }
   free(path);
-  if (!r->f) {
-    static const char message[] = "the AST dump could not be opened";
-    *failure = an_error(env, message, sizeof message - 1);
+  if (!opened) {
+    r->error = "the AST dump could not be opened";
+    *failure = an_error(env, r->error, strlen(r->error));
     return false;
   }
   r->data = malloc(BLOCK_BYTES);
   if (!r->data) {
-    fclose(r->f);
+    if (r->f) fclose(r->f);
+    if (r->fd >= 0) close(r->fd);
     r->f = NULL;
+    r->fd = -1;
     *failure = an_raise(env, "out of memory");
     return false;
   }
@@ -237,9 +326,150 @@ static bool open_lines(an_env *env, an_term path_term, lines *r, an_term *failur
   return true;
 }
 
+static bool open_lines(an_env *env, an_term path_term, lines *r, an_term *failure) {
+  return open_lines_until(env, path_term, -1, r, failure);
+}
+
 static void close_lines(lines *r) {
   if (r->f) fclose(r->f);
+  if (r->fd >= 0) close(r->fd);
   free(r->data);
+}
+
+/* fifo(path: String) -> Result[Bool] */
+static an_term fifo(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  bool bad;
+  char *path = c_path(env, argv[0], &bad);
+  if (bad) return an_badarg(env, 0);
+  if (!path) return an_raise(env, "out of memory");
+  int made = mkfifo(path, 0600);
+  int why = errno;
+  free(path);
+  if (made != 0) {
+    char message[160];
+    int n = snprintf(message, sizeof message, "the FIFO of the AST dump could not be made: %s", strerror(why));
+    return an_error(env, message, n < 0 ? 0 : (size_t)n < sizeof message ? (size_t)n : sizeof message - 1);
+  }
+  return an_ok(env, an_bool(env, true));
+}
+
+/* The distinct values of the `"file": ` lines, as written. Few distinct files (some hundreds), each seen many times: a
+ * linear search over the seen ones, last hit first. */
+typedef struct {
+  buf seen;
+  /* Each value at seen.data + at, n bytes long: a value may hold a NUL. */
+  struct {
+    size_t at, n;
+  } *values;
+  size_t count, cap, last;
+  bool failed;
+} file_values;
+
+/* Notes the value of `text`, a line without its indent, when it is a `"file": ` line. False on a failure: `r->error`
+ * says why, or `failed` is out of memory. */
+static bool note_file(file_values *f, lines *r, slice text) {
+  if (!starts(text, LIT("\"file\": "))) return true;
+  slice v = value_of(text, LIT("\"file\": "));
+  for (size_t k = 0; k < f->count; k++) {
+    size_t at = (f->last + k) % f->count;
+    if (f->values[at].n == v.n && memcmp(f->seen.data + f->values[at].at, v.s, v.n) == 0) {
+      f->last = at;
+      return true;
+    }
+  }
+  if (!utf8((const unsigned char *)v.s, v.n)) {
+    r->error = not_utf8;
+    return false;
+  }
+  if (f->count == f->cap) {
+    size_t cap = f->cap ? f->cap * 2 : 64;
+    void *grown = realloc(f->values, cap * sizeof *f->values);
+    if (!grown) {
+      f->failed = true;
+      return false;
+    }
+    f->values = grown;
+    f->cap = cap;
+  }
+  f->values[f->count].at = f->seen.len;
+  f->values[f->count++].n = v.n;
+  put(&f->seen, v.s, v.n);
+  return !f->seen.failed; /* `values` would point past what `seen` holds */
+}
+
+/* The values as a list, or the error of the read; frees `f`. */
+static an_term file_values_end(an_env *env, file_values *f, lines *r) {
+  an_term result;
+  if (r->error) {
+    result = an_error(env, r->error, strlen(r->error));
+  } else if (f->failed || f->seen.failed) {
+    result = an_raise(env, "out of memory");
+  } else {
+    an_list_builder b;
+    an_list_begin(env, &b, f->count);
+    for (size_t k = 0; k < f->count; k++)
+      an_list_push(env, &b, an_string(env, f->seen.data + f->values[k].at, f->values[k].n));
+    result = an_ok(env, an_list_end(env, &b));
+  }
+  free(f->values);
+  free(f->seen.data);
+  return result;
+}
+
+/* compact(from: String, to: String, timeout_ms: Int) -> Result[List[String]] */
+static an_term compact(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  static const char spaces[INDENT_CAP] = {' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' '};
+  bool bad;
+  char *to = c_path(env, argv[1], &bad);
+  if (bad) return an_badarg(env, 1);
+  if (!to) return an_raise(env, "out of memory");
+  int64_t timeout_ms;
+  if (!an_get_int(env, argv[2], &timeout_ms) || timeout_ms < 0) {
+    free(to);
+    return an_badarg(env, 2);
+  }
+  lines r;
+  an_term result;
+  if (!open_lines_until(env, argv[0], timeout_ms, &r, &result)) {
+    free(to);
+    return r.error ? copy_error(env, &r, r.error) : result;
+  }
+  /* The bytes are copied as they are: `scan` checks them. */
+  r.any_bytes = true;
+#ifdef F_SETPIPE_SZ
+  /* A pipe holds 64 KiB: clang would wait on each one. A larger one (at most /proc/sys/fs/pipe-max-size) is fewer
+   * switches between the two. Past the user's pipe-user-pages-soft (16384 pages, 64 MiB of pipes by default, so
+   * about -j 64 of these) the call fails, and new pipes of the user get only 2 pages: slower, still correct. */
+  (void)fcntl(r.fd, F_SETPIPE_SZ, (int)BLOCK_BYTES);
+#endif
+  FILE *out = fopen(to, "wb");
+  free(to);
+  file_values f = {0};
+  bool written = out != NULL, noted = true, done = false;
+  slice line;
+  /* On a failure the FIFO closes at once: clang gets SIGPIPE, and the caller reports both. */
+  while (written && noted && next_line(&r, &line, &done) && !done) {
+    noted = note_file(&f, &r, strip(line));
+    size_t k = 0;
+    while (k < line.n && line.s[k] == ' ') k++;
+    if (k > INDENT_CAP) {
+      written = fwrite(spaces, 1, INDENT_CAP, out) == INDENT_CAP;
+      line.s += k, line.n -= k;
+    }
+    written = written && fwrite(line.s, 1, line.n, out) == line.n && fputc('\n', out) != EOF;
+  }
+  if (out && fclose(out) != 0) written = false;
+  if (r.error || !written) {
+    result = copy_error(env, &r, r.error ? r.error : "the copy of the AST dump could not be written");
+    free(f.values);
+    free(f.seen.data);
+  } else {
+    result = file_values_end(env, &f, &r);
+  }
+  close_lines(&r);
+  return result;
 }
 
 /* files(path: String) -> Result[List[String]] */
@@ -249,56 +479,12 @@ static an_term files(an_env *env, int argc, const an_term *argv) {
   an_term failure;
   if (!open_lines(env, argv[0], &r, &failure)) return failure;
   r.any_bytes = true;
-  /* Few distinct files (some hundreds), each seen many times: a linear search over the seen ones, last hit first. */
-  buf seen = {0};
-  /* Each value at seen.data + at, n bytes long: a value may hold a NUL. */
-  struct {
-    size_t at, n;
-  } *values = NULL;
-  size_t count = 0, cap = 0, last = 0;
-  bool done = false, failed = false;
+  file_values f = {0};
+  bool done = false;
   slice line;
-  while (next_line(&r, &line, &done) && !done) {
-    slice text = strip(line);
-    if (!starts(text, LIT("\"file\": "))) continue;
-    slice v = value_of(text, LIT("\"file\": "));
-    bool found = false;
-    for (size_t k = 0; k < count && !found; k++) {
-      size_t at = (last + k) % count;
-      if (values[at].n == v.n && memcmp(seen.data + values[at].at, v.s, v.n) == 0) found = true, last = at;
-    }
-    if (found) continue;
-    if (!utf8((const unsigned char *)v.s, v.n)) {
-      r.error = not_utf8;
-      break;
-    }
-    if (count == cap) {
-      cap = cap ? cap * 2 : 64;
-      void *grown = realloc(values, cap * sizeof *values);
-      if (!grown) {
-        failed = true;
-        break;
-      }
-      values = grown;
-    }
-    values[count].at = seen.len;
-    values[count++].n = v.n;
-    put(&seen, v.s, v.n);
-    if (seen.failed) break; /* `values` would point past what `seen` holds */
+  while (next_line(&r, &line, &done) && !done && note_file(&f, &r, strip(line))) {
   }
-  an_term result;
-  if (r.error) {
-    result = an_error(env, r.error, strlen(r.error));
-  } else if (failed || seen.failed) {
-    result = an_raise(env, "out of memory");
-  } else {
-    an_list_builder b;
-    an_list_begin(env, &b, count);
-    for (size_t k = 0; k < count; k++) an_list_push(env, &b, an_string(env, seen.data + values[k].at, values[k].n));
-    result = an_ok(env, an_list_end(env, &b));
-  }
-  free(values);
-  free(seen.data);
+  an_term result = file_values_end(env, &f, &r);
   close_lines(&r);
   return result;
 }
@@ -797,6 +983,8 @@ static const an_type types[] = {
 };
 
 static const an_function functions[] = {
+  {"fifo", "(String) -> Result[Bool]", fifo, AN_DIRTY},
+  {"compact", "(String, String, Int) -> Result[List[String]]", compact, AN_DIRTY},
   {"files", "(String) -> Result[List[String]]", files, AN_DIRTY},
   {"scan", "(String, List[Place], Bool) -> Result[NativeDump]", scan, AN_DIRTY},
 };
