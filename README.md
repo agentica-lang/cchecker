@@ -81,10 +81,10 @@ file is read before any tool runs, and written in one rename.
 
 A run covers the tools and the files whose job ended well. Only a full run, which is every file of a database with no
 `--exclude`, no FILE subset, no skipped file and no failed job, covers the headers and the files that left the
-database. `fixed` counts the accepted findings of that scope that no tool found this time, and `--update-baseline` replaces the
-entries of that scope and keeps the others, so `--tools gcc` or a subset of FILEs updates only what it ran. A header
-that the run did not name keeps the larger count of its entry, as other flags can show other findings in it
-(`#ifdef`); only a full run lowers it. It refuses to write, and leaves the file as it was, when a tool failed, when
+database. `fixed` counts the accepted findings of that scope that no tool found this time, and `--update-baseline`
+replaces the entries of that scope and keeps the others, so `--tools gcc` or a subset of FILEs updates only what it
+ran. A header that the run did not name keeps the larger count of its entry, as other flags can show other findings in
+it (`#ifdef`); only a full run lowers it. It refuses to write, and leaves the file as it was, when a tool failed, when
 the database has a file that was skipped (outside the working directory), or with `--checks` (a baseline made with
 other checks would lose the findings of the default ones). The exit code is `2` in each case.
 
