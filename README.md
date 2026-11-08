@@ -189,18 +189,17 @@ lists are in `src/known.agc`. A function the project defines is judged by its bo
 listed has no effect. A known name is known by name alone: a project function named `remove`, `rewind`, `ftell` or
 `dlsym` counts as the libc one in a run that does not read its body.
 
-A call through a function pointer reaches every function the project stores in the same place: a field of a struct
-or a union (by record and field name, in an initializer or an assignment), a variable, or a parameter of a function
-(from the direct calls that pass a function), and every function of a place copied into it (`box.handle = handle`).
-An item of an initializer of a struct or an array counts designated or not (`{[3] = f}`). A cast is seen through,
-so a function kept in a `void *` or an `uintptr_t` is reached by a call through it, but not one kept in a table
-whose first item is a literal number (`uintptr_t t[] = {0, (uintptr_t)f}`): that is a table of numbers (below). A
-variable with `__attribute__((cleanup(f)))` calls `f`. A pointer that comes from anywhere else reaches nothing: a
-return value, the arguments of a variadic function, and a function handed to a library that calls it back (`qsort`, a libuv
-callback). A walk goes only through what the run read, so run it on all the files of the project: with a subset of
-the files, a call into a file that was not run reaches nothing. For the baseline, only a full run of a compile
-database covers the findings of the rules: a run of some files never counts them fixed and never drops them on
-`--update-baseline`.
+A call through a function pointer reaches every function the project stores in the same place: a field of a struct or a
+union (by record and field name, in an initializer or an assignment), a variable, or a parameter of a function (from
+the direct calls that pass a function), and every function of a place copied into it (`box.handle = handle`). An item
+of an initializer of a struct or an array counts designated or not (`{[3] = f}`). A cast is seen through, so a function
+kept in a `void *` or an `uintptr_t` is reached by a call through it, but not one kept in a table whose first item is a
+literal number (`uintptr_t t[] = {0, (uintptr_t)f}`): that is a table of numbers (below). A variable with
+`__attribute__((cleanup(f)))` calls `f`. A pointer that comes from anywhere else reaches nothing: a return value, the
+arguments of a variadic function, and a function handed to a library that calls it back (`qsort`, a libuv callback). A
+walk goes only through what the run read, so run it on all the files of the project: with a subset of the files, a call
+into a file that was not run reaches nothing. For the baseline, only a full run of a compile database covers the
+findings of the rules: a run of some files never counts them fixed and never drops them on `--update-baseline`.
 
 The AST of a file is tens of MiB with its system headers, more than a process output holds in Agentica (1 MiB):
 `sh` writes it to a file in a private folder under `$TMPDIR`, and cchecker reads it line by line and keeps
