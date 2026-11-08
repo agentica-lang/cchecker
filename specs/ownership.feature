@@ -42,6 +42,9 @@ Feature: Ownership on every path
       | pointer array not null | 6     | void f(int n) { CC_OWNS char **v = malloc(n * sizeof *v); if (!*v) return; free(v); }                     |
       | parameter set again    | 6      | void f(CC_OWNS char *p) { free(p); p = malloc(8); }                                                        |
       | overwritten through *p | 13     | static void replace(CC_FREES char **p, char *v) { *p = v; }                                                |
+      | elvis                  | 6      | void f(char *q, int n) { char *p = q ?: make(n); work(p); }                                              |
+      | old value never freed  | 6      | void f(CC_FREES char **p, char *v) { char *old = *p; *p = v; }                                            |
+      | local named as a global | 23    | CC_OWNS char *g; void f(int n) { CC_OWNS char *b = malloc(n); char *g[1]; g[0] = b; } |
 
   Scenario Outline: An owned pointer freed or handed on on every path passes (<case>)
     Given the C file "own.c" holds:
@@ -101,6 +104,9 @@ Feature: Ownership on every path
       | old value kept         | static void replace(CC_FREES char **p, char *v) { char *old = *p; *p = v; free(old); }                                                    |
       | items freed            | void f(void) { CC_OWNS char **v = malloc(16); free(*v); free(v); }                                                                         |
       | freed through address  | void f(int n) { CC_OWNS char *b = malloc(n); zap(&b); if (!b) work(b); }                                                                  |
+      | freed by a helper      | void f(int n) { CC_OWNS char *b = malloc(n); zap(&b); free(b); }                                                                         |
+      | global declared twice  | extern CC_OWNS char *g; char *g; void f(int n) { CC_OWNS char *b = malloc(n); g = b; }                                                 |
+      | atomic pointer freed   | static void release(CC_FREES _Atomic(char *) *p) { if (*p) free(*p); }                                                                   |
       | elvis                  | void f(char *q, int n) { char *p = q ?: make(n); free(p); }                                                                               |
       | field of a local struct | void f(int n) { struct local { CC_OWNS char *held; } x; CC_OWNS char *b = malloc(n); x.held = b; work(x.held); }                        |
 
@@ -133,6 +139,9 @@ Feature: Ownership on every path
       | freed by the project | void f(int n) { char *p = make(n); drop(p); drop(p); }                    |
       | owned parameter   | void f(CC_OWNS char *p) { free(p); free(p); }                                |
       | freed through address | void f(int n) { CC_OWNS char *b = malloc(n); zap(&b); if (b) free(b); }    |
+      | stored through *p     | void f(CC_FREES char **p) { CC_OWNS char *n = malloc(8); free(*p); *p = n; free(n); } |
+      | old value freed       | void f(CC_FREES char **p) { char *old = *p; free(*p); *p = NULL; free(old); } |
+      | two locals of the old value | void f(CC_FREES char **p, char *v) { char *a = *p; char *c = *p; *p = v; free(a); free(c); } |
 
   Scenario Outline: A pointer used after a path freed it or handed it on is a finding at the function (<case>)
     Given the C file "own.c" holds:
@@ -158,6 +167,7 @@ Feature: Ownership on every path
       | after handing on   | 6      | void f(int n) { CC_OWNS char *b = malloc(n); adopt(b); work(b); }          |
       | handed on twice    | 6      | void f(int n) { CC_OWNS char *b = malloc(n); adopt(b); adopt(b); }         |
       | returned           | 15     | CC_OWNS char *f(int n) { CC_OWNS char *b = malloc(n); free(b); return b; } |
+      | stored through *p  | 6      | void f(CC_FREES char **p) { CC_OWNS char *n = malloc(8); free(*p); *p = n; work(n); } |
       | through a pointer  | 6      | void f(CC_FREES char *p) { free(p); *p = 0; }                              |
 
   Scenario: The path of a finding goes from where the pointer got its value to the return that leaks it

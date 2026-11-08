@@ -254,7 +254,7 @@ def context_of(tables: Tables, nodes: List[Json]) -> Flow.Context
   declarations = nodes.select do |node| Ast.kind(node) == "FunctionDecl" end
   for node in declarations
     function = function_of(tables, node)
-    params = params_of(node)
+    params = Flow.params_named(node)
     types = param_types_of(node)
     # A definition inherits the annotations of the prototype before it, in the names of the prototype's parameters:
     # only the declaration that wrote an annotation knows what its names are.
@@ -604,11 +604,6 @@ end
 def param_types_of(node: Json) -> List[String]
   parameters = Ast.children(node).select do |child| Ast.kind(child) == "ParmVarDecl" end
   return parameters.map do |child| Ast.text(JSON.get(child, "type").unwrap_or(JSON.from("")), "qualType") end
-end
-
-def params_of(node: Json) -> List[String]
-  parameters = Ast.children(node).select do |child| Ast.kind(child) == "ParmVarDecl" end
-  return parameters.map do |child| Ast.text(child, "name") end
 end
 
 def tables_of(nodes: List[Json]) -> Tables

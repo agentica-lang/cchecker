@@ -492,11 +492,13 @@ A `malloc` into a local without a mark is not checked: `gcc -fanalyzer` reports 
 contract part of the code. The rules do not follow a pointer into a struct or an array (a store into a `CC_OWNS` field
 is where they stop), through a function pointer, or out through a parameter (`int open_buf(char **out)`: the caller
 lends `&p` to be set). Two locals of the same name in one function are one pointer. A local that stands for a pointer
-still stands for it after that pointer gets a new value. `return p` hands `p` on even when the function has no
+still stands for it after that pointer gets a new value, except through a `CC_FREES` parameter that points to the
+pointer: after `old = *p; *p = v;`, `old` holds the old value. `return p` hands `p` on even when the function has no
 `CC_OWNS` mark, and `p = realloc(p, n)` is trusted to work. A pointer put in a struct or a compound literal is not
 followed, and only one level of pointer is (`*p` of a `char **p`, not `**p`). A pointer freed through its address
 (`free_and_null(&p)`, a cleanup function) is freed or null: it may be read and freed again (`free(NULL)`), and where a
-condition says it is not null it is freed.
+condition says it is not null it is freed. The rules assume that a helper that frees through `&p` sets the pointer to
+null; one that only frees leaves a later double free or use unreported.
 
 ### Values of the collector
 

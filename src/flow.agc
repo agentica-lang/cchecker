@@ -512,6 +512,23 @@ export def zero?(node: Json) -> Bool
   return Ast.kind(bare) == "IntegerLiteral" and Ast.text(bare, "value") == "0"
 end
 
+## Returns a type without the qualifiers at its end, and out of `_Atomic(...)`: `char *` for `char *const volatile`.
+## clang writes no space between the star and the qualifier.
+export def unqualified(type: String) -> String
+  text = type.strip
+  if text.start_with?("_Atomic(") and text.end_with?(")")
+    return unqualified(text.slice(8, text.length - 9))
+  end
+
+  for word in ["const", "volatile", "restrict", "__restrict"]
+    if text.end_with?(" #{word}") or text.end_with?("*#{word}")
+      return unqualified(text.slice(0, text.length - word.length))
+    end
+  end
+
+  return text
+end
+
 ## Returns the names of the parameters of a function definition, whose key is `key`, that own what the caller passes
 ## (CC_OWNS or CC_FREES), in the order of the parameters.
 export def owned_params(ctx: Context, key: String, node: Json) -> List[String]
@@ -520,8 +537,8 @@ export def owned_params(ctx: Context, key: String, node: Json) -> List[String]
   return indices.select do |i| i < names.size end.map do |i| names[i] end
 end
 
-# The names of the parameters of a function, in order.
-def params_named(node: Json) -> List[String]
+## Returns the names of the parameters of a function, in order.
+export def params_named(node: Json) -> List[String]
   return Ast.children(node)
     .select do |child| Ast.kind(child) == "ParmVarDecl" end
     .map do |child| Ast.text(child, "name") end
@@ -1404,23 +1421,6 @@ def pointer_type?(node: Json) -> Bool
   return [Ast.text(type, "qualType"), Ast.text(type, "desugaredQualType")].any? do |text|
     unqualified(text).end_with?("*")
   end
-end
-
-# A type without the qualifiers at its end: `char *` for `char *const volatile`. clang writes no space between the
-# star and the qualifier.
-def unqualified(type: String) -> String
-  text = type.strip
-  if text.start_with?("_Atomic(") and text.end_with?(")")
-    return unqualified(text.slice(8, text.length - 9))
-  end
-
-  for word in ["const", "volatile", "restrict", "__restrict"]
-    if text.end_with?(" #{word}") or text.end_with?("*#{word}")
-      return unqualified(text.slice(0, text.length - word.length))
-    end
-  end
-
-  return text
 end
 
 # A call: its arguments in order, then the call. A call that never comes back ends the path. `tried` leaves out the

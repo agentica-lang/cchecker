@@ -72,6 +72,8 @@ Feature: Values of the collector kept where it sees them
       | a static local alone | 14     | struct obj **f(void) { static struct obj *last; return &last; }        |
       | a typedef static     | 10     | obj_ref *f(void) { static obj_ref last; return &last; }                |
       | a typedef global     | 16     | static obj_ref last;                                                   |
+      | stacked qualifiers   | 73     | struct cholder { struct obj *const volatile o; }; static struct cholder box; |
+      | a restrict pointer   | 67     | struct rholder { struct obj *restrict o; }; static struct rholder box; |
 
   Scenario Outline: A value of the collector kept where the collector sees it passes (<case>)
     Given the C file "gc.c" holds:
