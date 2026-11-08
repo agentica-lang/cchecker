@@ -22,7 +22,8 @@ test/             unit tests of the pure helpers (the parsers, the scan of the A
 
 ## Commands
 
-- Binary: the Agentica release pinned in `.github/workflows/ci.yml` (`AGENTICA_VERSION`, with its sha256). Download it
+- Binary: the Agentica release pinned in `.github/workflows/ci.yml` (the `version` and `sha256` inputs of
+  `agentica-lang/setup-agentica`). Download it
   under `.tools/` (gitignored), never `/tmp`. Changing the pin changes both values from the release's SHA256SUMS.
 - `make check`: `agentica check`. `make fmt-check`: `agentica fmt --check` (`agentica fmt` fixes it). `make test`:
   `agentica test --jobs 4` (the features and the unit tests). `agentica test --only TEXT` runs the scenarios whose name
