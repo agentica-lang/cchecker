@@ -24,7 +24,7 @@ def main() -> Void
     BDD.step("there is a folder {string} holding {string}", &make_open_folder),
     BDD.step("I run cchecker with {string}", &run_cchecker),
     BDD.step("I run cchecker with {string} and TMPDIR {string}", &run_with_tmpdir),
-    BDD.step("I run cchecker with {string} in at most {int} MiB", &run_capped),
+    BDD.step("I run cchecker with {string} in at most {int} MiB and {int} seconds", &run_bounded),
     BDD.step("I run cchecker in its folder with {string}", &run_in_folder),
     BDD.step("I run cchecker in its folder {string} with {string}", &run_in_subfolder),
     BDD.step("the folder {string} is empty", &folder_empty),
@@ -87,12 +87,16 @@ def run_cchecker(ctx: BDD.Context, args: List[String]) -> BDD.Context
   return run_program(ctx, "agentica", [PROGRAM].concat(words))
 end
 
-# The run under `ulimit -v`: a run that needs more memory fails instead of taking the machine's.
-def run_capped(ctx: BDD.Context, args: List[String]) -> BDD.Context
+# The run under `ulimit -v`, which its compilers inherit: a run that needs more memory fails (its exit code is not the
+# one the scenario expects) instead of taking the machine's. A run that takes longer than its seconds fails the step.
+def run_bounded(ctx: BDD.Context, args: List[String]) -> BDD.Context
   words = args[0].replace("$DIR", folder_of(ctx)).split(" ").select do |word| word != "" end
   limit = args[1].to_i! * 1024
   script = "ulimit -v #{limit} && exec agentica \"$@\""
-  return run_program(ctx, "sh", ["-c", script, "sh", PROGRAM].concat(words))
+  started = Time.monotonic_ms()
+  ran = run_program(ctx, "sh", ["-c", script, "sh", PROGRAM].concat(words))
+  elapsed = Time.monotonic_ms() - started
+  return BDD.assert(ran, elapsed <= args[2].to_i! * 1000, "the run took #{elapsed} ms")
 end
 
 # A run whose project folder is the folder of the scenario, for the settings files that cchecker looks for there.
