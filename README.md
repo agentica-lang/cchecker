@@ -54,12 +54,13 @@ not findings, as they are not for clang-tidy.
 
 `-Werror` in the flags of a database does not turn the other warnings of gcc into tool errors: cchecker adds
 `-Wno-error` after the flags, and `-Werror=analyzer-...` stays an error, which is a finding. A gcc that exits with `1`
-after analyzer errors counts as a finding only when it ends with `cc1: all warnings being treated as errors` or `cc1:
-some warnings being treated as errors`; a `cc1` killed halfway prints only `Killed`, and that is a tool error.
+after analyzer errors counts as a finding only when it ends with `cc1: some warnings being treated as errors`; a `cc1`
+killed halfway prints `gcc: fatal error: Killed signal terminated program cc1`, and that is a tool error.
 
-Only the C files of a database are run. The paths are relative to the working directory: a file outside it is skipped
-(a line on standard error and `skipped` in `--json`), and a finding in a header outside it (a system or third-party
-header) is dropped.
+Only the C files of a database are run (a `.cc` or `.S` entry is ignored, and a run that ignored one is not a full run:
+it keeps the baseline entries of everything it did not name). The paths are relative to the working directory: a file
+outside it is skipped (a line on standard error and `skipped` in `--json`), and a finding in a header outside it (a
+system or third-party header) is dropped.
 
 ### Codes
 

@@ -118,6 +118,24 @@ export def failure(wrapped: Bool, timeout_s: Int, text: String, code: Int) -> St
   return "exited with code #{code}: #{first_line(text)}"
 end
 
+## Returns the line that says why a tool stopped: a fatal error (gcc says so when cc1 is killed), else the first error,
+## else the first line.
+export def first_line(text: String) -> String
+  lines = text.split("\n").map do |line| line.strip end.select do |line| line != "" end
+  if lines.empty?
+    return "no output"
+  end
+
+  for marker in ["fatal error:", "error"]
+    found = lines.select do |line| line.include?(marker) end
+    if not found.empty?
+      return found.first
+    end
+  end
+
+  return lines.first
+end
+
 def executable(job: Job) -> String
   case job.tool
     Tool.Gcc -> return job.options.gcc
@@ -227,7 +245,9 @@ def plain_option(option: String) -> String
 end
 
 # Whether gcc says that it ended the run on purpose because of -Werror. A cc1 that was killed after it printed such an
-# error says "Killed" and exits 1 as well, and its output is not a whole run.
+# error prints a fatal error instead and exits 1 as well, and its output is not a whole run. With `-Wno-error` after
+# the flags only the "some" line can come (the analyzer warnings named with `-Werror=analyzer-...` stay errors); the
+# "all" line is kept for a gcc that prints it anyway.
 def treated_as_errors?(text: String) -> Bool
   return (
     text.include?("cc1: all warnings being treated as errors") or
@@ -251,19 +271,4 @@ def finding(job: Job, d: Diagnostics.Diagnostic) -> Finding
     column: d.column,
     message: d.message.split(" ").select do |word| word != "" end.join(" "),
   )
-end
-
-# The line that says why a tool stopped: the first error, else the first line.
-def first_line(text: String) -> String
-  lines = text.split("\n").map do |line| line.strip end.select do |line| line != "" end
-  if lines.empty?
-    return "no output"
-  end
-
-  errors = lines.select do |line| line.include?("error") end
-  if errors.empty?
-    return lines.first
-  end
-
-  return errors.first
 end

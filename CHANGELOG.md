@@ -16,6 +16,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   turn the other warnings into tool errors.
 - `--update-baseline` is refused when a file of the database was skipped, and a header that a partial run did not name
   keeps the larger count of its entry. `fixed` does not count the files whose job failed.
+- A run of a database that ignored a non-C entry (`.cc`) is not a full run, so it keeps the entries it did not name. A
+  gcc killed halfway is reported with its `fatal error` line.
 - Exit codes: 0 no new findings, 1 new findings, 2 usage or tool error.
 - `include/cchecker.h`: the annotation macros `CC_SHORT`, `CC_BLOCKING`, `CC_HOT`, `CC_OWNS`, `CC_PAIR` and
   `CC_NO_SYSCALL_UNDER`, an `annotate` attribute for clang and empty for other compilers.

@@ -20,10 +20,12 @@ struct Collected
   ran: List[String]
 end
 
-# The jobs of a run, and the files that were left out because they are outside the working directory.
+# The jobs of a run, the files that were left out because they are outside the working directory, and the entries of
+# the database that are not C files (they are not run, and so a run of the database is not a run of all its files).
 struct Plan
   jobs: List[Tools.Job]
   skipped: List[String]
+  ignored: List[String]
 end
 
 ## Runs the tools, prints the report and returns the exit code: 0 for no new findings, 1 for new ones, 2 for an error
@@ -163,16 +165,18 @@ def from_command_line(options: Options) -> Result[List[Commands.Entry]]
 end
 
 # One job for each tool and each C file of the database (a file named on the command line is checked whatever
-# its name).
+# its name; any other file of the database is ignored).
 # Excluded files are not run. Files outside the working directory are not run either, as their findings would be
 # dropped, and the report says so.
 def plan_for(options: Options, entries: List[Commands.Entry], cwd: String) -> Result[Plan]
   wrapped = Tools.timeout_available?()
   jobs: List[Tools.Job] = []
   skipped: List[String] = []
+  ignored: List[String] = []
   for entry in entries
     path = try Paths.absolute(entry.directory, entry.file)
     if not (options.files.include?(entry.file) or entry.file.end_with?(".c"))
+      ignored = ignored.push(entry.file)
       next
     end
 
@@ -187,7 +191,7 @@ def plan_for(options: Options, entries: List[Commands.Entry], cwd: String) -> Re
     end
   end
 
-  return ok(Plan(jobs: jobs, skipped: skipped))
+  return ok(Plan(jobs: jobs, skipped: skipped, ignored: ignored))
 end
 
 def skipped_line(skipped: List[String]) -> String
@@ -206,7 +210,13 @@ def scope_of(options: Options, plan: Plan, collected: Collected) -> Baseline.Sco
   return Baseline.Scope(
     tools: Set.new(options.tools.map do |tool| ToolKind.name(tool) end),
     pairs: Set.new(collected.ran),
-    full: options.files.empty? and options.exclude.empty? and plan.skipped.empty? and collected.errors.empty?,
+    full: (
+      options.files.empty? and
+      options.exclude.empty? and
+      plan.skipped.empty? and
+      plan.ignored.empty? and
+      collected.errors.empty?
+    ),
   )
 end
 
