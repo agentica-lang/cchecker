@@ -478,6 +478,7 @@ Feature: Effects on the call graph
       | CC_SHORT |                                                                    | __attribute__((noreturn)) |
       | CC_SHORT | typedef void nr(const char *) __attribute__((noreturn)); nr fatal; |                           |
       | CC_SHORT | __attribute__((cold)) void fatal(const char *why);                 |                           |
+      | CC_SHORT | CC_NORETURN void fatal(const char *why);                           |                           |
       | CC_HOT   |                                                                    | __attribute__((cold))     |
 
   Scenario: follow_cold in [effects] follows a call into a function that never returns or is cold

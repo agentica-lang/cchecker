@@ -6,6 +6,7 @@ import Config from "config"
 import Effects from "effects"
 import Findings from "findings"
 import {Finding, ToolError, UnresolvedCallback} from "findings"
+import Locking from "locking"
 import {Options} from "options"
 import Paths from "paths"
 import Report from "report"
@@ -33,6 +34,7 @@ struct Collected
   ran: List[String]
   units: List[Unit]
   skipped_declarations: Int = 0
+  incomplete_functions: Int = 0
   unresolved: List[UnresolvedCallback] = []
   missing_roots: List[String] = []
 end
@@ -84,6 +86,13 @@ export def run(options: Options) -> Result[Int]
     )
   end
 
+  if collected.incomplete_functions > 0
+    IO.warn(
+      "cchecker: #{collected.incomplete_functions} functions have more paths than the path rules follow; " +
+      "their findings are those of the paths followed",
+    )
+  end
+
   found = (
     collected.findings
     |> localize(cwd, options.exclude)
@@ -124,6 +133,7 @@ export def run(options: Options) -> Result[Int]
             errors: collected.errors,
             skipped: plan.skipped.size,
             skipped_declarations: collected.skipped_declarations,
+            incomplete_functions: collected.incomplete_functions,
             suppressed: applied.suppressed,
             config: config.origin,
             unresolved_callbacks: collected.unresolved,
@@ -141,6 +151,7 @@ export def run(options: Options) -> Result[Int]
             errors: collected.errors,
             skipped: plan.skipped.size,
             skipped_declarations: collected.skipped_declarations,
+            incomplete_functions: collected.incomplete_functions,
             suppressed: applied.suppressed,
             config: config.origin,
             unresolved_callbacks: collected.unresolved,
@@ -430,12 +441,14 @@ def collect(options: Options, config: Config.Config, jobs: List[Tools.Job], cwd:
   end
 
   checked = Effects.check(units, config, options.infer, options.all_paths, cwd)
+  locked = Locking.check(units)
   return Collected(
-    findings: findings.concat(checked.findings),
+    findings: findings.concat(checked.findings).concat(locked.findings),
     errors: errors,
     ran: ran,
     units: units,
     skipped_declarations: skipped_declarations,
+    incomplete_functions: locked.incomplete,
     unresolved: checked.unresolved,
     missing_roots: checked.missing_roots,
   )

@@ -197,7 +197,21 @@ def with_unit(job: Job, done: Outcome) -> Result[Outcome]
     )
   end
 
-  return ok(done.with(units: [unit], errors: done.errors.concat(errors), skipped_declarations: dump.skipped))
+  # A function too large for the path rules is not checked by them: the run says so.
+  large = unit.too_large.map do |name|
+    ToolError(tool: "rules", file: job.entry.file, message: "#{name} is too large for the path rules")
+  end
+
+  # A lock mark that cannot be read would leave a rule off without a word.
+  marks = unit.mark_errors.map do |message| ToolError(tool: "rules", file: job.entry.file, message: message) end
+
+  return ok(
+    done.with(
+      units: [unit],
+      errors: done.errors.concat(errors).concat(large).concat(marks),
+      skipped_declarations: dump.skipped,
+    ),
+  )
 end
 
 # LC_ALL=C keeps the messages in English with plain quotes, so a baseline holds on any machine.
