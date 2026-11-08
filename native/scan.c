@@ -1,8 +1,16 @@
 /* The scan of src/scan.agc in C: the same state machine over the lines of clang's JSON AST, at the speed of a read.
  * src/scan.agc stays the reference (test/scan_test.agc compares both on real dumps); keep the two in step.
  *
- * Two calls, both dirty (`compute def`): they read a file of tens of MiB, some hundred milliseconds, which would hold
- * a scheduler and the tasks queued on it (the readers of clang's pipes among them).
+ * clang writes the dump into a FIFO (`fifo`), and `compact` copies it to a file with the indent of each line cut to
+ * INDENT_CAP spaces: clang indents a node two spaces per level of nesting, so a deep tree (a chain of else-if) has a
+ * dump of a size quadratic in its depth, gigabytes for a chain of 2000, while the copy stays linear.
+ *
+ * The calls that read are dirty (`compute def`): they read a file of tens of MiB, some hundred milliseconds, which
+ * would hold a scheduler and the tasks queued on it (the readers of clang's pipes among them).
+ *   fifo(path)         makes the FIFO at `path` (short: a plain call).
+ *   compact(from, to)  copies the lines of `from` (the FIFO, until its writer closes it) to `to`, each indent cut to
+ *                      INDENT_CAP spaces, and gives what `files` gives, in the same pass. The scan reads no indent
+ *                      deeper than 10 spaces, so it reads the copy as it would read the dump.
  *   files(path)        the distinct values of the `"file": ` lines, as written (JSON text), for the caller to resolve
  *                      with Paths: where a file is and whether it is in the project stay Agentica's.
  *   scan(path, places, prune)
@@ -16,16 +24,22 @@
  * call returns; the returned terms are the VM's. A line is at most LINE_BYTES (as File.foreach reads it); a longer
  * one, a line that is not UTF-8, or a failed read is an error result. */
 
+/* F_SETPIPE_SZ of Linux. */
+#define _GNU_SOURCE
+#include <fcntl.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #include "agentica_native.h"
 
 #define LINE_BYTES 16777216
 #define MAX_DECL_LINES 1000000
+/* Above the deepest indent that `step` tells apart (10 spaces). */
+#define INDENT_CAP 12
 
 enum { NATIVE_DUMP, PLACE };
 enum phase { BETWEEN, OPEN, KEPT, DROPPED, OVERSIZED };
@@ -204,21 +218,27 @@ static bool next_line(lines *r, slice *line, bool *done) {
   }
 }
 
-static bool open_lines(an_env *env, an_term path_term, lines *r, an_term *failure) {
+/* A copy of the String term `term`, NUL-terminated, in malloc memory; NULL when out of memory. */
+static char *c_path(an_env *env, an_term term, bool *bad) {
   const char *data;
   size_t len;
-  memset(r, 0, sizeof *r);
-  if (!an_get_string(env, path_term, &data, &len)) {
-    *failure = an_badarg(env, 0);
-    return false;
-  }
+  *bad = !an_get_string(env, term, &data, &len);
+  if (*bad) return NULL;
   char *path = malloc(len + 1);
-  if (!path) {
-    *failure = an_raise(env, "out of memory");
-    return false;
-  }
+  if (!path) return NULL;
   memcpy(path, data, len);
   path[len] = '\0';
+  return path;
+}
+
+static bool open_lines(an_env *env, an_term path_term, lines *r, an_term *failure) {
+  memset(r, 0, sizeof *r);
+  bool bad;
+  char *path = c_path(env, path_term, &bad);
+  if (bad || !path) {
+    *failure = bad ? an_badarg(env, 0) : an_raise(env, "out of memory");
+    return false;
+  }
   r->f = fopen(path, "rb");
   free(path);
   if (!r->f) {
@@ -242,6 +262,136 @@ static void close_lines(lines *r) {
   free(r->data);
 }
 
+/* fifo(path: String) -> Result[Bool] */
+static an_term fifo(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  bool bad;
+  char *path = c_path(env, argv[0], &bad);
+  if (bad) return an_badarg(env, 0);
+  if (!path) return an_raise(env, "out of memory");
+  int made = mkfifo(path, 0600);
+  free(path);
+  if (made != 0) {
+    static const char message[] = "the FIFO of the AST dump could not be made";
+    return an_error(env, message, sizeof message - 1);
+  }
+  return an_ok(env, an_bool(env, true));
+}
+
+/* The distinct values of the `"file": ` lines, as written. Few distinct files (some hundreds), each seen many times: a
+ * linear search over the seen ones, last hit first. */
+typedef struct {
+  buf seen;
+  /* Each value at seen.data + at, n bytes long: a value may hold a NUL. */
+  struct {
+    size_t at, n;
+  } *values;
+  size_t count, cap, last;
+  bool failed;
+} file_values;
+
+/* Notes the value of `text`, a line without its indent, when it is a `"file": ` line. False on a failure: `r->error`
+ * says why, or `failed` is out of memory. */
+static bool note_file(file_values *f, lines *r, slice text) {
+  if (!starts(text, LIT("\"file\": "))) return true;
+  slice v = value_of(text, LIT("\"file\": "));
+  for (size_t k = 0; k < f->count; k++) {
+    size_t at = (f->last + k) % f->count;
+    if (f->values[at].n == v.n && memcmp(f->seen.data + f->values[at].at, v.s, v.n) == 0) {
+      f->last = at;
+      return true;
+    }
+  }
+  if (!utf8((const unsigned char *)v.s, v.n)) {
+    r->error = not_utf8;
+    return false;
+  }
+  if (f->count == f->cap) {
+    size_t cap = f->cap ? f->cap * 2 : 64;
+    void *grown = realloc(f->values, cap * sizeof *f->values);
+    if (!grown) {
+      f->failed = true;
+      return false;
+    }
+    f->values = grown;
+    f->cap = cap;
+  }
+  f->values[f->count].at = f->seen.len;
+  f->values[f->count++].n = v.n;
+  put(&f->seen, v.s, v.n);
+  return !f->seen.failed; /* `values` would point past what `seen` holds */
+}
+
+/* The values as a list, or the error of the read; frees `f`. */
+static an_term file_values_end(an_env *env, file_values *f, lines *r) {
+  an_term result;
+  if (r->error) {
+    result = an_error(env, r->error, strlen(r->error));
+  } else if (f->failed || f->seen.failed) {
+    result = an_raise(env, "out of memory");
+  } else {
+    an_list_builder b;
+    an_list_begin(env, &b, f->count);
+    for (size_t k = 0; k < f->count; k++)
+      an_list_push(env, &b, an_string(env, f->seen.data + f->values[k].at, f->values[k].n));
+    result = an_ok(env, an_list_end(env, &b));
+  }
+  free(f->values);
+  free(f->seen.data);
+  return result;
+}
+
+/* compact(from: String, to: String) -> Result[List[String]] */
+static an_term compact(an_env *env, int argc, const an_term *argv) {
+  (void)argc;
+  static const char spaces[INDENT_CAP] = {' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' '};
+  bool bad;
+  char *to = c_path(env, argv[1], &bad);
+  if (bad) return an_badarg(env, 1);
+  if (!to) return an_raise(env, "out of memory");
+  lines r;
+  an_term result;
+  if (!open_lines(env, argv[0], &r, &result)) {
+    free(to);
+    return result;
+  }
+  /* The bytes are copied as they are: `scan` checks them. */
+  r.any_bytes = true;
+#ifdef F_SETPIPE_SZ
+  /* A pipe holds 64 KiB: clang would wait on each one. A larger one (at most /proc/sys/fs/pipe-max-size) is fewer
+   * switches between the two; a failure keeps the default. */
+  (void)fcntl(fileno(r.f), F_SETPIPE_SZ, (int)BLOCK_BYTES);
+#endif
+  FILE *out = fopen(to, "wb");
+  free(to);
+  file_values f = {0};
+  bool written = out != NULL, noted = true, done = false;
+  slice line;
+  while (next_line(&r, &line, &done) && !done) {
+    /* After a failure the FIFO is still read to its end, so that clang does not wait on it. */
+    if (!written || !noted) continue;
+    noted = note_file(&f, &r, strip(line));
+    size_t k = 0;
+    while (k < line.n && line.s[k] == ' ') k++;
+    if (k > INDENT_CAP) {
+      written = fwrite(spaces, 1, INDENT_CAP, out) == INDENT_CAP;
+      line.s += k, line.n -= k;
+    }
+    written = written && fwrite(line.s, 1, line.n, out) == line.n && fputc('\n', out) != EOF;
+  }
+  if (out && fclose(out) != 0) written = false;
+  if (!written && !r.error) {
+    static const char message[] = "the copy of the AST dump could not be written";
+    result = an_error(env, message, sizeof message - 1);
+    free(f.values);
+    free(f.seen.data);
+  } else {
+    result = file_values_end(env, &f, &r);
+  }
+  close_lines(&r);
+  return result;
+}
+
 /* files(path: String) -> Result[List[String]] */
 static an_term files(an_env *env, int argc, const an_term *argv) {
   (void)argc;
@@ -249,56 +399,12 @@ static an_term files(an_env *env, int argc, const an_term *argv) {
   an_term failure;
   if (!open_lines(env, argv[0], &r, &failure)) return failure;
   r.any_bytes = true;
-  /* Few distinct files (some hundreds), each seen many times: a linear search over the seen ones, last hit first. */
-  buf seen = {0};
-  /* Each value at seen.data + at, n bytes long: a value may hold a NUL. */
-  struct {
-    size_t at, n;
-  } *values = NULL;
-  size_t count = 0, cap = 0, last = 0;
-  bool done = false, failed = false;
+  file_values f = {0};
+  bool done = false;
   slice line;
-  while (next_line(&r, &line, &done) && !done) {
-    slice text = strip(line);
-    if (!starts(text, LIT("\"file\": "))) continue;
-    slice v = value_of(text, LIT("\"file\": "));
-    bool found = false;
-    for (size_t k = 0; k < count && !found; k++) {
-      size_t at = (last + k) % count;
-      if (values[at].n == v.n && memcmp(seen.data + values[at].at, v.s, v.n) == 0) found = true, last = at;
-    }
-    if (found) continue;
-    if (!utf8((const unsigned char *)v.s, v.n)) {
-      r.error = not_utf8;
-      break;
-    }
-    if (count == cap) {
-      cap = cap ? cap * 2 : 64;
-      void *grown = realloc(values, cap * sizeof *values);
-      if (!grown) {
-        failed = true;
-        break;
-      }
-      values = grown;
-    }
-    values[count].at = seen.len;
-    values[count++].n = v.n;
-    put(&seen, v.s, v.n);
-    if (seen.failed) break; /* `values` would point past what `seen` holds */
+  while (next_line(&r, &line, &done) && !done && note_file(&f, &r, strip(line))) {
   }
-  an_term result;
-  if (r.error) {
-    result = an_error(env, r.error, strlen(r.error));
-  } else if (failed || seen.failed) {
-    result = an_raise(env, "out of memory");
-  } else {
-    an_list_builder b;
-    an_list_begin(env, &b, count);
-    for (size_t k = 0; k < count; k++) an_list_push(env, &b, an_string(env, seen.data + values[k].at, values[k].n));
-    result = an_ok(env, an_list_end(env, &b));
-  }
-  free(values);
-  free(seen.data);
+  an_term result = file_values_end(env, &f, &r);
   close_lines(&r);
   return result;
 }
@@ -797,6 +903,8 @@ static const an_type types[] = {
 };
 
 static const an_function functions[] = {
+  {"fifo", "(String) -> Result[Bool]", fifo, AN_SHORT},
+  {"compact", "(String, String) -> Result[List[String]]", compact, AN_DIRTY},
   {"files", "(String) -> Result[List[String]]", files, AN_DIRTY},
   {"scan", "(String, List[Place], Bool) -> Result[NativeDump]", scan, AN_DIRTY},
 };

@@ -291,10 +291,11 @@ def test_the_scan_in_c_reads_crafted_lines_as_the_scan_in_agentica() -> Result[V
   end
 
   _ = Path.remove(folder)
-  return Test.eq(try checks, [true, true, true, true, true, true])
+  return Test.eq(try checks, [true, true, true, true, true, true, true, true])
 end
 
-# For each dump: the C scan keeps some declarations and gives the reference text; then the place of each pruned dump.
+# For each dump: the C scan keeps some declarations, gives the reference text and reads its compacted copy the same;
+# then the place of each pruned dump.
 def crafted_scans(folder: String) -> Result[List[Bool]]
   crlf = "#{folder}/crlf.json"
   long = "#{folder}/long.json"
@@ -315,6 +316,7 @@ def crafted_scans(folder: String) -> Result[List[Bool]]
     fast = try Scan.project_decls(path, "/proj", "/proj", false)
     reference = try Scan.reference_decls(path, "/proj", "/proj")
     checks = checks.push(fast.decls.length > 2).push(fast.decls == reference.decls)
+    checks = checks.push(try same_copy(path, "/proj"))
   end
 
   pruned_crlf = try Scan.project_decls(crlf, "/proj", "/proj")
@@ -344,9 +346,22 @@ def same_scans(dumps: List[String], cwd: String) -> Result[Void]
     full_unit = try UnitReader.read(try JSON.parse(fast.decls))
     pruned_unit = try UnitReader.read(try JSON.parse(pruned.decls))
     try Test.eq(pruned_unit, full_unit)
+    try Test.eq(try same_copy(path, root), true)
   end
 
   return ok()
+end
+
+# Whether the copy of a dump by `Scan.compact`, with its indents cut short, scans as the dump, pruned and not.
+def same_copy(path: String, root: String) -> Result[Bool]
+  copy = "#{path}.copy"
+  raws = try Scan.compact(path, copy)
+  copied = Scan.decls_in(copy, raws, root, root, false)
+  copied_pruned = Scan.decls_in(copy, raws, root, root)
+  _ = Path.remove(copy)
+  fast = try Scan.project_decls(path, root, root, false)
+  pruned = try Scan.project_decls(path, root, root)
+  return ok(try copied == fast and try copied_pruned == pruned)
 end
 
 # The dump of a C file as the rules ask clang for it.

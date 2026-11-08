@@ -539,16 +539,18 @@ parameter that is not marked, a field that is not `CC_OWNS`) is not reported, no
 value none`), which only ever holds its initializer. A typedef of a pointer (`typedef struct object *object_ref`) is
 read through to the type it names.
 
-The AST of a file is tens of MiB with its system headers, more than a process output holds in Agentica (1 MiB):
-`sh` writes it to a file in a private folder under `$TMPDIR`, and cchecker reads it line by line and keeps
-only the declarations of the project. A table of numbers is not kept: an array of a number or character type,
-or whose first item is a number (`const uint8_t ROM[]`); a number cast to a pointer (`0`, `NULL`, or `1` under
-`-Wno-int-conversion`) is not a number. A declaration of more than a million lines of the dump is left out: when it
-names a function, before or past that cap, it is a tool error, and otherwise (a table of enum values or of structs
-of numbers) it is counted in `skipped_declarations` of `--json` and in a line on standard error, while the rest
-of the file is checked. A dump that ends early is a tool error. The folder is removed at the end of the run, and a
-run removes the folders that killed runs left there: a folder of the same user, private, not a link, holding only
-dumps, whose process is gone. Runs in different PID namespaces that share `$TMPDIR` can remove each other's folders.
+The AST of a file is tens of MiB with its system headers, more than a process output holds in Agentica (1 MiB): `sh`
+writes it into a FIFO in a private folder under `$TMPDIR`, cchecker copies it to a file there with the indent of each
+line cut short (clang indents each level of nesting, so a deeply nested function, such as a chain of 3000 else-if,
+gives gigabytes of spaces), and reads that file line by line, keeping only the declarations of the project. A table of
+numbers is not kept: an array of a number or character type, or whose first item is a number (`const uint8_t ROM[]`); a
+number cast to a pointer (`0`, `NULL`, or `1` under `-Wno-int-conversion`) is not a number. A declaration of more than
+a million lines of the dump is left out: when it names a function, before or past that cap, it is a tool error, and
+otherwise (a table of enum values or of structs of numbers) it is counted in `skipped_declarations` of `--json` and in
+a line on standard error, while the rest of the file is checked. A dump that ends early is a tool error. The folder is
+removed at the end of the run, and a run removes the folders that killed runs left there: a folder of the same user,
+private, not a link, holding only dumps and their FIFOs, whose process is gone. Runs in different PID namespaces that
+share `$TMPDIR` can remove each other's folders.
 
 ## Development
 
@@ -565,7 +567,7 @@ make native      # builds the native module once; make test and make test-slow r
 make bench       # the rules on the C VM of Agentica: wall time and peak RSS (BENCH_JOBS=2 for -j 2)
 ```
 
-A scenario tagged `@slow` runs a large generated input (`specs/limits.feature`: a chain of 1000 branches, a
+A scenario tagged `@slow` runs a large generated input (`specs/limits.feature`: chains of 1000 and 3000 branches, a
 declaration of 16 million lines of the dump, a function over the guard of nodes or of states) under a bound on memory
 (`ulimit -v`) and on time. `make test` leaves them out; CI runs them in a job of their own on every pull request.
 

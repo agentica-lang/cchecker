@@ -113,7 +113,17 @@ end
 ## `reference_decls` gives, in C; with `prune` (the default) without the keys that no rule reads, which hold a third
 ## of the text.
 export def project_decls(path: String, directory: String, cwd: String, prune: Bool = true) -> Result[Dump]
-  raws = try files(path)
+  return decls_in(path, try files(path), directory, cwd, prune)
+end
+
+## Returns what `project_decls` returns, for a dump whose `"file": ` values `raws` are known (`compact` gives them).
+export def decls_in(
+  path: String,
+  raws: List[String],
+  directory: String,
+  cwd: String,
+  prune: Bool = true,
+) -> Result[Dump]
   places = raws.map do |raw|
     located = place_of(directory, cwd, raw)
     Place(raw: raw, encoded: located.encoded, inside: located.inside)
@@ -209,6 +219,13 @@ end
 # `"file": ` lines, which are resolved below, and `scan` takes them. Both read the dump, so they run on the compute
 # pool.
 extern module "cchecker_scan"
+  ## Makes the FIFO at `path` that clang writes its dump into, for `compact`.
+  export def fifo(path: String) -> Result[Bool]
+  ## Copies the dump that clang writes into the FIFO `from` to the file `to`, until clang closes it, with the indent of
+  ## each line cut short, and gives the values of its `"file": ` lines for `decls_in`. clang indents a node two spaces
+  ## per level, so the dump of a deep tree (a chain of else-if) is gigabytes of spaces; the copy scans as the dump
+  ## would, and stays the size of the tree.
+  export compute def compact(from: String, to: String) -> Result[List[String]]
   compute def files(path: String) -> Result[List[String]]
   compute def scan(path: String, places: List[Place], prune: Bool) -> Result[NativeDump]
 end
