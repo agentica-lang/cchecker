@@ -131,7 +131,7 @@ suppressed finding never goes into it, and neither does a `CC-UNUSED-IGNORE`: th
 | `-p, --compile-commands PATH` | the compile database: a file or its folder (default: `compile_commands.json` here) |
 | `-t, --tools LIST` | `gcc`, `clang-tidy` and `rules`, comma separated (default all three) |
 | `--checks LIST` | the clang-tidy checks, after those of a `.clang-tidy` file; default below |
-| `-j, --jobs N` | tool runs at once (default 4) |
+| `-j, --jobs N` | tool runs at once (default: the number of cores) |
 | `--timeout SECONDS` | for one tool on one file (default 300); a timeout is a tool error |
 | `-b, --baseline FILE`, `--update-baseline` | see above |
 | `--exclude LIST` | files or folders to skip, comma separated (`src/vendor`, `./gen/a.c`): whole path parts |

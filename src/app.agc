@@ -407,6 +407,27 @@ def stale?(name: String) -> Bool
   return not File.stat("/proc/#{parts[0]}").ok?
 end
 
+# Runs the jobs, those of the largest source files first, so that a large file does not run alone at the end. The
+# results are in the order of the jobs.
+def run_largest_first(options: Options, jobs: List[Tools.Job]) -> List[Result[Tools.Outcome]]
+  sizes = jobs.map(&source_size)
+
+  order = (0...jobs.size).to_a.sort_by do |i| -sizes[i] end
+  ran = Task.map(order.map do |i| jobs[i] end, options.jobs, Tools.limit_ms(options), &Tools.run)
+  # The place of each job in `order`, to put its result back.
+  places = (0...order.size).to_a.sort_by do |k| order[k] end
+  return places.map do |k| ran[k] end
+end
+
+# The size of the source file of a job, or 0 when it cannot be read (the tool then says why).
+def source_size(job: Tools.Job) -> Int
+  path = Paths.absolute(job.entry.directory, job.entry.file).unwrap_or(job.entry.file)
+  case File.stat(path)
+    ok(info) -> return info.size_bytes
+    error(_) -> return 0
+  end
+end
+
 # Runs the jobs, with the folder of the dumps when the rules run. The rules check the units of all the files at once.
 def collect_in_scratch(
   options: Options,
@@ -427,7 +448,7 @@ def collect_in_scratch(
 end
 
 def collect(options: Options, config: Config.Config, jobs: List[Tools.Job], cwd: String) -> Collected
-  results = Profile.measure("jobs") do Task.map(jobs, options.jobs, Tools.limit_ms(options), &Tools.run) end
+  results = Profile.measure("jobs") do run_largest_first(options, jobs) end
   findings: List[Finding] = []
   errors: List[ToolError] = []
   ran: List[String] = []
