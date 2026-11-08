@@ -45,3 +45,30 @@ Feature: Laws of the rules on generated C files
       | 3     |
       | 4     |
       | 5     |
+
+  Scenario: Suppressions hold where the rule says: a trailing comment for its line, one alone for the next line too
+    Then suppressions agree with the rule on 15 generated files
+
+  Scenario: With nothing to suppress, every suppression is unused
+    Then every suppression is unused in 10 generated files with nothing to suppress
+
+  @slow
+  Scenario Outline: Suppressions agree with the rule on many files (<batch>)
+    Then suppressions agree with the rule on 100 generated files
+
+    Examples:
+      | batch |
+      | 1     |
+      | 2     |
+      | 3     |
+      | 4     |
+      | 5     |
+
+  @slow
+  Scenario Outline: With nothing to suppress, every suppression is unused, on many files (<batch>)
+    Then every suppression is unused in 100 generated files with nothing to suppress
+
+    Examples:
+      | batch |
+      | 1     |
+      | 2     |
