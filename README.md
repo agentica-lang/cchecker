@@ -551,6 +551,10 @@ A scenario tagged `@slow` runs a large generated input (`specs/limits.feature`: 
 declaration of 16 million lines of the dump, a function over the guard of nodes or of states) under a bound on memory
 (`ulimit -v`) and on time. `make test` leaves them out; CI runs them in a job of their own on every pull request.
 
+`specs/properties.feature` holds property tests, with the [prop](https://github.com/agentica-lang/packages) package
+(`make deps` installs it into `deps/`; cchecker itself needs no package): a law of the rules is checked on generated C
+files, and a failure shows the seed and the shrunk C file. `make test` runs a few cases and `make test-slow` many.
+
 `make bench` fetches Agentica at a pinned commit (`AGENTICA_BENCH_COMMIT`) into `.bench/`, with only the submodules
 whose headers its VM reads, and runs `--tools rules` on the 84 files of `vm/`; it fails when a file is not checked. It
 needs `git`, `make`, GNU time and the headers of libgc, OpenSSL and zlib (Debian: `libgc-dev libssl-dev zlib1g-dev

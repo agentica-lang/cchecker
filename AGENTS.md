@@ -45,10 +45,14 @@ test/             unit tests of the pure helpers (the parsers, the scan of the A
 - Search with `rg`.
 - Tests are written first: the scenario that fails, then the code. All tests are Agentica and run with `agentica test`
   (BDD features in `specs/` first, `*_test.agc` unit tests in `test/` only for a pure helper such as a parser). No
-  Python (no pytest, no helper scripts) in the tests or in CI, and no property-based tests for now.
+  Python (no pytest, no helper scripts) in the tests or in CI.
 - A scenario on a large generated input (a limit of the rules, a bound on time or memory) is tagged `@slow` and goes
-  in `specs/limits.feature`, with its bounds in the step (`in at most N MiB and S seconds`); each scenario has 30 s. The memory bound is
-  `ulimit -v`: virtual size, not peak RSS, and the tests run on Linux only.
+  in `specs/limits.feature`, with its bounds in the step (`in at most N MiB and S seconds`); each scenario has 30 s.
+  The memory bound is `ulimit -v`: virtual size, not peak RSS, and the tests run on Linux only.
+- Property tests use the `prop` package (`agentica.lock`, `make deps`): a law in `specs/props.agc` generates small C
+  files, runs the compiled cchecker on each and returns the C file of a failing case in its message (`Prop.check`
+  shrinks it). A scenario of `specs/properties.feature` runs a few cases; its `@slow` twin runs many, in rows of
+  about 100 so that each fits the 30 s of a scenario.
 - A fake tool for a scenario is a small shell script in `specs/fixtures/` (`fake_gcc_*.sh`, run with `--gcc`).
 - A scenario runs `cchecker.agc` on a small C fixture and asserts the exit code, the codes and the `--json` fields,
   never message text (the compilers' texts change between versions). A fixture is one small file per case, with a clean

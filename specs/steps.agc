@@ -3,6 +3,7 @@
 
 import BDD from "std/bdd"
 import Paths from "../src/paths"
+import Props from "props"
 
 # The steps run from the folder where `agentica test` runs, the root of the repository.
 # cchecker runs in specs/, as a user would run it in a project.
@@ -39,6 +40,7 @@ def main() -> Void
     BDD.step("the file {string} exists", &file_exists),
     BDD.step("the file {string} does not exist", &file_missing),
     BDD.step("the process written in {string} has ended", &process_ended),
+    BDD.step("cchecker finds the blocking function of {int} generated tables", &tables_hold),
   ])
 end
 
@@ -287,4 +289,17 @@ def check(ctx: BDD.Context, result: Result[Void]) -> BDD.Context
     ok(_) -> return ctx
     error(message) -> return BDD.assert(ctx, false, message)
   end
+end
+
+# cchecker is compiled once into the folder of the scenario, so that each generated case is one short run.
+def tables_hold(ctx: BDD.Context, args: List[String]) -> BDD.Context
+  started = ensure_folder(ctx)
+  program = "#{folder_of(started)}/cchecker.agcb"
+  compiled = run_program(started, "agentica", ["compile", PROGRAM, "-o", program])
+  if JSON.int(BDD.get(compiled, "code").unwrap!).unwrap! != 0
+    return BDD.assert(compiled, false, "cannot compile cchecker: #{text(compiled, "stderr")}")
+  end
+
+  held = Props.scanner_keeps_paths(program, folder_of(compiled), args[0].to_i!)
+  return BDD.assert(compiled, held.ok?, held.message)
 end
