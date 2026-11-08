@@ -98,6 +98,10 @@ Feature: Ownership on every path
       """
       {"code":"CC-OWN-DOUBLE-FREE","tool":"rules","file":"$DIR/own.c","line":6,"column":6,
       """
+    And the output does not include:
+      """
+      CC-OWN-USE-AFTER-FREE
+      """
 
     Examples:
       | case              | code                                                                         |

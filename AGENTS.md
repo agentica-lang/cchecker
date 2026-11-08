@@ -14,7 +14,8 @@ src/              one module per topic (`ls src/`): the compile database, runnin
                   out of the AST dump), ast (reading its nodes), unit (functions, calls, pointer stores), effects
                   (the call graph and its rules), known (the blocking, allocating, system and lock calls), flow (the
                   control flow graph of a function), locking (the lock and CC_PAIR rules on its paths), held (what
-                  runs while a lock is held); suppressions (`cchecker: ignore`, CC_IGNORE)
+                  runs while a lock is held), ownership (the CC_OWNS rules on its paths); suppressions
+                  (`cchecker: ignore`, CC_IGNORE)
 include/          cchecker.h: the annotation macros that the rules read (CC_SHORT, ...)
 specs/            .feature files (BDD through the CLI) and steps.agc; specs/fixtures/ holds the small C files and a
                   compile_commands.json for them

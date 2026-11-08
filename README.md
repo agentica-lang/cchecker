@@ -9,8 +9,8 @@ The rules read clang's JSON AST and the annotations of `include/cchecker.h`. Thi
 graph (a `CC_SHORT` function never reaches a blocking call, and a `CC_HOT` function never allocates or makes a system
 call) and locks on every path of a function: a lock taken is released, a lock released is held, no system call runs
 under a lock marked `CC_NO_SYSCALL_UNDER`, locks are taken in the order of their `CC_LOCK_LEVEL`, and the set of a
-`CC_PAIR` is restored. Ownership comes in a later phase; the plan is in
-[issue 1](https://github.com/agentica-lang/cchecker/issues/1).
+`CC_PAIR` is restored. It also checks ownership on every path: a pointer marked `CC_OWNS` is freed or handed on, not
+freed twice and not used after. The plan is in [issue 1](https://github.com/agentica-lang/cchecker/issues/1).
 
 ## Install
 
@@ -72,7 +72,7 @@ A code is stable: a baseline holds it. `CC-GCC-` is followed by the gcc warning 
 (`-Wanalyzer-malloc-leak` is `CC-GCC-ANALYZER-MALLOC-LEAK`, also when `-Werror` made it
 `-Werror=analyzer-malloc-leak`), and `CC-TIDY-` by the clang-tidy check (`clang-analyzer-unix.Malloc` is
 `CC-TIDY-CLANG-ANALYZER-UNIX-MALLOC`). A diagnostic without a name is `CC-GCC-WARNING` or `CC-TIDY-WARNING`. The
-rules have `CC-EFFECT-` and `CC-PATH-` codes (below).
+rules have `CC-EFFECT-`, `CC-PATH-` and `CC-OWN-` codes (below).
 
 ### Baseline
 
@@ -99,8 +99,8 @@ other checks would lose the findings of the default ones). The exit code is `2` 
 A finding that is a false positive, where the check cannot be made smarter, is suppressed next to the code, with the
 reason. A comment that trails code holds for the findings of its line; a comment alone on its line holds for its line
 and the line below it. Only a comment that starts with `cchecker: ignore` counts (not a string or a comment that
-mentions it). It takes one or more codes, each of a tool (`CC-GCC-`, `CC-TIDY-`, `CC-EFFECT-` or `CC-PATH-`), and a
-code that ends with `*` is a prefix:
+mentions it). It takes one or more codes, each of a tool (`CC-GCC-`, `CC-TIDY-`, `CC-EFFECT-`, `CC-PATH-` or
+`CC-OWN-`), and a code that ends with `*` is a prefix:
 
 ```c
 /* cchecker: ignore CC-GCC-ANALYZER-MALLOC-LEAK: conn_free frees it through the struct */
@@ -148,7 +148,7 @@ tools that are running (they end by themselves or at the timeout); see
 
 `include/cchecker.h` defines the macros that the rules read: `CC_SHORT`, `CC_BLOCKING`, `CC_HOT`, `CC_ACQUIRES(lock)`,
 `CC_RELEASES(lock)`, `CC_NORETURN`, `CC_NO_SYSCALL_UNDER(lock)`, `CC_LOCK_LEVEL(n)`, `CC_PAIR(set, restore)`,
-`CC_OWNS` (for a later phase) and `CC_IGNORE("CODE", "reason")` (a suppression). With clang each is
+`CC_OWNS`, `CC_FREES` and `CC_IGNORE("CODE", "reason")` (a suppression). With clang each is
 `__attribute__((annotate("cchecker:...")))`; with any other compiler it is empty. When cchecker dumps the AST it
 defines `CCHECKER_AST`, and the macros become `deprecated("cchecker:...")`: the JSON AST of clang 19 drops the text of
 `annotate` and keeps the message of `deprecated`. The dump runs with `-w`, so this gives no warning.
@@ -294,6 +294,53 @@ CC_PAIR(gc_pause, gc_resume) int copy_out(struct heap *h);                  /* i
 | `CC-PATH-PAIR-NOT-RESTORED` | a path returns after a call of `set` and no call of `restore` after it |
 
 The path goes from the call of `set` to the return: `7:3 calls mask_signals -> 8:7 true -> 9:5 returns`.
+
+### Ownership on every path
+
+`CC_OWNS` says that a place owns the memory its pointer points to, which is freed once, with `free` or with a
+function of the project marked `CC_FREES`:
+
+```c
+CC_OWNS char *read_name(int fd);            /* returns a pointer that the caller owns */
+void adopt(CC_OWNS char *name);             /* takes what the caller passes */
+void conn_free(CC_FREES struct conn *c);    /* frees what the caller passes */
+struct conn { CC_OWNS char *buf; };         /* a store into the field hands the pointer on */
+
+int load(int n) {
+  CC_OWNS char *buf = malloc(n);            /* the local owns its value */
+```
+
+The rules follow every path of a function that has a pointer that owns, with the graph and the walk of the locks. A
+parameter marked `CC_OWNS` or `CC_FREES` owns from the entry, a local marked `CC_OWNS` owns the value it gets (other
+than `NULL`), and a local that gets the value of a `CC_OWNS` function owns it without a mark. On every path that
+returns, each one is freed or handed on: returned, stored in a `CC_OWNS` field (or an item of one, `q->items[i] = p`,
+or a `CC_OWNS` global), or passed to a `CC_OWNS` parameter. Stored anywhere else or passed to another parameter, it is
+lent and still owns. A condition that tells that a pointer is null (`if (!p)`, `if ((p = malloc(n)) == NULL)`) leaves
+it owning nothing on that side.
+
+A local without a mark that gets a pointer that owns (`char *c = p`) stands for it: freeing `c` frees `p`. A local
+marked `CC_OWNS` that gets one takes it over, and `p` owns no more. `t = realloc(p, n)` moves `p` to `t`, and `p` owns
+again where `t` is null; `p = realloc(p, n)` keeps `p` owning. A pointer lent to be set (`fill(&p)`) owns what the
+call left in it, which the rules do not know: no finding says it leaks. The marks of the parameters of a prototype
+hold in the definition and in every caller that includes it.
+
+| Code | |
+|---|---|
+| `CC-OWN-LEAK` | a path returns, or gives a pointer a new value, while it still owns; or drops the value of a `CC_OWNS` function (kept nowhere: not in a local, a `CC_OWNS` place, a return or a parameter that takes it) |
+| `CC-OWN-DOUBLE-FREE` | a path frees a pointer that it already freed or handed on |
+| `CC-OWN-USE-AFTER-FREE` | a path reads, returns or hands on a pointer after it freed it or handed it on |
+
+The finding is at the function, once for each code and pointer, and `path` goes from where the pointer got its value
+(or from the free) to the step that breaks the rule:
+
+```text
+src/load.c:6:5 CC-OWN-LEAK load does not free or hand on buf on every path: 7:21 buf = malloc -> 8:8 true -> 10:7 true -> 11:5 returns
+```
+
+A `malloc` into a local without a mark is not checked: `gcc -fanalyzer` reports those leaks, and the mark makes the
+contract part of the code. The rules do not follow a pointer into a struct or an array (a store into a `CC_OWNS` field
+is where they stop), through a function pointer, or out through a parameter (`int open_buf(char **out)`: the caller
+lends `&p` to be set). Two locals of the same name in one function are one pointer.
 
 The AST of a file is tens of MiB with its system headers, more than a process output holds in Agentica (1 MiB):
 `sh` writes it to a file in a private folder under `$TMPDIR`, and cchecker reads it line by line and keeps only the
