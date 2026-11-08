@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `--update-baseline` with `-c FILE` is refused when the file leaves out a name of `[roots]` of the project settings.
 - `CC_IGNORE` takes codes of the rules only (another code is a usage error), and each code of a suppression is used
   on its own: a stale second code is `CC-UNUSED-IGNORE`.
 - Suppression comments read `///`, `//!` and tabs between codes, and refuse near-miss markers (`ignored`).

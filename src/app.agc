@@ -63,12 +63,8 @@ end
 export def run(options: Options) -> Result[Int]
   cwd = try Paths.working_directory()
   config = try Config.load(options.config, cwd)
-  # A baseline written with a check off would drop the accepted findings of that check, as --checks would.
-  if options.update_baseline and options.tools.include?(Tool.Rules) and (not options.infer or not config.off.empty?)
-    return error(
-      "--update-baseline needs every check of the rules on: drop --no-infer and the [library] flags set to false " +
-      "(#{config.origin}), or the baseline would lose their findings",
-    )
+  if options.update_baseline and options.tools.include?(Tool.Rules)
+    try full_rules(options, config, cwd)
   end
 
   if not options.json
@@ -196,6 +192,36 @@ export def run(options: Options) -> Result[Int]
         ),
       )
   end
+end
+
+# A baseline written with a check off, or with fewer roots than the project names, would drop the accepted findings of
+# that check or root, as --checks would: --update-baseline is refused then, naming what causes it.
+def full_rules(options: Options, config: Config.Config, cwd: String) -> Result[Void]
+  causes: List[String] = []
+  if not options.infer
+    causes = causes.push("drop --no-infer")
+  end
+
+  if not config.off.empty?
+    causes = causes.push("set the [library] flags of #{config.origin} to true (#{config.off.to_a.sort.join(", ")})")
+  end
+
+  if options.config.some?
+    project = try Config.load(none, cwd)
+    missing = project.short.concat(project.hot).select do |name| not config.short.concat(config.hot).include?(name) end
+    if not missing.empty?
+      causes = causes.push("name the [roots] of #{project.origin} in #{config.origin} (#{missing.join(", ")})")
+    end
+  end
+
+  if causes.empty?
+    return ok()
+  end
+
+  return error(
+    "--update-baseline needs every check of the rules on: #{causes.join("; ")}, or the baseline would " +
+    "lose their findings",
+  )
 end
 
 # The accepted findings, read before any tool runs so that a baseline that cannot be read costs no time. A baseline

@@ -48,7 +48,7 @@ export def load(explicit: Optional[String], folder: String) -> Result[Config]
       document = try parse(path, text)
       case Toml.get(document, TOOL_TABLE)
         ok(table) -> return from_table(path, "#{TOOL_TABLE}.", table)
-        error(_) -> return from_table(path, "", document, WHOLE_NOTE)
+        error(_) -> return from_table(path, "", document, manifest_note(document))
       end
 
     none -> return found_in(folder)
@@ -120,6 +120,16 @@ export def flags() -> List[String]
 end
 
 # The settings of the project folder: cchecker.toml, else the table of cchecker in agentica.toml, else the defaults.
+# The note of an unknown key of a file of -c read whole: only a file that looks like a manifest of Agentica (it has a
+# `name`) gets it, as it may lack its [tool.cchecker] table; a plain file of cchecker does not.
+def manifest_note(document: Toml.Value) -> String
+  if Toml.get(document, "name").ok?
+    return WHOLE_NOTE
+  end
+
+  return ""
+end
+
 def found_in(folder: String) -> Result[Config]
   own = try Path.join([folder, OWN_FILE])
   if File.stat(own).ok?

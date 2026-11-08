@@ -99,8 +99,9 @@ replaces the entries of that scope and keeps the others, so `--tools gcc` or a s
 ran. A header that the run did not name keeps the larger count of its entry, as other flags can show other findings in
 it (`#ifdef`); only a full run lowers it. It refuses to write, and leaves the file as it was, when a tool failed, when
 the database has a file that was skipped (outside the working directory), with `--checks` (a baseline made with
-other checks would lose the findings of the default ones), and, when the rules run, with `--no-infer` or a `[library]`
-flag set to false (Settings), for the same reason. The exit code is `2` in each case.
+other checks would lose the findings of the default ones), and, when the rules run, with `--no-infer`, a `[library]`
+flag set to false (Settings), or a file of `-c` that leaves out a name of `[roots]` of the project's settings, for the
+same reason. The exit code is `2` in each case.
 
 ### Suppressions
 
@@ -134,10 +135,11 @@ gets better. Suppressions apply before the baseline, so a suppressed finding nev
 
 A suppression is per code, not per message: one `CC-GCC-ANALYZER-MALLOC-LEAK` on a line hides every leak of that line,
 a new one too. A finding is where its tool puts it: gcc reports one inside a macro at the line of the `#define`, so the
-comment goes there, not at the use. A suppression in a block that a configuration leaves out (`#ifdef` of a macro that is
-not defined) is reported unused on a run of that configuration; a project that checks several configurations sees it
-reported in those that skip the block. A `//` comment that
-ends with `\` goes on to the next line, and that line counts as a line of the comment.
+comment goes there, not at the use. A suppression in a block that a configuration leaves out (`#ifdef` of a macro that
+is not defined) is reported unused on a run of that configuration; a project that checks several configurations sees
+it reported in those that skip the block. A suppression in a header is never reported unused: a header is read
+through the files that include it, each with its own configuration. A `//` comment that ends with `\` goes on to the
+next line, and that line counts as a line of the comment.
 
 ### Options
 
