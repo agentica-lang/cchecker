@@ -193,8 +193,8 @@ A call through a function pointer reaches every function the project stores in t
 or a union (by record and field name, in an initializer or an assignment), a variable, or a parameter of a function
 (from the direct calls that pass a function), and every function of a place copied into it (`box.handle = handle`).
 An item of an initializer of a struct or an array counts designated or not (`{[3] = f}`). A cast is seen through,
-so a function kept in a `void *` or an `uintptr_t` is reached by a call through it, but not one kept in an array
-of a number type (`uintptr_t t[] = {0, (uintptr_t)f}`): that is a table of numbers (below). A variable with
+so a function kept in a `void *` or an `uintptr_t` is reached by a call through it, but not one kept in a table
+whose first item is a literal number (`uintptr_t t[] = {0, (uintptr_t)f}`): that is a table of numbers (below). A variable with
 `__attribute__((cleanup(f)))` calls `f`. A pointer that comes from anywhere else reaches nothing: a return value,
 the arguments of a variadic function, and a function handed to a library that calls it back (`qsort`, a libuv
 callback). A walk goes only through what the run read, so run it on all the files of the project: with a subset of

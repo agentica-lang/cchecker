@@ -31,9 +31,8 @@ DESUGARED_KEY = "        \"desugaredQualType\": "
 TYPE_KEY = "        \"qualType\": "
 
 # The kind of the initializer of a top-level variable, and the kinds of an item in it: a cast or a zero fill is looked
-# through, and a literal number tells a table of numbers, unless a cast made it a pointer: a null pointer (`{0,
-# f}`), or
-# an integer under `-Wno-int-conversion` (`{1, f}`).
+# through, and a literal number tells a table of numbers, unless a cast made it a pointer: a null pointer
+# (`{0, f}`), or an integer under `-Wno-int-conversion` (`{1, f}`).
 INIT_LIST = "          \"kind\": \"InitListExpr\","
 KIND_KEY = "\"kind\": "
 SEEN_THROUGH = Set.new(["\"ImplicitCastExpr\"", "\"ImplicitValueInitExpr\""])
