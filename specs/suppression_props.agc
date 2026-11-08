@@ -23,8 +23,11 @@ MARK = 2
 # A reason of this value is left out: a usage error.
 NO_REASON = 19
 
-# The codes a suppression names: the finding's, a prefix of it, and one of the same tool that never matches here.
-CODES = ["CC-EFFECT-SHORT-BLOCKS", "CC-EFFECT-*", "CC-EFFECT-HOT-SYSCALL"]
+# The codes a suppression names: the finding's, a prefix of it, one of the same tool that never matches here, and two
+# codes, of which the second never matches (each code of a suppression is used on its own).
+CODES = [
+  "CC-EFFECT-SHORT-BLOCKS", "CC-EFFECT-*", "CC-EFFECT-HOT-SYSCALL", "CC-EFFECT-SHORT-BLOCKS, CC-EFFECT-HOT-SYSCALL",
+]
 SHORT_BLOCKS = "CC-EFFECT-SHORT-BLOCKS"
 UNUSED = "CC-UNUSED-IGNORE"
 
@@ -45,10 +48,10 @@ export struct Line
   reason: Int
 end
 
-# A suppression as the oracle sees it: its line, its code, and whether it is alone on its line or a CC_IGNORE.
+# A suppression as the oracle sees it: its line, its codes, and whether it is alone on its line or a CC_IGNORE.
 struct Ignore
   line: Int
-  code: String
+  codes: List[String]
   alone: Bool
   mark: Bool
 end
@@ -62,7 +65,7 @@ end
 
 ## The generator of files: up to 8 lines.
 export def files() -> Prop.Gen[List[Line]]
-  kind_and_code = Prop.pair(Prop.int(0, CALLER), Prop.int(0, 2))
+  kind_and_code = Prop.pair(Prop.int(0, CALLER), Prop.int(0, CODES.size - 1))
   attach_and_reason = Prop.pair(Prop.int(0, MARK), Prop.int(0, NO_REASON))
   return (
     Prop.pair(kind_and_code, attach_and_reason)
@@ -174,13 +177,13 @@ def oracle(lines: List[Line]) -> Outcome
     i += 1
 
     if line.kind == ALONE
-      ignores = ignores.push(Ignore(line: number, code: code, alone: true, mark: false))
+      ignores = ignores.push(Ignore(line: number, codes: code.split(", "), alone: true, mark: false))
       usage = usage or line.reason == NO_REASON
     elsif line.kind != BLANK and line.attach == TRAILING
-      ignores = ignores.push(Ignore(line: number, code: code, alone: false, mark: false))
+      ignores = ignores.push(Ignore(line: number, codes: code.split(", "), alone: false, mark: false))
       usage = usage or line.reason == NO_REASON
     elsif function?(line) and line.attach == MARK
-      ignores = ignores.push(Ignore(line: number, code: code, alone: false, mark: true))
+      ignores = ignores.push(Ignore(line: number, codes: code.split(", "), alone: false, mark: true))
     end
   end
 
@@ -190,19 +193,21 @@ def oracle(lines: List[Line]) -> Outcome
 
   findings: List[String] = []
   suppressed: List[String] = []
-  used: List[Int] = []
+  used: List[String] = []
   for at in blocking
     holding = ignores.select do |ignore| holds?(ignore, at) end
     if holding.empty?
       findings = findings.push("#{SHORT_BLOCKS}@#{at}")
     else
       suppressed = suppressed.push("#{SHORT_BLOCKS}@#{at}")
-      used = used.concat(holding.map do |ignore| ignore.line end)
+      for ignore in holding
+        used = used.concat(ignore.codes.select do |code| matches?(code) end.map do |code| "#{ignore.line} #{code}" end)
+      end
     end
   end
 
   for ignore in ignores
-    if not used.include?(ignore.line)
+    if ignore.codes.any? do |code| not used.include?("#{ignore.line} #{code}") end
       findings = findings.push("#{UNUSED}@#{ignore.line}")
     end
   end
@@ -215,9 +220,15 @@ def oracle(lines: List[Line]) -> Outcome
   return Outcome(findings: findings.sort, suppressed: suppressed.sort, code: code)
 end
 
+# Whether a code matches the finding of a blocking function: it is its code or a prefix of it.
+def matches?(code: String) -> Bool
+  return code == SHORT_BLOCKS or (code.end_with?("*") and SHORT_BLOCKS.start_with?(code.replace("*", "")))
+end
+
+# Whether a suppression holds for the finding at line `at`: a code of it matches, and it is on its line or alone on
+# the line above.
 def holds?(ignore: Ignore, at: Int) -> Bool
-  prefix = ignore.code.end_with?("*") and SHORT_BLOCKS.start_with?(ignore.code.replace("*", ""))
-  if ignore.code != SHORT_BLOCKS and not prefix
+  if not ignore.codes.any? do |code| matches?(code) end
     return false
   end
 
