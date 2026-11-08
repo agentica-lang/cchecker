@@ -38,8 +38,19 @@ jobs:
       - name: Install the pinned Agentica release
         run: |
           archive="agentica-${AGENTICA_VERSION}-linux-x86_64.tar.gz"
-          curl -fsSL -o "$RUNNER_TEMP/$archive" \
-            "https://github.com/agentica-lang/agentica/releases/download/${AGENTICA_VERSION}/$archive"
+          url="https://github.com/agentica-lang/agentica/releases/download/${AGENTICA_VERSION}/$archive"
+          # GitHub's release downloads sometimes answer 5xx for a while: 5 tries, waiting 10, 20, 40 and 80 s.
+          delay=10
+          for try in 1 2 3 4 5; do
+            curl -fsSL --connect-timeout 20 --max-time 300 -o "$RUNNER_TEMP/$archive" "$url" && break
+            if [ "$try" = 5 ]; then
+              echo "download failed after $try tries"
+              exit 1
+            fi
+            echo "download failed (try $try), retrying in ${delay}s"
+            sleep "$delay"
+            delay=$((delay * 2))
+          done
           echo "${AGENTICA_SHA256}  $RUNNER_TEMP/$archive" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/agentica-${AGENTICA_VERSION}-linux-x86_64/bin" >> "$GITHUB_PATH"
