@@ -46,13 +46,9 @@ struct Scope
 end
 
 ## Returns whether a type (as clang writes it) is that of a value of the collector: a type marked CC_GC or a pointer to
-## one, or a record that holds one, or an array of those. A function, a pointer to a function and a pointer to a
-## pointer (an array of them, wherever it is) are not.
+## one, or a record that holds one, or an array of those. A pointer to a pointer is not, and neither is a function or a
+## pointer to one: what is left of its text once the stars go (`value_t ()(int)`) names no type.
 export def collector_type?(marks: Marks, type: String) -> Bool
-  if type.include?("(")
-    return false
-  end
-
   name = type
   for word in QUALIFIERS
     name = name.replace(word, "")

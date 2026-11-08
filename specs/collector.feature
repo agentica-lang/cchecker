@@ -13,7 +13,7 @@ Feature: Values of the collector kept where it sees them
 
       struct CC_GC obj { int n; }; CC_GC typedef struct { struct obj *o; } value_t; struct holder { value_t v; }; typedef struct obj obj_t;
       CC_GC_ALLOC void *gc_alloc(size_t n); void *GC_malloc(size_t n); struct queue { CC_OWNS value_t *owned; void *any; };
-
+      typedef struct { int n; } cell_t CC_GC; typedef struct obj *obj_ref;
       <code>
       """
     When I run cchecker with "--tools rules --json $DIR/gc.c -- -I../include"
@@ -39,6 +39,8 @@ Feature: Values of the collector kept where it sees them
       | at an offset                | void f(value_t v) { value_t *a = malloc(8 * sizeof *a); *(a + 1) = v; free(a); }        |
       | either side of ?:           | void f(int n) { void **a = malloc(8); a[0] = n ? gc_alloc(n) : NULL; free(a); }         |
       | a typedef of a marked type  | void f(obj_t *o) { obj_t **a = malloc(8); a[0] = o; free(a); }                          |
+      | a marked typedef            | void f(cell_t *c) { cell_t **a = malloc(8); a[0] = c; free(a); }                        |
+      | a typedef of a pointer      | void f(obj_ref o) { obj_ref *a = malloc(8); a[0] = o; free(a); }                        |
 
   Scenario Outline: A value of the collector stored in a static is a finding at the function (<case>)
     Given the C file "gc.c" holds:
@@ -65,6 +67,7 @@ Feature: Values of the collector kept where it sees them
       | a static pointer     | 6      | void f(int n) { static void *p; p = gc_alloc(n); }                     |
       | an item of a static  | 34     | static struct obj *seen[4]; void f(struct obj *o) { seen[1] = o; }     |
       | a field of a static  | 40     | static struct { value_t v; } box; void f(value_t v) { box.v = v; }     |
+      | a static local alone | 14     | struct obj **f(void) { static struct obj *last; return &last; }        |
 
   Scenario Outline: A value of the collector kept where the collector sees it passes (<case>)
     Given the C file "gc.c" holds:
