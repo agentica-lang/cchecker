@@ -149,7 +149,9 @@ def update(
     return ok(finish(options, Report.Report(findings: [], baselined: 0, fixed: 0, errors: errors, skipped: 0)))
   end
 
-  entries = Baseline.merged(accepted, scope, findings)
+  # An unused suppression is fixed by editing its comment, never accepted: the baseline could not tell when it goes.
+  kept = findings.select do |f| f.code != Suppressions.UNUSED end
+  entries = Baseline.merged(accepted, scope, kept)
   try Baseline.write(path, entries)
   puts("cchecker: wrote #{entries.reduce(0) do |total, entry| total + entry.count end} findings to #{path}")
   return ok(0)
