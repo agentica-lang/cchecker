@@ -207,7 +207,7 @@ export def read(decls: Json) -> Result[Unit]
         end
 
         if function.defined
-          params = owned_params(ctx, function.key, node)
+          params = Flow.owned_params(ctx, function.key, node)
           collected = collected.concat(Collector.stores(marks, ctx, function.name, Ast.place_of(node), params, node))
         end
 
@@ -320,8 +320,11 @@ def owning_of(tables: Tables, nodes: List[Json]) -> Flow.Owning
     end
   end
 
+  # The records of the unit, those declared in a function body too.
+  bodies = declarations.flat_map do |n| Ast.children(n).select do |child| Ast.kind(child) == "CompoundStmt" end end
+  inner = Flow.descendants(bodies).select do |n| Ast.kind(n) == "DeclStmt" end.flat_map(&Ast.children)
   fields: Set[String] = Set.new([])
-  for nested in record_decls(nodes, "")
+  for nested in record_decls(nodes, "").concat(record_decls(inner, ""))
     record_fields = Ast.children(nested.node).select do |child| Ast.kind(child) == "FieldDecl" end
     for field in record_fields
       if own_marks(field).include?(OWNS)
@@ -330,9 +333,11 @@ def owning_of(tables: Tables, nodes: List[Json]) -> Flow.Owning
     end
   end
 
-  globals = nodes.select do |n| Ast.kind(n) == "VarDecl" and own_marks(n).include?(OWNS) end
-    .map do |n| Ast.text(n, "name") end
-
+  # A global by the ids of all its declarations, so that the mark of one holds in the others and a local of the same
+  # name is not it.
+  variables = nodes.select do |n| Ast.kind(n) == "VarDecl" end
+  marked = Set.new(variables.select do |n| own_marks(n).include?(OWNS) end.map do |n| Ast.text(n, "name") end)
+  globals = variables.select do |n| marked.include?(Ast.text(n, "name")) end.map do |n| Ast.text(n, "id") end
   return Flow.Owning(returns: returns, takes: takes, frees: frees, fields: fields, globals: Set.new(globals))
 end
 
@@ -410,13 +415,6 @@ def own_record_id(node: Json) -> String
   end
 
   return Ast.text(JSON.get(type, "decl").unwrap_or(JSON.from("")), "id")
-end
-
-# The names of the parameters of a function that own what the caller passes (CC_OWNS or CC_FREES).
-def owned_params(ctx: Flow.Context, key: String, node: Json) -> List[String]
-  names = params_of(node)
-  indices = ctx.owning.takes.get(key, []).concat(ctx.owning.frees.get(key, []))
-  return indices.select do |i| i < names.size end.map do |i| names[i] end
 end
 
 # The context of the body of a function: CC_PAIR(set, restore) on a function other than `set` holds in its body only.

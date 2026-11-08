@@ -13,7 +13,7 @@ Feature: Ownership on every path
       #include "string.h"
       #include "cchecker.h"
       struct box { char *loose; CC_OWNS char *held; };
-      int work(char *p); int fill(char **out); void adopt(CC_OWNS char *p); void drop(CC_FREES char *p); CC_OWNS char *make(int n);
+      int work(char *p); int fill(char **out); void adopt(CC_OWNS char *p); void drop(CC_FREES char *p); CC_OWNS char *make(int n); void zap(CC_FREES char **p);
 
       <code>
       """
@@ -41,6 +41,7 @@ Feature: Ownership on every path
       | null on the other side | 5      | int f(int n) { CC_OWNS char *b = malloc(n); if (b) return -1; free(b); return 0; }                         |
       | pointer array not null | 6     | void f(int n) { CC_OWNS char **v = malloc(n * sizeof *v); if (!*v) return; free(v); }                     |
       | parameter set again    | 6      | void f(CC_OWNS char *p) { free(p); p = malloc(8); }                                                        |
+      | overwritten through *p | 13     | static void replace(CC_FREES char **p, char *v) { *p = v; }                                                |
 
   Scenario Outline: An owned pointer freed or handed on on every path passes (<case>)
     Given the C file "own.c" holds:
@@ -49,7 +50,7 @@ Feature: Ownership on every path
       #include "string.h"
       #include "cchecker.h"
       struct box { char *loose; CC_OWNS char *held; };
-      int work(char *p); int fill(char **out); void adopt(CC_OWNS char *p); void drop(CC_FREES char *p); CC_OWNS char *make(int n);
+      int work(char *p); int fill(char **out); void adopt(CC_OWNS char *p); void drop(CC_FREES char *p); CC_OWNS char *make(int n); void zap(CC_FREES char **p);
 
       <code>
       """
@@ -94,6 +95,14 @@ Feature: Ownership on every path
       | pointer array nulled  | void f(int n) { CC_OWNS char **v = malloc(n * sizeof *v); *v = NULL; free(v); }                                               |
       | freed and set again   | static void reset(CC_FREES char **p) { free(*p); *p = strdup("x"); }                                                                        |
       | const pointer freed   | static void release(CC_FREES char *const *p) { if (*p) free(*p); }                                                                         |
+      | restrict pointer freed | static void release(CC_FREES char *__restrict *p) { if (*p) free(*p); }                                                                   |
+      | owning call through *p | static void reset(CC_FREES char **p) { free(*p); *p = make(1); }                                                                          |
+      | owner stored through *p | static void reset(CC_FREES char **p) { free(*p); CC_OWNS char *n = malloc(8); *p = n; }                                                  |
+      | old value kept         | static void replace(CC_FREES char **p, char *v) { char *old = *p; *p = v; free(old); }                                                    |
+      | items freed            | void f(void) { CC_OWNS char **v = malloc(16); free(*v); free(v); }                                                                         |
+      | freed through address  | void f(int n) { CC_OWNS char *b = malloc(n); zap(&b); if (!b) work(b); }                                                                  |
+      | elvis                  | void f(char *q, int n) { char *p = q ?: make(n); free(p); }                                                                               |
+      | field of a local struct | void f(int n) { struct local { CC_OWNS char *held; } x; CC_OWNS char *b = malloc(n); x.held = b; work(x.held); }                        |
 
   Scenario Outline: A pointer freed or handed on twice on a path is a finding at the function (<case>)
     Given the C file "own.c" holds:
@@ -101,7 +110,7 @@ Feature: Ownership on every path
       #include "stdlib.h"
       #include "cchecker.h"
 
-      int work(char *p); void adopt(CC_OWNS char *p); void drop(CC_FREES char *p); CC_OWNS char *make(int n);
+      int work(char *p); void adopt(CC_OWNS char *p); void drop(CC_FREES char *p); CC_OWNS char *make(int n); void zap(CC_FREES char **p);
 
       <code>
       """
@@ -123,6 +132,7 @@ Feature: Ownership on every path
       | after handing on  | void f(int n) { CC_OWNS char *b = malloc(n); adopt(b); free(b); }            |
       | freed by the project | void f(int n) { char *p = make(n); drop(p); drop(p); }                    |
       | owned parameter   | void f(CC_OWNS char *p) { free(p); free(p); }                                |
+      | freed through address | void f(int n) { CC_OWNS char *b = malloc(n); zap(&b); if (b) free(b); }    |
 
   Scenario Outline: A pointer used after a path freed it or handed it on is a finding at the function (<case>)
     Given the C file "own.c" holds:

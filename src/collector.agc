@@ -23,8 +23,10 @@ export IN_MALLOC = "CC-OWN-GC-IN-MALLOC"
 ## The code of a value of the collector stored in, or declared as, a variable of static storage.
 export IN_STATIC = "CC-OWN-GC-IN-STATIC"
 
-# The words of a type that do not change what it is.
+# The words of a type that do not change what it is, and those that clang writes after a star with no space
+# (`obj *const`).
 QUALIFIERS = ["const ", "volatile ", "struct ", "union ", "restrict", "_Atomic "]
+STAR_QUALIFIERS = ["*const", "*volatile", "*__restrict", "*restrict"]
 
 ## What the rule knows of a translation unit: the names of the types that the collector manages (CC_GC on a struct,
 ## a union or a typedef), the records that hold one of their values (by name), the keys of the functions marked
@@ -53,6 +55,10 @@ end
 ## pointer to one: what is left of its text once the stars go (`value_t ()(int)`) names no type.
 export def collector_type?(marks: Marks, type: String) -> Bool
   name = type
+  for word in STAR_QUALIFIERS
+    name = name.replace(word, "*")
+  end
+
   for word in QUALIFIERS
     name = name.replace(word, "")
   end
@@ -242,8 +248,10 @@ def heap?(scope: Scope, node: Json) -> Bool
   parts = Ast.children(bare)
   case Ast.kind(bare)
     "DeclRefExpr" ->
-      name = Ast.referenced_name(bare)
-      return scope.heap.include?(Flow.variable_name(bare)) or scope.ctx.owning.globals.include?(name)
+      return (
+        scope.heap.include?(Flow.variable_name(bare)) or
+        scope.ctx.owning.globals.include?(Ast.referenced_id(bare))
+      )
     "MemberExpr" -> return scope.ctx.owning.fields.include?(Ast.text(bare, "referencedMemberDecl"))
     "CallExpr" -> return Known.OWNED.include?(Flow.callee_name(bare)) or Flow.owning_call?(scope.ctx, bare)
     "BinaryOperator" ->

@@ -13,7 +13,7 @@ Feature: Values of the collector kept where it sees them
 
       struct CC_GC obj { int n; }; CC_GC typedef struct { struct obj *o; } value_t; struct holder { value_t v; }; typedef struct obj obj_t;
       CC_GC_ALLOC void *gc_alloc(size_t n); void *GC_malloc(size_t n); struct queue { CC_OWNS value_t *owned; void *any; };
-      typedef struct { int n; } cell_t CC_GC; typedef struct obj *obj_ref; struct ref_holder { obj_ref r; };
+      typedef struct { int n; } cell_t CC_GC; typedef struct obj *obj_ref; struct ref_holder { obj_ref r; }; struct vholder { struct obj *volatile o; };
       <code>
       """
     When I run cchecker with "--tools rules --json $DIR/gc.c -- -I../include"
@@ -42,6 +42,7 @@ Feature: Values of the collector kept where it sees them
       | a marked typedef            | void f(cell_t *c) { cell_t **a = malloc(8); a[0] = c; free(a); }                        |
       | a typedef of a pointer      | void f(obj_ref o) { obj_ref *a = malloc(8); a[0] = o; free(a); }                        |
       | a holder of a typedef       | void f(struct ref_holder h) { struct ref_holder *a = malloc(sizeof *a); *a = h; free(a); } |
+      | a holder of a volatile pointer | void f(struct vholder h) { struct vholder *a = malloc(sizeof *a); *a = h; free(a); } |
 
   Scenario Outline: A value of the collector stored in a static is a finding at the function (<case>)
     Given the C file "gc.c" holds:
@@ -99,6 +100,7 @@ Feature: Values of the collector kept where it sees them
       | a pointer to pointers    | void f(struct obj **list) { struct obj ***a = malloc(8); a[0] = list; free(a); } |
       | NULL in malloc memory    | void f(void) { struct obj **a = malloc(8); a[0] = NULL; free(a); }              |
       | 0 in a field             | struct box { struct obj *o; }; void f(void) { struct box *h = malloc(sizeof *h); h->o = 0; free(h); } |
+      | a local named as an owning global | CC_OWNS char *slot; void f(value_t v) { value_t a[2]; value_t *slot = a; slot[0] = v; } |
 
   Scenario: A variable of static storage of a collector type is a finding at the variable
     Given the C file "gc.c" holds:
