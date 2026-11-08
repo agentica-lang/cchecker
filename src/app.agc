@@ -21,6 +21,11 @@ import {Unit} from "unit"
 # The compile database that a run without FILE or -p reads.
 DEFAULT_DATABASE = "compile_commands.json"
 
+# The kept AST that the jobs of the rules parse and read at once, in MiB of its text (Tools.Budget). On the 84 files of
+# the VM of Agentica at -j 8 it took the peak memory from 721 MB to 336 MB for half a second more; 8 MiB saved nothing
+# more.
+READ_BUDGET_MIB = 16
+
 # The start of the name of the folder of the AST dumps of a run, in $TMPDIR.
 SCRATCH_PREFIX = "cchecker-"
 
@@ -448,7 +453,9 @@ def collect_in_scratch(
 end
 
 def collect(options: Options, config: Config.Config, jobs: List[Tools.Job], cwd: String) -> Collected
-  results = Profile.measure("jobs") do run_largest_first(options, jobs) end
+  budget = Tools.budget(READ_BUDGET_MIB)
+  budgeted = jobs.map do |job| job.with(budget: some(budget)) end
+  results = Profile.measure("jobs") do run_largest_first(options, budgeted) end
   findings: List[Finding] = []
   errors: List[ToolError] = []
   ran: List[String] = []
