@@ -10,7 +10,9 @@
 
 import Effects from "effects"
 import {Finding} from "findings"
-import {Body, Event, Fact, Mark, Site} from "flow"
+import Flow from "flow"
+import {Body, Event, Fact, Lock, Mark, Site} from "flow"
+import Held from "held"
 import {Function, Unit} from "unit"
 
 ## The code of a path that returns with a lock that the function took.
@@ -58,6 +60,18 @@ enum Moved
   Stopped
 end
 
+# What the walk of one function reads: the merged functions of the project, the rules on held locks, the conditions it
+# tracks and the variables they read, the locks of its calls by key, and the keys of its own CC_NO_SYSCALL_UNDER(lock).
+struct Walker
+  body: Body
+  functions: Map[String, Function]
+  rules: Held.Rules
+  tracked: Set[String]
+  roots: Map[String, List[String]]
+  locks: Map[String, Lock]
+  quiet: Set[String]
+end
+
 # What a walk found: the findings by code and lock key, and whether it went through every path.
 struct Walk
   findings: Map[String, Finding]
@@ -74,8 +88,10 @@ end
 ## Returns the findings of the lock rules on the functions of the units. A function defined in several units (a static
 ## inline function of a header) is checked once.
 export def check(units: List[Unit]) -> Checked
+  graph = Effects.graph_of(units)
+  rules = Held.rules_of(units, graph)
   functions: Map[String, Function] = {}
-  for function in Effects.functions(units)
+  for function in graph.functions.values
     functions = functions.put(function.key, function)
   end
 
@@ -85,7 +101,7 @@ export def check(units: List[Unit]) -> Checked
   for unit in units
     for body in unit.bodies
       if not done.include?(body.key) and not helper?(functions.get(body.key))
-        walk = checked(body, functions)
+        walk = checked(body, functions, rules)
         findings = findings.concat(walk.findings.values)
         if not walk.complete
           incomplete += 1
@@ -105,13 +121,54 @@ def helper?(function: Optional[Function]) -> Bool
 end
 
 # The findings of one function: with the conditions it tests twice, or without them when there are too many paths.
-def checked(body: Body, functions: Map[String, Function]) -> Walk
-  walk = walked(body, functions, tracked_of(body))
+def checked(body: Body, functions: Map[String, Function], rules: Held.Rules) -> Walk
+  marks = functions.get(body.key).map do |f| f.marks end.unwrap_or([])
+  walker = Walker(
+    body: body,
+    functions: functions,
+    rules: rules,
+    tracked: tracked_of(body),
+    roots: roots_of(body),
+    locks: locks_of(body),
+    quiet: Set.new(marks.flat_map(&quiet_keys)),
+  )
+
+  walk = walked(walker)
   if not walk.complete
-    walk = walked(body, functions, Set.new([]))
+    walk = walked(walker.with(tracked: Set.new([])))
   end
 
   return walk
+end
+
+# The keys of the locks of a mark `no_syscall_under(a, b)` of the function itself.
+def quiet_keys(mark: String) -> List[String]
+  prefix = "no_syscall_under("
+  if not mark.start_with?(prefix) or not mark.end_with?(")")
+    return []
+  end
+
+  inside = mark.slice(prefix.length, mark.length - prefix.length - 1)
+  return inside.split(",").map do |text| text.strip end.select do |text| text != "" end.map(&Flow.key_of)
+end
+
+# The locks that the calls of a function take, release or wait on, by key.
+def locks_of(body: Body) -> Map[String, Lock]
+  locks: Map[String, Lock] = {}
+  for node in body.nodes
+    case node.event
+      Event.Call(site) ->
+        for lock in site.takes.concat(site.drops).concat(site.waits)
+          if not locks.key?(lock.key) or locks[lock.key].class == ""
+            locks = locks.put(lock.key, lock)
+          end
+        end
+
+      _ -> next
+    end
+  end
+
+  return locks
 end
 
 # The conditions that the function tests in two places or more: only those can make a path impossible.
@@ -136,8 +193,8 @@ def tracked_of(body: Body) -> Set[String]
   return twice
 end
 
-def walked(body: Body, functions: Map[String, Function], tracked: Set[String]) -> Walk
-  roots = roots_of(body)
+def walked(walker: Walker) -> Walk
+  body = walker.body
   queue = [Item(node: 0, state: State(held: {}, facts: {}), path: [])]
   visited: Set[String] = Set.new([])
   found: Map[String, Finding] = {}
@@ -150,7 +207,8 @@ def walked(body: Body, functions: Map[String, Function], tracked: Set[String]) -
     item = queue[i]
     i += 1
     node = body.nodes[item.node]
-    case stepped(node.event, item, functions, tracked, roots)
+    found = with_breaches(found, walker, item, node.event)
+    case stepped(walker, node.event, item)
       Moved.Ended(path) -> found = with_exit(found, body, item.state, path)
       Moved.Stopped -> next
       Moved.Went(moved) ->
@@ -167,13 +225,38 @@ def walked(body: Body, functions: Map[String, Function], tracked: Set[String]) -
   return Walk(findings: found, complete: true)
 end
 
-def stepped(
-  event: Event,
-  item: Item,
-  functions: Map[String, Function],
-  tracked: Set[String],
-  roots: Map[String, List[String]],
-) -> Moved
+# The findings of the rules on held locks at a call that the path makes.
+def with_breaches(found: Map[String, Finding], walker: Walker, item: Item, event: Event) -> Map[String, Finding]
+  case event
+    Event.Call(site) ->
+      held = item.state
+        .held
+        .keys
+        .select do |key| item.state.held[key] > 0 end
+        .map do |key| held_lock(walker, item, key) end
+
+      kept = found
+      for breach in Held.at_call(walker.rules, walker.body, held, site, "#{site.line}:#{site.column}")
+        if not kept.key?(breach.id)
+          kept = kept.put(breach.id, located(walker.body, breach.code, breach.message, breach.path))
+        end
+      end
+
+      return kept
+    _ -> return found
+  end
+end
+
+def held_lock(walker: Walker, item: Item, key: String) -> Held.Held
+  lock = walker.locks.get(key).unwrap_or(Lock(key: key, shown: key))
+  steps = from_last(item.path, key, true).map do |step| step.text end
+  return Held.Held(lock: lock, quiet: walker.quiet.include?(key), path: steps)
+end
+
+def stepped(walker: Walker, event: Event, item: Item) -> Moved
+  functions = walker.functions
+  tracked = walker.tracked
+  roots = walker.roots
   state = item.state
   case event
     Event.Join -> return Moved.Went(item)
@@ -266,21 +349,31 @@ end
 
 # The path starts at the last take of the lock for a lock left held, at its last release for one not held.
 def finding(body: Body, code: String, key: String, path: List[Step]) -> Finding
-  start = 0
-  for i in 0...path.size
-    if path[i].lock == key and path[i].took == (code == NOT_RELEASED)
-      start = i
-    end
-  end
-
-  steps = path.drop(start)
+  steps = from_last(path, key, code == NOT_RELEASED)
   shown = steps.first.shown
   message = "#{body.name} does not release #{shown} on every path"
   if code == NOT_HELD
     message = "#{body.name} releases #{shown}, which it does not hold, on a path"
   end
 
-  texts = steps.map do |step| step.text end
+  return located(body, code, message, steps.map do |step| step.text end)
+end
+
+# The steps of a path from the last one that took the lock (`took`) or released it.
+def from_last(path: List[Step], key: String, took: Bool) -> List[Step]
+  start = 0
+  for i in 0...path.size
+    if path[i].lock == key and path[i].took == took
+      start = i
+    end
+  end
+
+  return path.drop(start)
+end
+
+# A finding at the function, with its path cut to the first and the last steps when it is long.
+def located(body: Body, code: String, message: String, path: List[String]) -> Finding
+  texts = path
   if texts.size > MAX_PATH
     texts = texts.take(MAX_PATH / 2).push("...").concat(texts.drop(texts.size - MAX_PATH / 2))
   end

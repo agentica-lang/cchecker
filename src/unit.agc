@@ -23,6 +23,13 @@ LOCK_MARKS = {"acquires": true, "releases": false}
 # of the Agentica VM. A larger function is an error of the tool, so a run never runs out of memory on one.
 MAX_BODY_NODES = 20_000
 
+# The words of a type that are not the name of its struct.
+TYPE_QUALIFIERS = Set.new(["const", "volatile", "restrict", "__restrict", "struct", "union"])
+
+# The marks of a lock field or global: CC_NO_SYSCALL_UNDER() and CC_LOCK_LEVEL(n), n a decimal number.
+QUIET_MARK = "no_syscall_under"
+LEVEL_MARK = "lock_level"
+
 # The slot that the argument of a callback is read into, which no other store names: only its sources are kept.
 CALLBACK_SLOT = "callback"
 
@@ -48,10 +55,13 @@ export enum Target
   Slot(String)
 end
 
-## A call of `caller`, a function key.
+## A call of `caller`, a function key. A call through a slot has the place of the call, so the path rules find the
+## functions that a call of a pointer under a lock reaches.
 export struct Call
   caller: String
   target: Target
+  line: Int = 0
+  column: Int = 0
 end
 
 ## What a slot gets: a function, by key, or every function of another slot (a copy of a pointer).
@@ -66,6 +76,20 @@ export struct Store
   source: Source
 end
 
+## An annotation of a lock: a field (`queue.mu`, by struct and field name) or a global variable, and the mark
+## (`no_syscall_under()`, `lock_level(2)`).
+export struct LockMark
+  class: String
+  mark: String
+  named: String = ""
+end
+
+# The lock marks of a unit that can be read, and the errors of those that cannot.
+struct LockMarks
+  marks: List[LockMark]
+  errors: List[String]
+end
+
 ## A function pointer passed to a libuv call that runs it on the loop thread (`Known.LOOP_CALLBACKS`): the call, the
 ## place of the argument (from 0), the place of the call (`file` absolute), and what the argument holds, which is empty
 ## when it is neither a function nor a pointer that the rules follow.
@@ -77,14 +101,17 @@ export struct Callback
   sources: List[Source]
 end
 
-## The functions, calls and stores of one translation unit, its callbacks of libuv, and the graphs of its functions
-## that take or release a lock. `too_large` names the functions too large for a graph (`MAX_BODY_NODES`).
+## The functions, calls and stores of one translation unit, its callbacks of libuv, the graphs of its functions that
+## take or release a lock, and the annotations of its locks. `too_large` names the functions too large for a graph
+## (`MAX_BODY_NODES`), and `mark_errors` says what is wrong with the lock marks that cannot be read.
 export struct Unit
   functions: List[Function]
   calls: List[Call]
   stores: List[Store]
   bodies: List[Flow.Body] = []
+  lock_marks: List[LockMark] = []
   too_large: List[String] = []
+  mark_errors: List[String] = []
   callbacks: List[Callback] = []
 end
 
@@ -93,6 +120,7 @@ struct Record
   name: String
   field_ids: List[String]
   fields: List[String]
+  types: List[String] = []
 end
 
 # A record declaration and the name of the record it is declared in ("" at the top level).
@@ -157,13 +185,16 @@ export def read(decls: Json) -> Result[Unit]
     end
   end
 
+  marked = lock_marks_of(tables, nodes)
   return ok(
     Unit(
       functions: functions,
       calls: found.calls,
       stores: found.stores,
       bodies: bodies,
+      lock_marks: marked.marks,
       too_large: too_large,
+      mark_errors: marked.errors,
       callbacks: found.callbacks,
     ),
   )
@@ -174,13 +205,26 @@ end
 # (`_Noreturn`, `__attribute__((noreturn))`, CC_NORETURN).
 def context_of(tables: Tables, nodes: List[Json]) -> Flow.Context
   callees: Map[String, Flow.Callee] = {}
+  variables = nodes.select do |node| Ast.kind(node) == "VarDecl" end
+  globals: Map[String, String] = {}
+  global_ids: Map[String, String] = {}
+  for node in variables
+    class = variable_key(tables, Ast.text(node, "name"))
+    globals = globals.put(Ast.text(node, "name"), class)
+    global_ids = global_ids.put(Ast.text(node, "id"), class)
+  end
+
   declarations = nodes.select do |node| Ast.kind(node) == "FunctionDecl" end
   for node in declarations
     function = function_of(tables, node)
     params = params_of(node)
+    types = param_types_of(node)
     # A definition inherits the annotations of the prototype before it, in the names of the prototype's parameters:
     # only the declaration that wrote an annotation knows what its names are.
-    locks = own_marks(node).flat_map do |mark| annotated(mark, params) end
+    locks = own_marks(node)
+      .flat_map do |mark| annotated(mark, params) end
+      .map do |lock| lock.with(class: class_of_text(tables, globals, lock.text, params, types)) end
+
     attributes = Ast.children(node).map(&Ast.kind)
     stops = function.marks.include?("noreturn") or attributes.any? do |name| NORETURN_ATTRS.include?(name) end
     if not locks.empty? or stops
@@ -189,7 +233,121 @@ def context_of(tables: Tables, nodes: List[Json]) -> Flow.Context
     end
   end
 
-  return Flow.Context(callees: callees, statics: tables.static_functions)
+  fields: Map[String, String] = {}
+  for id in tables.field_slots.keys
+    fields = fields.put(id, tables.field_slots[id].replace("field:", ""))
+  end
+
+  return Flow.Context(callees: callees, statics: tables.static_functions, fields: fields, globals: global_ids)
+end
+
+# The class of the lock of an annotation, through the types of the parameters: `s->pool->mu` of `struct server *s` is
+# `pool.mu`, and `p->m[0]` the field `m`; a global is its name (`name@file` for a static one), unless a parameter has
+# that name. "" when a type on the way is not a struct of the project.
+def class_of_text(
+  tables: Tables,
+  globals: Map[String, String],
+  text: String,
+  params: List[String],
+  types: List[String],
+) -> String
+  path = Flow.shown_of(text).replace("*", "").replace("->", ".").split(".").map do |part| part.split("[").first end
+  at = -1
+  for i in 0...params.size
+    if params[i] == path.first
+      at = i
+    end
+  end
+
+  if at < 0
+    if path.size == 1
+      return globals.get(path.first).unwrap_or("")
+    end
+
+    return ""
+  end
+
+  type = types[at]
+  for j in 1...path.size
+    case tables.records.get(type_name(type))
+      some(record) ->
+        for k in 0...record.fields.size
+          if record.fields[k] == path[j]
+            if j == path.size - 1
+              return "#{record.name}.#{path[j]}"
+            end
+
+            type = record.types[k]
+          end
+        end
+
+      none -> return ""
+    end
+  end
+
+  return ""
+end
+
+# The name of the struct of a type as clang writes it: `struct server *`, `const server *` and `struct server *const`
+# are `server`.
+def type_name(type: String) -> String
+  words = type.replace("*", " ").split(" ").select do |word| word != "" and not TYPE_QUALIFIERS.include?(word) end
+  return words.join(" ")
+end
+
+# The lock marks of the fields and the global variables of the unit, by their class, and the errors of the marks that
+# cannot be read: a level that is not a decimal number, a lock named in the mark of a field, or a field of a struct
+# with no name.
+def lock_marks_of(tables: Tables, nodes: List[Json]) -> LockMarks
+  marks: List[LockMark] = []
+  for nested in record_decls(nodes, "")
+    fields = Ast.children(nested.node).select do |child| Ast.kind(child) == "FieldDecl" end
+    for field in fields
+      class = tables.field_slots.get(Ast.text(field, "id")).unwrap_or("").replace("field:", "")
+      named = class
+      if named == ""
+        named = Ast.text(field, "name")
+      end
+
+      marks = marks.concat(own_marks(field).map do |mark| LockMark(class: class, mark: mark, named: named) end)
+    end
+  end
+
+  variables = nodes.select do |node| Ast.kind(node) == "VarDecl" end
+  for node in variables
+    class = variable_key(tables, Ast.text(node, "name"))
+    marks = marks.concat(own_marks(node).map do |mark| LockMark(class: class, mark: mark, named: class) end)
+  end
+
+  locks = marks.select do |found| lock_mark?(found.mark) end
+  errors = locks.map(&mark_error).select do |text| text != "" end
+  return LockMarks(marks: locks.select do |found| mark_error(found) == "" end, errors: errors)
+end
+
+def lock_mark?(mark: String) -> Bool
+  return mark.start_with?("#{QUIET_MARK}(") or mark.start_with?("#{LEVEL_MARK}(")
+end
+
+# What is wrong with a lock mark, or "".
+def mark_error(mark: LockMark) -> String
+  # A field of a struct with no name and no typedef has the class `.field`, which no other struct can name.
+  if mark.class == "" or mark.class.start_with?(".")
+    return "#{mark.named}: a lock mark needs a field of a named struct or a global"
+  end
+
+  if mark.mark.start_with?("#{QUIET_MARK}(") and mark.mark != "#{QUIET_MARK}()"
+    return "#{mark.named}: CC_NO_SYSCALL_UNDER() on a lock names no lock: #{mark.mark}"
+  end
+
+  if mark.mark.start_with?("#{LEVEL_MARK}(")
+    inside = mark.mark.slice(LEVEL_MARK.length + 1, mark.mark.length - LEVEL_MARK.length - 2).strip
+    digits = inside != "" and inside.split("").all? do |c| c.code >= 48 and c.code <= 57 end
+    if not digits or not mark.mark.end_with?(")")
+      return "#{mark.named}: CC_LOCK_LEVEL takes a decimal number: #{mark.mark}"
+    end
+  end
+
+  return ""
 end
 
 # The locks of an annotation `acquires(a, b)` or `releases(a)`; none for another one.
@@ -223,6 +381,11 @@ def mark_of(attribute: Json) -> String
   return message.slice(MARK_PREFIX.length, message.length - MARK_PREFIX.length)
 end
 
+def param_types_of(node: Json) -> List[String]
+  parameters = Ast.children(node).select do |child| Ast.kind(child) == "ParmVarDecl" end
+  return parameters.map do |child| Ast.text(JSON.get(child, "type").unwrap_or(JSON.from("")), "qualType") end
+end
+
 def params_of(node: Json) -> List[String]
   parameters = Ast.children(node).select do |child| Ast.kind(child) == "ParmVarDecl" end
   return parameters.map do |child| Ast.text(child, "name") end
@@ -246,6 +409,16 @@ def tables_of(nodes: List[Json]) -> Tables
     by_type = by_type.put(record.name, record)
     for i in 0...record.fields.size
       field_slots = field_slots.put(record.field_ids[i], "field:#{record.name}.#{record.fields[i]}")
+    end
+  end
+
+  # A typedef of a named struct (`typedef struct runtime runtime_t`) is another name of its type.
+  for node in nodes
+    if Ast.kind(node) == "TypedefDecl"
+      case records.get(record_id_of(node))
+        some(record) -> by_type = by_type.put(Ast.text(node, "name"), record)
+        none -> next
+      end
     end
   end
 
@@ -298,6 +471,7 @@ def records_of(nodes: List[Json]) -> Map[String, Record]
           name: name,
           field_ids: fields.map do |f| Ast.text(f, "id") end,
           fields: fields.map do |f| Ast.text(f, "name") end,
+          types: fields.map do |f| Ast.text(JSON.get(f, "type").unwrap_or(JSON.from("")), "qualType") end,
         ),
       )
     end
@@ -448,7 +622,10 @@ def with_call(tables: Tables, scope: Scope, node: Json, found: Found) -> Found
   end
 
   case slot_of(tables, scope, callee)
-    some(slot) -> return found.with(calls: found.calls.push(Call(caller: scope.caller, target: Target.Slot(slot))))
+    some(slot) ->
+      place = Ast.start_of(node)
+      call = Call(caller: scope.caller, target: Target.Slot(slot), line: place.line, column: place.column)
+      return found.with(calls: found.calls.push(call))
     none -> return found
   end
 end

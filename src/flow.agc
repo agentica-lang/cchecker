@@ -25,13 +25,17 @@ NORETURN_TYPE = "__attribute__((noreturn))"
 ALIAS_DEPTH = 4
 
 ## A lock: `key` is what tells two locks apart (`q.mu` for `&q->mu`, `q->mu` and `(&q->mu)`), `shown` how the code
-## wrote it.
+## wrote it, and `class` the field it is (`queue.mu`, by struct and field name) or the global, which the marks of
+## CC_NO_SYSCALL_UNDER() and CC_LOCK_LEVEL name; "" when the rules cannot tell.
 export struct Lock
   key: String
   shown: String
+  class: String = ""
 end
 
-## A call of a function, by name and key (`name@file` for a static one), and what it does to the locks.
+## A call of a function, by name and key (`name@file` for a static one), and what it does to the locks: those it takes,
+## releases, and waits on (a condition wait gives its lock back while it waits). A call through a function pointer
+## (`pointer`) has the text of the pointer as its name and no key. `tried` is a trylock, which never waits for its lock.
 export struct Site
   name: String
   key: String
@@ -40,6 +44,9 @@ export struct Site
   takes: List[Lock]
   drops: List[Lock]
   stops: Bool
+  waits: List[Lock] = []
+  pointer: Bool = false
+  tried: Bool = false
 end
 
 ## The value a condition has on an edge. `text` is "" for a condition that may change between two reads (a call).
@@ -90,6 +97,7 @@ export struct Annotated
   text: String
   params: List[String]
   takes: Bool
+  class: String = ""
 end
 
 ## What a function of the translation unit says about locks, from all its declarations, and whether it never returns.
@@ -98,11 +106,20 @@ export struct Callee
   stops: Bool
 end
 
-## What the graphs of one translation unit need: the functions that say something about locks, by key, and the keys of
-## its static functions by name.
+## What the graphs of one translation unit need: the functions that say something about locks, by key, the keys of
+## its static functions by name, the class of each field by id (`queue.mu`), and the class of each global variable by
+## the id of its declaration (its name, `name@file` for a static one), so a local of the same name is not it.
 export struct Context
   callees: Map[String, Callee]
   statics: Map[String, String]
+  fields: Map[String, String]
+  globals: Map[String, String]
+end
+
+# An argument of a call: its text, and its class when it is a lock.
+struct Arg
+  text: String
+  class: String
 end
 
 # A block: its id, and the cleanup calls of its variables so far, in the order they were declared.
@@ -644,7 +661,12 @@ def declaration(b: Builder, node: Json, preds: List[Int]) -> Built
 
   function = Ast.text(JSON.get(cleanup.first, "cleanup_function").unwrap_or(JSON.from("")), "name")
   place = Ast.place_of(node)
-  site = site_of(written.b, function, ["&#{local_text(written.b, name)}"], place, "")
+  var = Arg(
+    text: "&#{local_text(written.b, name)}",
+    class: written.b.aliases.get(name).map do |value| class_of(written.b, value) end.unwrap_or(""),
+  )
+
+  site = site_of(written.b, function, [var], place, "")
   scope = written.b.scopes.last
   scopes = written.b.scopes.set(written.b.scopes.size - 1, scope.with(cleanups: scope.cleanups.push(site)))
   return Built(b: written.b.with(scopes: scopes), exits: written.exits)
@@ -736,13 +758,27 @@ def call(b: Builder, node: Json, preds: List[Int], tried: Bool) -> Built
   args = parts.drop(1)
   built = in_order(b, args, preds)
   if Ast.kind(callee) != "DeclRefExpr" or Ast.referenced_kind(callee) != "FunctionDecl"
-    # A call through a pointer whose type does not return ends the path too.
+    # A call through a pointer: the rules on held locks follow the functions stored in it. One whose type does not
+    # return ends the path too.
     pointer = expression(built.b, parts.first, built.exits)
-    if type_text(parts.first).include?(NORETURN_TYPE)
-      return Built(b: pointer.b, exits: [])
+    place = Ast.start_of(node)
+    site = Site(
+      name: text_of(pointer.b, parts.first, false),
+      key: "",
+      line: place.line,
+      column: place.column,
+      takes: [],
+      drops: [],
+      stops: type_text(parts.first).include?(NORETURN_TYPE),
+      pointer: true,
+    )
+
+    through = add(pointer.b, Event.Call(site), pointer.exits)
+    if site.stops
+      return Built(b: through.b, exits: [])
     end
 
-    return pointer
+    return through
   end
 
   # The type of the declaration: the reference to a builtin such as `__builtin_abort` has no type of its own.
@@ -750,7 +786,7 @@ def call(b: Builder, node: Json, preds: List[Int], tried: Bool) -> Built
   site = site_of(
     built.b,
     Ast.referenced_name(callee),
-    args.map do |arg| text_of(built.b, arg, true) end,
+    args.map do |arg| arg_of(built.b, arg) end,
     Ast.start_of(node),
     type,
   )
@@ -769,35 +805,92 @@ end
 
 # What a call does to the locks: a known call takes or drops the lock of its first argument, and a function with
 # CC_ACQUIRES or CC_RELEASES the locks it names, in the texts of the arguments of the call.
-def site_of(b: Builder, name: String, args: List[String], place: Ast.Place, type: String) -> Site
+def site_of(b: Builder, name: String, args: List[Arg], place: Ast.Place, type: String) -> Site
   key = key_of_function(b.ctx, name)
   takes: List[Lock] = []
   drops: List[Lock] = []
+  waits: List[Lock] = []
   stops = Known.NORETURN.include?(name) or type.include?(NORETURN_TYPE)
-  first = ""
-  if not args.empty?
-    first = args.first
-  end
-
   if Known.TAKES.include?(name)
-    takes = locks_of([first])
+    takes = lock_of(args, 0)
   end
 
   if Known.DROPS.include?(name)
-    drops = locks_of([first])
+    drops = lock_of(args, 0)
   end
 
-  site = Site(name: name, key: key, line: place.line, column: place.column, takes: takes, drops: drops, stops: stops)
+  if Known.WAITS.include?(name)
+    waits = lock_of(args, 1)
+  end
+
+  site = Site(
+    name: name,
+    key: key,
+    line: place.line,
+    column: place.column,
+    takes: takes,
+    drops: drops,
+    stops: stops,
+    waits: waits,
+  )
+
   case b.ctx.callees.get(key)
     some(callee) ->
+      texts = args.map do |arg| arg.text end
       taken = callee.locks.select do |lock| lock.takes end
       dropped = callee.locks.select do |lock| not lock.takes end
       return site.with(
-        takes: takes.concat(locks_of(taken.map do |lock| substituted(lock.text, lock.params, args) end)),
-        drops: drops.concat(locks_of(dropped.map do |lock| substituted(lock.text, lock.params, args) end)),
+        takes: takes.concat(taken.flat_map do |lock| annotated_lock(lock, texts) end),
+        drops: drops.concat(dropped.flat_map do |lock| annotated_lock(lock, texts) end),
         stops: stops or callee.stops,
       )
     none -> return site
+  end
+end
+
+# The lock of the argument at `index`, if the call has it and it names an object.
+def lock_of(args: List[Arg], index: Int) -> List[Lock]
+  if index >= args.size
+    return []
+  end
+
+  return locks_of([args[index].text]).map do |lock| lock.with(class: args[index].class) end
+end
+
+# The lock of an annotation, in the texts of the arguments of the call.
+def annotated_lock(lock: Annotated, texts: List[String]) -> List[Lock]
+  return locks_of([substituted(lock.text, lock.params, texts)]).map do |found| found.with(class: lock.class) end
+end
+
+def arg_of(b: Builder, node: Json) -> Arg
+  return Arg(text: text_of(b, node, true), class: class_of(b, node))
+end
+
+# The class of a lock expression: the field it ends in, or a global variable, through `&`, `*` and the local variables
+# set once.
+def class_of(b: Builder, node: Json) -> String
+  return aliased_class(b, node, 0)
+end
+
+def aliased_class(b: Builder, node: Json, depth: Int) -> String
+  bare = see_through(node)
+  while Ast.kind(bare) == "UnaryOperator" and UNARY_TEXT.include?(Ast.text(bare, "opcode"))
+    bare = see_through(Ast.children(bare).first)
+  end
+
+  case Ast.kind(bare)
+    "MemberExpr" -> return b.ctx.fields.get(Ast.text(bare, "referencedMemberDecl")).unwrap_or("")
+    "ArraySubscriptExpr" -> return aliased_class(b, Ast.children(bare).first, depth)
+    "DeclRefExpr" ->
+      name = Ast.referenced_name(bare)
+      case b.aliases.get(name)
+        some(value) if depth < ALIAS_DEPTH -> return aliased_class(b, value, depth + 1)
+        _ ->
+          declared = JSON.get(bare, "referencedDecl").unwrap_or(JSON.from(""))
+          return b.ctx.globals.get(Ast.text(declared, "id")).unwrap_or("")
+      end
+
+    _ -> return ""
   end
 end
 
@@ -930,21 +1023,19 @@ def trial(b: Builder, tried: Tried, preds: List[Int]) -> Split
   called = call(b, tried.call, preds, true)
   args = Ast.children(tried.call).drop(1)
   name = callee_name(tried.call)
-  site = site_of(called.b, name, args.map do |arg| text_of(called.b, arg, true) end, Ast.start_of(tried.call), "")
-  taken = add(called.b, Event.Call(site.with(takes: locks_of([lock_text(called.b, args)]))), called.exits)
+  passed = args.map do |arg| arg_of(called.b, arg) end
+  site = site_of(called.b, name, passed, Ast.start_of(tried.call), "")
+  taken = add(
+    called.b,
+    Event.Call(site.with(takes: lock_of(passed, 0), tried: Known.NO_WAIT.include?(name))),
+    called.exits,
+  )
+
   if tried.zero_is_true
     return Split(b: taken.b, yes: taken.exits, no: called.exits)
   end
 
   return Split(b: taken.b, yes: called.exits, no: taken.exits)
-end
-
-def lock_text(b: Builder, args: List[Json]) -> String
-  if args.empty?
-    return ""
-  end
-
-  return text_of(b, args.first, true)
 end
 
 # The text of an expression, from the names, fields, constants and operators of `UNARY_TEXT` and `BINARY_TEXT`; ""

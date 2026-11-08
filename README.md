@@ -7,9 +7,9 @@ baseline file accepts the findings a project has today, so CI fails only on new 
 
 The rules read clang's JSON AST and the annotations of `include/cchecker.h`. This version checks effects on the call
 graph (a `CC_SHORT` function never reaches a blocking call, and a `CC_HOT` function never allocates or makes a system
-call) and locks on every path of a function (a lock taken is released, and a lock released is held). Locks under
-system calls, the lock order, paired state and ownership come in later phases; the plan is in [issue
-1](https://github.com/agentica-lang/cchecker/issues/1).
+call) and locks on every path of a function: a lock taken is released, a lock released is held, no system call runs
+under a lock marked `CC_NO_SYSCALL_UNDER`, and locks are taken in the order of their `CC_LOCK_LEVEL`. Paired state
+and ownership come in later phases; the plan is in [issue 1](https://github.com/agentica-lang/cchecker/issues/1).
 
 ## Install
 
@@ -151,8 +151,8 @@ tools that are running (they end by themselves or at the timeout); see
 ## Annotations
 
 `include/cchecker.h` defines the macros that the rules read: `CC_SHORT`, `CC_BLOCKING`, `CC_HOT`, `CC_ACQUIRES(lock)`,
-`CC_RELEASES(lock)`, `CC_NORETURN`, `CC_OWNS`, `CC_PAIR(set, restore)`, `CC_NO_SYSCALL_UNDER(lock)` (these three for
-later phases) and `CC_IGNORE("CODE", "reason")` (a suppression). With clang each is
+`CC_RELEASES(lock)`, `CC_NORETURN`, `CC_NO_SYSCALL_UNDER(lock)`, `CC_LOCK_LEVEL(n)`, `CC_OWNS`, `CC_PAIR(set,
+restore)` (these two for later phases) and `CC_IGNORE("CODE", "reason")` (a suppression). With clang each is
 `__attribute__((annotate("cchecker:...")))`; with any other compiler it is empty. When cchecker dumps the AST it
 defines `CCHECKER_AST`, and the macros become `deprecated("cchecker:...")`: the JSON AST of clang 19 drops the text of
 `annotate` and keeps the message of `deprecated`. The dump runs with `-w`, so this gives no warning.
@@ -207,8 +207,8 @@ it reaches (`libc_blocking`), and for an inferred root the inference before it (
 | `libgc_blocking` | `GC_gcollect` of the Boehm collector, which stops the world |
 | `libuv_callbacks_short` | a `CC_SHORT` root for each function passed as a callback that libuv runs on the loop thread: the `cb` of `uv_timer_start` (argument 1, from 0), `uv_poll_start` (2), `uv_async_init` (2) and `uv_close` (1), the `alloc_cb` and `read_cb` of `uv_read_start` (1 and 2), the callback of `uv_write` (4), `uv_write2` (5), `uv_shutdown` (2), `uv_tcp_connect` (3), `uv_pipe_connect` (3) and `uv_pipe_connect2` (5), and the `after_work_cb` of `uv_queue_work` (3), never its `work_cb`, which runs on the pool (Roots) |
 
-A flag changes only the blocking calls of `CC_SHORT`: the rules of `CC_HOT` count every known blocking call as a
-system call whatever the flags.
+A flag changes only the blocking calls of `CC_SHORT`: the rules of `CC_HOT` and of `CC_NO_SYSCALL_UNDER` count every
+known blocking call as a system call whatever the flags.
 
 `[roots]` names the functions that are `CC_SHORT` (`short`) or `CC_HOT` (`hot`) without a mark in the C, by their name
 (a static function of that name in any file). A finding of a root of `[roots]` is the same as that of the mark, and a
@@ -341,6 +341,42 @@ Limits: a lock is counted by its text, so a lock taken in a loop over several ob
 taken hand over hand, or a pointer that is set again between the lock and the unlock (`q = q->next`) can give false
 findings; the result of a lock stored before the test (`r = trylock(&q->mu); if (r == 0)`) takes nothing; a global
 that a called function changes keeps the value the path knew.
+
+### What runs while a lock is held
+
+A lock held for short sections only, which other threads spin for, is marked on its field (or on a global lock):
+`CC_NO_SYSCALL_UNDER()`. While a path holds it, no call is a system call or a blocking call (the lists of the effects,
+a lock or an unlock of another lock included, and a `CC_BLOCKING` function) or reaches one through the functions of
+the project, a call through a function pointer included (the functions stored in it), except the release of the lock
+itself and a wait on a condition with it. `CC_NO_SYSCALL_UNDER(lock)` on a function says the same
+of one lock of that function, in the names of its parameters.
+
+`CC_LOCK_LEVEL(n)` on the field of a lock (or a global lock) orders the locks: a path takes a lock with a level only
+while every lock it holds with a level has a lower one, and it calls a function that takes one (in its body or in the
+functions it reaches, or those stored in a pointer it calls) only then. Two locks of the same level are never held
+together. A trylock (`pthread_mutex_trylock`) never waits, so it is never out of order. One exception: a called
+function that takes the class of a lock held again is not out of order, for a lock that counts its takes by the same
+thread; the rules cannot tell it from another lock of the same class.
+
+```c
+struct runtime { CC_LOCK_LEVEL(1) pthread_mutex_t sync; ... };
+struct runq { CC_NO_SYSCALL_UNDER() CC_LOCK_LEVEL(3) pthread_mutex_t lock; ... };
+```
+
+| Code | |
+|---|---|
+| `CC-PATH-SYSCALL-UNDER-LOCK` | a call under a `CC_NO_SYSCALL_UNDER` lock is or reaches a system call |
+| `CC-PATH-LOCK-ORDER` | a lock with a level is taken (or a function that takes one is called) under one of the same or a higher level |
+
+A field is known by its struct and its name (`runq.lock`, the name of a typedef for an anonymous struct; an item of
+an array of locks is its field), and a global by its name (`name@file` for a static one; a parameter or a local of the
+same name is not it). The marks are `CC_NO_SYSCALL_UNDER()` with nothing in it and `CC_LOCK_LEVEL(n)` with a decimal
+number; another form, or a mark on a field of a struct with no name, is an error of the `rules` tool (exit code 2). A
+lock is known by its text in a function, so the same lock written two ways (`&q->mu` and `m` set later to it) is two
+locks. A lock of a `CC_ACQUIRES` is followed to its field through the types of the parameters
+(`CC_ACQUIRES(s->pool->mu)` on `void pool_lock(struct server *s)` takes `pool.mu`). The path of a finding goes from
+the take of the lock held to the call, and the call path to the system call when there is one: `13:3 calls bump: bump
+-> pthread_mutex_lock`.
 
 The AST of a file is tens of MiB with its system headers, more than a process output holds in Agentica (1 MiB):
 `sh` writes it to a file in a private folder under `$TMPDIR`, and cchecker reads it line by line and keeps

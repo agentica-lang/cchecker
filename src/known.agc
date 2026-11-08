@@ -115,11 +115,23 @@ export TRIES = Set.new([
   "pthread_mutex_lock", "pthread_spin_lock", "pthread_rwlock_rdlock", "pthread_rwlock_wrlock", "mtx_lock",
 ])
 
+## The calls of `TRIES` that never wait for their lock, so a trylock is never out of the lock order.
+export NO_WAIT = Set.new([
+  "pthread_mutex_trylock", "pthread_spin_trylock", "pthread_rwlock_tryrdlock", "pthread_rwlock_trywrlock",
+  "mtx_trylock", "uv_mutex_trylock", "uv_rwlock_tryrdlock", "uv_rwlock_trywrlock",
+])
+
 ## The calls that release the lock of their first argument.
 export DROPS = Set.new([
   "pthread_mutex_unlock", "pthread_spin_unlock", "pthread_rwlock_unlock", "mtx_unlock", "uv_mutex_unlock",
   "uv_rwlock_rdunlock", "uv_rwlock_wrunlock", "LeaveCriticalSection", "ReleaseSRWLockExclusive",
   "ReleaseSRWLockShared",
+])
+
+## The calls that wait on a condition with the lock of their second argument, which they give back while they wait.
+export WAITS = Set.new([
+  "pthread_cond_wait", "pthread_cond_timedwait", "pthread_cond_clockwait", "cnd_wait", "cnd_timedwait", "uv_cond_wait",
+  "uv_cond_timedwait", "SleepConditionVariableCS", "SleepConditionVariableSRW",
 ])
 
 ## The calls that never come back, besides those whose type says `noreturn`.

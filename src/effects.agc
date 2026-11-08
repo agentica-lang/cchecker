@@ -17,12 +17,14 @@ enum Effect
   System
 end
 
-# The call graph of the project. A function is merged from all its declarations: the marks of each, and the place of
-# its definition. A slot holds every function stored in it.
-struct Graph
+## The call graph of the project. A function is merged from all its declarations: the marks of each, and the place of
+## its definition. A slot holds every function stored in it. `pointers` are the slots of each call through a pointer,
+## by its caller and place (`caller LINE:COL`).
+export struct Graph
   functions: Map[String, Function]
   edges: Map[String, List[Target]]
   slots: Map[String, List[String]]
+  pointers: Map[String, List[String]] = {}
 end
 
 ## What the rules found: the findings, and the callbacks of libuv calls they could not follow to a function.
@@ -80,6 +82,75 @@ end
 ## Returns the functions of the units, each merged from all its declarations.
 export def functions(units: List[Unit]) -> List[Function]
   return graph_of(units).functions.values
+end
+
+## Returns the names of the shortest call path from a function of the project to a system call, a blocking one
+## included: [`key`'s name, ..., the call]; none when it makes none. A library function is a path of its own name when
+## it is a system call.
+export def system_path(graph: Graph, key: String) -> Optional[List[String]]
+  # A function of the project marked CC_BLOCKING is one itself, whatever its body does. Every blocking call enters the
+  # kernel whatever the `[library]` flags say, so the families passed do not change what a system call is.
+  families = Known.BLOCKING_FAMILIES
+  if has?(graph, families, key, Effect.System)
+    return some([name_of(graph, key)])
+  end
+
+  return search(graph, families, key, Effect.System).map do |path| path.map do |k| name_of(graph, k) end end
+end
+
+## Returns the functions that a call through a pointer at `line`:`column` of `caller` reaches: those stored in its slot.
+export def pointer_targets(graph: Graph, caller: String, line: Int, column: Int) -> List[String]
+  slots = graph.pointers.get("#{caller} #{line}:#{column}").unwrap_or([])
+  return slots.flat_map do |slot| graph.slots.get(slot).unwrap_or([]) end.uniq
+end
+
+## Returns the functions that a function calls, directly or through a slot.
+export def callees(graph: Graph, key: String) -> List[String]
+  found: List[String] = []
+  for target in graph.edges.get(key).unwrap_or([])
+    case target
+      Target.Direct(to) -> found = found.push(to)
+      Target.Slot(slot) -> found = found.concat(graph.slots.get(slot).unwrap_or([]))
+    end
+  end
+
+  return found
+end
+
+## Returns whether the project defines the function.
+export def defined?(graph: Graph, key: String) -> Bool
+  return graph.functions.get(key).map do |f| f.defined end.unwrap_or(false)
+end
+
+## Returns the call graph of the units.
+export def graph_of(units: List[Unit]) -> Graph
+  functions: Map[String, Function] = {}
+  edges: Map[String, List[Target]] = {}
+  pointers: Map[String, List[String]] = {}
+  stores: List[Store] = []
+  for unit in units
+    for function in unit.functions
+      functions = functions.put(function.key, merged(functions.get(function.key), function))
+    end
+
+    for call in unit.calls
+      known = edges.get(call.caller).unwrap_or([])
+      if not known.include?(call.target)
+        edges = edges.put(call.caller, known.push(call.target))
+      end
+
+      case call.target
+        Target.Slot(slot) if call.line > 0 ->
+          at = "#{call.caller} #{call.line}:#{call.column}"
+          pointers = pointers.put(at, pointers.get(at).unwrap_or([]).push(slot))
+        _ -> next
+      end
+    end
+
+    stores = stores.concat(unit.stores)
+  end
+
+  return Graph(functions: functions, edges: edges, slots: slots_of(stores), pointers: pointers)
 end
 
 # The names of `[roots]` that no function of the graph defines.
@@ -152,28 +223,6 @@ def keys_of(graph: Graph, source: Source) -> List[String]
     Source.Function(key) -> return [key]
     Source.Copy(from) -> return graph.slots.get(from).unwrap_or([])
   end
-end
-
-def graph_of(units: List[Unit]) -> Graph
-  functions: Map[String, Function] = {}
-  edges: Map[String, List[Target]] = {}
-  stores: List[Store] = []
-  for unit in units
-    for function in unit.functions
-      functions = functions.put(function.key, merged(functions.get(function.key), function))
-    end
-
-    for call in unit.calls
-      known = edges.get(call.caller).unwrap_or([])
-      if not known.include?(call.target)
-        edges = edges.put(call.caller, known.push(call.target))
-      end
-    end
-
-    stores = stores.concat(unit.stores)
-  end
-
-  return Graph(functions: functions, edges: edges, slots: slots_of(stores))
 end
 
 # The functions each slot holds: those stored in it, and those of the slots copied into it, until nothing changes.
@@ -266,19 +315,6 @@ def search(graph: Graph, families: List[Known.Family], start: String, effect: Ef
   return none
 end
 
-# The functions a function calls, directly or through a slot.
-def callees(graph: Graph, key: String) -> List[String]
-  found: List[String] = []
-  for target in graph.edges.get(key).unwrap_or([])
-    case target
-      Target.Direct(to) -> found = found.push(to)
-      Target.Slot(slot) -> found = found.concat(graph.slots.get(slot).unwrap_or([]))
-    end
-  end
-
-  return found
-end
-
 # The path from `start` to `last`. `callers` maps a function to the one that called it first.
 def path_to(callers: Map[String, String], start: String, last: String) -> List[String]
   path = [last]
@@ -318,10 +354,6 @@ def source_of(graph: Graph, families: List[Known.Family], key: String, effect: E
   end
 
   return ""
-end
-
-def defined?(graph: Graph, key: String) -> Bool
-  return graph.functions.get(key).map do |f| f.defined end.unwrap_or(false)
 end
 
 def name_of(graph: Graph, key: String) -> String
