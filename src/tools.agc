@@ -54,7 +54,7 @@ export struct Job
 end
 
 ## What a job found, and what kept it from finding more. A job of the rules finds nothing alone: it gives the unit
-## that the rules check with the units of the other files, and the count of declarations too large to read that named
+## that the rules check with the units of the other files, and the count of declarations too large to read that name
 ## no function.
 export struct Outcome
   findings: List[Finding]
