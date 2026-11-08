@@ -271,11 +271,13 @@ short with `CC_ASSUME_SHORT` or `[assume] short`. A class of `short_locks` that 
 (none taken, none marked) is an error, as for the names.
 
 `stop_fields` names the function-pointer fields that no walk follows, by struct and field (`request.call` for the field
-`call` of `struct request`, or of a typedef of an anonymous struct): a call through the field reaches none of the
-functions stored in it, for every rule and every root, `--all-paths` included. Use it for a field that holds many kinds
-of work (one `call` slot of every request), whose functions every root would otherwise reach. Only a call through the
-field itself is cut: one through a local that got its value (`fn f = r->call; f(x)`) is still followed. A field that
-the compile database neither stores a function in nor calls through is an error (exit 2).
+`call` of `struct request`, also when the code names it by a typedef such as `request_t`; for an anonymous struct, the
+name of its typedef, or of the record it is declared in): a call through the field reaches none of the functions stored
+in it, for every rule and every root, `--all-paths` included. Use it for a field that holds many kinds of work (one
+`call` slot of every request), whose functions every root would otherwise reach. Only a call through the field itself
+is cut: one through a local that got its value (`fn f = r->call; f(x)`) is still followed, and a store into the field
+still counts when cchecker infers the roots. A field that the compile database neither stores a function in nor calls
+through is an error (exit 2).
 
 A suppression and an assumption answer different questions. A suppression (`cchecker: ignore`, `CC_IGNORE`) says
 that one finding is wrong, at one place; it stays next to that code and shows when the finding goes away

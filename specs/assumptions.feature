@@ -287,7 +287,7 @@ Feature: What the project assumes of its functions
       [assume]
       <list>
       """
-    When I run cchecker in its folder with "--tools rules --json fields.c -- -I../../../include"
+    When I run cchecker in its folder with "--tools rules <flags> fields.c -- -I../../../include"
     Then the exit code is <exit>
     And the output <found>:
       """
@@ -299,11 +299,40 @@ Feature: What the project assumes of its functions
       """
 
     Examples:
-      | case                 | code                                  | list                           | exit | found            |
-      | not listed           | r->call(r->fd);                       |                                | 1    | includes         |
-      | listed               | r->call(r->fd);                       | stop_fields = ["request.call"] | 0    | does not include |
-      | another field        | r->done(r->fd);                       | stop_fields = ["request.call"] | 1    | includes         |
-      | through a local copy | void (*f)(int) = r->call; f(r->fd);   | stop_fields = ["request.call"] | 1    | includes         |
+      | case                 | code                                | list                           | flags              | exit | found            |
+      | not listed           | r->call(r->fd);                     |                                | --json             | 1    | includes         |
+      | listed               | r->call(r->fd);                     | stop_fields = ["request.call"] | --json             | 0    | does not include |
+      | listed, all paths    | r->call(r->fd);                     | stop_fields = ["request.call"] | --all-paths --json | 0    | does not include |
+      | another field        | r->done(r->fd);                     | stop_fields = ["request.call"] | --json             | 1    | includes         |
+      | through a local copy | void (*f)(int) = r->call; f(r->fd); | stop_fields = ["request.call"] | --json             | 1    | includes         |
+
+  Scenario Outline: A field of a struct nested in a typedef'd anonymous struct is named by the typedef (<case>)
+    Given the C file "fields.c" holds:
+      """
+      #include "unistd.h"
+      #include "cchecker.h"
+
+      typedef struct { struct { void (*call)(int); } ops; int fd; } conn_t;
+      static void slow(int fd) { (void)write(fd, "x", 1); }
+      void setup(conn_t *c) { c->ops.call = slow; }
+      CC_SHORT void tick(conn_t *c) { c->ops.call(c->fd); }
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [assume]
+      <list>
+      """
+    When I run cchecker in its folder with "--tools rules --json fields.c -- -I../../../include"
+    Then the exit code is <exit>
+    And the output <found>:
+      """
+      "CC-EFFECT-SHORT-BLOCKS"
+      """
+
+    Examples:
+      | case       | list                          | exit | found            |
+      | not listed |                               | 1    | includes         |
+      | listed     | stop_fields = ["conn_t.call"] | 0    | does not include |
 
   Scenario: A field of [assume] stop_fields that no record of the compile database has is an error
     Given the C file "fields.c" holds:

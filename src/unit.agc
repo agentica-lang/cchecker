@@ -158,10 +158,11 @@ struct Pair
   restore: String
 end
 
-# A record declaration and the name of the record it is declared in ("" at the top level).
+# A record declaration and its name: an anonymous one takes the name of a typedef of it, else the name of the record
+# it is declared in ("" at the top level).
 struct Nested
   node: Json
-  parent: String
+  name: String
 end
 
 # What the walk of the functions needs from the whole unit: the keys of its static functions and variables by name,
@@ -675,8 +676,16 @@ end
 
 # The records of the unit by id, nested ones included. An anonymous one takes the name of a typedef of it.
 def records_of(nodes: List[Json]) -> Map[String, Record]
+  # The typedef names come first, so that a record nested in an anonymous typedef'd one takes the typedef name too.
+  aliases: Map[String, String] = {}
+  for node in nodes
+    if Ast.kind(node) == "TypedefDecl" and not aliases.key?(record_id_of(node))
+      aliases = aliases.put(record_id_of(node), Ast.text(node, "name"))
+    end
+  end
+
   records: Map[String, Record] = {}
-  for nested in record_decls(nodes, "")
+  for nested in record_decls(nodes, "", aliases)
     node = nested.node
     if has_fields?(node)
       # An unnamed bit-field takes no item of an initializer; the field of an anonymous union or struct does.
@@ -684,15 +693,10 @@ def records_of(nodes: List[Json]) -> Map[String, Record]
         Ast.kind(child) == "FieldDecl" and not unnamed_bit_field?(child)
       end
 
-      name = Ast.text(node, "name")
-      if name == ""
-        name = nested.parent
-      end
-
       records = records.put(
         Ast.text(node, "id"),
         Record(
-          name: name,
+          name: nested.name,
           field_ids: fields.map do |f| Ast.text(f, "id") end,
           fields: fields.map do |f| Ast.text(f, "name") end,
           types: fields.map do |f| Ast.text(JSON.get(f, "type").unwrap_or(JSON.from("")), "qualType") end,
@@ -702,31 +706,21 @@ def records_of(nodes: List[Json]) -> Map[String, Record]
     end
   end
 
-  for node in nodes
-    if Ast.kind(node) == "TypedefDecl"
-      case records.get(record_id_of(node))
-        some(record) if record.name == "" ->
-          records = records.put(record_id_of(node), record.with(name: Ast.text(node, "name")))
-        _ -> next
-      end
-    end
-  end
-
   return records
 end
 
-# The records at the top level and those declared in them, each with the name of the record it is in. The fields of
+# The records at the top level and those declared in them, each with its name (see Nested). The fields of
 # an anonymous union or struct are read as fields of the record it is in, as C reads them.
-def record_decls(nodes: List[Json], parent: String) -> List[Nested]
+def record_decls(nodes: List[Json], parent: String, aliases: Map[String, String] = {}) -> List[Nested]
   found: List[Nested] = []
   for node in nodes
     if Ast.kind(node) == "RecordDecl"
       name = Ast.text(node, "name")
       if name == ""
-        name = parent
+        name = aliases.get(Ast.text(node, "id")).unwrap_or(parent)
       end
 
-      found = found.push(Nested(node: node, parent: parent)).concat(record_decls(Ast.children(node), name))
+      found = found.push(Nested(node: node, name: name)).concat(record_decls(Ast.children(node), name, aliases))
     end
   end
 
