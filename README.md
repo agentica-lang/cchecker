@@ -468,8 +468,9 @@ into it later owns nothing, as in any local without a mark. A local marked `CC_O
 `p` owns no more. Each side of `?:` gives its own value (`p = n ? make(n) : NULL` owns where `n` is true), and a
 statement expression gives the value of its last expression (`({ char *q = make(n); ...; q; })`). In a `CC_FREES`
 parameter that points to the pointer (`release(CC_FREES char **p)`, a cleanup function), `*p` is the pointer:
-`free(*p)` frees it, `if (*p)` tests it, and `*p = NULL` sets it to null. `t = realloc(p, n)` moves `p` to `t`, and `p` owns
-again where `t` is null; `p = realloc(p, n)` keeps `p` owning. A pointer lent to be set (`fill(&p)`) owns what the
+`free(*p)` frees it, `if (*p)` tests it, `*p = NULL` sets it to null, and `*p = v` gives the caller a value that the
+function does not own. `t = realloc(p, n)` moves `p` to `t`, and `p` owns again where `t` is null; `p = realloc(p, n)`
+keeps `p` owning. A pointer lent to be set (`fill(&p)`) owns what the
 call left in it, which the rules do not know: no finding says it leaks. The marks of the parameters of a prototype
 hold in the definition and in every caller that includes it.
 
@@ -492,7 +493,8 @@ is where they stop), through a function pointer, or out through a parameter (`in
 lends `&p` to be set). Two locals of the same name in one function are one pointer. A local that stands for a pointer
 still stands for it after that pointer gets a new value. `return p` hands `p` on even when the function has no
 `CC_OWNS` mark, and `p = realloc(p, n)` is trusted to work. A pointer put in a struct or a compound literal is not
-followed, and only one level of pointer is (`*p` of a `char **p`, not `**p`).
+followed, and only one level of pointer is (`*p` of a `char **p`, not `**p`). A pointer freed through its address
+(`free_and_null(&p)`) stays freed: reading it after (`if (p)`) is a use after free, even when the call set it to null.
 
 ### Values of the collector
 

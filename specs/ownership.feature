@@ -10,8 +10,8 @@ Feature: Ownership on every path
     Given the C file "own.c" holds:
       """
       #include "stdlib.h"
+      #include "string.h"
       #include "cchecker.h"
-
       struct box { char *loose; CC_OWNS char *held; };
       int work(char *p); int fill(char **out); void adopt(CC_OWNS char *p); void drop(CC_FREES char *p); CC_OWNS char *make(int n);
 
@@ -39,13 +39,15 @@ Feature: Ownership on every path
       | lent                   | 6      | void f(int n) { CC_OWNS char *b = malloc(n); work(b); }                                                    |
       | moved to a local       | 6      | void f(int n) { CC_OWNS char *b = malloc(n); char *c = b; work(c); }                                       |
       | null on the other side | 5      | int f(int n) { CC_OWNS char *b = malloc(n); if (b) return -1; free(b); return 0; }                         |
+      | pointer array not null | 6     | void f(int n) { CC_OWNS char **v = malloc(n * sizeof *v); if (!*v) return; free(v); }                     |
+      | parameter set again    | 6      | void f(CC_OWNS char *p) { free(p); p = malloc(8); }                                                        |
 
   Scenario Outline: An owned pointer freed or handed on on every path passes (<case>)
     Given the C file "own.c" holds:
       """
       #include "stdlib.h"
+      #include "string.h"
       #include "cchecker.h"
-
       struct box { char *loose; CC_OWNS char *held; };
       int work(char *p); int fill(char **out); void adopt(CC_OWNS char *p); void drop(CC_FREES char *p); CC_OWNS char *make(int n);
 
@@ -87,6 +89,11 @@ Feature: Ownership on every path
       | ?: tested again       | void f(int n) { char *p = n ? make(n) : NULL; if (!n) return; work(p); free(p); }                                                           |
       | alias set again       | void f(CC_OWNS char *p) { char *c = p; free(c); c = malloc(8); work(c); }                                                                   |
       | statement expression  | void f(int n) { char *p = ({ char *q = make(n); if (!q) abort(); q; }); free(p); }                                                       |
+      | nested statement expr | void f(int n) { char *p = ({ char *q = ({ char *r = make(n); r; }); q; }); free(p); }                                     |
+      | ?: set in the condition | char *g(void); void f(int n) { char *q; char *p = (q = g()) ? make(n) : NULL; free(p); }                                |
+      | pointer array nulled  | void f(int n) { CC_OWNS char **v = malloc(n * sizeof *v); *v = NULL; free(v); }                                               |
+      | freed and set again   | static void reset(CC_FREES char **p) { free(*p); *p = strdup("x"); }                                                                        |
+      | const pointer freed   | static void release(CC_FREES char *const *p) { if (*p) free(*p); }                                                                         |
 
   Scenario Outline: A pointer freed or handed on twice on a path is a finding at the function (<case>)
     Given the C file "own.c" holds:

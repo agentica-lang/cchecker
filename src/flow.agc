@@ -230,12 +230,13 @@ struct Builder
 end
 
 # The pointers of a function that own or may stand for one that does, by name (`names`): its parameters that own
-# (`params`), its locals marked CC_OWNS (`marked`), and the locals that get an owned value or a pointer of one of
+# (`params`), those that free it only (`freed`, CC_FREES), its locals marked CC_OWNS (`marked`), and the locals that get an owned value or a pointer of one of
 # them. `locals` are the names of its parameters and local variables, `kept` the ids of the calls of a function that
 # returns an owned pointer whose value is kept (in a local, a CC_OWNS place, a return or a parameter that takes it),
 # and `calls` whether it calls such a function at all.
 struct Owners
   params: List[String]
+  freed: Set[String]
   names: Set[String]
   marked: Set[String]
   locals: Set[String]
@@ -514,6 +515,10 @@ def owners_of(ctx: Context, key: String, node: Json) -> Owners
 
   indices = ctx.owning.takes.get(key, []).concat(ctx.owning.frees.get(key, [])).uniq.sort
   params = indices.select do |i| i < names_of_params.size end.map do |i| names_of_params[i] end
+  takes = ctx.owning.takes.get(key, [])
+  freed = ctx.owning.frees.get(key, [])
+    .select do |i| i < names_of_params.size and not takes.include?(i) end
+    .map do |i| names_of_params[i] end
   decls = all.select do |n| Ast.kind(n) == "VarDecl" end
   locals = Set.new(
     names_of_params.concat(
@@ -541,6 +546,7 @@ def owners_of(ctx: Context, key: String, node: Json) -> Owners
 
   return Owners(
     params: params,
+    freed: Set.new(freed),
     names: names,
     marked: marked,
     locals: locals,
@@ -1146,12 +1152,20 @@ def assignment(b: Builder, node: Json, preds: List[Int]) -> Built
       return owner_assigned(b, name, parts[1], preds)
     end
 
-    # `*p = NULL` of a pointer to the pointer that owns sets it to null and does not read it.
-    nulled = pointee_owner(b, parts[0])
-    if nulled != "" and zero?(parts[1])
+    # `*p = v` in a CC_FREES parameter that points to the pointer gives the pointer a new value without reading it:
+    # null, or a value that goes back to the caller, which the function does not own.
+    pointed = pointee_owner(b, parts[0])
+    if pointed != ""
       place = Ast.start_of(parts[1])
-      assign = Assign(name: nulled, value: "null", from: "", shown: "NULL", line: place.line, column: place.column)
-      written = add(b, Event.Writes([nulled]), preds)
+      assign = Assign(name: pointed, value: "other", from: "", shown: "", line: place.line, column: place.column)
+      if zero?(parts[1])
+        assign = assign.with(value: "null", shown: "NULL")
+      else
+        assign = assign.with(shown: text_of(b, parts[1], false))
+      end
+
+      value = expression(b, parts[1], preds)
+      written = add(value.b, Event.Writes([pointed]), value.exits)
       return add(written.b, Event.Assigns(assign), written.exits)
     end
 
@@ -1284,21 +1298,41 @@ def owner_of(b: Builder, node: Json) -> String
   return owner_named(b, bare)
 end
 
-# The pointer that owns which an expression points to: `*p` of a parameter or a local `T **p` in the owners, whose
-# value (`*p`) is itself a pointer; "" for any other.
+# The CC_FREES parameter that `*p` stands for when the parameter points to the pointer it frees (`T **p`, a cleanup
+# function); "" for any other.
 def pointee_owner(b: Builder, node: Json) -> String
   bare = see_through(node)
   if Ast.kind(bare) != "UnaryOperator" or Ast.text(bare, "opcode") != "*" or not pointer_type?(bare)
     return ""
   end
 
-  return owner_named(b, Ast.children(bare).first)
+  name = owner_named(b, Ast.children(bare).first)
+  if not b.owners.freed.include?(name)
+    return ""
+  end
+
+  return name
 end
 
-# Whether the type of an expression is a pointer, as written or behind a typedef.
+# Whether the type of an expression is a pointer, as written or behind a typedef, `const` or not (`char *const`).
 def pointer_type?(node: Json) -> Bool
   type = JSON.get(node, "type").unwrap_or(JSON.from(""))
-  return Ast.text(type, "qualType").end_with?("*") or Ast.text(type, "desugaredQualType").end_with?("*")
+  return [Ast.text(type, "qualType"), Ast.text(type, "desugaredQualType")].any? do |text|
+    unqualified(text).end_with?("*")
+  end
+end
+
+# A type without the qualifiers at its end: `char *` for `char *const volatile`. clang writes no space between the
+# star and the qualifier.
+def unqualified(type: String) -> String
+  text = type.strip
+  for word in ["const", "volatile", "restrict"]
+    if text.end_with?(" #{word}") or text.end_with?("*#{word}")
+      return unqualified(text.slice(0, text.length - word.length))
+    end
+  end
+
+  return text
 end
 
 # A call: its arguments in order, then the call. A call that never comes back ends the path. `tried` leaves out the
