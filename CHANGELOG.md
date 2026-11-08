@@ -6,8 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- `incomplete_functions` of `--json` lists each function (`file`, `line`, `function`), and standard error names
-  them.
+- **Breaking:** `incomplete_functions` of `--json` is a list of the functions (`file`, `line`, `function`), no longer
+  a count, and standard error names them.
 - A lock mark that cannot be read in a header is one error, on the header, not one for each file that includes it.
 - A library call that never returns (`_exit`, `abort`, ...) is an error exit the effect walks skip, as a project
   `_Noreturn` function is; `follow_cold` follows it.

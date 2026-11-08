@@ -585,11 +585,14 @@ def cut?(graph: Graph, walk: Walk, key: String, effect: Effect, cold: Bool) -> B
 end
 
 # A function that never returns or is cold, which the walk does not go into, unless a CC_BLOCKING mark says what it
-# does: the mark wins. A call of libc that never returns (`_exit`, `abort`, `Known.NORETURN`) is skipped as a project
+# does: the mark wins. A library call that never returns (`_exit`, `abort`, `Known.NORETURN`) is skipped as a project
 # `_Noreturn` function is, though `_exit` also enters the kernel: it is the error exit, not the path the rule is about.
+# A function of that name that the project defines (`static void err(...)`) is judged by its body.
 def skips?(graph: Graph, key: String) -> Bool
   case graph.functions.get(key)
-    some(f) -> return (f.noreturn or f.cold or Known.NORETURN.include?(f.name)) and not f.marks.include?("blocking")
+    some(f) ->
+      exits = not f.defined and Known.NORETURN.include?(f.name)
+      return (f.noreturn or f.cold or exits) and not f.marks.include?("blocking")
     none -> return Known.NORETURN.include?(key)
   end
 end

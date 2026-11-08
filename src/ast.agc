@@ -139,16 +139,26 @@ def list_at(node: Json, key: String) -> List[Json]
   end
 end
 
-# The nodes of a tree, depth first, counting no further than `budget` (at least 1): each node is visited once, so the
-# count is linear in the nodes it reaches.
+# The nodes of a tree, depth first, counting no further than `budget` (at least 1). The nodes still to visit are on a
+# stack of their own, not the call stack, so a deep tree cannot pass the VM's call depth; each node is pushed once, so
+# the count is linear in the nodes it reaches. `stack[0...depth]` holds them, and the slots past `depth` are reused.
 def counted(node: Json, budget: Int) -> Int
-  n = 1
-  for child in children(node)
-    if n >= budget
-      return n
-    end
+  stack = [node]
+  depth = 1
+  n = 0
+  while depth > 0 and n < budget
+    depth -= 1
+    current = stack[depth]
+    n += 1
+    for child in children(current)
+      if depth < stack.size
+        stack = stack.set(depth, child)
+      else
+        stack = stack.push(child)
+      end
 
-    n += counted(child, budget - n)
+      depth += 1
+    end
   end
 
   return n

@@ -621,6 +621,22 @@ Feature: Effects on the call graph
       "path":["step","_exit"]
       """
 
+  Scenario: A project function named as a library call that never returns is judged by its body
+    Given the C file "own_err.c" holds:
+      """
+      #include "cchecker.h"
+
+      long write(int fd, const void *buf, unsigned long n);
+      static void err(const char *m) { write(2, m, 1); }
+      CC_HOT int step(int key) { if (key < 0) err("bad"); return key; }
+      """
+    When I run cchecker with "--tools rules --json $DIR/own_err.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "path":["step","err","write"]
+      """
+
   Scenario: --all-paths gives one finding for each distinct bad call, each with its shortest path
     Given the C file "serve.c" holds:
       """

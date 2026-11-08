@@ -625,7 +625,7 @@ def ignores_of(
 end
 
 # The errors of the tools in their order, each once: a mark of a header that several units include gives the same
-# error in each.
+# error in each. Every repeated tool error is dropped this way, not only those of the marks.
 def once(errors: List[ToolError]) -> List[ToolError]
   seen: Set[String] = Set.new([])
   kept: List[ToolError] = []
