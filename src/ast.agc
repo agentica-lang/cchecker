@@ -1,6 +1,9 @@
 ## Reading the nodes of clang's JSON AST. A missing key reads as "", 0, false or no children: the dump leaves out what
 ## a node does not have, and an empty node (`{}`, a part of a `for` that is not there) has the kind "".
 
+# How clang starts a group of attributes in a type.
+ATTRIBUTE = " __attribute__(("
+
 ## A place in a file: the file is absolute (`cc_file` of the scan).
 export struct Place
   file: String
@@ -49,19 +52,12 @@ export def flag?(node: Json, key: String) -> Bool
   end
 end
 
-## Returns the kind of the declaration that a reference names (`FunctionDecl`, `ParmVarDecl`), or "".
 ## Returns how many nodes the tree of `node` has, counting no further than `limit` + 1.
 export def size_of(node: Json, limit: Int) -> Int
-  queue = [node]
-  i = 0
-  while i < queue.size and i <= limit
-    queue = queue.concat(children(queue[i]))
-    i += 1
-  end
-
-  return i
+  return counted(node, limit + 1)
 end
 
+## Returns the kind of the declaration that a reference names (`FunctionDecl`, `ParmVarDecl`), or "".
 export def referenced_kind(node: Json) -> String
   return text(JSON.get(node, "referencedDecl").unwrap_or(JSON.from("")), "kind")
 end
@@ -102,6 +98,14 @@ export def end_of(node: Json) -> Place
   end
 end
 
+## Returns whether the type of a node (a function, or a pointer to one) says that it never returns, as clang writes it
+## or without its typedefs, so a `noreturn` behind a typedef shows. clang writes the attribute at the end of the type
+## it belongs to, so one inside (a parameter that points to a function that does not return) does not count.
+export def noreturn_type?(node: Json) -> Bool
+  type = JSON.get(node, "type").unwrap_or(JSON.from(""))
+  return noreturn_attribute?(text(type, "qualType")) or noreturn_attribute?(text(type, "desugaredQualType"))
+end
+
 def expanded(loc: Json) -> Place
   case JSON.get(loc, "expansionLoc")
     ok(expansion) -> return place_in(expansion)
@@ -133,4 +137,41 @@ def list_at(node: Json, key: String) -> List[Json]
     ok(nodes) -> return JSON.list(nodes).unwrap_or(empty)
     error(_) -> return empty
   end
+end
+
+# The nodes of a tree, depth first, counting no further than `budget` (at least 1): each node is visited once, so the
+# count is linear in the nodes it reaches.
+def counted(node: Json, budget: Int) -> Int
+  n = 1
+  for child in children(node)
+    if n >= budget
+      return n
+    end
+
+    n += counted(child, budget - n)
+  end
+
+  return n
+end
+
+# Whether a type ends with `__attribute__((noreturn))`, maybe followed by other groups of attributes: clang writes
+# `noreturn` first and a calling convention after it (`__attribute__((noreturn)) __attribute__((regparm (1)))`). A
+# group is one only when its parentheses close at the end of the type, which a parameter list does not.
+def noreturn_attribute?(type: String) -> Bool
+  groups = type.split(ATTRIBUTE)
+  i = groups.size - 1
+  while i > 0
+    group = groups[i]
+    if group == "noreturn))"
+      return true
+    end
+
+    if not group.end_with?("))") or group.split("(").size + 2 != group.split(")").size
+      return false
+    end
+
+    i -= 1
+  end
+
+  return false
 end

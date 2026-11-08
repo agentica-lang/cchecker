@@ -6,7 +6,7 @@ import Config from "config"
 import Effects from "effects"
 import Findings from "findings"
 import Known from "known"
-import {Finding, ToolError, UncheckedFile, UnresolvedCallback} from "findings"
+import {Finding, IncompleteFunction, ToolError, UncheckedFile, UnresolvedCallback} from "findings"
 import Locking from "locking"
 import {Options} from "options"
 import Ownership from "ownership"
@@ -42,7 +42,7 @@ struct Collected
   ran: List[String]
   units: List[Unit]
   skipped_declarations: Int = 0
-  incomplete_functions: Int = 0
+  incomplete_functions: List[IncompleteFunction] = []
   unresolved: List[UnresolvedCallback] = []
   missing_roots: List[String] = []
   missing_assumed: List[String] = []
@@ -107,10 +107,11 @@ export def run(options: Options) -> Result[Int]
     )
   end
 
-  if collected.incomplete_functions > 0
+  incomplete = collected.incomplete_functions
+  if not incomplete.empty?
     IO.warn(
-      "cchecker: #{collected.incomplete_functions} functions have more paths than the path rules follow; " +
-      "their findings are those of the paths followed",
+      "cchecker: the findings of these functions are those of the paths followed, as they have more paths than the " +
+      "path rules follow: #{incomplete.map do |f| "#{f.file}:#{f.line} #{f.function}" end.join(", ")}",
     )
   end
 
@@ -575,11 +576,11 @@ def collect(options: Options, config: Config.Config, jobs: List[Tools.Job], cwd:
         .concat(owned.findings)
         .concat(units.flat_map do |unit| unit.collected end.select do |f| not config.off.include?(f.source) end)
     ),
-    errors: errors,
+    errors: once(errors),
     ran: ran,
     units: units,
     skipped_declarations: skipped_declarations,
-    incomplete_functions: locked.incomplete + owned.incomplete,
+    incomplete_functions: incomplete_of(locked.incomplete.concat(owned.incomplete), cwd),
     unresolved: checked.unresolved,
     missing_roots: checked.missing_roots,
     missing_assumed: checked.missing_assumed.concat(cut_missing),
@@ -621,6 +622,32 @@ def ignores_of(
   end
 
   return ok(ignores)
+end
+
+# The errors of the tools in their order, each once: a mark of a header that several units include gives the same
+# error in each.
+def once(errors: List[ToolError]) -> List[ToolError]
+  seen: Set[String] = Set.new([])
+  kept: List[ToolError] = []
+  for e in errors
+    key = "#{e.tool}\n#{e.file}\n#{e.message}"
+    if not seen.include?(key)
+      seen = seen.add(key)
+      kept = kept.push(e)
+    end
+  end
+
+  return kept
+end
+
+# The functions with too many paths, once each (both rules may walk one, and a function of a header is in each unit
+# that includes it), in the order of the files, with paths shown as findings are.
+def incomplete_of(functions: List[IncompleteFunction], cwd: String) -> List[IncompleteFunction]
+  shown = functions.map do |f| f.with(file: Paths.inside(cwd, f.file).unwrap_or(f.file)) end
+  return shown.group_by do |f| "#{f.file}\n#{Findings.pad(f.line)}\n#{f.function}" end
+    .values
+    .map do |same| same.first end
+    .sort_by do |f| "#{f.file}\n#{Findings.pad(f.line)}" end
 end
 
 # Shortens the paths to be relative to the working directory, and drops what is outside it (system and third-party

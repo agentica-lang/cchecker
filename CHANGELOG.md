@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `incomplete_functions` of `--json` lists each function (`file`, `line`, `function`), and standard error names
+  them.
+- A lock mark that cannot be read in a header is one error, on the header, not one for each file that includes it.
+- A library call that never returns (`_exit`, `abort`, ...) is an error exit the effect walks skip, as a project
+  `_Noreturn` function is; `follow_cold` follows it.
+- A noreturn function type followed by a calling convention (`__attribute__((noreturn, regparm(1)))`) ends a path.
 - `libuv_callbacks_short` also infers the callbacks of `uv_listen`, the idle, prepare, check and signal handles,
   `uv_tcp_close_reset`, UDP, `uv_getaddrinfo`, `uv_getnameinfo`, `uv_random`, the fs event and poll handles, and the
   `uv_fs_*` requests; the libuv lists match libuv 1.50.

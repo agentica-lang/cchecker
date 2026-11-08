@@ -323,6 +323,30 @@ Feature: What runs while a lock is held
       "line":18,
       """
 
+  Scenario: A lock mark that cannot be read in a header is one error, of the header
+    Given the C file "box.h" holds:
+      """
+      #include <pthread.h>
+      #include "cchecker.h"
+      struct box { CC_LOCK_LEVEL(0x2) pthread_mutex_t mu; };
+      """
+    And the C file "a.c" holds:
+      """
+      #include "box.h"
+      void a(struct box *b) { (void)b; }
+      """
+    And the C file "b.c" holds:
+      """
+      #include "box.h"
+      void b(struct box *b) { (void)b; }
+      """
+    When I run cchecker with "--tools rules --json $DIR/a.c $DIR/b.c -- -I../include"
+    Then the exit code is 2
+    And the output includes:
+      """
+      "errors":[{"tool":"rules","file":"$DIR/box.h","message":"box.mu: CC_LOCK_LEVEL takes a decimal number: lock_level(0x2)"}]
+      """
+
   Scenario: A static lock is its own file's
     Given the C file "q.h" holds:
       """

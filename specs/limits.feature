@@ -159,5 +159,5 @@ Feature: Time and memory on large generated inputs
     Then the exit code is 1
     And the output includes:
       """
-      "incomplete_functions":1
+      "incomplete_functions":[{"file":"$DIR/many.c","line":4,"function":"many"}]
       """

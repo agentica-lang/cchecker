@@ -504,6 +504,7 @@ Feature: Effects on the call graph
       | CC_SHORT | [[noreturn]] void fatal(const char *why);                          |                           |
       | CC_SHORT |                                                                    | __attribute__((noreturn)) |
       | CC_SHORT | typedef void nr(const char *) __attribute__((noreturn)); nr fatal; |                           |
+      | CC_SHORT | typedef void nr(const char *) __attribute__((noreturn, regparm(1))); nr fatal; |                           |
       | CC_SHORT | __attribute__((cold)) void fatal(const char *why);                 |                           |
       | CC_SHORT | CC_NORETURN void fatal(const char *why);                           |                           |
       | CC_HOT   |                                                                    | __attribute__((cold))     |
@@ -570,6 +571,48 @@ Feature: Effects on the call graph
     And the output includes:
       """
       "path":["entry","wait_disk"]
+      """
+
+  Scenario: A CC_BLOCKING mark on a cold function also lets the CC_HOT walk go into it
+    Given the C file "cold_alloc.c" holds:
+      """
+      #include "cchecker.h"
+
+      void *malloc(unsigned long n);
+      CC_BLOCKING __attribute__((cold)) void grow(void) { (void)malloc(64); }
+      CC_HOT int step(int key) { if (key < 0) grow(); return key; }
+      """
+    When I run cchecker with "--tools rules --json $DIR/cold_alloc.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      {"code":"CC-EFFECT-HOT-ALLOCATES","tool":"rules","file":"$DIR/cold_alloc.c","line":5,"column":12,
+      """
+    And the output includes:
+      """
+      "path":["step","grow","malloc"]
+      """
+
+  Scenario: A library call that never returns is an error exit, as a _Noreturn function of the project is
+    Given the C file "quit.c" holds:
+      """
+      #include <unistd.h>
+      #include "cchecker.h"
+
+      CC_HOT int step(int key) { if (key < 0) _exit(1); return key; }
+      """
+    When I run cchecker in its folder with "--tools rules --json quit.c -- -I../../../include"
+    Then the exit code is 0
+    Given the file "cchecker.toml" holds:
+      """
+      [effects]
+      follow_cold = true
+      """
+    When I run cchecker in its folder with "--tools rules --json quit.c -- -I../../../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "path":["step","_exit"]
       """
 
   Scenario: --all-paths gives one finding for each distinct bad call, each with its shortest path

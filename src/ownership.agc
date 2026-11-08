@@ -12,7 +12,7 @@
 ## and the conditions that the function tests twice.
 
 import Effects from "effects"
-import {Finding} from "findings"
+import {Finding, IncompleteFunction} from "findings"
 import {Assign, Body, Event, Fact, Give, Mark, Site, Use} from "flow"
 import Locking from "locking"
 import {Function, Unit} from "unit"
@@ -101,7 +101,7 @@ end
 ## through only.
 export struct Checked
   findings: List[Finding]
-  incomplete: Int
+  incomplete: List[IncompleteFunction]
 end
 
 ## Returns the findings of the ownership rules on the functions of the units. A function defined in several units (a
@@ -114,14 +114,14 @@ export def check(units: List[Unit]) -> Checked
 
   done: Set[String] = Set.new([])
   findings: List[Finding] = []
-  incomplete = 0
+  incomplete: List[IncompleteFunction] = []
   for unit in units
     for body in unit.bodies
       if body.owns and not done.include?(body.key)
         walk = checked(body, functions)
         findings = findings.concat(walk.findings.values)
         if not walk.complete
-          incomplete += 1
+          incomplete = incomplete.push(IncompleteFunction(file: body.file, line: body.line, function: body.name))
         end
       end
 

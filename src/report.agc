@@ -1,13 +1,13 @@
 ## What a run prints.
 
-import {Finding, ToolError, UncheckedFile, UnresolvedCallback} from "findings"
+import {Finding, IncompleteFunction, ToolError, UncheckedFile, UnresolvedCallback} from "findings"
 import {Suppressed} from "suppressions"
 
 ## The result of a run. `findings` are the new ones; `baselined` were accepted by the baseline, and `fixed` are
 ## accepted findings of the tools and files of the run that no tool found this time. `skipped` counts the files that
 ## were left out because they are outside the working directory, and `skipped_declarations` the declarations the rules
 ## did not read because they are too large and name no function (tables of numbers, mostly). `incomplete_functions`
-## counts the functions with more paths than the path rules follow. `suppressed` are the findings that a suppression
+## are the functions with more paths than the path rules follow. `suppressed` are the findings that a suppression
 ## took out. `config` is the settings file that was read, or "defaults". `unresolved_callbacks` are the callbacks of
 ## libuv calls that the inference of roots could not follow to a function. `unchecked_files` are the files that were
 ## not checked because a header they include is not found.
@@ -18,7 +18,7 @@ export struct Report
   errors: List[ToolError]
   skipped: Int
   skipped_declarations: Int = 0
-  incomplete_functions: Int = 0
+  incomplete_functions: List[IncompleteFunction] = []
   suppressed: List[Suppressed] = []
   config: String = "defaults"
   unresolved_callbacks: List[UnresolvedCallback] = []
@@ -34,7 +34,7 @@ struct Encoded
   errors: List[ToolError]
   skipped: Int
   skipped_declarations: Int
-  incomplete_functions: Int
+  incomplete_functions: List[IncompleteFunction]
   suppressed: List[Suppressed]
   config: String
   unresolved_callbacks: List[UnresolvedCallback]

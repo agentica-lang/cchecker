@@ -81,6 +81,7 @@ Feature: Ownership on every path
       | realloc in place      | void f(int n) { CC_OWNS char *b = malloc(n); b = realloc(b, 2 * n); free(b); }                                                              |
       | moved to a local      | void f(int n) { CC_OWNS char *b = malloc(n); char *c = b; free(c); }                                                                        |
       | does not return       | void f(int n) { CC_OWNS char *b = malloc(n); if (work(b)) abort(); free(b); }                                                               |
+      | noreturn pointer      | void f(int n, void (*die)(void) __attribute__((noreturn))) { CC_OWNS char *b = malloc(n); if (work(b)) die(); free(b); }                    |
       | same condition        | void f(int n) { CC_OWNS char *b = NULL; if (n) b = malloc(n); work(b); if (n) free(b); }                                                    |
       | filled by a call      | int f(void) { CC_OWNS char *b; if (fill(&b) < 0) return -1; free(b); return 0; }                                                            |
       | filled after a free   | void f(int n) { CC_OWNS char *b = malloc(n); free(b); if (fill(&b) < 0) return; free(b); }                                                  |
@@ -270,7 +271,11 @@ Feature: Ownership on every path
     Then the exit code is 0
     And the output includes:
       """
-      "incomplete_functions":1
+      "incomplete_functions":[{"file":"$DIR/many.c","line":4,"function":"many"}]
+      """
+    And the errors include:
+      """
+      as they have more paths than the path rules follow: $DIR/many.c:4 many
       """
 
   Scenario: The marks of a prototype hold in the definition and in the callers that include it

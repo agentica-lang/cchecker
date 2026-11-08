@@ -375,8 +375,7 @@ end
 # decides whether it is kept; for one that a macro wrote, the place where the macro was expanded decides, not the
 # place of its spelling (a header of a library, or clang's scratch space for a pasted name).
 def located(state: State, line: String, text: String) -> State
-  indent = " " * (line.length - line.strip.length)
-  marked = "#{indent}\"cc_file\": #{state.encoded}, \"cc_line\": #{state.line}, #{text}"
+  marked = "\"cc_file\": #{state.encoded}, \"cc_line\": #{state.line}, #{text}"
   if state.phase == Phase.Open and not state.spelling
     phase = Phase.Dropped
     if state.inside
