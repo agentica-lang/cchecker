@@ -5,9 +5,12 @@
  * pool (measured on the VM of Agentica).
  *   files(path)        the distinct values of the `"file": ` lines, as written (JSON text), for the caller to resolve
  *                      with Paths: where a file is and whether it is in the project stay Agentica's.
- *   scan(path, places) the kept declarations as the text of a JSON array, the names (JSON text) of the declarations
+ *   scan(path, places, prune)
+ *                      the kept declarations as the text of a JSON array, the names (JSON text) of the declarations
  *                      too large to keep that name a function, the count of those that name none, and whether the
- *                      dump ended. A `"file": ` value that `places` lacks is no file of the project.
+ *                      dump ended. A `"file": ` value that `places` lacks is no file of the project. With
+ *                      `prune`, the keys that no rule reads are left out (see `pruned`); without it, the text is
+ *                      that of the reference.
  *
  * Memory: one line, the current declaration and the result text are held at once, in malloc memory freed before the
  * call returns; the returned terms are the VM's. A line is at most LINE_BYTES (as File.foreach reads it); a longer
@@ -290,7 +293,9 @@ typedef struct {
   enum phase phase;
   buf desugared, name;
   buf decl; /* the kept lines of the declaration, joined by LF */
-  size_t decl_lines;
+  size_t decl_lines; /* the lines kept, pruned ones included, as the reference counts them for MAX_DECL_LINES */
+  bool prune;
+  size_t skip_depth; /* > 0 inside the object or list of a pruned key */
   buf out; /* the kept declarations, joined by ",\n" */
   size_t kept;
   buf oversized; /* the names, each ended by a NUL */
@@ -304,17 +309,63 @@ static void set(buf *b, slice v) {
   put(b, v.s, v.n);
 }
 
+/* The keys that no rule reads, which `prune` leaves out of the kept text: the parts of a location that the scan has
+ * written into `cc_file` and `cc_line` (or that no rule reads: the offset, the length of the token, the spelling of a
+ * macro), and flags of clang that no rule asks for. About a third of the text and of the parsed values. A key that a
+ * rule reads must never be here (`rg '"KEY"' src` finds none for each). */
+static const char *const pruned[] = {
+  "offset",       "tokLen",        "includedFrom",   "file",         "line",           "spellingLoc",
+  "valueCategory", "typeAliasDeclId", "isMacroArgExpansion", "mangledName", "isUsed", "isReferenced",
+  "isImplicit",   "isPartOfExplicitCast", "canOverflow", "computeResultType", "computeLHSType", "tagUsed",
+  "completeDefinition", "previousDecl",
+};
+
+/* Whether a stripped line is `"KEY": ...` of a pruned key. */
+static bool pruned_key(slice text) {
+  if (text.n < 4 || text.s[0] != '"') return false;
+  const char *quote = memchr(text.s + 1, '"', text.n - 1);
+  if (!quote) return false;
+  slice key = {text.s + 1, (size_t)(quote - text.s - 1)};
+  if (key.n + 4 > text.n || quote[1] != ':') return false;
+  for (size_t k = 0; k < sizeof pruned / sizeof pruned[0]; k++)
+    if (eq(key, (slice){pruned[k], strlen(pruned[k])})) return true;
+  return false;
+}
+
+static bool opens(slice text) { return text.n > 0 && (text.s[text.n - 1] == '{' || text.s[text.n - 1] == '['); }
+static bool closes(slice text) { return text.n > 0 && (text.s[0] == '}' || text.s[0] == ']'); }
+
+/* Appends a line to the declaration. A key left out may have been the last of its object: the comma before a closing
+ * line goes, so the text stays JSON. */
+static void append(state *s, slice text) {
+  if (closes(strip(text)) && s->decl.len > 0 && s->decl.data[s->decl.len - 1] == ',') s->decl.len--;
+  if (s->decl.len > 0) put(&s->decl, "\n", 1);
+  put(&s->decl, text.s, text.n);
+}
+
 static void keep(state *s, slice line) {
   if (s->phase != OPEN && s->phase != KEPT) return;
   slice text = strip(line);
-  if (s->decl_lines > 0) put(&s->decl, "\n", 1);
-  put(&s->decl, text.s, text.n);
   s->decl_lines++;
+  if (s->prune) {
+    /* clang opens an object or a list at the end of a line and closes it at the start of its own line. */
+    if (s->skip_depth > 0) {
+      if (closes(text)) s->skip_depth--;
+      if (opens(text)) s->skip_depth++;
+      return;
+    }
+    if (pruned_key(text)) {
+      if (opens(text)) s->skip_depth = 1;
+      return;
+    }
+  }
+  append(s, text);
 }
 
 static void drop_lines(state *s) {
   s->decl.len = 0;
   s->decl_lines = 0;
+  s->skip_depth = 0;
 }
 
 static void push_oversized(state *s) {
@@ -487,8 +538,8 @@ static void located_or_kept(state *s, slice line) {
 static void close_decl(state *s) {
   if (s->phase == KEPT) {
     if (s->kept > 0) puts_(&s->out, ",\n");
-    put(&s->out, s->decl.data ? s->decl.data : "", s->decl.len);
-    puts_(&s->out, "\n    }");
+    append(s, LIT("    }"));
+    put(&s->out, s->decl.data, s->decl.len);
     s->kept++;
   } else if (s->phase == OVERSIZED) {
     s->skipped++;
@@ -543,14 +594,15 @@ static void step(state *s, slice line) {
   located_or_kept(s, line);
 }
 
-/* scan(path: String, places: List[Place]) -> Result[NativeDump] */
+/* scan(path: String, places: List[Place], prune: Bool) -> Result[NativeDump] */
 static an_term scan(an_env *env, int argc, const an_term *argv) {
   (void)argc;
   an_list_cursor c;
   size_t count;
-  if (!an_list_cursor_begin(env, argv[1], &c, &count)) return an_badarg(env, 1);
   state s;
   memset(&s, 0, sizeof s);
+  if (!an_get_bool(env, argv[2], &s.prune)) return an_badarg(env, 2);
+  if (!an_list_cursor_begin(env, argv[1], &c, &count)) return an_badarg(env, 1);
   s.encoded = empty_encoded;
   s.encoded_n = sizeof empty_encoded - 1;
   s.places = calloc(count ? count : 1, sizeof *s.places);
@@ -612,7 +664,7 @@ static const an_type types[] = {
 
 static const an_function functions[] = {
   {"files", "(String) -> Result[List[String]]", files, AN_SHORT},
-  {"scan", "(String, List[Place]) -> Result[NativeDump]", scan, AN_SHORT},
+  {"scan", "(String, List[Place], Bool) -> Result[NativeDump]", scan, AN_SHORT},
 };
 
 AN_MODULE_TYPES("cchecker_scan", functions, types, NULL)

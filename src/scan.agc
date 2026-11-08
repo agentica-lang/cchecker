@@ -110,15 +110,16 @@ struct Place
 end
 
 ## Returns the declarations of the project in the dump at `path`, or an error when the dump ends early. It gives what
-## `reference_decls` gives, in C.
-export def project_decls(path: String, directory: String, cwd: String) -> Result[Dump]
+## `reference_decls` gives, in C; with `prune` (the default) without the keys that no rule reads, which hold a third
+## of the text.
+export def project_decls(path: String, directory: String, cwd: String, prune: Bool = true) -> Result[Dump]
   raws = try files(path)
   places = raws.map do |raw|
     located = place_of(directory, cwd, raw)
     Place(raw: raw, encoded: located.encoded, inside: located.inside)
   end
 
-  dump = try scan(path, places)
+  dump = try scan(path, places, prune)
   if not dump.ended
     return error("the AST dump ends early")
   end
@@ -209,7 +210,7 @@ end
 # lines, which are resolved below, and `scan` takes them.
 extern module "cchecker_scan"
   def files(path: String) -> Result[List[String]]
-  def scan(path: String, places: List[Place]) -> Result[NativeDump]
+  def scan(path: String, places: List[Place], prune: Bool) -> Result[NativeDump]
 end
 
 # The lines of a location move the file and the line; every other line is kept or dropped with its declaration.

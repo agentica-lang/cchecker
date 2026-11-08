@@ -1,5 +1,6 @@
 import Scan from "../src/scan"
 import Paths from "../src/paths"
+import UnitReader from "../src/unit"
 
 # A dump as clang writes it: a location leaves out the file and the line when they are those of the location before
 # it, and `includedFrom` names the file that included it, which is not the file of the location.
@@ -286,12 +287,18 @@ def same_scans(dumps: List[String], cwd: String) -> Result[Void]
       root = "/proj"
     end
 
-    fast = try Scan.project_decls(path, root, root)
+    fast = try Scan.project_decls(path, root, root, false)
     reference = try Scan.reference_decls(path, root, root)
     try Test.eq(fast.decls.length > 2, true)
     try Test.eq(fast.decls, reference.decls)
     try Test.eq(fast.oversized, reference.oversized)
     try Test.eq(fast.skipped, reference.skipped)
+    # The keys that the pruned text leaves out are none that the rules read: both give the same unit.
+    pruned = try Scan.project_decls(path, root, root)
+    try Test.eq(pruned.decls.length < fast.decls.length, true)
+    full_unit = try UnitReader.read(try JSON.parse(fast.decls))
+    pruned_unit = try UnitReader.read(try JSON.parse(pruned.decls))
+    try Test.eq(pruned_unit, full_unit)
   end
 
   return ok()

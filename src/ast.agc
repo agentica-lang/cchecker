@@ -17,7 +17,12 @@ end
 ## or fewer items than the array holds) under `array_filler` instead of `inner`, as one list: the filler first, then
 ## the items.
 export def children(node: Json) -> List[Json]
-  return list_at(node, "inner").concat(list_at(node, "array_filler"))
+  # Most nodes have no filler: their `inner` is given as it is, with no new list.
+  inner = list_at(node, "inner")
+  case JSON.get(node, "array_filler")
+    ok(filler) -> return inner.concat(JSON.list(filler).unwrap_or([]))
+    error(_) -> return inner
+  end
 end
 
 ## Returns a string of a node, or "".
