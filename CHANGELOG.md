@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Breaking:** a suppression comment whose word only starts with `ignore` (`cchecker: ignore: r`, `ignored`), or with
+  a `*` inside a code, is a usage error (exit 2) instead of no suppression. `///` and `//!` comments hold a
+  suppression, codes may be separated by tabs, and a comment after a C23 digit separator (`1'000`) or in an `#error`
+  line is read.
 - The rules run 2.6 times faster with 44% less memory (the 84 files of the VM of Agentica at -j 2: 47.0 s and 732 MB
   before, 17.9 s and 411 MB now): a native module in C scans clang's AST. `-j` defaults to the number of cores, and
   the jobs of the largest files start first.
