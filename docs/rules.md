@@ -244,6 +244,12 @@ restore of two pairs is a finding only when it restores neither. A set made more
 than twice on a path counts as twice, and a restore that then finds the count at
 zero is no finding.
 
+The walk does not tie a variable to the set it records, so `if (big) {
+gc_pause(); paused = 1; } ... if (paused) gc_resume();` and a toggle (`if (on)
+set(); else restore();`) give findings. A restore reached without the set is
+reported even when the restore is harmless to repeat: `CC_PAIR` is opt-in, so
+leave it off such a pair.
+
 The body of a `set` that carries its own `CC_PAIR` is how the pair works (a
 wrapper of `GC_disable`), so it may leave another pair set for its caller, but
 not on a return of an error value, after which the caller does not call
@@ -251,7 +257,8 @@ not on a return of an error value, after which the caller does not call
 constant), a null pointer (`NULL`, `(void *)0`, `nullptr`), or a false bool,
 read through typedefs. Any other value, `0` of an `int` included, counts as a
 success, and a returned variable is not followed (`rc = -1; goto out; out:
-return rc;` is a success).
+return rc;` is a success). A `set` whose `NULL`, `false` or negative return
+means success gets a finding on that return.
 
 ```c
 CC_PAIR(mask_signals, restore_signals) void mask_signals(sigset_t *old);   /* in every caller */
