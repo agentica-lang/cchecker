@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  AGENTICA_VERSION: 0.26.1
+  AGENTICA_SHA256: 68c3e825cb14148e45c47b21b6ef66036c5ad17a2cdf36948f47e1415bae5524
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Debian 13 has the versions the tests were written with (gcc 14, clang and clang-tidy 19). The messages of the
+    # tools change between versions, and the features assert codes that depend on the analyzers.
+    container: debian:trixie
+    steps:
+      - name: Install the tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl git make gcc libc6-dev clang clang-tidy
+
+      # The tools are the product: a missing one is a failure here, never a skipped test.
+      - name: Check that the tools are there
+        run: |
+          for tool in gcc clang clang-tidy; do
+            command -v "$tool" || { echo "$tool is missing"; exit 1; }
+            "$tool" --version | head -n 1
+          done
+
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned Agentica release
+        run: |
+          archive="agentica-${AGENTICA_VERSION}-linux-x86_64.tar.gz"
+          curl -fsSL -o "$RUNNER_TEMP/$archive" \
+            "https://github.com/agentica-lang/agentica/releases/download/${AGENTICA_VERSION}/$archive"
+          echo "${AGENTICA_SHA256}  $RUNNER_TEMP/$archive" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/agentica-${AGENTICA_VERSION}-linux-x86_64/bin" >> "$GITHUB_PATH"
+
+      - name: Check
+        run: |
+          agentica --version
+          make check
+
+      - name: Format
+        run: make fmt-check
+
+      # The features of specs/ run cchecker on the C fixtures; test/ has the unit tests of the parsers.
+      - name: Test
+        run: make test

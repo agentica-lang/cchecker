@@ -1,0 +1,22 @@
+[
+  {
+    "directory": ".",
+    "command": "cc -DLEVEL=\"two words\" -I. -o /dev/null -MMD -MF leak.d -c leak.c",
+    "file": "leak.c"
+  },
+  {
+    "directory": ".",
+    "arguments": ["cc", "-I.", "-c", "tidy_only.c", "-o", "tidy_only.o"],
+    "file": "tidy_only.c"
+  },
+  {
+    "directory": ".",
+    "command": "cc -c clean.c",
+    "file": "clean.c"
+  },
+  {
+    "directory": ".",
+    "command": "cc '-DLABEL=\"two words\"' -c quoted.c",
+    "file": "quoted.c"
+  }
+]

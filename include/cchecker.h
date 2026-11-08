@@ -1,0 +1,40 @@
+/* Annotations for cchecker, the rule checker for C (https://github.com/agentica-lang/cchecker).
+ *
+ * Each macro expands to an `annotate` attribute that clang keeps in its AST, where cchecker reads it. For every other
+ * compiler the macros are empty, so a project can annotate its code and still build with gcc, MSVC or tcc.
+ *
+ *   CC_SHORT                    the function never blocks and does bounded work
+ *   CC_BLOCKING                 the function may block
+ *   CC_HOT                      the function never allocates and makes no system call
+ *   CC_OWNS                     the pointer owns its memory: free it or hand it on on every path
+ *   CC_PAIR(set, restore)       the function changes state that `restore` puts back
+ *   CC_NO_SYSCALL_UNDER(lock)   the function makes no system call while `lock` is held
+ *
+ * Put an annotation before the declaration, or before the type of a parameter:
+ *
+ *   CC_SHORT int next_id(void);
+ *   void adopt(CC_OWNS char *name);
+ */
+#ifndef CCHECKER_H
+#define CCHECKER_H
+
+#if defined(__clang__)
+#define CC_ANNOTATE_(text) __attribute__((annotate("cchecker:" text)))
+/* The arguments are kept as written, so `CC_PAIR(mask_signals, restore_signals)` is "pair(mask_signals, ...)". */
+#define CC_ANNOTATE_ARGS_(name, ...) CC_ANNOTATE_(name "(" #__VA_ARGS__ ")")
+#define CC_SHORT CC_ANNOTATE_("short")
+#define CC_BLOCKING CC_ANNOTATE_("blocking")
+#define CC_HOT CC_ANNOTATE_("hot")
+#define CC_OWNS CC_ANNOTATE_("owns")
+#define CC_PAIR(...) CC_ANNOTATE_ARGS_("pair", __VA_ARGS__)
+#define CC_NO_SYSCALL_UNDER(...) CC_ANNOTATE_ARGS_("no_syscall_under", __VA_ARGS__)
+#else
+#define CC_SHORT
+#define CC_BLOCKING
+#define CC_HOT
+#define CC_OWNS
+#define CC_PAIR(...)
+#define CC_NO_SYSCALL_UNDER(...)
+#endif
+
+#endif
