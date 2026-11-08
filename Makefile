@@ -3,7 +3,7 @@
 
 JOBS ?= 4
 
-.PHONY: check fmt-check test test-slow
+.PHONY: check fmt-check test test-slow native
 
 # The Agentica files of the repository, named so that nothing else under the root is read.
 SOURCES = cchecker.agc src specs test
@@ -18,14 +18,19 @@ fmt-check:
 # The features of specs/ and the unit tests of test/, up to JOBS files at once, without the scenarios tagged @slow. Run
 # it from the root of the repository: the steps of the features start cchecker from there. `--tags` leaves the unit
 # tests out, so they run on their own.
-test:
+test: native
 	@agentica test --jobs $(JOBS) --tags "not @slow" specs
 	@agentica test --jobs $(JOBS) test
 
 # The scenarios tagged @slow (large generated inputs with bounds on time and memory), one file at a time so that the
 # bounds hold: the slow job of CI.
-test-slow:
+test-slow: native
 	@agentica test --tags "@slow" specs
+
+# One run of cchecker builds its native module (agentica.toml) into the build cache before the tests start many runs
+# at once: on an empty cache, two runs that build it together can fail to make the same folder.
+native:
+	@agentica cchecker.agc --help > /dev/null
 
 # The Agentica commit that `make bench` checks: the merge of 0.26.2.
 AGENTICA_BENCH_COMMIT ?= fe9b9bdcf7e042d1d139d6c105e1b6457944ca93

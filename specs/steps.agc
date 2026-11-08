@@ -46,9 +46,25 @@ def write_file(ctx: BDD.Context, args: List[String]) -> BDD.Context
   return write_text(ctx, args[0], BDD.doc_string(ctx))
 end
 
-# A large file, which a doc string would not hold: ITEMS in the doc string is the text repeated.
+# A large file, which a doc string would not hold: ITEMS in the doc string is the text repeated. One write takes
+# at most 1 MiB of text, so the items are appended in parts.
 def write_generated(ctx: BDD.Context, args: List[String]) -> BDD.Context
-  return write_text(ctx, args[0], BDD.doc_string(ctx).replace("ITEMS", args[2] * args[1].to_i!))
+  parts = BDD.doc_string(ctx).split("ITEMS")
+  written = write_text(ctx, args[0], parts[0])
+  path = Path.join([SPECS, folder_of(written), args[0]]).unwrap!
+  left = args[1].to_i!
+  per_write = 500_000 / (args[2].size + 1)
+  while left > 0
+    count = per_write
+    if left < count
+      count = left
+    end
+
+    written = check(written, File.append_text(path, args[2] * count))
+    left -= count
+  end
+
+  return check(written, File.append_text(path, parts.drop(1).join("ITEMS")))
 end
 
 # The file is in the folder of the scenario, in a subfolder of it when the name has one.
