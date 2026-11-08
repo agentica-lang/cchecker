@@ -236,7 +236,7 @@ def with_breaches(found: Map[String, Finding], walker: Walker, item: Item, event
         .map do |key| held_lock(walker, item, key) end
 
       kept = found
-      for breach in Held.at_call(walker.rules, walker.body.name, held, site, "#{site.line}:#{site.column}")
+      for breach in Held.at_call(walker.rules, walker.body, held, site, "#{site.line}:#{site.column}")
         if not kept.key?(breach.id)
           kept = kept.put(breach.id, located(walker.body, breach.code, breach.message, breach.path))
         end

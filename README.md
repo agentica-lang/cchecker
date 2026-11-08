@@ -260,14 +260,17 @@ that a called function changes keeps the value the path knew.
 
 A lock held for short sections only, which other threads spin for, is marked on its field (or on a global lock):
 `CC_NO_SYSCALL_UNDER()`. While a path holds it, no call is a system call or a blocking call (the lists of the effects,
-a lock or an unlock of another lock included) or reaches one through the functions of the project, except the
-release of the lock itself and a wait on a condition with it. `CC_NO_SYSCALL_UNDER(lock)` on a function says the same
+a lock or an unlock of another lock included, and a `CC_BLOCKING` function) or reaches one through the functions of
+the project, a call through a function pointer included (the functions stored in it), except the release of the lock
+itself and a wait on a condition with it. `CC_NO_SYSCALL_UNDER(lock)` on a function says the same
 of one lock of that function, in the names of its parameters.
 
 `CC_LOCK_LEVEL(n)` on the field of a lock (or a global lock) orders the locks: a path takes a lock with a level only
 while every lock it holds with a level has a lower one, and it calls a function that takes one (in its body or in the
-functions it reaches) only then. Two locks of the same level are never held together; a called function that takes
-the class of a lock held again (a counted lock, taken once more by the same thread) is not out of order.
+functions it reaches, or those stored in a pointer it calls) only then. Two locks of the same level are never held
+together. A trylock (`pthread_mutex_trylock`) never waits, so it is never out of order. One exception: a called
+function that takes the class of a lock held again is not out of order, for a lock that counts its takes by the same
+thread; the rules cannot tell it from another lock of the same class.
 
 ```c
 struct runtime { CC_LOCK_LEVEL(1) pthread_mutex_t sync; ... };
@@ -279,8 +282,12 @@ struct runq { CC_NO_SYSCALL_UNDER() CC_LOCK_LEVEL(3) pthread_mutex_t lock; ... }
 | `CC-PATH-SYSCALL-UNDER-LOCK` | a call under a `CC_NO_SYSCALL_UNDER` lock is or reaches a system call |
 | `CC-PATH-LOCK-ORDER` | a lock with a level is taken (or a function that takes one is called) under one of the same or a higher level |
 
-A field is known by its struct and its name (`runq.lock`, the name of a typedef for an anonymous struct), and a global
-by its name. A lock of a `CC_ACQUIRES` is followed to its field through the types of the parameters
+A field is known by its struct and its name (`runq.lock`, the name of a typedef for an anonymous struct; an item of
+an array of locks is its field), and a global by its name (`name@file` for a static one; a parameter or a local of the
+same name is not it). The marks are `CC_NO_SYSCALL_UNDER()` with nothing in it and `CC_LOCK_LEVEL(n)` with a decimal
+number; another form, or a mark on a field of a struct with no name, is an error of the `rules` tool (exit code 2). A
+lock is known by its text in a function, so the same lock written two ways (`&q->mu` and `m` set later to it) is two
+locks. A lock of a `CC_ACQUIRES` is followed to its field through the types of the parameters
 (`CC_ACQUIRES(s->pool->mu)` on `void pool_lock(struct server *s)` takes `pool.mu`). The path of a finding goes from
 the take of the lock held to the call, and the call path to the system call when there is one: `13:3 calls bump: bump
 -> pthread_mutex_lock`.

@@ -34,7 +34,8 @@ export struct Lock
 end
 
 ## A call of a function, by name and key (`name@file` for a static one), and what it does to the locks: those it takes,
-## releases, and waits on (a condition wait gives its lock back while it waits).
+## releases, and waits on (a condition wait gives its lock back while it waits). A call through a function pointer
+## (`pointer`) has the text of the pointer as its name and no key. `tried` is a trylock, which never waits for its lock.
 export struct Site
   name: String
   key: String
@@ -44,6 +45,8 @@ export struct Site
   drops: List[Lock]
   stops: Bool
   waits: List[Lock] = []
+  pointer: Bool = false
+  tried: Bool = false
 end
 
 ## The value a condition has on an edge. `text` is "" for a condition that may change between two reads (a call).
@@ -104,12 +107,13 @@ export struct Callee
 end
 
 ## What the graphs of one translation unit need: the functions that say something about locks, by key, the keys of
-## its static functions by name, the class of each field by id (`queue.mu`), and the names of its global variables.
+## its static functions by name, the class of each field by id (`queue.mu`), and the class of each global variable by
+## the id of its declaration (its name, `name@file` for a static one), so a local of the same name is not it.
 export struct Context
   callees: Map[String, Callee]
   statics: Map[String, String]
   fields: Map[String, String]
-  globals: Set[String]
+  globals: Map[String, String]
 end
 
 # An argument of a call: its text, and its class when it is a lock.
@@ -754,13 +758,27 @@ def call(b: Builder, node: Json, preds: List[Int], tried: Bool) -> Built
   args = parts.drop(1)
   built = in_order(b, args, preds)
   if Ast.kind(callee) != "DeclRefExpr" or Ast.referenced_kind(callee) != "FunctionDecl"
-    # A call through a pointer whose type does not return ends the path too.
+    # A call through a pointer: the rules on held locks follow the functions stored in it. One whose type does not
+    # return ends the path too.
     pointer = expression(built.b, parts.first, built.exits)
-    if type_text(parts.first).include?(NORETURN_TYPE)
-      return Built(b: pointer.b, exits: [])
+    place = Ast.start_of(node)
+    site = Site(
+      name: text_of(pointer.b, parts.first, false),
+      key: "",
+      line: place.line,
+      column: place.column,
+      takes: [],
+      drops: [],
+      stops: type_text(parts.first).include?(NORETURN_TYPE),
+      pointer: true,
+    )
+
+    through = add(pointer.b, Event.Call(site), pointer.exits)
+    if site.stops
+      return Built(b: through.b, exits: [])
     end
 
-    return pointer
+    return through
   end
 
   # The type of the declaration: the reference to a builtin such as `__builtin_abort` has no type of its own.
@@ -862,16 +880,14 @@ def aliased_class(b: Builder, node: Json, depth: Int) -> String
 
   case Ast.kind(bare)
     "MemberExpr" -> return b.ctx.fields.get(Ast.text(bare, "referencedMemberDecl")).unwrap_or("")
+    "ArraySubscriptExpr" -> return aliased_class(b, Ast.children(bare).first, depth)
     "DeclRefExpr" ->
       name = Ast.referenced_name(bare)
       case b.aliases.get(name)
         some(value) if depth < ALIAS_DEPTH -> return aliased_class(b, value, depth + 1)
         _ ->
-          if b.ctx.globals.include?(name)
-            return name
-          end
-
-          return ""
+          declared = JSON.get(bare, "referencedDecl").unwrap_or(JSON.from(""))
+          return b.ctx.globals.get(Ast.text(declared, "id")).unwrap_or("")
       end
 
     _ -> return ""
@@ -1009,7 +1025,12 @@ def trial(b: Builder, tried: Tried, preds: List[Int]) -> Split
   name = callee_name(tried.call)
   passed = args.map do |arg| arg_of(called.b, arg) end
   site = site_of(called.b, name, passed, Ast.start_of(tried.call), "")
-  taken = add(called.b, Event.Call(site.with(takes: lock_of(passed, 0))), called.exits)
+  taken = add(
+    called.b,
+    Event.Call(site.with(takes: lock_of(passed, 0), tried: Known.NO_WAIT.include?(name))),
+    called.exits,
+  )
+
   if tried.zero_is_true
     return Split(b: taken.b, yes: taken.exits, no: called.exits)
   end
