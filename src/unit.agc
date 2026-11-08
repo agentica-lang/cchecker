@@ -18,6 +18,10 @@ NORETURN_ATTRS = Set.new(["C11NoReturnAttr", "NoReturnAttr", "CXX11NoReturnAttr"
 # The annotations that name locks, and whether the function takes them.
 LOCK_MARKS = {"acquires": true, "releases": false}
 
+# The most nodes of the AST of a function that the path rules build a graph for, about four times the largest function
+# of the Agentica VM. A larger function is an error of the tool, so a run never runs out of memory on one.
+MAX_BODY_NODES = 20_000
+
 # The nodes a function pointer goes through on its way to a call or a store, which do not change where it points.
 TRANSPARENT = Set.new(["ImplicitCastExpr", "CStyleCastExpr", "ParenExpr", "CompoundLiteralExpr"])
 
@@ -66,13 +70,14 @@ export struct LockMark
 end
 
 ## The functions, calls and stores of one translation unit, the graphs of its functions that take or release a lock,
-## and the annotations of its locks.
+## and the annotations of its locks. `too_large` names the functions too large for a graph (`MAX_BODY_NODES`).
 export struct Unit
   functions: List[Function]
   calls: List[Call]
   stores: List[Store]
   bodies: List[Flow.Body] = []
   lock_marks: List[LockMark] = []
+  too_large: List[String] = []
 end
 
 # A struct or union: its name (a typedef name for an anonymous one) and the ids and names of its fields.
@@ -118,6 +123,7 @@ export def read(decls: Json) -> Result[Unit]
   ctx = context_of(tables, nodes)
   functions: List[Function] = []
   bodies: List[Flow.Body] = []
+  too_large: List[String] = []
   found = Found(calls: [], stores: [])
   for node in nodes
     case Ast.kind(node)
@@ -126,7 +132,11 @@ export def read(decls: Json) -> Result[Unit]
         functions = functions.push(function)
         found = in_function(tables, function.key, node, found)
         if function.defined and Flow.locks?(ctx, node)
-          bodies = bodies.push(Flow.body_of(ctx, function.key, node))
+          if Ast.size_of(node, MAX_BODY_NODES) > MAX_BODY_NODES
+            too_large = too_large.push(function.name)
+          else
+            bodies = bodies.push(Flow.body_of(ctx, function.key, node))
+          end
         end
 
       "VarDecl" ->
@@ -146,6 +156,7 @@ export def read(decls: Json) -> Result[Unit]
       stores: found.stores,
       bodies: bodies,
       lock_marks: lock_marks_of(tables, nodes),
+      too_large: too_large,
     ),
   )
 end

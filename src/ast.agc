@@ -47,6 +47,18 @@ export def flag?(node: Json, key: String) -> Bool
 end
 
 ## Returns the kind of the declaration that a reference names (`FunctionDecl`, `ParmVarDecl`), or "".
+## Returns how many nodes the tree of `node` has, counting no further than `limit` + 1.
+export def size_of(node: Json, limit: Int) -> Int
+  queue = [node]
+  i = 0
+  while i < queue.size and i <= limit
+    queue = queue.concat(children(queue[i]))
+    i += 1
+  end
+
+  return i
+end
+
 export def referenced_kind(node: Json) -> String
   return text(JSON.get(node, "referencedDecl").unwrap_or(JSON.from("")), "kind")
 end
