@@ -29,23 +29,29 @@ end
 ## The call graph of the project. A function is merged from all its declarations: the marks of each, and the place of
 ## its definition. A slot holds every function stored in it. `pointers` are the slots of each call through a pointer,
 ## by its caller and place (`caller LINE:COL`). `locks` are the classes of the locks that a function takes with each
-## call of a lock function, by caller and callee (`caller>callee`), "" for a lock the rules cannot tell.
+## call of a lock function, by caller and callee (`caller>callee`), "" for a lock the rules cannot tell, and `quiet`
+## whether each call of a function of `Known.FLAG_ARGUMENTS` has the flag that makes it return at once, by the same
+## key. `unknown_targets` are the targets whose flags the rules do not know, of the units that call one with a
+## constant flag.
 export struct Graph
   functions: Map[String, Function]
   edges: Map[String, List[Target]]
   slots: Map[String, List[String]]
   pointers: Map[String, List[String]] = {}
   locks: Map[String, List[String]] = {}
+  quiet: Map[String, List[Bool]] = {}
+  unknown_targets: List[String] = []
 end
 
 # How a rule walks the graph: the families of blocking calls that are on, whether it goes into the functions that never
 # return or are cold, whether it finds every bad call or stops at the first, and the classes of the short locks, whose
-# taking is not blocking.
+# taking is not blocking, and whether a call with a flag that makes it return at once is not blocking (`flags`).
 struct Walk
   families: List[Known.Family]
   follow_cold: Bool
   all: Bool
   short_locks: Set[String]
+  flags: Bool = false
 end
 
 ## What the rules found: the findings, and the callbacks of libuv calls they could not follow to a function.
@@ -56,6 +62,7 @@ export struct Checked
   unresolved: List[UnresolvedCallback]
   missing_roots: List[String] = []
   missing_assumed: List[String] = []
+  unknown_targets: List[String] = []
 end
 
 # The CC_SHORT roots inferred from the callbacks of libuv, by function key, each with the call that made it, and the
@@ -78,6 +85,7 @@ export def check(units: List[Unit], config: Config, infer: Bool, all_paths: Bool
     follow_cold: config.follow_cold,
     all: all_paths,
     short_locks: short_locks_of(units, config),
+    flags: not config.off.include?(Known.NONBLOCKING_FLAG),
   )
 
   inferred = Inferred(roots: {}, unresolved: [])
@@ -112,6 +120,7 @@ export def check(units: List[Unit], config: Config, infer: Bool, all_paths: Bool
     unresolved: inferred.unresolved,
     missing_roots: missing_roots(graph, config),
     missing_assumed: missing_assumed(graph, config).concat(missing_locks(units, graph, config)),
+    unknown_targets: graph.unknown_targets,
   )
 end
 
@@ -190,6 +199,8 @@ export def graph_of(units: List[Unit]) -> Graph
   edges: Map[String, List[Target]] = {}
   pointers: Map[String, List[String]] = {}
   locks: Map[String, List[String]] = {}
+  quiet: Map[String, List[Bool]] = {}
+  unknown: List[String] = []
   stores: List[Store] = []
   for unit in units
     for function in unit.functions
@@ -206,6 +217,16 @@ export def graph_of(units: List[Unit]) -> Graph
         Target.Direct(to) if Known.TAKES.include?(name_of_key(functions, to)) ->
           at = "#{call.caller}>#{to}"
           locks = locks.put(at, locks.get(at).unwrap_or([]).push(call.lock))
+        Target.Direct(to) if Known.FLAG_ARGUMENTS.key?(name_of_key(functions, to)) ->
+          at = "#{call.caller}>#{to}"
+          bit = Known.nonblocking_bit(unit.target, name_of_key(functions, to))
+          # Only a flag value can matter: 0 is no flag at all.
+          if bit == 0 and call.flags > 0 and not call.named and not unknown.include?(unit.target)
+            unknown = unknown.push(unit.target)
+          end
+
+          set = call.named or (bit != 0 and call.flags >= 0 and Int.bit_and(call.flags, bit) != 0)
+          quiet = quiet.put(at, quiet.get(at).unwrap_or([]).push(set))
         Target.Slot(slot) if call.line > 0 ->
           at = "#{call.caller} #{call.line}:#{call.column}"
           pointers = pointers.put(at, pointers.get(at).unwrap_or([]).push(slot))
@@ -216,7 +237,15 @@ export def graph_of(units: List[Unit]) -> Graph
     stores = stores.concat(unit.stores)
   end
 
-  return Graph(functions: functions, edges: edges, slots: slots_of(stores), pointers: pointers, locks: locks)
+  return Graph(
+    functions: functions,
+    edges: edges,
+    slots: slots_of(stores),
+    pointers: pointers,
+    locks: locks,
+    quiet: quiet,
+    unknown_targets: unknown,
+  )
 end
 
 # The classes of the short locks: those marked CC_NO_SYSCALL_UNDER() and those of `[assume] short_locks`.
@@ -262,6 +291,13 @@ def bare_class(class: String) -> String
     some(at) -> return class.slice(0, at)
     none -> return class
   end
+end
+
+# Whether every call of `callee` in `key` has the flag that makes it return at once, so the short rule does not count
+# it.
+def returns_at_once?(graph: Graph, walk: Walk, key: String, callee: String) -> Bool
+  calls = graph.quiet.get("#{key}>#{callee}").unwrap_or([])
+  return walk.flags and not calls.empty? and calls.all? do |set| set end
 end
 
 # The classes of `[assume] short_locks` that no lock of the units has: none taken and none marked, with their key.
@@ -470,7 +506,10 @@ def search(graph: Graph, walk: Walk, start: String, effect: Effect) -> List[List
         next
       end
 
-      if effect == Effect.Blocks and short_takes?(graph, walk, key, callee)
+      if (
+        effect == Effect.Blocks and
+        (short_takes?(graph, walk, key, callee) or returns_at_once?(graph, walk, key, callee))
+      )
         next
       end
 

@@ -29,6 +29,10 @@ NO_ERROR = "-Wno-error"
 # child that outlives its parent would keep running after a timeout.
 KILL_AFTER_S = 2
 
+# The flags that choose the target of a compile command, alone or with the value after them.
+TARGET_FLAGS = Set.new(["-m32", "-m64", "-mx32", "-m16"])
+TARGET_PAIRS = Set.new(["-target", "--target", "-arch"])
+
 # The flags of the AST dump for the rules, after those of the build: no warnings (the build may have -Werror), and the
 # annotations of cchecker.h as attributes whose JSON keeps their text (see cchecker.h).
 AST_FLAGS = ["-w", "-DCCHECKER_AST"]
@@ -56,6 +60,7 @@ export struct Job
   dump: String = ""
   cwd: String = ""
   budget: Optional[Budget] = none
+  target: String = ""
 end
 
 ## How much of the kept AST the jobs of the rules parse and read at once, in MiB of its text: the parsed tree is
@@ -113,6 +118,43 @@ export def timeout_available?() -> Bool
       return code == 0
     error(_) -> return false
   end
+end
+
+## Returns the triple of clang for the flags of a compile command (`x86_64-pc-linux-gnu`), from the flags that choose
+## the target; "" when `clang` does not say.
+export def target_of(clang: String, entry: Commands.Entry) -> String
+  args = ["-print-target-triple"].concat(target_flags(entry.args))
+  case Process.spawn_captured(clang, args, entry.directory, 5_000)
+    ok(process) ->
+      line = Process.read_line(process, 5_000).unwrap_or("")
+      code = Process.wait(process, 5_000).unwrap_or(1)
+      Process.close(process)
+      if code != 0
+        return ""
+      end
+
+      return line.strip
+    error(_) -> return ""
+  end
+end
+
+## Returns the flags of a compile command that choose its target: `--target=`, `-target T`, `-arch A`, `-m32`, ...
+export def target_flags(args: List[String]) -> List[String]
+  found: List[String] = []
+  i = 0
+  while i < args.size
+    arg = args[i]
+    if TARGET_PAIRS.include?(arg) and i + 1 < args.size
+      found = found.push(arg).push(args[i + 1])
+      i += 1
+    elsif arg.start_with?("--target=") or TARGET_FLAGS.include?(arg)
+      found = found.push(arg)
+    end
+
+    i += 1
+  end
+
+  return found
 end
 
 ## Runs the job. An error is a tool that did not start or did not finish in time; a file that does not compile is an
@@ -254,7 +296,7 @@ def with_unit(job: Job, done: Outcome) -> Result[Outcome]
 
   return ok(
     done.with(
-      units: [unit],
+      units: [unit.with(target: job.target)],
       errors: done.errors.concat(errors).concat(large).concat(marks),
       skipped_declarations: dump.skipped,
     ),

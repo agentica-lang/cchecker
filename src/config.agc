@@ -115,6 +115,7 @@ export def flags() -> List[String]
     Known.BLOCKING_FAMILIES.map do |family| family.flag end
       .push(Known.CALLBACKS_FLAG)
       .push(Known.LIBGC_ALLOC_FLAG)
+      .push(Known.NONBLOCKING_FLAG)
   )
 end
 
