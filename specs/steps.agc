@@ -50,6 +50,10 @@ end
 # at most 1 MiB of text, so the items are appended in parts.
 def write_generated(ctx: BDD.Context, args: List[String]) -> BDD.Context
   parts = BDD.doc_string(ctx).split("ITEMS")
+  if parts.size != 2
+    return BDD.assert(ctx, false, "the doc string holds ITEMS #{parts.size - 1} times, not once")
+  end
+
   written = write_text(ctx, args[0], parts[0])
   path = Path.join([SPECS, folder_of(written), args[0]]).unwrap!
   left = args[1].to_i!
@@ -64,7 +68,7 @@ def write_generated(ctx: BDD.Context, args: List[String]) -> BDD.Context
     left -= count
   end
 
-  return check(written, File.append_text(path, parts.drop(1).join("ITEMS")))
+  return check(written, File.append_text(path, parts[1]))
 end
 
 # The file is in the folder of the scenario, in a subfolder of it when the name has one.
@@ -105,6 +109,7 @@ end
 
 # The run under `ulimit -v`, which its compilers inherit: a run that needs more memory fails (its exit code is not the
 # one the scenario expects) instead of taking the machine's. A run that takes longer than its seconds fails the step.
+# `ulimit -v` bounds the virtual size, not the peak RSS, and works as meant on Linux only.
 def run_bounded(ctx: BDD.Context, args: List[String]) -> BDD.Context
   words = args[0].replace("$DIR", folder_of(ctx)).split(" ").select do |word| word != "" end
   limit = args[1].to_i! * 1024

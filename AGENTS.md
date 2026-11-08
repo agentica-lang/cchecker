@@ -32,8 +32,9 @@ test/             unit tests of the pure helpers (the parsers, the scan of the A
   under `.tools/` (gitignored), never `/tmp`. Changing the pin changes both values from the release's SHA256SUMS.
 - `make check`: `agentica check`. `make fmt-check`: `agentica fmt --check` (`agentica fmt` fixes it). `make test`:
   `agentica test --jobs 4` (the features and the unit tests) without the scenarios tagged `@slow`; `make test-slow`
-  runs those, in a CI job of their own (on a shared machine, run at most one, with `--only`). `agentica test --only
-  TEXT` runs the scenarios whose name contains `TEXT`.
+  runs those, in a CI job of their own (on a shared machine, run at most one, with `--only`). Both first run
+  `make native`, which builds the native module once. `agentica test --only TEXT` runs the scenarios whose name
+  contains `TEXT`.
 - The tests need `gcc`, `clang`, `clang-tidy`, `sh` and `timeout` (coreutils) on PATH. CI installs them and fails if
   one is missing; a local run without one fails the scenarios too.
 - `agentica cchecker.agc [options] FILE... -- FLAGS...` runs the tool; `agentica compile cchecker.agc -o cchecker.agcb`
@@ -46,7 +47,8 @@ test/             unit tests of the pure helpers (the parsers, the scan of the A
   (BDD features in `specs/` first, `*_test.agc` unit tests in `test/` only for a pure helper such as a parser). No
   Python (no pytest, no helper scripts) in the tests or in CI, and no property-based tests for now.
 - A scenario on a large generated input (a limit of the rules, a bound on time or memory) is tagged `@slow` and goes
-  in `specs/limits.feature`, with its bounds in the step (`in at most N MiB and S seconds`); each scenario has 30 s.
+  in `specs/limits.feature`, with its bounds in the step (`in at most N MiB and S seconds`); each scenario has 30 s. The memory bound is
+  `ulimit -v`: virtual size, not peak RSS, and the tests run on Linux only.
 - A fake tool for a scenario is a small shell script in `specs/fixtures/` (`fake_gcc_*.sh`, run with `--gcc`).
 - A scenario runs `cchecker.agc` on a small C fixture and asserts the exit code, the codes and the `--json` fields,
   never message text (the compilers' texts change between versions). A fixture is one small file per case, with a clean
