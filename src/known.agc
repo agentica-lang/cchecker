@@ -243,3 +243,15 @@ export NORETURN = Set.new([
   "abort", "exit", "_exit", "_Exit", "quick_exit", "longjmp", "siglongjmp", "_longjmp", "pthread_exit", "thrd_exit",
   "__assert_fail", "__builtin_unreachable", "__builtin_trap", "err", "errx", "verr", "verrx",
 ])
+
+## The calls that return memory of the heap for the caller to free: a pointer that owns gets a new value from them.
+export OWNED = Set.new([
+  "malloc", "calloc", "realloc", "reallocarray", "aligned_alloc", "memalign", "valloc", "pvalloc", "strdup", "strndup",
+])
+
+## The calls that free the memory of their first argument.
+export FREES = Set.new(["free"])
+
+## The calls that move the memory of their first argument to the pointer they return; when that pointer is null, the
+## first argument still owns it.
+export RESIZES = Set.new(["realloc", "reallocarray"])

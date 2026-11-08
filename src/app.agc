@@ -7,6 +7,7 @@ import Findings from "findings"
 import {Finding, ToolError} from "findings"
 import Locking from "locking"
 import {Options} from "options"
+import Ownership from "ownership"
 import Paths from "paths"
 import Report from "report"
 import Suppressions from "suppressions"
@@ -390,7 +391,7 @@ def collect(options: Options, jobs: List[Tools.Job]) -> Collected
   end
 
   return Collected(
-    findings: findings.concat(Effects.check(units)).concat(Locking.check(units)),
+    findings: findings.concat(Effects.check(units)).concat(Locking.check(units)).concat(Ownership.check(units)),
     errors: errors,
     ran: ran,
     units: units,

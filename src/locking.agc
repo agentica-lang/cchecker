@@ -95,7 +95,7 @@ export def check(units: List[Unit]) -> List[Finding]
   findings: List[Finding] = []
   for unit in units
     for body in unit.bodies
-      if not done.include?(body.key) and not helper?(functions.get(body.key))
+      if not done.include?(body.key) and not helper?(functions.get(body.key)) and not locks_of(body).empty?
         findings = findings.concat(checked(body, functions, rules))
       end
 
@@ -104,6 +104,83 @@ export def check(units: List[Unit]) -> List[Finding]
   end
 
   return findings
+end
+
+## Returns the conditions that the function tests in two places or more: only those can make a path impossible.
+export def tracked_of(body: Body) -> Set[String]
+  seen: Set[String] = Set.new([])
+  twice: Set[String] = Set.new([])
+  for node in body.nodes
+    case node.event
+      Event.Branch(fact) ->
+        if fact.text != "" and fact.value
+          if seen.include?(fact.text)
+            twice = twice.add(fact.text)
+          end
+
+          seen = seen.add(fact.text)
+        end
+
+      _ -> next
+    end
+  end
+
+  return twice
+end
+
+## Returns a finding at the function, with its path cut to the first and the last steps when it is long.
+export def located(body: Body, code: String, message: String, path: List[String]) -> Finding
+  texts = path
+  if texts.size > MAX_PATH
+    texts = texts.take(MAX_PATH / 2).push("...").concat(texts.drop(texts.size - MAX_PATH / 2))
+  end
+
+  return Finding(
+    code: code,
+    tool: Effects.TOOL,
+    file: body.file,
+    line: body.line,
+    column: body.column,
+    message: message,
+    path: texts,
+  )
+end
+
+## Returns the variables each condition reads, so a write to one of them forgets the condition.
+export def roots_of(body: Body) -> Map[String, List[String]]
+  roots: Map[String, List[String]] = {}
+  for node in body.nodes
+    case node.event
+      Event.Branch(fact) -> roots = roots.put(fact.text, fact.roots)
+      _ -> next
+    end
+  end
+
+  return roots
+end
+
+## Returns the known conditions without those that read one of `names`, which a path just wrote.
+export def forgotten(
+  facts: Map[String, Bool],
+  roots: Map[String, List[String]],
+  names: List[String],
+) -> Map[String, Bool]
+  return facts.select do |text, _value| not roots.get(text, []).any? do |root| names.include?(root) end end
+end
+
+## Returns whether a call never comes back: by its type or name, or by a CC_NORETURN on the function.
+export def stops?(site: Site, functions: Map[String, Function]) -> Bool
+  marked = functions.get(site.key).map do |f| f.marks.include?("noreturn") end.unwrap_or(false)
+  return site.stops or marked
+end
+
+## Returns the word of the value of a condition on a step of a path.
+export def truth(fact: Fact) -> String
+  if fact.value
+    return "true"
+  end
+
+  return "false"
 end
 
 def helper?(function: Optional[Function]) -> Bool
@@ -169,28 +246,6 @@ def locks_of(body: Body) -> Map[String, Lock]
   end
 
   return locks
-end
-
-# The conditions that the function tests in two places or more: only those can make a path impossible.
-def tracked_of(body: Body) -> Set[String]
-  seen: Set[String] = Set.new([])
-  twice: Set[String] = Set.new([])
-  for node in body.nodes
-    case node.event
-      Event.Branch(fact) ->
-        if fact.text != "" and fact.value
-          if seen.include?(fact.text)
-            twice = twice.add(fact.text)
-          end
-
-          seen = seen.add(fact.text)
-        end
-
-      _ -> next
-    end
-  end
-
-  return twice
 end
 
 def walked(walker: Walker) -> Walk
@@ -281,6 +336,7 @@ def stepped(walker: Walker, event: Event, item: Item) -> Moved
     Event.Writes(names) -> return Moved.Went(item.with(state: state.with(facts: forgotten(state.facts, roots, names))))
     Event.Note(mark) -> return Moved.Went(item.with(path: item.path.push(marked(mark))))
     Event.Exit(mark) -> return Moved.Ended(item.path.push(marked(mark)))
+    _ -> return Moved.Went(item)
   end
 end
 
@@ -383,54 +439,6 @@ def from_last(path: List[Step], key: String) -> List[Step]
   end
 
   return path.drop(start)
-end
-
-# A finding at the function, with its path cut to the first and the last steps when it is long.
-def located(body: Body, code: String, message: String, path: List[String]) -> Finding
-  texts = path
-  if texts.size > MAX_PATH
-    texts = texts.take(MAX_PATH / 2).push("...").concat(texts.drop(texts.size - MAX_PATH / 2))
-  end
-
-  return Finding(
-    code: code,
-    tool: Effects.TOOL,
-    file: body.file,
-    line: body.line,
-    column: body.column,
-    message: message,
-    path: texts,
-  )
-end
-
-# The variables each tracked condition reads, so a write to one of them forgets the condition.
-def roots_of(body: Body) -> Map[String, List[String]]
-  roots: Map[String, List[String]] = {}
-  for node in body.nodes
-    case node.event
-      Event.Branch(fact) -> roots = roots.put(fact.text, fact.roots)
-      _ -> next
-    end
-  end
-
-  return roots
-end
-
-def forgotten(facts: Map[String, Bool], roots: Map[String, List[String]], names: List[String]) -> Map[String, Bool]
-  return facts.select do |text, _value| not roots.get(text, []).any? do |root| names.include?(root) end end
-end
-
-def stops?(site: Site, functions: Map[String, Function]) -> Bool
-  marked = functions.get(site.key).map do |f| f.marks.include?("noreturn") end.unwrap_or(false)
-  return site.stops or marked
-end
-
-def truth(fact: Fact) -> String
-  if fact.value
-    return "true"
-  end
-
-  return "false"
 end
 
 # The state as a text, the same for two states with the same locks and conditions whatever their order.

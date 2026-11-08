@@ -20,6 +20,10 @@ LOCK_MARKS = {"acquires": true, "releases": false}
 
 PAIR_MARK = "pair("
 
+# The marks of ownership.
+OWNS = "owns"
+FREES = "frees"
+
 # The nodes a function pointer goes through on its way to a call or a store, which do not change where it points.
 TRANSPARENT = Set.new(["ImplicitCastExpr", "CStyleCastExpr", "ParenExpr", "CompoundLiteralExpr"])
 
@@ -134,7 +138,7 @@ export def read(decls: Json) -> Result[Unit]
         functions = functions.push(function)
         found = in_function(tables, function.key, node, found)
         own = paired(ctx, tables, function)
-        if function.defined and Flow.locks?(own, node)
+        if function.defined and (Flow.locks?(own, node) or Flow.owns?(own, function.key, node))
           bodies = bodies.push(Flow.body_of(own, function.key, node))
         end
 
@@ -199,7 +203,56 @@ def context_of(tables: Tables, nodes: List[Json]) -> Flow.Context
     fields = fields.put(id, tables.field_slots[id].replace("field:", ""))
   end
 
-  return Flow.Context(callees: callees, statics: tables.static_functions, fields: fields, globals: globals)
+  return Flow.Context(
+    callees: callees,
+    statics: tables.static_functions,
+    fields: fields,
+    globals: globals,
+    owning: owning_of(tables, nodes),
+  )
+end
+
+# What the declarations of the unit say about ownership: CC_OWNS on a function (it returns an owned pointer), on a
+# parameter (it takes what the caller passes), on a field or a global (a store into it hands a pointer on), and
+# CC_FREES on a parameter. The marks of the parameters of all the declarations of a function hold, by index.
+def owning_of(tables: Tables, nodes: List[Json]) -> Flow.Owning
+  returns: Set[String] = Set.new([])
+  takes: Map[String, List[Int]] = {}
+  frees: Map[String, List[Int]] = {}
+  declarations = nodes.select do |n| Ast.kind(n) == "FunctionDecl" end
+  for node in declarations
+    key = function_key(tables, Ast.text(node, "name"))
+    if own_marks(node).include?(OWNS)
+      returns = returns.add(key)
+    end
+
+    parameters = Ast.children(node).select do |child| Ast.kind(child) == "ParmVarDecl" end
+    for i in 0...parameters.size
+      marks = own_marks(parameters[i])
+      if marks.include?(OWNS) and not takes.get(key, []).include?(i)
+        takes = takes.put(key, takes.get(key, []).push(i))
+      end
+
+      if marks.include?(FREES) and not frees.get(key, []).include?(i)
+        frees = frees.put(key, frees.get(key, []).push(i))
+      end
+    end
+  end
+
+  fields: Set[String] = Set.new([])
+  for nested in record_decls(nodes, "")
+    record_fields = Ast.children(nested.node).select do |child| Ast.kind(child) == "FieldDecl" end
+    for field in record_fields
+      if own_marks(field).include?(OWNS)
+        fields = fields.add(Ast.text(field, "id"))
+      end
+    end
+  end
+
+  globals = nodes.select do |n| Ast.kind(n) == "VarDecl" and own_marks(n).include?(OWNS) end
+    .map do |n| Ast.text(n, "name") end
+
+  return Flow.Owning(returns: returns, takes: takes, frees: frees, fields: fields, globals: Set.new(globals))
 end
 
 # The context of the body of a function: CC_PAIR(set, restore) on a function other than `set` holds in its body only.
