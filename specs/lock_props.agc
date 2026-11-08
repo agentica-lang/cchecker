@@ -1,6 +1,8 @@
 ## The property tests of the lock walk: a generated function takes and releases one lock `m` under if/else, loops with
 ## break and continue, a switch with fallthrough, early returns and a goto to a cleanup label, all on conditions that
-## cchecker cannot know. An oracle runs the function over all its paths, and its result is compared with cchecker's.
+## cchecker cannot know. An oracle runs the function over all its paths, counting the lock as the README says (at most
+## twice either way), and cchecker must report a code of the lock rules if and only if a path breaks its rule. The law
+## compares the codes only, not the path a finding shows.
 
 import Prop from "pkg/prop/prop"
 import Props from "props"
@@ -30,12 +32,9 @@ DRAWN = [
   CONTINUE, RETURN, GOTO,
 ]
 
-# The counts of the lock that cchecker keeps exactly: it counts a lock taken more often as taken this many times
-# (MAX_COUNT of src/locking.agc), a documented limit.
-EXACT = 2
-
-# The counts the oracle follows when it looks for any path; a path that goes past it is not followed.
-WIDE = 6
+# A lock taken more often than this on a path counts as taken this many times, and one released more often as released
+# this many times: the limit of the README, so that a loop ends.
+CLAMP = 2
 
 # The codes of the two lock rules.
 NOT_RELEASED = "CC-PATH-LOCK-NOT-RELEASED"
@@ -66,25 +65,25 @@ struct Parsed
 end
 
 # Where each way out of a piece of code goes: the counts of the lock on the paths that go on, break, continue, return
-# or jump to `out`, and the largest count (in absolute value) that any path reached.
+# or jump to `out`.
 struct Flow
   normal: List[Int] = []
   brk: List[Int] = []
   cont: List[Int] = []
   ret: List[Int] = []
   jump: List[Int] = []
-  peak: Int = 0
 end
 
-## The generator of functions: up to 24 tokens of the body and 3 of the cleanup (lock, unlock or work).
+## The generator of functions: up to 24 tokens of the body and 3 of the cleanup (lock, unlock, work, or a `return` or
+## a `goto out` under a condition).
 export def programs() -> Prop.Gen[Program]
-  tokens = Prop.pair(Prop.list(Prop.one_of(DRAWN), 24), Prop.list(Prop.int(0, WORK), 3))
+  tokens = Prop.pair(Prop.list(Prop.one_of(DRAWN), 24), Prop.list(Prop.one_of([LOCK, UNLOCK, WORK, RETURN, GOTO]), 3))
   return Prop.map(tokens, &program_of)
 end
 
-## Checks `runs` functions, from `seed` when it is given, with cchecker (the bytecode `program`, run in specs/). Every
-## rule that a path within the exact counts breaks is reported (no false negative), and every finding is one that some
-## path breaks, unless a path counts the lock past what cchecker keeps exactly (the documented limit).
+## Checks `runs` functions, from `seed` when it is given, with cchecker (the bytecode `program`, run in specs/): each
+## rule that a path breaks is reported (no false negative), each code reported is a rule that a path breaks (no false
+## positive), and the exit code is 1 with findings and 0 without.
 export def walk_agrees(program: String, folder: String, runs: Int, seed: Optional[Int]) -> Result[Void]
   config = Prop.Config(runs: runs, seed: seed, shrinks: Props.SHRINKS)
   return Prop.check(programs(), config) do |generated|
@@ -152,21 +151,14 @@ def block(tokens: List[Int], at: Int, loop: Bool, breakable: Bool, stops: List[I
   return Parsed(stmts: stmts, at: i, stop: -1)
 end
 
-# Compares what cchecker reported with the oracle.
+# Compares what cchecker reported with the oracle: a code is reported if and only if a path breaks its rule.
 def agrees(ran: Result[Props.Output], generated: Program, source: String) -> Result[Void]
   output = try ran
   reported = [NOT_RELEASED, NOT_HELD].select do |code| output.stdout.include?("\"code\":\"#{code}\"") end
-  sure = broken(exits(generated, EXACT).ret)
-  wide = exits(generated, WIDE)
-  possible = broken(wide.ret)
-  missing = sure.select do |code| not reported.include?(code) end
-  if not missing.empty?
-    return error("missed #{missing.join(", ")} (#{exit_of(output.code, reported)}), in:\n#{source}\n#{output.stdout}")
-  end
-
-  extra = reported.select do |code| not possible.include?(code) end
-  if wide.peak <= EXACT and not extra.empty?
-    return error("no path breaks #{extra.join(", ")}, in:\n#{source}\n#{output.stdout}")
+  expected = broken(exits(generated))
+  if reported != expected
+    got = "exit code #{output.code}, reported [#{reported.join(", ")}]"
+    return error("expected [#{expected.join(", ")}], #{got}, in:\n#{source}\n#{output.stdout}#{output.stderr}")
   end
 
   expected_code = 0
@@ -179,10 +171,6 @@ def agrees(ran: Result[Props.Output], generated: Program, source: String) -> Res
   end
 
   return ok()
-end
-
-def exit_of(code: Int, reported: List[String]) -> String
-  return "exit code #{code}, reported [#{reported.join(", ")}]"
 end
 
 # The rules that the counts at the returns break: a lock held, or released more than taken.
@@ -199,71 +187,89 @@ def broken(counts: List[Int]) -> List[String]
   return codes
 end
 
-# The oracle: the counts of the lock at the returns of the function, on every path whose counts stay within `bound`
-# (in `ret`), and the largest count reached (in `peak`). A `goto out` and the end of the body run the cleanup, then
-# return; a `return` returns at once.
-def exits(generated: Program, bound: Int) -> Flow
-  body = run_block(generated.body, [0], bound)
-  cleanup = run_block(generated.cleanup, merged(body.normal, body.jump), bound)
-  return Flow(ret: merged(body.ret, cleanup.normal), peak: [body.peak, cleanup.peak].max.unwrap_or(0))
+# The oracle: the counts of the lock at the returns of the function, on every path. The label `out:` is reached
+# from the end of the body and from each `goto out`, also one in the cleanup, until no new count comes; the end of
+# the cleanup and each `return` return.
+def exits(generated: Program) -> List[Int]
+  body = run_block(generated.body, [0])
+  entry = merged(body.normal, body.jump)
+  cleanup = run_block(generated.cleanup, entry)
+  label = merged(entry, cleanup.jump)
+  while label != entry
+    entry = label
+    cleanup = run_block(generated.cleanup, entry)
+    label = merged(entry, cleanup.jump)
+  end
+
+  return merged(body.ret, merged(cleanup.ret, cleanup.normal))
 end
 
-def run_block(stmts: List[Stmt], counts: List[Int], bound: Int) -> Flow
+def run_block(stmts: List[Stmt], counts: List[Int]) -> Flow
   flow = Flow(normal: counts)
   for stmt in stmts
-    one = run_stmt(stmt, flow.normal, bound)
+    one = run_stmt(stmt, flow.normal)
     flow = joined(flow.with(normal: []), one)
   end
 
   return flow
 end
 
-# The kinds are the tokens above: 0 LOCK, 1 UNLOCK, 3 IF, 6 WHILE, 7 BREAK, 8 CONTINUE, 9 RETURN, 10 GOTO, 11 SWITCH.
-def run_stmt(stmt: Stmt, counts: List[Int], bound: Int) -> Flow
-  case stmt.kind
-    0 -> return moved(counts, 1, bound)
-    1 -> return moved(counts, -1, bound)
-    3 -> return joined(run_block(stmt.body, counts, bound), run_block(stmt.other, counts, bound))
-    6 -> return run_loop(stmt.body, counts, bound)
-    7 -> return Flow(brk: counts)
-    8 -> return Flow(cont: counts)
-    9 -> return Flow(ret: counts)
-    10 -> return Flow(jump: counts)
-    11 -> return run_switch(stmt.cases, counts, bound)
-    _ -> return Flow(normal: counts)
+def run_stmt(stmt: Stmt, counts: List[Int]) -> Flow
+  kind = stmt.kind
+  if kind == LOCK or kind == UNLOCK
+    return Flow(normal: moved(counts, kind == LOCK))
+  elsif kind == IF
+    return joined(run_block(stmt.body, counts), run_block(stmt.other, counts))
+  elsif kind == WHILE
+    return run_loop(stmt.body, counts)
+  elsif kind == BREAK
+    return Flow(brk: counts)
+  elsif kind == CONTINUE
+    return Flow(cont: counts)
+  elsif kind == RETURN
+    return Flow(ret: counts)
+  elsif kind == GOTO
+    return Flow(jump: counts)
+  elsif kind == SWITCH
+    return run_switch(stmt.cases, counts)
   end
+
+  return Flow(normal: counts)
 end
 
-# Each count moved by `by`; a count past `bound` is a path the oracle does not follow, and only raises the peak.
-def moved(counts: List[Int], by: Int, bound: Int) -> Flow
-  next_counts = counts.map do |count| count + by end
-  peak = next_counts.map do |count| count.abs end.max.unwrap_or(0)
-  return Flow(normal: next_counts.select do |count| count.abs <= bound end, peak: peak)
+# Each count after a take (or a release), held within CLAMP.
+def moved(counts: List[Int], take: Bool) -> List[Int]
+  by = -1
+  if take
+    by = 1
+  end
+
+  return merged([], counts.map do |count| [[count + by, CLAMP].min.unwrap_or(0), -CLAMP].max.unwrap_or(0) end)
 end
 
 # The head of the loop is reached from before it and after each turn (the end of the body or a `continue`), until no
 # new count comes. The loop ends at the head (its condition false) or at a `break`.
-def run_loop(body: List[Stmt], counts: List[Int], bound: Int) -> Flow
+def run_loop(body: List[Stmt], counts: List[Int]) -> Flow
   head = counts
-  turn = run_block(body, head, bound)
+  turn = run_block(body, head)
   next_head = merged(head, merged(turn.normal, turn.cont))
   while next_head != head
     head = next_head
-    turn = run_block(body, head, bound)
+    turn = run_block(body, head)
     next_head = merged(head, merged(turn.normal, turn.cont))
   end
 
-  return Flow(normal: merged(head, turn.brk), ret: turn.ret, jump: turn.jump, peak: turn.peak)
+  return Flow(normal: merged(head, turn.brk), ret: turn.ret, jump: turn.jump)
 end
 
 # Each case is entered from the switch and from the case before it that does not break; with no `default`, the switch
 # also goes on after it.
-def run_switch(cases: List[List[Stmt]], counts: List[Int], bound: Int) -> Flow
+def run_switch(cases: List[List[Stmt]], counts: List[Int]) -> Flow
   flow = Flow(normal: [])
   falling: List[Int] = []
   breaks = counts
   for one in cases
-    ran = run_block(one, merged(counts, falling), bound)
+    ran = run_block(one, merged(counts, falling))
     falling = ran.normal
     breaks = merged(breaks, ran.brk)
     flow = joined(flow, ran.with(normal: [], brk: []))
@@ -279,7 +285,6 @@ def joined(a: Flow, b: Flow) -> Flow
     cont: merged(a.cont, b.cont),
     ret: merged(a.ret, b.ret),
     jump: merged(a.jump, b.jump),
-    peak: [a.peak, b.peak].max.unwrap_or(0),
   )
 end
 
@@ -293,32 +298,35 @@ end
 
 def stmt_lines(stmt: Stmt, depth: Int) -> List[String]
   pad = "  " * depth
-  case stmt.kind
-    0 -> return ["#{pad}pthread_mutex_lock(&m);"]
-    1 -> return ["#{pad}pthread_mutex_unlock(&m);"]
-    3 ->
-      lines = ["#{pad}if (pick(#{stmt.id})) {"].concat(lines_of(stmt.body, depth + 1))
-      if not stmt.other.empty?
-        lines = lines.push("#{pad}} else {").concat(lines_of(stmt.other, depth + 1))
-      end
+  kind = stmt.kind
+  simple = {
+    LOCK: "pthread_mutex_lock(&m);",
+    UNLOCK: "pthread_mutex_unlock(&m);",
+    BREAK: "break;",
+    CONTINUE: "continue;",
+    RETURN: "return 0;",
+    GOTO: "goto out;",
+  }
 
-      return lines.push("#{pad}}")
+  if kind == IF
+    lines = ["#{pad}if (pick(#{stmt.id})) {"].concat(lines_of(stmt.body, depth + 1))
+    if not stmt.other.empty?
+      lines = lines.push("#{pad}} else {").concat(lines_of(stmt.other, depth + 1))
+    end
 
-    6 -> return ["#{pad}while (pick(#{stmt.id})) {"].concat(lines_of(stmt.body, depth + 1)).push("#{pad}}")
-    7 -> return ["#{pad}break;"]
-    8 -> return ["#{pad}continue;"]
-    9 -> return ["#{pad}return 0;"]
-    10 -> return ["#{pad}goto out;"]
-    11 ->
-      lines = ["#{pad}switch (pick(#{stmt.id})) {"]
-      i = 0
-      for one in stmt.cases
-        lines = lines.push("#{pad}case #{i}: ;").concat(lines_of(one, depth + 1))
-        i += 1
-      end
+    return lines.push("#{pad}}")
+  elsif kind == WHILE
+    return ["#{pad}while (pick(#{stmt.id})) {"].concat(lines_of(stmt.body, depth + 1)).push("#{pad}}")
+  elsif kind == SWITCH
+    lines = ["#{pad}switch (pick(#{stmt.id})) {"]
+    i = 0
+    for one in stmt.cases
+      lines = lines.push("#{pad}case #{i}: ;").concat(lines_of(one, depth + 1))
+      i += 1
+    end
 
-      return lines.push("#{pad}}")
-
-    _ -> return ["#{pad}work();"]
+    return lines.push("#{pad}}")
   end
+
+  return ["#{pad}#{simple.get(kind).unwrap_or("work();")}"]
 end
