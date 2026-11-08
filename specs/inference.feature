@@ -110,11 +110,13 @@ Feature: Roots inferred from libuv callbacks
       """
 
     Examples:
-      | call           | args              |
-      | uv_queue_work  | h, h, slow, quick |
-      | uv_timer_start | h, quick, slow, 0 |
-      | uv_close       | h, 0              |
-      | uv_close       | h, sleep          |
+      | call           | args                |
+      | uv_queue_work  | h, h, slow, quick   |
+      | uv_timer_start | h, quick, slow, 0   |
+      | uv_close       | h, 0                |
+      | uv_close       | h, sleep            |
+      | uv_fs_stat     | h, h, slow, 0       |
+      | uv_getaddrinfo | h, h, 0, slow, h, h |
 
   Scenario: A callback passed on through a parameter is followed, and the text report names the root
     Given the C file "loop.c" holds:
