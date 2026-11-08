@@ -11,6 +11,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   function reaches a blocking call (a `CC_BLOCKING` function, or a known blocking call of libc, pthread or libuv).
   `CC-EFFECT-HOT-ALLOCATES` and `CC-EFFECT-HOT-SYSCALL`: a `CC_HOT` function allocates or makes a system call. The
   message and the new `path` field of `--json` give the call path.
+- Suppressions with a reason: a comment `cchecker: ignore CODE: reason` on the line of a finding or the line above,
+  and `CC_IGNORE("CODE", "reason")` on a function for the rules. `--json` lists them under `suppressed`; one that
+  matches no finding is `CC-UNUSED-IGNORE`; a suppressed finding never goes into the baseline.
 - `--clang PROGRAM`, the clang that dumps the AST. Under `CCHECKER_AST`, `cchecker.h` writes the annotations as
   `deprecated` attributes, whose text clang 19 keeps in its JSON AST.
 

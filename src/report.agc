@@ -1,16 +1,19 @@
 ## What a run prints.
 
 import {Finding, ToolError} from "findings"
+import {Suppressed} from "suppressions"
 
 ## The result of a run. `findings` are the new ones; `baselined` were accepted by the baseline, and `fixed` are
 ## accepted findings of the tools and files of the run that no tool found this time. `skipped` counts the files that
-## were left out because they are outside the working directory.
+## were left out because they are outside the working directory. `suppressed` are the findings that a suppression took
+## out.
 export struct Report
   findings: List[Finding]
   baselined: Int
   fixed: Int
   errors: List[ToolError]
   skipped: Int
+  suppressed: List[Suppressed] = []
 end
 
 # The JSON form of a report, which says in `clean` whether the run is clean.
@@ -21,6 +24,7 @@ struct Encoded
   fixed: Int
   errors: List[ToolError]
   skipped: Int
+  suppressed: List[Suppressed]
 end
 
 ## Returns the report for people: one line for each finding, then a summary line.
@@ -39,6 +43,7 @@ export def json(report: Report) -> String
       fixed: report.fixed,
       errors: report.errors,
       skipped: report.skipped,
+      suppressed: report.suppressed,
     ),
   )
 end
@@ -58,6 +63,10 @@ def summary(report: Report) -> String
 
   if report.fixed > 0
     notes = notes.push("#{report.fixed} fixed since the baseline")
+  end
+
+  if not report.suppressed.empty?
+    notes = notes.push("#{report.suppressed.size} suppressed")
   end
 
   tail = ""

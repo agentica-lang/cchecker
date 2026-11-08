@@ -8,19 +8,23 @@ import {Finding, ToolError} from "findings"
 import {Options} from "options"
 import Paths from "paths"
 import Report from "report"
+import Suppressions from "suppressions"
 import ToolKind from "tool_kind"
 import {Tool} from "tool_kind"
 import Tools from "tools"
+import Files from "files"
 import {Unit} from "unit"
 
 # The compile database that a run without FILE or -p reads.
 DEFAULT_DATABASE = "compile_commands.json"
 
-# What the tools made of all the jobs, before the paths are shortened and the repeats taken out.
+# What the tools made of all the jobs, before the paths are shortened and the repeats taken out. `units` are the
+# translation units of the rules, which also hold the CC_IGNORE of the functions.
 struct Collected
   findings: List[Finding]
   errors: List[ToolError]
   ran: List[String]
+  units: List[Unit]
 end
 
 # The jobs of a run, the files that were left out because they are outside the working directory, and the entries of
@@ -51,12 +55,15 @@ export def run(options: Options) -> Result[Int]
   end
 
   collected = try collect_in_scratch(options, plan.jobs, scratch)
-  findings = (
+  found = (
     collected.findings
     |> localize(cwd, options.exclude)
     |> Findings.unique()
-    |> Findings.sort()
   )
+
+  ignores = try ignores_of(found, plan, collected.units, cwd)
+  applied = Suppressions.apply(found, ignores, Set.new(collected.ran))
+  findings = Findings.sort(applied.findings)
 
   scope = scope_of(options, plan, collected)
   case options.baseline
@@ -75,6 +82,7 @@ export def run(options: Options) -> Result[Int]
             fixed: split.fixed,
             errors: collected.errors,
             skipped: plan.skipped.size,
+            suppressed: applied.suppressed,
           ),
         ),
       )
@@ -88,6 +96,7 @@ export def run(options: Options) -> Result[Int]
             fixed: 0,
             errors: collected.errors,
             skipped: plan.skipped.size,
+            suppressed: applied.suppressed,
           ),
         ),
       )
@@ -288,7 +297,39 @@ def collect(options: Options, jobs: List[Tools.Job]) -> Collected
     end
   end
 
-  return Collected(findings: findings.concat(Effects.check(units)), errors: errors, ran: ran)
+  return Collected(findings: findings.concat(Effects.check(units)), errors: errors, ran: ran, units: units)
+end
+
+# The suppressions of the run: the comments in the files it ran and in the files of its findings, and the CC_IGNORE of
+# the functions it read. A file that cannot be read has none.
+def ignores_of(
+  findings: List[Finding],
+  plan: Plan,
+  units: List[Unit],
+  cwd: String,
+) -> Result[List[Suppressions.Ignore]]
+  files = findings.map do |f| f.file end.concat(plan.jobs.map do |job| job.shown end).uniq
+  ignores: List[Suppressions.Ignore] = []
+  for file in files
+    case Files.read_all(file)
+      ok(text) -> ignores = ignores.concat(try Suppressions.in_text(file, text))
+      error(_) -> next
+    end
+  end
+
+  for function in Effects.functions(units)
+    shown = Paths.inside(cwd, function.file)
+    if function.defined and shown.some?
+      for mark in function.marks
+        case try Suppressions.of_mark(shown.unwrap!, function.line, function.column, mark)
+          some(ignore) -> ignores = ignores.push(ignore)
+          none -> next
+        end
+      end
+    end
+  end
+
+  return ok(ignores)
 end
 
 # Shortens the paths to be relative to the working directory, and drops what is outside it (system and third-party
