@@ -42,7 +42,7 @@ OPTIONS = [
   Opt(
     name: "checks",
     metavar: "LIST",
-    help: "clang-tidy checks, after those of .clang-tidy (default: see the README)",
+    help: "clang-tidy checks, after those of .clang-tidy (default: see docs/usage.md)",
   ),
   Opt(
     name: "jobs",

@@ -255,6 +255,61 @@ Feature: The settings of a project
       (no [tool.cchecker] table; read as a cchecker file)
       """
 
+  Scenario: A plain file of -c with an unknown key gets no note about a manifest
+    Given the file "other.toml" holds:
+      """
+      [rots]
+      short = ["tick"]
+      """
+    When I run cchecker in its folder with "--tools rules -c other.toml blocks.c -- -I../../../include"
+    Then the exit code is 2
+    And the errors include:
+      """
+      rots
+      """
+    And the errors do not include:
+      """
+      no [tool.cchecker] table
+      """
+
+  Scenario: --update-baseline with -c is refused when the file leaves out a short root, even named as hot
+    Given the C file "more.c" holds:
+      """
+      unsigned int sleep(unsigned int seconds);
+      int tock(void) { return (int)sleep(1); }
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [roots]
+      short = ["tock"]
+      """
+    And the file "other.toml" holds:
+      """
+      [roots]
+      hot = ["tock"]
+      """
+    When I run cchecker in its folder with "--tools rules -b base.json --update-baseline -c other.toml more.c"
+    Then the exit code is 2
+    And the errors include:
+      """
+      (short: tock)
+      """
+    And the file "$DIR/base.json" does not exist
+    When I run cchecker in its folder with "--tools rules -b base.json --update-baseline more.c"
+    Then the exit code is 0
+
+  Scenario: --update-baseline with --no-infer names only that cause
+    When I run cchecker in its folder with "--tools rules -b base.json --update-baseline --no-infer blocks.c"
+    Then the exit code is 2
+    And the errors include:
+      """
+      --no-infer
+      """
+    And the errors do not include:
+      """
+      defaults
+      """
+
   Scenario: A run of some files says that it did not check the names of [roots]
     Given the file "cchecker.toml" holds:
       """

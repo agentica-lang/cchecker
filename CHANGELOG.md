@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (a double restore).
 - The body of a `set` with its own `CC_PAIR` may leave another pair set only on a successful return: a return of a
   negative constant, a null pointer or a false bool that leaves one set is `CC-PATH-PAIR-NOT-RESTORED`.
+- `--update-baseline` with `-c FILE` is refused when the file leaves out a `short` or `hot` name of `[roots]` of the
+  project settings, and the refusal names only its causes.
+- The `first:` unresolved callback shown is one inside the working directory when there is one.
+- The note about a missing `[tool.cchecker]` table is shown only for a `-c` file that has a `name`, as a manifest does.
 - `CC_IGNORE` takes codes of the rules only (another code is a usage error), and each code of a suppression is used
   on its own: a stale second code is `CC-UNUSED-IGNORE`.
 - Suppression comments read `///`, `//!` and tabs between codes, and refuse near-miss markers (`ignored`).
