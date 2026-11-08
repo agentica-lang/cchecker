@@ -15,9 +15,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and counted in `skipped_declarations` of `--json`.
 - **Breaking:** the default tools are now `gcc,clang-tidy,rules`, so `clang` is needed too; `--tools gcc,clang-tidy`
   runs without it.
-- Suppressions with a reason: a comment `cchecker: ignore CODE: reason` on the line of a finding or the line above,
-  and `CC_IGNORE("CODE", "reason")` on a function for the rules. `--json` lists them under `suppressed`; one that
-  matches no finding is `CC-UNUSED-IGNORE`; a suppressed finding never goes into the baseline.
+- Suppressions with a reason: a comment `cchecker: ignore CODE: reason` after the code of a finding's line or alone on
+  the line above, and `CC_IGNORE("CODE", "reason")` on a function for the rules. `--json` lists them under
+  `suppressed`; one that matches no finding is `CC-UNUSED-IGNORE`; neither goes into the baseline.
 - Locks on every path: a control flow graph of each function that takes or releases a lock.
   `CC-PATH-LOCK-NOT-RELEASED`: a path returns with a lock the function took; `CC-PATH-LOCK-NOT-HELD`: a path releases
   a lock it did not take. `CC_ACQUIRES(lock)` and `CC_RELEASES(lock)` mark the helpers that take or drop a lock for
