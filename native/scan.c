@@ -71,6 +71,9 @@ static bool has(slice a, char c) { return a.n > 0 && memchr(a.s, c, a.n) != NULL
 static bool space(char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\f' || c == '\r'; }
 
 static slice strip(slice a) {
+  /* clang indents with spaces, hundreds of them in a deep expression: eight at a time first. */
+  static const char eight[8] = {' ', ' ', ' ', ' ', ' ', ' ', ' ', ' '};
+  while (a.n >= 8 && memcmp(a.s, eight, 8) == 0) a.s += 8, a.n -= 8;
   while (a.n > 0 && space(a.s[0])) a.s++, a.n--;
   while (a.n > 0 && space(a.s[a.n - 1])) a.n--;
   return a;
@@ -127,6 +130,7 @@ typedef struct {
   char *data;
   size_t cap, start, end;
   bool eof;
+  bool any_bytes; /* files() reads only ASCII keys: it leaves the UTF-8 check to scan() */
   const char *error;
 } lines;
 
@@ -181,7 +185,7 @@ static bool next_line(lines *r, slice *line, bool *done) {
       r->error = "a line of the AST dump is longer than 16777216 bytes";
       return false;
     }
-    if (!utf8((const unsigned char *)at, n)) {
+    if (!r->any_bytes && !utf8((const unsigned char *)at, n)) {
       r->error = "the AST dump is not UTF-8";
       return false;
     }
@@ -227,6 +231,7 @@ static an_term files(an_env *env, int argc, const an_term *argv) {
   lines r;
   an_term failure;
   if (!open_lines(env, argv[0], &r, &failure)) return failure;
+  r.any_bytes = true;
   /* Few distinct files (some hundreds), each seen many times: a linear search over the seen ones, last hit first. */
   buf seen = {0};
   size_t *offsets = NULL, count = 0, cap = 0, last = 0;
@@ -306,6 +311,7 @@ typedef struct {
   bool has_expansion_key, has_direct, has_expansion;
   buf direct, expansion; /* `FILE, LINE, COL` as JSON text */
   slice col; /* the `col` of the location line being kept, set by located() */
+  buf marked; /* the location line being written, kept between lines to spare an allocation for each */
   buf out; /* the kept declarations, joined by ",\n" */
   size_t kept;
   buf oversized; /* the names, each ended by a NUL */
@@ -521,7 +527,7 @@ static bool one_of(slice v, const char *const *set, size_t n) {
   return false;
 }
 
-static void deeper_key(state *s, slice line) {
+static void deeper_key(state *s, slice line, slice text) {
   static const char *const seen_through[] = {"\"ImplicitCastExpr\"", "\"ImplicitValueInitExpr\""};
   static const char *const literals[] = {"\"IntegerLiteral\"", "\"FloatingLiteral\"", "\"CharacterLiteral\""};
   if (s->phase != KEPT) return;
@@ -536,7 +542,6 @@ static void deeper_key(state *s, slice line) {
     return;
   }
   if (!s->items) return;
-  slice text = strip(line);
   if (starts(text, LIT("\"castKind\": ")) && ends(value_of(text, LIT("\"castKind\": ")), LIT("ToPointer\""))) {
     s->array = false;
     return;
@@ -591,26 +596,25 @@ static bool to_int(slice v, int64_t *out) {
   return true;
 }
 
-static void located(state *s, slice line, slice text) {
-  (void)line;
+static void located(state *s, slice text) {
   char number[32];
   int written = snprintf(number, sizeof number, "%lld", (long long)s->line);
-  buf marked = {0};
-  puts_(&marked, "\"cc_file\": ");
-  put(&marked, s->encoded, s->encoded_n);
-  puts_(&marked, ", \"cc_line\": ");
-  put(&marked, number, (size_t)written);
-  puts_(&marked, ", ");
-  put(&marked, text.s, text.n);
+  buf *marked = &s->marked;
+  marked->len = 0;
+  puts_(marked, "\"cc_file\": ");
+  put(marked, s->encoded, s->encoded_n);
+  puts_(marked, ", \"cc_line\": ");
+  put(marked, number, (size_t)written);
+  puts_(marked, ", ");
+  put(marked, text.s, text.n);
   s->col = value_of(text, LIT("\"col\": "));
   if (s->phase == OPEN && !s->spelling) s->phase = s->inside ? KEPT : DROPPED;
-  if (marked.failed) s->out.failed = true;
-  keep(s, (slice){marked.data ? marked.data : "", marked.len});
-  free(marked.data);
+  if (marked->failed) s->out.failed = true;
+  keep(s, (slice){marked->data ? marked->data : "", marked->len});
 }
 
-static void located_or_kept(state *s, slice line) {
-  slice text = strip(line);
+/* `text` is the line without its indent. */
+static void located_or_kept(state *s, slice text) {
   if (s->included) {
     s->included = false;
   } else if (starts(text, LIT("\"includedFrom\": {"))) {
@@ -625,10 +629,10 @@ static void located_or_kept(state *s, slice line) {
     int64_t n;
     if (to_int(value_of(text, LIT("\"line\": ")), &n)) s->line = n;
   } else if (starts(text, LIT("\"col\": "))) {
-    located(s, line, text);
+    located(s, text);
     return;
   }
-  keep(s, line);
+  keep(s, text);
 }
 
 static void close_decl(state *s) {
@@ -681,13 +685,14 @@ static void step(state *s, slice line) {
     }
     return;
   }
+  slice text = strip(line);
   if (starts(line, LIT("      \"")) || starts(line, LIT("        \""))) {
     top_key(s, line);
   } else {
-    deeper_key(s, line);
+    deeper_key(s, line, text);
   }
   if (s->phase == DROPPED) return;
-  located_or_kept(s, line);
+  located_or_kept(s, text);
 }
 
 /* scan(path: String, places: List[Place], prune: Bool) -> Result[NativeDump] */
@@ -727,7 +732,7 @@ static an_term scan(an_env *env, int argc, const an_term *argv) {
   while (next_line(&r, &line, &done) && !done) step(&s, line);
   puts_(&s.out, "]");
   bool failed = s.out.failed || s.decl.failed || s.name.failed || s.desugared.failed || s.oversized.failed ||
-                s.direct.failed || s.expansion.failed;
+                s.direct.failed || s.expansion.failed || s.marked.failed;
   if (r.error) {
     result = an_error(env, r.error, strlen(r.error));
   } else if (failed) {
@@ -750,6 +755,7 @@ static an_term scan(an_env *env, int argc, const an_term *argv) {
   free(s.name.data);
   free(s.desugared.data);
   free(s.direct.data);
+  free(s.marked.data);
   free(s.expansion.data);
   free(s.oversized.data);
   close_lines(&r);
