@@ -373,7 +373,9 @@ with the reason. A call through a function pointer does nothing to the locks.
 Limits: a lock is counted by its text, so a lock taken in a loop over several objects (`lock(&a[i]->mu)`), locks
 taken hand over hand, or a pointer that is set again between the lock and the unlock (`q = q->next`) can give false
 findings; the result of a lock stored before the test (`r = trylock(&q->mu); if (r == 0)`) takes nothing; a global
-that a called function changes keeps the value the path knew.
+that a called function changes keeps the value the path knew; a lock taken more than twice on a path, with no release
+between, counts as taken twice (and one released more than twice as released twice), so such a path can give a false
+finding or miss one.
 
 ### What runs while a lock is held
 
@@ -565,7 +567,8 @@ declaration of 16 million lines of the dump, a function over the guard of nodes 
 
 `specs/properties.feature` holds property tests, with the [prop](https://github.com/agentica-lang/packages) package
 (`make deps` installs it into `deps/`; cchecker itself needs no package): a law of the rules is checked on generated C
-files, and a failure shows the seed and the shrunk C file. `make test` runs a few cases and `make test-slow` many.
+files (tables of function pointers, and functions whose lock walk is compared with an oracle that follows all their
+paths), and a failure shows the seed and the shrunk C file. `make test` runs a few cases and `make test-slow` many.
 `CCHECKER_PROP_SEED=SEED agentica test --only "NAME" specs/properties.feature` runs the cases of a failure again.
 
 `make bench` fetches Agentica at a pinned commit (`AGENTICA_BENCH_COMMIT`) into `.bench/`, with only the submodules

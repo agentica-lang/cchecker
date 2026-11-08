@@ -3,6 +3,7 @@
 
 import BDD from "std/bdd"
 import Paths from "../src/paths"
+import LockProps from "lock_props"
 import Props from "props"
 
 # The steps run from the folder where `agentica test` runs, the root of the repository.
@@ -44,6 +45,7 @@ def main() -> Void
     BDD.step("the process written in {string} has ended", &process_ended),
     BDD.step("cchecker finds the blocking function of {int} generated tables", &tables_hold),
     BDD.step("cchecker finds nothing in {int} generated tables of a function that does not block", &tables_clean),
+    BDD.step("the lock walk agrees with the oracle on {int} generated functions", &walks_agree),
   ])
 end
 
@@ -300,6 +302,10 @@ end
 
 def tables_clean(ctx: BDD.Context, args: List[String]) -> BDD.Context
   return with_compiled(ctx, args[0].to_i!, &Props.scanner_blames_nothing)
+end
+
+def walks_agree(ctx: BDD.Context, args: List[String]) -> BDD.Context
+  return with_compiled(ctx, args[0].to_i!, &LockProps.walk_agrees)
 end
 
 # cchecker is compiled once into the folder of the scenario, so that each generated case is one short run.
