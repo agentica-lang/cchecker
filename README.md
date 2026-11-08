@@ -572,8 +572,8 @@ declaration of 16 million lines of the dump, a function over the guard of nodes 
 `specs/properties.feature` holds property tests, with the [prop](https://github.com/agentica-lang/packages) package
 (`make deps` installs it into `deps/`; cchecker itself needs no package): a law of the rules is checked on generated C
 files (tables of function pointers, functions whose lock walk is compared with an oracle that follows all their
-paths, and suppressions placed at random next to findings), and a failure shows the seed and the shrunk C file. `make test` runs a few cases and `make test-slow` many.
-`CCHECKER_PROP_SEED=SEED agentica test --only "NAME" specs/properties.feature` runs the cases of a failure again.
+paths, and suppressions placed at random next to findings), and a failure shows the seed and the shrunk C file.
+`make test` runs a few cases and `make test-slow` many. `CCHECKER_PROP_SEED=SEED agentica test --only "NAME" specs/properties.feature` runs the cases of a failure again.
 
 `make bench` fetches Agentica at a pinned commit (`AGENTICA_BENCH_COMMIT`) into `.bench/`, with only the submodules
 whose headers its VM reads, and runs `--tools rules` on the 84 files of `vm/`; it fails when a file is not checked. It

@@ -13,6 +13,7 @@ CLEAN = 1
 ALONE = 2
 BLANK = 3
 OTHER = 4
+CALLER = 5
 
 # What a line of code carries: nothing, a trailing comment, or a CC_IGNORE (on a function only).
 NOTHING = 0
@@ -20,7 +21,7 @@ TRAILING = 1
 MARK = 2
 
 # A reason of this value is left out: a usage error.
-NO_REASON = 9
+NO_REASON = 19
 
 # The codes a suppression names: the finding's, a prefix of it, and one of the same tool that never matches here.
 CODES = ["CC-EFFECT-SHORT-BLOCKS", "CC-EFFECT-*", "CC-EFFECT-HOT-SYSCALL"]
@@ -33,8 +34,8 @@ ARGUMENTS = "[\"cc\", \"-I../../../include\", \"-c\", \"case.c\"]"
 # The lines before the generated ones.
 HEADER = ["#include \"cchecker.h\"", "unsigned int sleep(unsigned int seconds);"]
 
-## A line of the generated file. `kind` is a function that blocks or not, a comment alone, a blank line or an
-## unrelated line of code; `attach` what a line of code carries; `code` the index in CODES of the code of its
+## A line of the generated file. `kind` is a function that blocks or not, a comment alone, a blank line, an
+## unrelated line of code (with more code after a trailing `/* */`), or a function that calls the function before it; `attach` what a line of code carries; `code` the index in CODES of the code of its
 ## suppression; `reason` is NO_REASON for a comment with no reason.
 export struct Line
   kind: Int
@@ -60,7 +61,11 @@ end
 
 ## The generator of files: up to 8 lines.
 export def files() -> Prop.Gen[List[Line]]
-  parts = Prop.pair(Prop.pair(Prop.int(0, OTHER), Prop.int(0, 2)), Prop.pair(Prop.int(0, MARK), Prop.int(0, 9)))
+  parts = Prop.pair(
+    Prop.pair(Prop.int(0, CALLER), Prop.int(0, 2)),
+    Prop.pair(Prop.int(0, MARK), Prop.int(0, NO_REASON)),
+  )
+
   return Prop.list(Prop.map(parts, &line_of), 8)
 end
 
@@ -156,12 +161,15 @@ def oracle(lines: List[Line]) -> Outcome
   blocking: List[Int] = []
   usage = false
   number = HEADER.size
+  i = 0
   for line in lines
     number += 1
     code = CODES[line.code]
-    if line.kind == BLOCKING
+    if line.kind == BLOCKING or (line.kind == CALLER and calls_blocking?(lines, i))
       blocking = blocking.push(number)
     end
+
+    i += 1
 
     if line.kind == ALONE
       ignores = ignores.push(Ignore(line: number, code: code, alone: true, mark: false))
@@ -170,7 +178,7 @@ def oracle(lines: List[Line]) -> Outcome
       ignores = ignores.push(Ignore(line: number, code: code, alone: false, mark: false))
       usage = usage or line.reason == NO_REASON
     elsif function?(line) and line.attach == MARK
-      ignores = ignores.push(Ignore(line: number, code: mark_code(line.code), alone: false, mark: true))
+      ignores = ignores.push(Ignore(line: number, code: code, alone: false, mark: true))
     end
   end
 
@@ -215,16 +223,27 @@ def holds?(ignore: Ignore, at: Int) -> Bool
 end
 
 def function?(line: Line) -> Bool
-  return line.kind == BLOCKING or line.kind == CLEAN
+  return line.kind == BLOCKING or line.kind == CLEAN or line.kind == CALLER
 end
 
-# A CC_IGNORE takes whole codes: the prefix is written as the finding's code.
-def mark_code(code: Int) -> String
-  if code == 1
-    return SHORT_BLOCKS
+# The line a CALLER at `i` calls: the nearest function before it that blocks or not, or -1 for none.
+def callee(lines: List[Line], i: Int) -> Int
+  j = i - 1
+  while j >= 0
+    if lines[j].kind == BLOCKING or lines[j].kind == CLEAN
+      return j
+    end
+
+    j -= 1
   end
 
-  return CODES[code]
+  return -1
+end
+
+# Whether a CALLER reaches `sleep`: its callee blocks. Its finding is at the caller, apart from the callee's own.
+def calls_blocking?(lines: List[Line], i: Int) -> Bool
+  j = callee(lines, i)
+  return j >= 0 and lines[j].kind == BLOCKING
 end
 
 # The C file of the lines.
@@ -232,14 +251,15 @@ def c_file(lines: List[Line]) -> String
   body: List[String] = []
   i = 0
   for line in lines
-    body = body.push(text_of(line, i))
+    body = body.push(text_of(line, i, callee(lines, i)))
     i += 1
   end
 
   return HEADER.concat(body).join("\n") + "\n"
 end
 
-def text_of(line: Line, i: Int) -> String
+# The text of the line at `i`; `called` is the function a CALLER calls (-1 for none).
+def text_of(line: Line, i: Int, called: Int) -> String
   comment = comment_of(line, i)
   if line.kind == ALONE
     return comment
@@ -252,10 +272,16 @@ def text_of(line: Line, i: Int) -> String
     code = "CC_SHORT int f#{i}(void) { return (int)sleep(1); }"
   elsif line.kind == CLEAN
     code = "CC_SHORT int f#{i}(void) { return 0; }"
+  elsif line.kind == CALLER and called >= 0
+    code = "CC_SHORT int g#{i}(void) { return f#{called}(); }"
+  elsif line.kind == CALLER
+    code = "CC_SHORT int g#{i}(void) { return 0; }"
   end
 
   if function?(line) and line.attach == MARK
-    return "CC_IGNORE(\"#{mark_code(line.code)}\", \"generated\") #{code}"
+    return "CC_IGNORE(\"#{CODES[line.code]}\", \"generated\") #{code}"
+  elsif line.attach == TRAILING and line.kind == OTHER and i % 2 == 1
+    return "#{code} #{comment} static int w#{i} = 0;"
   elsif line.attach == TRAILING
     return "#{code} #{comment}"
   end
