@@ -174,7 +174,7 @@ Feature: What a baseline covers
       "findings":[],"baselined":1,"fixed":0
       """
 
-  Scenario: A tool that did not start does not make its accepted findings fixed
+  Scenario: A tool that printed too much to be read does not make its accepted findings fixed
     Given the C file "old.json" holds:
       """
       {
@@ -184,7 +184,7 @@ Feature: What a baseline covers
         ]
       }
       """
-    When I run cchecker with "--json --tools gcc --gcc no-such-gcc -b $DIR/old.json fixtures/leak.c"
+    When I run cchecker with "--json --tools gcc --gcc fixtures/fake_gcc_flood.sh -b $DIR/old.json fixtures/leak.c"
     Then the exit code is 2
     And the output includes:
       """
