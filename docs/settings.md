@@ -48,6 +48,8 @@ reaches (`libc_blocking`), and for an inferred root the inference before it
 (`libuv_callbacks_short+libc_blocking`). `source` is not part of the baseline
 key. The full lists are the sets `LIBC_BLOCKING`, `PTHREAD_BLOCKING`,
 `LIBUV_BLOCKING` and `LIBUV_SYSTEM` in [src/known.agc](../src/known.agc).
+The libuv lists (`libuv_blocking`, `libuv_callbacks_short`) match libuv 1.50; a
+call that a later libuv adds is not known until the lists are updated.
 
 | Flag | What it adds |
 |---|---|

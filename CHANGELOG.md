@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `libuv_callbacks_short` also infers the callbacks of `uv_listen`, the idle, prepare, check and signal handles,
   `uv_tcp_close_reset`, UDP, `uv_getaddrinfo`, `uv_getnameinfo`, `uv_random`, the fs event and poll handles, and the
-  `uv_fs_*` requests.
+  `uv_fs_*` requests; the libuv lists match libuv 1.50.
 - `--update-baseline` with `-c FILE` is refused when the file leaves out a `short` or `hot` name of `[roots]` of the
   project settings, and the refusal names only its causes.
 - The `first:` unresolved callback shown is one inside the working directory when there is one.

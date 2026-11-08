@@ -26,6 +26,9 @@ export PTHREAD_BLOCKING = Set.new([
   "pthread_once",
 ])
 
+# The libuv lists (`LIBUV_BLOCKING`, `LIBUV_SYSTEM`, `LOOP_CALLBACKS`) match the calls and argument places of `uv.h`
+# of libuv 1.50.0. A newer libuv may add or change calls: check its `uv.h` against them before relying on it.
+
 ## The calls of libuv that wait. Its file calls run at once, on the calling thread, when they are given no callback:
 ## the rules count one as blocking only when its last argument is NULL or 0, and only when the libc call it makes
 ## blocks (`open`, `read`, `fsync`, `realpath`). The others are in `LIBUV_SYSTEM`.
