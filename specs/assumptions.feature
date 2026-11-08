@@ -2,8 +2,9 @@ Feature: What the project assumes of its functions
   A project can say once what cchecker cannot see in the C: that a function counts as fine for CC_SHORT (it runs
   inline on the right thread only, or reads a descriptor that never blocks), or that no walk goes into a function at
   all (a trace call behind a runtime flag), or that a lock is held for a few instructions only. CC_ASSUME_SHORT, CC_STOP
-  and CC_NO_SYSCALL_UNDER() say it in the C, `[assume] short`, `stop` and `short_locks` in the settings. A name of
-  `[assume]` that no function or lock of the compile database has is an error.
+  and CC_NO_SYSCALL_UNDER() say it in the C, `[assume] short`, `stop` and `short_locks` in the settings;
+  `[assume] stop_fields` names the function-pointer fields that no walk follows. A name of `[assume]` that nothing of
+  the compile database has is an error.
 
   Scenario Outline: A function trusted for CC_SHORT is not walked into by the short rule only (<case>)
     Given the C file "short.c" holds:
@@ -202,7 +203,7 @@ Feature: What the project assumes of its functions
     Then the exit code is 2
     And the errors include:
       """
-      no function or lock of the compile database is named queue.mux (assume.short_locks)
+      no function, lock or field of the compile database is named queue.mux (assume.short_locks)
       """
 
   Scenario: A name of [assume] holds for the static functions of that name in every file
@@ -265,4 +266,70 @@ Feature: What the project assumes of its functions
     And the errors include:
       """
       cchecker: the names of [assume] were not checked
+      """
+
+  Scenario Outline: No rule follows a call through a field of [assume] stop_fields (<case>)
+    Given the C file "fields.c" holds:
+      """
+      #include "pthread.h" /* found in the system folders */
+      #include "unistd.h"
+      #include "cchecker.h"
+
+      struct request { void (*call)(int); void (*done)(int); int fd; };
+      struct queue { CC_NO_SYSCALL_UNDER() pthread_mutex_t mu; };
+      static void slow(int fd) { (void)write(fd, "x", 1); }
+      void setup(struct request *r) { r->call = slow; r->done = slow; }
+      CC_SHORT void tick(struct request *r) { <code> }
+      void push(struct queue *q, struct request *r) { pthread_mutex_lock(&q->mu); <code> pthread_mutex_unlock(&q->mu); }
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [assume]
+      <list>
+      """
+    When I run cchecker in its folder with "--tools rules --json fields.c -- -I../../../include"
+    Then the exit code is <exit>
+    And the output <found>:
+      """
+      "CC-EFFECT-SHORT-BLOCKS"
+      """
+    And the output <found>:
+      """
+      "CC-PATH-SYSCALL-UNDER-LOCK"
+      """
+
+    Examples:
+      | case                 | code                                  | list                           | exit | found            |
+      | not listed           | r->call(r->fd);                       |                                | 1    | includes         |
+      | listed               | r->call(r->fd);                       | stop_fields = ["request.call"] | 0    | does not include |
+      | another field        | r->done(r->fd);                       | stop_fields = ["request.call"] | 1    | includes         |
+      | through a local copy | void (*f)(int) = r->call; f(r->fd);   | stop_fields = ["request.call"] | 1    | includes         |
+
+  Scenario: A field of [assume] stop_fields that no record of the compile database has is an error
+    Given the C file "fields.c" holds:
+      """
+      struct request { void (*call)(int); int fd; };
+      void run(struct request *r) { r->call(r->fd); }
+      """
+    And the file "compile_commands.json" holds:
+      """
+      [{"directory": ".", "file": "fields.c", "arguments": ["cc", "-c", "fields.c"]}]
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [assume]
+      stop_fields = ["request.call"]
+      """
+    When I run cchecker in its folder with "--tools rules"
+    Then the exit code is 0
+    Given the file "cchecker.toml" holds:
+      """
+      [assume]
+      stop_fields = ["request.call", "request.cal"]
+      """
+    When I run cchecker in its folder with "--tools rules"
+    Then the exit code is 2
+    And the errors include:
+      """
+      no function, lock or field of the compile database is named request.cal (assume.stop_fields)
       """
