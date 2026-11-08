@@ -1,3 +1,5 @@
+import Baseline from "../src/baseline"
+import {Finding} from "../src/findings"
 import Suppressions from "../src/suppressions"
 
 LEAK = "CC-GCC-ANALYZER-MALLOC-LEAK"
@@ -86,4 +88,37 @@ def test_of_mark_reads_a_cc_ignore_and_leaves_other_marks() -> Result[Void]
   other = try Suppressions.of_mark("a.c", 3, 5, "cc_short")
   try Test.assert(not other.some?, "a mark of another kind")
   return Test.assert(not Suppressions.of_mark("a.c", 3, 5, "ignore(CC-EFFECT-SHORT-BLOCKS: )").ok?, "no reason")
+end
+
+def test_a_continued_line_comment_and_string_carry_to_the_next_line() -> Result[Void]
+  comment = "int a; // a note \\\n  cchecker: ignore #{LEAK}: a line of the comment\nint b;\n"
+  try Test.eq(try read(comment), ["2 #{LEAK} true"])
+  string = "char *s = \"a \\\n// cchecker: ignore #{LEAK}: in the string\";\n"
+  return Test.eq(try read(string), [])
+end
+
+def test_each_code_of_a_comment_is_used_on_its_own() -> Result[Void]
+  ignores = try Suppressions.in_text("a.c", "int a; // cchecker: ignore #{LEAK}, CC-GCC-X: two codes\n")
+  leak = Finding(code: LEAK, tool: "gcc", file: "a.c", line: 1, column: 5, message: "leak")
+  applied = Suppressions.apply([leak], ignores, Set.new([Baseline.pair("gcc", "a.c")]))
+  try Test.eq(applied.suppressed.size, 1)
+  return Test.eq(applied.findings.map do |f| f.code end, [Suppressions.UNUSED])
+end
+
+def test_a_continuation_with_trailing_blanks_or_a_crlf_carries_too() -> Result[Void]
+  blanks = "int a; // a note \\  \n  cchecker: ignore #{LEAK}: a line of the comment\n"
+  try Test.eq(try read(blanks), ["2 #{LEAK} true"])
+  crlf = "int a; // a note \\\r\n  cchecker: ignore #{LEAK}: a line of the comment\r\n"
+  return Test.eq(try read(crlf), ["2 #{LEAK} true"])
+end
+
+def test_a_code_written_twice_is_one_code() -> Result[Void]
+  return Test.eq(try read("int a; // cchecker: ignore #{LEAK}, #{LEAK}: twice\n"), ["1 #{LEAK} false"])
+end
+
+def test_stale_codes_of_two_tools_give_a_finding_for_each_tool() -> Result[Void]
+  ignores = try Suppressions.in_text("a.c", "int a; // cchecker: ignore #{LEAK}, CC-TIDY-X: two tools\n")
+  ran = Set.new([Baseline.pair("gcc", "a.c"), Baseline.pair("clang-tidy", "a.c")])
+  applied = Suppressions.apply([], ignores, ran)
+  return Test.eq(applied.findings.map do |f| f.tool end, ["gcc", "clang-tidy"])
 end

@@ -5,6 +5,7 @@ import Commands from "commands"
 import Config from "config"
 import Effects from "effects"
 import Findings from "findings"
+import Known from "known"
 import {Finding, ToolError, UncheckedFile, UnresolvedCallback} from "findings"
 import Locking from "locking"
 import {Options} from "options"
@@ -45,6 +46,7 @@ struct Collected
   unresolved: List[UnresolvedCallback] = []
   missing_roots: List[String] = []
   missing_assumed: List[String] = []
+  unknown_targets: List[String] = []
   unchecked: List[UncheckedFile] = []
 end
 
@@ -89,6 +91,20 @@ export def run(options: Options) -> Result[Int]
   end
 
   collected = try collect_in_scratch(options, config, plan.jobs, scratch, cwd)
+  if not config.off.include?(Known.NONBLOCKING_FLAG)
+    for target in collected.unknown_targets
+      if target == ""
+        IO.warn(
+          "cchecker: clang printed no target, so the flags of open, recv and send are not read: they count as blocking",
+        )
+      else
+        IO.warn(
+          "cchecker: the flags of #{target} are not known: open, recv and send count as blocking whatever their flags",
+        )
+      end
+    end
+  end
+
   if collected.skipped_declarations > 0
     IO.warn(
       "cchecker: skipped #{collected.skipped_declarations} declarations too large to read, which name no function",
@@ -273,6 +289,8 @@ end
 # dropped, and the report says so.
 def plan_for(options: Options, entries: List[Commands.Entry], cwd: String, scratch: String) -> Result[Plan]
   wrapped = Tools.timeout_available?()
+  # The target of the rules, once for each set of flags that choose one: most databases have one.
+  targets: Map[String, String] = {}
   jobs: List[Tools.Job] = []
   skipped: List[String] = []
   ignored: List[String] = []
@@ -289,6 +307,16 @@ def plan_for(options: Options, entries: List[Commands.Entry], cwd: String, scrat
         if not Paths.excluded?(cwd, shown, options.exclude)
           for tool in options.tools
             dump = dump_path(tool, scratch, jobs.size)
+            target = ""
+            if tool == Tool.Rules
+              chosen = Tools.target_flags(entry.args).join(" ")
+              if not targets.key?(chosen)
+                targets = targets.put(chosen, Tools.target_of(options.clang, entry))
+              end
+
+              target = targets.get(chosen).unwrap_or("")
+            end
+
             jobs = jobs.push(
               Tools.Job(
                 tool: tool,
@@ -298,6 +326,7 @@ def plan_for(options: Options, entries: List[Commands.Entry], cwd: String, scrat
                 wrapped: wrapped,
                 dump: dump,
                 cwd: cwd,
+                target: target,
               ),
             )
           end
@@ -513,6 +542,7 @@ def collect(options: Options, config: Config.Config, jobs: List[Tools.Job], cwd:
     unresolved: checked.unresolved,
     missing_roots: checked.missing_roots,
     missing_assumed: checked.missing_assumed,
+    unknown_targets: checked.unknown_targets,
     unchecked: unchecked.group_by do |u| "#{u.file}\n#{u.missing}" end
       .values
       .map do |same| same.first end

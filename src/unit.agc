@@ -74,13 +74,17 @@ end
 
 ## A call of `caller`, a function key. A call through a slot has the place of the call, so the path rules find the
 ## functions that a call of a pointer under a lock reaches. A call that takes a lock (`Known.TAKES`) has the class of
-## its lock in `lock` (`queue.mu`, or a global), "" when the rules cannot tell.
+## its lock in `lock` (`queue.mu`, or a global), "" when the rules cannot tell. A call of `Known.FLAG_ARGUMENTS` has
+## the value of its flags in `flags` when they are a constant, else -1, and `named` says that they name the flag that
+## makes it return at once as a constant of an enum.
 export struct Call
   caller: String
   target: Target
   line: Int = 0
   column: Int = 0
   lock: String = ""
+  flags: Int = -1
+  named: Bool = false
 end
 
 ## What a slot gets: a function, by key, or every function of another slot (a copy of a pointer).
@@ -123,7 +127,8 @@ end
 ## The functions, calls and stores of one translation unit, its callbacks of libuv, the graphs of its functions that
 ## take or release a lock or own a pointer, the annotations of its locks, and the findings of the collector rule, which
 ## reads one unit. `too_large` names the functions too large for a graph (`MAX_BODY_NODES`), and `mark_errors` says
-## what is wrong with the lock marks that cannot be read.
+## what is wrong with the lock marks that cannot be read. `target` is the triple of clang that the unit was built for,
+## "" when it is not known.
 export struct Unit
   functions: List[Function]
   calls: List[Call]
@@ -134,6 +139,7 @@ export struct Unit
   mark_errors: List[String] = []
   callbacks: List[Callback] = []
   collected: List[Finding] = []
+  target: String = ""
 end
 
 # A struct or union: its name (a typedef name for an anonymous one), the ids and names of its fields, and their types
@@ -841,6 +847,13 @@ def with_call(tables: Tables, scope: Scope, node: Json, found: Found) -> Found
       call = call.with(lock: lock_class(slot_of(tables, scope, parts[1]).unwrap_or("")))
     end
 
+    # The flags of a call that a flag makes return at once, as the place of its argument says.
+    at = Known.FLAG_ARGUMENTS.get(Ast.referenced_name(callee)).unwrap_or(-1)
+    if at >= 0 and at + 1 < parts.size
+      flag = Known.nonblocking_name(Ast.referenced_name(callee))
+      call = call.with(flags: constant(parts[at + 1]), named: names_flag?(parts[at + 1], flag))
+    end
+
     called = noted.with(calls: noted.calls.push(call))
     return with_stores(called, stores)
   end
@@ -883,6 +896,47 @@ end
 
 def with_callbacks(found: Found, callbacks: List[Callback]) -> Found
   return found.with(callbacks: found.callbacks.concat(callbacks))
+end
+
+# The value of an integer constant written with literals, `|` and `+` (`O_RDONLY | O_NONBLOCK` once the macros are
+# expanded), or -1 for any other expression.
+def constant(node: Json) -> Int
+  value = Flow.see_through(node)
+  parts = Ast.children(value)
+  case Ast.kind(value)
+    "IntegerLiteral" -> return Ast.text(value, "value").to_i.unwrap_or(-1)
+    "BinaryOperator" ->
+      opcode = Ast.text(value, "opcode")
+      if parts.size != 2 or (opcode != "|" and opcode != "+")
+        return -1
+      end
+
+      left = constant(parts[0])
+      right = constant(parts[1])
+      if left < 0 or right < 0
+        return -1
+      end
+
+      if opcode == "+"
+        return left + right
+      end
+
+      return Int.bit_or(left, right)
+    _ -> return -1
+  end
+end
+
+# Whether flags joined with `|` or `+` name the constant of an enum `flag` (`MSG_DONTWAIT | MSG_NOSIGNAL`).
+def names_flag?(node: Json, flag: String) -> Bool
+  value = Flow.see_through(node)
+  parts = Ast.children(value)
+  case Ast.kind(value)
+    "DeclRefExpr" -> return Ast.referenced_kind(value) == "EnumConstantDecl" and Ast.referenced_name(value) == flag
+    "BinaryOperator" ->
+      opcode = Ast.text(value, "opcode")
+      return (opcode == "|" or opcode == "+") and parts.any? do |part| names_flag?(part, flag) end
+    _ -> return false
+  end
 end
 
 # The class of a lock by its slot: a field (`field:queue.mu`) or a global (`var:big_lock`); "" for a local or a

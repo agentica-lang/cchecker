@@ -169,8 +169,56 @@ export LIBGC_ALLOC = Set.new([
   "GC_memalign",
 ])
 
+## The `[library]` flag of the flags that make a blocking call return at once (`FLAG_ARGUMENTS`).
+export NONBLOCKING_FLAG = "libc_nonblocking_flags"
+
+## The calls that a flag makes return at once, and the place of their flags among their arguments (from 0):
+## O_NONBLOCK for `open` and `openat`, MSG_DONTWAIT for the others.
+export FLAG_ARGUMENTS: Map[String, Int] = {"open": 1, "openat": 2, "recv": 3, "send": 3, "recvfrom": 3, "sendto": 3}
+
 ## A family of library knowledge: the flag of `[library]` that turns it on or off, and the calls it says block.
 export struct Family
   flag: String
   calls: Set[String]
+end
+
+## Returns the name of the flag that makes a call of `FLAG_ARGUMENTS` return at once. A C library may define it as
+## a constant of an enum (glibc does for MSG_DONTWAIT), which the AST names.
+export def nonblocking_name(call: String) -> String
+  if call == "open" or call == "openat"
+    return "O_NONBLOCK"
+  end
+
+  return "MSG_DONTWAIT"
+end
+
+## Returns the bit of the flag that makes a call of `FLAG_ARGUMENTS` return at once on `target`, a triple of clang
+## (`x86_64-pc-linux-gnu`), or 0 when the rules do not know its value there: Linux, but on MIPS, SPARC, Alpha and
+## PA-RISC, whose values differ, and macOS.
+export def nonblocking_bit(target: String, call: String) -> Int
+  dontwait = call != "open" and call != "openat"
+  if apple?(target)
+    if dontwait
+      return 0x80
+    end
+
+    return 0x4
+  end
+
+  arch = target.split("-").first
+  odd = ["mips", "sparc", "alpha", "hppa", "parisc"].any? do |prefix| arch.start_with?(prefix) end
+  if target.include?("-linux") and not odd
+    if dontwait
+      return 0x40
+    end
+
+    return 0x800
+  end
+
+  return 0
+end
+
+# Whether a triple of clang is one of Apple's (`arm64-apple-macos`, `x86_64-apple-darwin23`).
+def apple?(target: String) -> Bool
+  return target.include?("-apple-") or target.include?("-darwin") or target.include?("-macos")
 end

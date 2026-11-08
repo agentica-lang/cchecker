@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `CC_IGNORE` takes codes of the rules only (another code is a usage error), and each code of a suppression is used
+  on its own: a stale second code is `CC-UNUSED-IGNORE`.
 - Suppression comments read `///`, `//!` and tabs between codes, and refuse near-miss markers (`ignored`).
 - The rules run 2.6 times faster with 44% less memory (the 84 files of the VM of Agentica at -j 2: 47.0 s and 732 MB
   before, 17.9 s and 411 MB now): a native module in C scans clang's AST. `-j` defaults to the number of cores, and
@@ -21,6 +23,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Assumptions of a project: `CC_ASSUME_SHORT` and `[assume] short` name a function that counts as fine for
   `CC_SHORT` (the short rule does not walk into it); `CC_STOP` and `[assume] stop` one that no rule walks into. A name
   of `[assume]` that no function of the compile database declares is an error.
+- `open` and `openat` with `O_NONBLOCK`, and `recv`, `send`, `recvfrom` and `sendto` with `MSG_DONTWAIT`, are not
+  blocking for `CC_SHORT` when the flag is a constant, with the values of the target (Linux and macOS);
+  `[library] libc_nonblocking_flags` turns it off. `open` of a regular file can still wait for the disk.
 - Short locks: taking a lock marked `CC_NO_SYSCALL_UNDER()`, or named in `[assume] short_locks` (`queue.mu`), is not
   blocking for `CC_SHORT`.
 - A file whose `#include` is not found is not checked, with `cchecker: warning: FILE not checked: HEADER not

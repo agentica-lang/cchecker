@@ -118,15 +118,26 @@ p = malloc(n);
 q = malloc(n); // cchecker: ignore CC-GCC-ANALYZER-*, CC-TIDY-CLANG-ANALYZER-UNIX-MALLOC: same as above
 ```
 
+Name only the codes that fire there: each code that matches nothing is reported (below).
+
 A finding of the rules belongs to a function: `CC_IGNORE("CC-EFFECT-SHORT-BLOCKS", "reason")` on any declaration of
-the function suppresses it (see Annotations). A suppression without a code or a reason, or with a code of no tool, is
-a usage error (exit 2). When two suppressions hold for a finding, the reason of the nearer one is shown, and both count
-as used.
+the function suppresses it (see Annotations); it takes codes of the rules only (checked when the rules run, so a run
+with `--tools gcc` does not see a wrong one). A suppression without a code or a
+reason, or with a code of no tool, is a usage error (exit 2). When two suppressions hold for a finding, the reason of
+the nearer one is shown, and both count as used.
 `--json` lists the suppressed findings under `suppressed`, each with its `reason`, and the summary line counts them. A
-suppression that matches no finding is a finding, `CC-UNUSED-IGNORE`, at the comment or the function, once the run
-covered every tool of its codes on that file, as the baseline does (for the rules, a full run of a compile database):
-a stale one shows when the code changes or a check gets better. Suppressions apply before the baseline, so a
-suppressed finding never goes into it, and neither does a `CC-UNUSED-IGNORE`: the fix is to edit or remove the comment.
+code of a suppression that matches no finding gives a finding, `CC-UNUSED-IGNORE`, at the comment or the function
+(one for each suppression, naming its stale codes), once the run covered the tool of that code on that file, as the
+baseline does (for the rules, a full run of a compile database): a stale one shows when the code changes or a check
+gets better. Suppressions apply before the baseline, so a suppressed finding never goes into it, and neither does a
+`CC-UNUSED-IGNORE`: the fix is to edit or remove the comment.
+
+A suppression is per code, not per message: one `CC-GCC-ANALYZER-MALLOC-LEAK` on a line hides every leak of that line,
+a new one too. A finding is where its tool puts it: gcc reports one inside a macro at the line of the `#define`, so the
+comment goes there, not at the use. A suppression in a block that a configuration leaves out (`#ifdef` of a macro that is
+not defined) is reported unused on a run of that configuration; a project that checks several configurations sees it
+reported in those that skip the block. A `//` comment that
+ends with `\` goes on to the next line, and that line counts as a line of the comment.
 
 ### Options
 
@@ -200,6 +211,7 @@ libuv_blocking = true
 libgc_blocking = true
 libuv_callbacks_short = true
 libgc_alloc = true
+libc_nonblocking_flags = true
 
 [roots]
 short = ["io_poll", "on_timer"]
@@ -227,6 +239,7 @@ it reaches (`libc_blocking`), and for an inferred root the inference before it (
 | `libgc_blocking` | `GC_gcollect` of the Boehm collector, which stops the world |
 | `libuv_callbacks_short` | a `CC_SHORT` root for each function passed as a callback that libuv runs on the loop thread: the `cb` of `uv_timer_start` (argument 1, from 0), `uv_poll_start` (2), `uv_async_init` (2) and `uv_close` (1), the `alloc_cb` and `read_cb` of `uv_read_start` (1 and 2), the callback of `uv_write` (4), `uv_write2` (5), `uv_shutdown` (2), `uv_tcp_connect` (3), `uv_pipe_connect` (3) and `uv_pipe_connect2` (5), and the `after_work_cb` of `uv_queue_work` (3), never its `work_cb`, which runs on the pool (Roots) |
 | `libgc_alloc` | the allocators of the Boehm collector (`GC_malloc`, `GC_malloc_atomic`, `GC_realloc`, `GC_strdup`, their `GC_debug_` forms, ...) to the allocators of `CC_GC_ALLOC`, in the rule on values of the collector (`source` `libgc_alloc`) |
+| `libc_nonblocking_flags` | the flags that make a blocking call return at once: `open` and `openat` with `O_NONBLOCK`, `recv`, `send`, `recvfrom` and `sendto` with `MSG_DONTWAIT`, when the flag argument is a constant (a flag in a variable leaves the call blocking); such a call is not blocking for `CC_SHORT`. `open` with `O_NONBLOCK` is meant for FIFOs and devices: on a regular file it can still wait for the disk, and the rules do not tell the two apart. The values are those of the target clang builds for (Linux, but on MIPS, SPARC, Alpha and PA-RISC, and macOS); on another target only a flag that the C library defines as a constant of an enum (glibc's `MSG_DONTWAIT`) counts, and the run says on standard error that it does not know the values |
 
 A blocking flag changes only the blocking calls of `CC_SHORT`: the rules of `CC_HOT` and of `CC_NO_SYSCALL_UNDER`
 count every known blocking call as a system call whatever the flags.
