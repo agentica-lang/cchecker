@@ -290,7 +290,7 @@ def collector_marks(tables: Tables, nodes: List[Json]) -> Collector.Marks
     case Ast.kind(node)
       "TypedefDecl" ->
         # A typedef of a marked record is marked too: clang does not desugar the pointee of `obj_t *`.
-        named = tables.record_ids.get(record_id_of(node)).map do |r| r.name end.unwrap_or("")
+        named = tables.record_ids.get(own_record_id(node)).map do |r| r.name end.unwrap_or("")
         if marks.include?(GC) or types.include?(named)
           types = types.add(Ast.text(node, "name")).add(named)
         end
@@ -315,16 +315,35 @@ def with_holders(marks: Collector.Marks, tables: Tables) -> Collector.Marks
   grew = true
   while grew
     grew = false
-    for name in tables.records.keys
-      record = tables.records[name]
-      if not grown.holders.include?(name) and record.types.any? do |t| Collector.collector_type?(grown, t) end
-        grown = grown.with(holders: grown.holders.add(name).add(record.name))
+    for record in tables.record_ids.values
+      if not grown.holders.include?(record.name) and record.types.any? do |t| Collector.collector_type?(grown, t) end
+        grown = grown.with(holders: grown.holders.add(record.name))
         grew = true
       end
     end
   end
 
   return grown
+end
+
+# The record that a typedef names itself (`typedef struct obj obj_t`), not one in a pointer or a function type
+# (`typedef value (*make_fn)(void)`); "" for none.
+def own_record_id(node: Json) -> String
+  types = Ast.children(node).select do |child| not Ast.kind(child).end_with?("Attr") end
+  if types.empty?
+    return ""
+  end
+
+  type = types.first
+  if Ast.kind(type) == "ElaboratedType" and not Ast.children(type).empty?
+    type = Ast.children(type).first
+  end
+
+  if Ast.kind(type) != "RecordType"
+    return ""
+  end
+
+  return Ast.text(JSON.get(type, "decl").unwrap_or(JSON.from("")), "id")
 end
 
 # The names of the parameters of a function that own what the caller passes (CC_OWNS or CC_FREES).

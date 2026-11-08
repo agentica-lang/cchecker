@@ -46,8 +46,12 @@ struct Scope
 end
 
 ## Returns whether a type (as clang writes it) is that of a value of the collector: a type marked CC_GC or a pointer to
-## one, or a record that holds one, or an array of those.
+## one, or a record that holds one, or an array of those. A function or a pointer to one is not.
 export def collector_type?(marks: Marks, type: String) -> Bool
+  if type.include?("(")
+    return false
+  end
+
   name = type
   for word in QUALIFIERS
     name = name.replace(word, "")
@@ -60,6 +64,10 @@ export def collector_type?(marks: Marks, type: String) -> Bool
 
   pointer = name.include?("*")
   base = name.replace("*", "").strip
+  if base == ""
+    return false
+  end
+
   return marks.types.include?(base) or (not pointer and marks.holders.include?(base))
 end
 
@@ -97,7 +105,7 @@ export def stores(
   scope = grown(start, written)
   found: Map[String, Finding] = {}
   for decl in static_locals
-    if collector_type?(marks, type_of(decl))
+    if collector_type?(marks, type_of(decl)) and not constant?(type_of(decl))
       local = Ast.text(decl, "name")
       message = "#{name} stores a value of the collector in a static: #{local}"
       found = found.put("#{IN_STATIC} #{local}", at(place, IN_STATIC, message, []))
@@ -142,7 +150,7 @@ export def statics(marks: Marks, nodes: List[Json]) -> List[Finding]
   found: List[Finding] = []
   for node in nodes
     if Ast.kind(node) == "VarDecl" and Ast.text(node, "storageClass") != "extern"
-      if collector_type?(marks, type_of(node))
+      if collector_type?(marks, type_of(node)) and not constant?(type_of(node))
         name = Ast.text(node, "name")
         message = "#{name} is a static that holds a value of the collector"
         found = found.push(at(Ast.place_of(node), IN_STATIC, message, []))
@@ -294,6 +302,19 @@ def shown(node: Json) -> String
     "IntegerLiteral" -> return Ast.text(bare, "value")
     _ -> return "?"
   end
+end
+
+# Whether a variable of the type is constant itself: `const value`, `const value [4]`, `value *const`, not `const
+# value *` (a pointer that may change). Its initializer is all it ever holds, and that is no allocation.
+def constant?(type: String) -> Bool
+  name = type
+  case name.index_of("[")
+    some(at) -> name = name.slice(0, at)
+    none -> name = name
+  end
+
+  stars = name.split("*")
+  return stars.last.include?("const")
 end
 
 def type_of(node: Json) -> String
