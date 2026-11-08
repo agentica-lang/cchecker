@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `CC-PATH-PAIR-NOT-SET`: a `restore` of a `CC_PAIR` with no `set` before it on a path, in a function that calls `set`
+  (a double restore).
+- The body of a `set` with its own `CC_PAIR` may leave another pair set only on a successful return: a return of a
+  negative constant, a null pointer or a false bool that leaves one set is `CC-PATH-PAIR-NOT-RESTORED`.
 - `CC_IGNORE` takes codes of the rules only (another code is a usage error), and each code of a suppression is used
   on its own: a stale second code is `CC-UNUSED-IGNORE`.
 - Suppression comments read `///`, `//!` and tabs between codes, and refuse near-miss markers (`ignored`).

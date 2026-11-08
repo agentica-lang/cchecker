@@ -1,9 +1,10 @@
 Feature: Pairs of calls restored on every path
   CC_PAIR(set, restore) on a function says that in its body, every call of `set` is followed by a call of `restore`
   on every path that returns. On the declaration of `set` itself, it says so in every function that calls `set`. A
-  call of `restore` with no `set` before it does nothing, and a path that ends in a call that does not return does
-  not need the restore. The body of a `set` that carries its own CC_PAIR is how the pair works: it may leave another
-  pair set for its caller.
+  call of `restore` with no `set` before it is a finding in a function that calls `set` on some path, and does nothing
+  in one that never calls it. A path that ends in a call that does not return does not need the restore. The body of a
+  `set` that carries its own CC_PAIR is how the pair works: it may leave another pair set for its caller, except on a
+  return of an error value (a negative constant, a null pointer, a false bool).
 
   Scenario Outline: A call of a set that a path does not restore is a finding at the function (<case>)
     Given the C file "guard.c" holds:
@@ -58,6 +59,83 @@ Feature: Pairs of calls restored on every path
       | set defined       | CC_PAIR(mask_signals, restore_signals) void mask_signals(void); void mask_signals(void) { work(0); } int guarded(int n) { mask_signals(); restore_signals(); return n; }                                  |
       | a set that wraps  | CC_PAIR(mask_signals, restore_signals) void mask_signals(void); CC_PAIR(enter_quiet, leave_quiet) void enter_quiet(void); void leave_quiet(void); void enter_quiet(void) { mask_signals(); } void leave_quiet(void) { restore_signals(); } |
       | restore alone     | CC_PAIR(mask_signals, restore_signals) void mask_signals(void); int reset(int n) { restore_signals(); return n; }                                                                                         |
+
+  Scenario Outline: A restore with no set before it is a finding in a function that calls the set (<case>)
+    Given the C file "guard.c" holds:
+      """
+      #include "cchecker.h"
+
+      void mask_signals(void); void restore_signals(void); int work(int n);
+
+      <code>
+      """
+    When I run cchecker with "--tools rules --json $DIR/guard.c -- -I../include"
+    Then the exit code is <exit>
+    And the output <found>:
+      """
+      {"code":"CC-PATH-PAIR-NOT-SET","tool":"rules","file":"$DIR/guard.c","line":5,"column":44,
+      """
+
+    Examples:
+      | case                | code                                                                                                                         | exit | found            |
+      | restored twice      | CC_PAIR(mask_signals, restore_signals) int guarded(int n) { mask_signals(); restore_signals(); restore_signals(); return n; } | 1    | includes         |
+      | restore first       | CC_PAIR(mask_signals, restore_signals) int guarded(int n) { restore_signals(); mask_signals(); restore_signals(); return n; } | 1    | includes         |
+      | restored once       | CC_PAIR(mask_signals, restore_signals) int guarded(int n) { mask_signals(); restore_signals(); return n; }                    | 0    | does not include |
+      | no set in function  | CC_PAIR(mask_signals, restore_signals) int guarded(int n) { restore_signals(); restore_signals(); return n; }                 | 0    | does not include |
+
+  Scenario: The path of a restore with no set goes from the set to the second restore
+    Given the C file "guard.c" holds:
+      """
+      #include "cchecker.h"
+
+      void gc_pause(void);
+      void gc_resume(void);
+
+      CC_PAIR(gc_pause, gc_resume) int guarded(int n) {
+        gc_pause();
+        gc_resume();
+        gc_resume();
+        return n;
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/guard.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "message":"guarded calls gc_resume with no call of gc_pause before it on a path"
+      """
+    And the output includes:
+      """
+      "path":["7:3 calls gc_pause","8:3 calls gc_resume","9:3 calls gc_resume"]
+      """
+
+  Scenario Outline: A set with its own CC_PAIR leaves no other pair set when it returns an error (<case>)
+    Given the C file "quiet.c" holds:
+      """
+      #include "stdlib.h"
+      #include "cchecker.h"
+
+      void mask_signals(void); void restore_signals(void); int work(int n); static int token;
+      CC_PAIR(mask_signals, restore_signals) void mask_signals(void);
+      CC_PAIR(enter_quiet, leave_quiet) <type> enter_quiet(int n);
+      void leave_quiet(void) { restore_signals(); }
+      <type> enter_quiet(int n) { mask_signals(); if (work(n)) { <failed> } return <ok>; }
+      """
+    When I run cchecker with "--tools rules --json $DIR/quiet.c -- -I../include"
+    Then the exit code is <exit>
+    And the output <found>:
+      """
+      {"code":"CC-PATH-PAIR-NOT-RESTORED","tool":"rules","file":"$DIR/quiet.c","line":8,
+      """
+
+    Examples:
+      | case                   | type   | failed                         | ok                         | exit | found            |
+      | a negative constant    | int    | return -1;                     | 0                          | 1    | includes         |
+      | a null pointer         | void * | return NULL;                   | (void *)&token             | 1    | includes         |
+      | a false bool           | _Bool  | return 0;                      | 1                          | 1    | includes         |
+      | restored on the error  | int    | restore_signals(); return -1;  | 0                          | 0    | does not include |
+      | a positive value       | int    | return 1;                      | 0                          | 0    | does not include |
+      | a zero int             | int    | return 0;                      | 0                          | 0    | does not include |
 
   Scenario: The path of a finding goes from the set to the return that skips the restore
     Given the C file "guard.c" holds:

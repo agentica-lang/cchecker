@@ -1,7 +1,8 @@
 ## The lock rules on the paths of each function: a lock that a function takes is released on every path that returns,
 ## and a lock that it releases is one it holds. The set of a CC_PAIR is a lock too, which its restore releases; a
-## restore with no set before it does nothing. The body of a set with its own CC_PAIR is how the pair works, and may
-## leave another pair set for its caller. A function with CC_ACQUIRES or CC_RELEASES is a helper that takes or
+## restore with no set before it is a finding in a function that calls the set, and does nothing in one that does not.
+## The body of a set with its own CC_PAIR is how the pair works, and may leave another pair set for its caller, except
+## on a return of an error value, after which the caller does not restore. A function with CC_ACQUIRES or CC_RELEASES is a helper that takes or
 ## drops a lock for its callers: its body is how the lock works (a count of nested takes, a spin before the wait), and
 ## the rules trust it and check its callers.
 ##
@@ -25,6 +26,10 @@ export NOT_HELD = "CC-PATH-LOCK-NOT-HELD"
 
 ## The code of a path that returns after a call of the set of a CC_PAIR and no call of its restore.
 export PAIR_NOT_RESTORED = "CC-PATH-PAIR-NOT-RESTORED"
+
+## The code of a path that calls the restore of a CC_PAIR with no call of its set before it, in a function that calls
+## the set on some path.
+export PAIR_NOT_SET = "CC-PATH-PAIR-NOT-SET"
 
 # A lock taken or released more times than this on one path counts as this many, so a loop ends.
 MAX_COUNT = 2
@@ -75,6 +80,10 @@ struct Walker
   roots: Map[String, List[String]]
   locks: Map[String, Lock]
   quiet: Set[String]
+  # The keys of the pairs whose set the function calls on some path.
+  sets: Set[String]
+  # Whether the function is the set of its own CC_PAIR, whose successful returns may leave another pair set.
+  own_set: Bool
 end
 
 # What a walk found: the findings by code and lock key, and whether it went through every path.
@@ -107,7 +116,7 @@ export def check(units: List[Unit]) -> Checked
     for body in unit.bodies
       if not done.include?(body.key) and not helper?(functions.get(body.key)) and not locks_of(body).empty?
         walk = checked(body, functions, rules)
-        findings = findings.concat(kept_findings(walk, body, functions))
+        findings = findings.concat(walk.findings.values)
         if not walk.complete
           incomplete += 1
         end
@@ -213,6 +222,8 @@ def checked(body: Body, functions: Map[String, Function], rules: Held.Rules) -> 
     roots: roots_of(body),
     locks: locks_of(body),
     quiet: Set.new(marks.flat_map(&quiet_keys)),
+    sets: sets_of(body),
+    own_set: pair_set?(body.name, marks),
   )
 
   walk = walked(walker)
@@ -221,16 +232,6 @@ def checked(body: Body, functions: Map[String, Function], rules: Held.Rules) -> 
   end
 
   return walk
-end
-
-# The findings of a walk, without those of the pairs in the body of the set of its own CC_PAIR.
-def kept_findings(walk: Walk, body: Body, functions: Map[String, Function]) -> List[Finding]
-  marks = functions.get(body.key).map do |f| f.marks end.unwrap_or([])
-  if not pair_set?(body.name, marks)
-    return walk.findings.values
-  end
-
-  return walk.findings.values.select do |f| f.code != PAIR_NOT_RESTORED end
 end
 
 # Whether a function is the set of a CC_PAIR on its own declaration: `pair(name, ...)`.
@@ -268,6 +269,25 @@ def locks_of(body: Body) -> Map[String, Lock]
   return locks
 end
 
+# The keys of the pairs whose set the body calls.
+def sets_of(body: Body) -> Set[String]
+  keys: Set[String] = Set.new([])
+  for node in body.nodes
+    case node.event
+      Event.Call(site) ->
+        for lock in site.takes
+          if lock.pair != ""
+            keys = keys.add(lock.key)
+          end
+        end
+
+      _ -> next
+    end
+  end
+
+  return keys
+end
+
 def walked(walker: Walker) -> Walk
   body = walker.body
   queue = [Item(node: 0, state: State(held: {}, facts: {}), path: [])]
@@ -284,7 +304,7 @@ def walked(walker: Walker) -> Walk
     node = body.nodes[item.node]
     found = with_breaches(found, walker, item, node.event)
     case stepped(walker, node.event, item)
-      Moved.Ended(path) -> found = with_exit(found, walker, item.state, path)
+      Moved.Ended(path) -> found = with_exit(found, walker, item.state, path, failed?(node.event))
       Moved.Stopped -> next
       Moved.Went(moved) ->
         for after in node.next
@@ -300,17 +320,26 @@ def walked(walker: Walker) -> Walk
   return Walk(findings: found, complete: true)
 end
 
-# The findings of the rules on held locks at a call that the path makes.
+# Whether an event is a return of an error value.
+def failed?(event: Event) -> Bool
+  case event
+    Event.Exit(mark) -> return mark.failed
+    _ -> return false
+  end
+end
+
+# The findings of the rules on held locks at a call that the path makes, and of a restore with no set before it.
 def with_breaches(found: Map[String, Finding], walker: Walker, item: Item, event: Event) -> Map[String, Finding]
   case event
     Event.Call(site) ->
+      unset = with_unset(found, walker, item, site)
       held = item.state
         .held
         .keys
         .select do |key| item.state.held[key] > 0 end
         .map do |key| held_lock(walker, item, key) end
 
-      kept = found
+      kept = unset
       for breach in Held.at_call(walker.rules, walker.body, held, site, "#{site.line}:#{site.column}")
         if not kept.key?(breach.id)
           kept = kept.put(breach.id, located(walker.body, breach.code, breach.message, breach.path))
@@ -320,6 +349,29 @@ def with_breaches(found: Map[String, Finding], walker: Walker, item: Item, event
       return kept
     _ -> return found
   end
+end
+
+# A restore at a count of zero of a pair whose set the function calls: the path goes from the last set (or the start)
+# to the restore. A count of zero stays zero, so a set after it still needs its own restore.
+def with_unset(found: Map[String, Finding], walker: Walker, item: Item, site: Site) -> Map[String, Finding]
+  kept = found
+  for lock in site.drops
+    id = "#{PAIR_NOT_SET} #{lock.key}"
+    if (
+      lock.pair != "" and
+      walker.sets.include?(lock.key) and
+      item.state.held.get(lock.key, 0) <= 0 and
+      not kept.key?(id)
+    )
+      set = set_of(lock.key)
+      steps = from_last(item.path, lock.key, true).map do |step| step.text end
+      message = "#{walker.body.name} calls #{site.name} with no call of #{set} before it on a path"
+      path = steps.push("#{site.line}:#{site.column} calls #{site.name}")
+      kept = kept.put(id, located(walker.body, PAIR_NOT_SET, message, path))
+    end
+  end
+
+  return kept
 end
 
 def held_lock(walker: Walker, item: Item, key: String) -> Held.Held
@@ -416,7 +468,13 @@ end
 
 # The findings of a path that ends: each lock it holds that it took, and each it released and did not take. One finding
 # for each code and lock: the first path, which is a shortest one.
-def with_exit(found: Map[String, Finding], walker: Walker, state: State, path: List[Step]) -> Map[String, Finding]
+def with_exit(
+  found: Map[String, Finding],
+  walker: Walker,
+  state: State,
+  path: List[Step],
+  failed: Bool,
+) -> Map[String, Finding]
   kept = found
   for key in state.held.keys
     count = state.held[key]
@@ -428,8 +486,10 @@ def with_exit(found: Map[String, Finding], walker: Walker, state: State, path: L
       code = NOT_HELD
     end
 
+    # The body of a set with its own pair leaves the other pairs set for its caller, unless it returns an error.
+    trusted = code == PAIR_NOT_RESTORED and walker.own_set and not failed
     id = "#{code} #{key}"
-    if not kept.key?(id)
+    if not trusted and not kept.key?(id)
       kept = kept.put(id, finding(walker.body, code, key, restore, path))
     end
   end
@@ -446,11 +506,16 @@ def finding(body: Body, code: String, key: String, restore: String, path: List[S
   if code == NOT_HELD
     message = "#{body.name} releases #{shown}, which it does not hold, on a path"
   elsif code == PAIR_NOT_RESTORED
-    set = key.slice(Flow.PAIR_PREFIX.length, key.length - Flow.PAIR_PREFIX.length).split(":").first
+    set = set_of(key)
     message = "#{body.name} calls #{set} and does not call #{restore} after it on every path"
   end
 
   return located(body, code, message, steps.map do |step| step.text end)
+end
+
+# The set of the lock key of a pair: `mask_signals` for `pair:mask_signals:restore_signals`.
+def set_of(key: String) -> String
+  return key.slice(Flow.PAIR_PREFIX.length, key.length - Flow.PAIR_PREFIX.length).split(":").first
 end
 
 # The steps of a path from the last one that took the lock (`took`) or released it.
