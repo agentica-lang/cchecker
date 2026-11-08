@@ -5,6 +5,7 @@
 import Effects from "effects"
 import Flow from "flow"
 import {Body, Event, Lock, Site} from "flow"
+import Known from "known"
 import {Unit} from "unit"
 
 ## The code of a system call or a blocking call under a lock marked CC_NO_SYSCALL_UNDER.
@@ -107,9 +108,9 @@ def under_quiet(rules: Rules, body: Body, held: List[Held], site: Site, at: Stri
   for h in quiet
     path = reached
     if site.drops.concat(site.waits).any? do |lock| lock.key == h.lock.key end
-      path = before_release(rules, site, true)
+      path = before_release(rules, body, site, some(h))
     elsif nested_release?(rules, body, held, h, site)
-      path = before_release(rules, site, false)
+      path = before_release(rules, body, site, none)
     end
 
     if not path.empty?
@@ -166,14 +167,15 @@ def system_take?(rules: Rules, body: Body, h: Held) -> Bool
 end
 
 # The call path to a system call that a call which releases a lock makes while the quiet lock is held: none for a call
-# of the library (the unlock, the wait), which has no graph, and for a function of the project the first system call
-# on a path of its body, up to an unlock of a lock of its own CC_RELEASES when `own` (the release of the quiet lock),
-# through the whole body otherwise. An unlock or a wait in the body is a release, never the system call: its lock may
-# be one under another name (`m = &q->mu`).
-def before_release(rules: Rules, site: Site, own: Bool) -> List[String]
+# of the library (the unlock, the wait), and for a function of the project the first system call on a path of its
+# body, up to its unlock of `quiet` when it releases that lock, through the whole body when it releases another (a
+# lock taken under the quiet one, the restore of a pair). An unlock or a wait in the body is a release, never the
+# system call: its lock may be one under another name (`m = &q->mu`). A function with no graph (no lock call in it) is
+# trusted when it releases `quiet`, and held to all it reaches otherwise.
+def before_release(rules: Rules, body: Body, site: Site, quiet: Optional[Held]) -> List[String]
   case rules.bodies.get(site.key)
     some(helper) ->
-      released = Set.new(released_keys(rules, site.key))
+      stops_at = quiet.map do |h| stop_keys(helper, site, h) end.unwrap_or(Set.new([]))
       seen = Set.new([0])
       queue = [0]
       i = 0
@@ -184,7 +186,7 @@ def before_release(rules: Rules, site: Site, own: Bool) -> List[String]
         stops = false
         case node.event
           Event.Call(call) ->
-            stops = own and call.drops.any? do |lock| released.include?(lock.key) end
+            stops = call.drops.any? do |lock| stops_at.include?(lock.key) end
             path = system_call(rules, helper, call)
             if call.drops.concat(call.waits).empty? and not path.empty?
               return [site.name].concat(path)
@@ -202,16 +204,25 @@ def before_release(rules: Rules, site: Site, own: Bool) -> List[String]
       end
 
       return []
-    none -> return []
+    none ->
+      if quiet.some? or Known.DROPS.include?(site.name)
+        return []
+      end
+
+      return system_call(rules, body, site)
   end
 end
 
-# The keys of the locks that a function releases by its marks (`releases(q->mu)`), in the names of its parameters.
-def released_keys(rules: Rules, key: String) -> List[String]
-  marks = rules.graph.functions.get(key).map do |f| f.marks end.unwrap_or([])
-  return marks.select do |mark| mark.start_with?("releases(") and mark.end_with?(")") end
-    .flat_map do |mark| mark.slice(9, mark.length - 10).split(",") end
-    .map do |lock| Flow.key_of(lock.strip) end
+# The keys of the helper's own locks that the call releases as `h`. The locks of a call of the helper are those of its
+# CC_RELEASES in order, one each; when the call has fewer (one it cannot name), any of them is.
+def stop_keys(helper: Body, site: Site, h: Held) -> Set[String]
+  if helper.releases.size != site.drops.size
+    return Set.new(helper.releases)
+  end
+
+  return Set.new(
+    (0...site.drops.size).to_a.select do |i| site.drops[i].key == h.lock.key end.map do |i| helper.releases[i] end,
+  )
 end
 
 # The call path from the call to a system call: [the call] for a system or blocking call (a CC_BLOCKING function

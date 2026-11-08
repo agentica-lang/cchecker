@@ -484,3 +484,54 @@ Feature: What runs while a lock is held
       | a level not a number | struct box { CC_LOCK_LEVEL(0x2) pthread_mutex_t mu; };            |
       | a lock named on a field | struct box { CC_NO_SYSCALL_UNDER(mu) pthread_mutex_t mu; };    |
       | a field with no class | struct { CC_LOCK_LEVEL(1) pthread_mutex_t mu; } box;              |
+
+  Scenario: A CC_RELEASES helper whose prototype names its parameters apart from its definition stops at its unlock
+    Given the C file "push.c" holds:
+      """
+      #include "pthread.h" /* found in the system folders */
+      #include "cchecker.h"
+
+      struct queue { CC_NO_SYSCALL_UNDER() pthread_mutex_t mu; pthread_cond_t cv; int n; };
+      CC_RELEASES(queue->mu) void unlock_and_wake(struct queue *queue);
+      void unlock_and_wake(struct queue *q) { pthread_mutex_unlock(&q->mu); pthread_cond_signal(&q->cv); }
+      void push(struct queue *q) { pthread_mutex_lock(&q->mu); q->n++; unlock_and_wake(q); }
+      """
+    When I run cchecker with "--tools rules --json $DIR/push.c -- -I../include"
+    Then the exit code is 0
+
+  Scenario: A CC_RELEASES helper of two locks is held to its system calls up to the release of the quiet one
+    Given the C file "push.c" holds:
+      """
+      #include "pthread.h" /* found in the system folders */
+      #include "unistd.h"
+      #include "cchecker.h"
+
+      struct queue { CC_NO_SYSCALL_UNDER() pthread_mutex_t mu; int fd; int n; }; struct box { pthread_mutex_t mu; };
+      CC_RELEASES(a->mu, b->mu) void unlock_both(struct queue *a, struct box *b) { pthread_mutex_unlock(&b->mu); write(a->fd, "x", 1); pthread_mutex_unlock(&a->mu); }
+      void push(struct queue *q, struct box *x) { pthread_mutex_lock(&x->mu); pthread_mutex_lock(&q->mu); q->n++; unlock_both(q, x); }
+      """
+    When I run cchecker with "--tools rules --json $DIR/push.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      calls unlock_both: unlock_both -> write"]
+      """
+
+  Scenario: The restore of a CC_PAIR whose set ran under a CC_NO_SYSCALL_UNDER lock is held to its system calls
+    Given the C file "push.c" holds:
+      """
+      #include "pthread.h" /* found in the system folders */
+      #include "signal.h"
+      #include "cchecker.h"
+
+      struct queue { CC_NO_SYSCALL_UNDER() pthread_mutex_t mu; int n; };
+      CC_PAIR(mask_signals, restore_signals) void mask_signals(void); void restore_signals(void);
+      void mask_signals(void) { sigprocmask(SIG_BLOCK, 0, 0); } void restore_signals(void) { sigprocmask(SIG_SETMASK, 0, 0); }
+      void push(struct queue *q) { pthread_mutex_lock(&q->mu); mask_signals(); q->n++; restore_signals(); pthread_mutex_unlock(&q->mu); }
+      """
+    When I run cchecker with "--tools rules --json $DIR/push.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      calls restore_signals: restore_signals -> sigprocmask"]
+      """
