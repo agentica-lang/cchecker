@@ -266,7 +266,7 @@ def located_or_kept(state: State, line: String) -> State
   end
 
   if text.start_with?("\"col\": ")
-    return located(state, line, text)
+    return located(state, text)
   end
 
   return keep(state, line)
@@ -374,9 +374,8 @@ end
 # The `col` of a location comes after its file and line, so they are known here. The first location of a declaration
 # decides whether it is kept; for one that a macro wrote, the place where the macro was expanded decides, not the
 # place of its spelling (a header of a library, or clang's scratch space for a pasted name).
-def located(state: State, line: String, text: String) -> State
-  indent = " " * (line.length - line.strip.length)
-  marked = "#{indent}\"cc_file\": #{state.encoded}, \"cc_line\": #{state.line}, #{text}"
+def located(state: State, text: String) -> State
+  marked = "\"cc_file\": #{state.encoded}, \"cc_line\": #{state.line}, #{text}"
   if state.phase == Phase.Open and not state.spelling
     phase = Phase.Dropped
     if state.inside

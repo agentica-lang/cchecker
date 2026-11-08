@@ -339,8 +339,20 @@ def with_unit(job: Job, done: Outcome, raws: List[String]) -> Result[Outcome]
     ToolError(tool: "rules", file: job.entry.file, message: "#{name} is too large for the path rules")
   end
 
-  # A lock mark that cannot be read would leave a rule off without a word.
-  marks = unit.mark_errors.map do |message| ToolError(tool: "rules", file: job.entry.file, message: message) end
+  # A lock mark that cannot be read would leave a rule off without a word. The error names the file of the mark (as
+  # the file of the job is named: relative to its folder when the database gives it so), so that one in a shared
+  # header is told once (`App.collect` drops the repeats).
+  source = Paths.absolute(job.entry.directory, job.entry.file).unwrap_or(job.entry.file)
+  marks = unit.mark_errors.map do |e|
+    file = e.file
+    if file == "" or file == source
+      file = job.entry.file
+    elsif not job.entry.file.start_with?("/")
+      file = Paths.inside(job.entry.directory, file).unwrap_or(file)
+    end
+
+    ToolError(tool: "rules", file: file, message: e.message)
+  end
 
   return ok(
     done.with(

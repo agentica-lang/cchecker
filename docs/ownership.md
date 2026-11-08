@@ -17,10 +17,10 @@ int load(int n) {
 
 The rules follow every path of a function that has a pointer that owns, with the
 graph and the walk of the [locks](rules.md#locks-on-every-path) and their limits
-(a function with too many paths counts in `incomplete_functions`, once for each
-walk). A parameter marked `CC_OWNS` or `CC_FREES` owns from the entry, a local
-marked `CC_OWNS` owns the value it gets (other than `NULL`), and a local that
-gets the value of a `CC_OWNS` function owns it without a mark. On every path
+(a function with too many paths is listed once in `incomplete_functions`). A
+parameter marked `CC_OWNS` or `CC_FREES` owns from the entry, a local marked
+`CC_OWNS` owns the value it gets (other than `NULL`), and a local that gets the
+value of a `CC_OWNS` function owns it without a mark. On every path
 that returns, each one is freed or handed on: returned, stored in a `CC_OWNS`
 field (or an item of one, `q->items[i] = p`, or a `CC_OWNS` global), or passed
 to a `CC_OWNS` parameter. Stored anywhere else or passed to another parameter,

@@ -28,9 +28,6 @@ ASSIGNMENTS = Set.new(["=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=
 UNARY_TEXT = Set.new(["&", "*", "!", "-", "~"])
 BINARY_TEXT = Set.new(["==", "!=", "<", ">", "<=", ">=", "+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>"])
 
-# How clang writes the type of a function that does not return.
-NORETURN_TYPE = "__attribute__((noreturn))"
-
 # How deep a local variable is followed to the value it was set to (`m = &q->mu`, `n = m`).
 ALIAS_DEPTH = 4
 
@@ -502,17 +499,6 @@ end
 ## Returns the key of a function of the unit by name: `name@file` for a static one.
 export def key_of_function(ctx: Context, name: String) -> String
   return ctx.statics.get(name).unwrap_or(name)
-end
-
-## Returns whether the type of a node (a function, or a pointer to one) says that it never returns, as clang writes it
-## or without its typedefs, so a `noreturn` behind a typedef shows. clang writes the attribute at the end of the type
-## it belongs to, so one inside (a parameter that points to a function that does not return) does not count.
-export def noreturn_type?(node: Json) -> Bool
-  type = JSON.get(node, "type").unwrap_or(JSON.from(""))
-  return (
-    Ast.text(type, "qualType").end_with?(NORETURN_TYPE) or
-    Ast.text(type, "desugaredQualType").end_with?(NORETURN_TYPE)
-  )
 end
 
 ## Returns whether a returned value is an error by the usual C convention: a negative integer constant (or a negated
@@ -1486,7 +1472,7 @@ def call(b: Builder, node: Json, preds: List[Int], tried: Bool) -> Built
       column: place.column,
       takes: [],
       drops: [],
-      stops: noreturn_type?(parts.first),
+      stops: Ast.noreturn_type?(parts.first),
       pointer: true,
     )
 
@@ -1513,7 +1499,7 @@ def call(b: Builder, node: Json, preds: List[Int], tried: Bool) -> Built
   end
 
   # The type of the declaration: the reference to a builtin such as `__builtin_abort` has no type of its own.
-  noreturn = noreturn_type?(JSON.get(callee, "referencedDecl").unwrap_or(JSON.from("")))
+  noreturn = Ast.noreturn_type?(JSON.get(callee, "referencedDecl").unwrap_or(JSON.from("")))
   site = site_of(
     built.b,
     Ast.referenced_name(callee),

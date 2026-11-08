@@ -12,7 +12,7 @@
 ## followed. A write to a variable forgets the conditions that read it.
 
 import Effects from "effects"
-import {Finding} from "findings"
+import {Finding, IncompleteFunction} from "findings"
 import Flow from "flow"
 import {Body, Event, Fact, Lock, Mark, Site} from "flow"
 import Held from "held"
@@ -98,7 +98,7 @@ end
 ## those of the paths it went through).
 export struct Checked
   findings: List[Finding]
-  incomplete: Int
+  incomplete: List[IncompleteFunction]
 end
 
 ## Returns the findings of the lock rules on the functions of the units. A function defined in several units (a static
@@ -113,14 +113,14 @@ export def check(units: List[Unit]) -> Checked
 
   done: Set[String] = Set.new([])
   findings: List[Finding] = []
-  incomplete = 0
+  incomplete: List[IncompleteFunction] = []
   for unit in units
     for body in unit.bodies
       if not done.include?(body.key) and not helper?(functions.get(body.key)) and not locks_of(body).empty?
         walk = checked(body, functions, rules)
         findings = findings.concat(walk.findings.values)
         if not walk.complete
-          incomplete += 1
+          incomplete = incomplete.push(IncompleteFunction(file: body.file, line: body.line, function: body.name))
         end
       end
 

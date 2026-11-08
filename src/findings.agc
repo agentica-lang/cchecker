@@ -17,6 +17,14 @@ export struct Finding
   root: String = ""
 end
 
+## A function with more paths than the path rules follow, at `file` and `line`: its findings are those of the paths
+## followed. `file` is relative to the working directory, or absolute outside it.
+export struct IncompleteFunction
+  file: String
+  line: Int
+  function: String
+end
+
 ## A callback of a libuv call that the rules could not follow to a function: `argument` is its place (from 0) in the
 ## call at `file` and `line`.
 export struct UnresolvedCallback
@@ -71,8 +79,8 @@ export def key(code: String, file: String, message: String) -> String
   return JSON.encode([code, file, message])
 end
 
-# Zero-padded so that the text order of the sort key is the numeric order.
-def pad(n: Int) -> String
+## Returns a line or column zero-padded, so that the text order of a sort key is the numeric order.
+export def pad(n: Int) -> String
   digits = n.to_s
   return "0" * (9 - digits.length) + digits
 end

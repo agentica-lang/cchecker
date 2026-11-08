@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Breaking:** `incomplete_functions` of `--json` is a list of the functions (`file`, `line`, `function`), no longer
+  a count, and standard error names them.
+- A lock mark that cannot be read in a header is one error, on the header, not one for each file that includes it.
+- A library call that never returns (`_exit`, `abort`, ...) is an error exit the effect walks skip, as a project
+  `_Noreturn` function is; `follow_cold` follows it.
+- A noreturn function type followed by a calling convention (`__attribute__((noreturn, regparm(1)))`) ends a path.
 - `link`, `linkat`, `symlink`, `symlinkat`, `lchown`, `utime`, `utimes`, `statfs`, `fstatfs` and `mkdtemp` are system
   calls, as their `uv_fs_*` forms are: for `CC_HOT`, and under a `CC_NO_SYSCALL_UNDER` lock (a `CC_RELEASES` helper
   included).

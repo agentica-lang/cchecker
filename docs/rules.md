@@ -64,8 +64,10 @@ The walk does not go into a function that never returns or is cold: one declared
 `_Noreturn`, `[[noreturn]]`, `CC_NORETURN` or `__attribute__((noreturn))` (in
 its type too, behind a typedef: `typedef void fatal_fn(const char *)
 __attribute__((noreturn)); fatal_fn die;`), or `__attribute__((cold))`, on any
-of its declarations. Such a call is an error exit (`out_of_memory`, `die`), not
-the path the rules are about. `[effects] follow_cold = true` follows it. A
+of its declarations, and a library call that never returns (`abort`, `exit`,
+`_exit`, `longjmp`, `pthread_exit`, ...), though `_exit` enters the kernel. Such
+a call is an error exit (`out_of_memory`, `die`), not the path the rules are
+about. `[effects] follow_cold = true` follows it. A
 `CC_BLOCKING` mark on such a function wins: it is a blocking call. The lock
 rules (`CC_NO_SYSCALL_UNDER`) follow every call whatever it says.
 
@@ -161,12 +163,12 @@ on `q->ready` keeps its value after `atomic_store(&q->ready, 0)`; copy the field
 to a local first and test the local (`int ready = q->ready; if (ready) ...`)
 when the call may change it. A function whose paths would take more than 200 000
 states to follow is walked again without these conditions; when that is not
-enough either, its findings are those of the paths followed, and the run counts
-it in `incomplete_functions` of `--json` and says so on standard error (the exit
-code does not change). A function whose AST has more than 20 000 nodes (about
-four times the largest of the Agentica VM) gets no graph: that is an error of
-the `rules` tool on its file, so the exit code is 2, and the rest of the run is
-checked.
+enough either, its findings are those of the paths followed, and the run lists
+it in `incomplete_functions` of `--json` (`file`, `line` and `function`) and on
+standard error (the exit code does not change). A function whose AST has more
+than 20 000 nodes (about four times the largest of the Agentica VM) gets no
+graph: that is an error of the `rules` tool on its file, so the exit code is 2,
+and the rest of the run is checked.
 
 A function that takes a lock for its caller, or releases the caller's lock, says
 so on its prototype: `CC_ACQUIRES(lock)` or `CC_RELEASES(lock)`, with the lock
@@ -243,13 +245,14 @@ for an anonymous struct; an item of an array of locks is its field), and a
 global by its name (`name@file` for a static one; a parameter or a local of the
 same name is not it). The marks are `CC_NO_SYSCALL_UNDER()` with nothing in it
 and `CC_LOCK_LEVEL(n)` with a decimal number; another form, or a mark on a field
-of a struct with no name, is an error of the `rules` tool (exit code 2). A lock
-is known by its text in a function, so the same lock written two ways (`&q->mu`
-and `m` set later to it) is two locks. A lock of a `CC_ACQUIRES` is followed to
-its field through the types of the parameters (`CC_ACQUIRES(s->pool->mu)` on
-`void pool_lock(struct server *s)` takes `pool.mu`). The path of a finding goes
-from the take of the lock held to the call, and the call path to the system call
-when there is one: `13:3 calls bump: bump -> pthread_mutex_lock`.
+of a struct with no name, is an error of the `rules` tool (exit code 2) on the
+file of the mark, once even when several files include it. A lock is known by
+its text in a function, so the same lock written two ways (`&q->mu` and `m` set
+later to it) is two locks. A lock of a `CC_ACQUIRES` is followed to its field
+through the types of the parameters (`CC_ACQUIRES(s->pool->mu)` on `void
+pool_lock(struct server *s)` takes `pool.mu`). The path of a finding goes from
+the take of the lock held to the call, and the call path to the system call when
+there is one: `13:3 calls bump: bump -> pthread_mutex_lock`.
 
 ## Pairs of calls
 

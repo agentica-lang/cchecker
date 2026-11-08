@@ -108,12 +108,20 @@ export struct LockMark
   class: String
   mark: String
   named: String = ""
+  file: String = ""
+end
+
+## A lock mark that cannot be read: what is wrong with it, and the file it is written in (a header shared by several
+## units gives the same error in each).
+export struct MarkError
+  file: String
+  message: String
 end
 
 # The lock marks of a unit that can be read, and the errors of those that cannot.
 struct LockMarks
   marks: List[LockMark]
-  errors: List[String]
+  errors: List[MarkError]
 end
 
 ## A function pointer passed to a libuv call that runs it on the loop thread (`Known.LOOP_CALLBACKS`): the call, the
@@ -139,7 +147,7 @@ export struct Unit
   bodies: List[Flow.Body] = []
   lock_marks: List[LockMark] = []
   too_large: List[String] = []
-  mark_errors: List[String] = []
+  mark_errors: List[MarkError] = []
   callbacks: List[Callback] = []
   collected: List[Finding] = []
   target: String = ""
@@ -546,18 +554,26 @@ def lock_marks_of(tables: Tables, nodes: List[Json]) -> LockMarks
         named = Ast.text(field, "name")
       end
 
-      marks = marks.concat(own_marks(field).map do |mark| LockMark(class: class, mark: mark, named: named) end)
+      file = Ast.place_of(field).file
+      marks = marks.concat(
+        own_marks(field).map do |mark| LockMark(class: class, mark: mark, named: named, file: file) end,
+      )
     end
   end
 
   variables = nodes.select do |node| Ast.kind(node) == "VarDecl" end
   for node in variables
     class = variable_key(tables, Ast.text(node, "name"))
-    marks = marks.concat(own_marks(node).map do |mark| LockMark(class: class, mark: mark, named: class) end)
+    file = Ast.place_of(node).file
+    marks = marks.concat(
+      own_marks(node).map do |mark| LockMark(class: class, mark: mark, named: class, file: file) end,
+    )
   end
 
   locks = marks.select do |found| lock_mark?(found.mark) end
-  errors = locks.map(&mark_error).select do |text| text != "" end
+  errors = locks.select do |found| mark_error(found) != "" end
+    .map do |found| MarkError(file: found.file, message: mark_error(found)) end
+
   return LockMarks(marks: locks.select do |found| mark_error(found) == "" end, errors: errors)
 end
 
@@ -781,7 +797,7 @@ end
 
 # A declaration that never returns by an attribute, or by its type, as written or behind a typedef (`fatal_fn die;`).
 def noreturn?(node: Json) -> Bool
-  return Ast.children(node).any? do |child| NORETURN_ATTRS.include?(Ast.kind(child)) end or Flow.noreturn_type?(node)
+  return Ast.children(node).any? do |child| NORETURN_ATTRS.include?(Ast.kind(child)) end or Ast.noreturn_type?(node)
 end
 
 def in_function(tables: Tables, key: String, node: Json, found: Found) -> Found
