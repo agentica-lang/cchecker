@@ -543,6 +543,10 @@ end
 # Whether a value makes the variable that gets it stand for an owned pointer: a call that returns one, a realloc of a
 # pointer in `names`, or a pointer in `names`.
 def gets_owner?(ctx: Context, names: Set[String], value: Json) -> Bool
+  if Ast.kind(see_through(value)) == "ConditionalOperator"
+    return values_of(value).any? do |branch| gets_owner?(ctx, names, branch) end
+  end
+
   if names.include?(variable_name(value)) or owning_call?(ctx, value)
     return true
   end
@@ -584,7 +588,7 @@ def kept_calls(ctx: Context, all: List[Json], locals: Set[String]) -> Set[String
       _ -> next
     end
 
-    for value in values
+    for value in values.flat_map(&values_of)
       if owning_call?(ctx, value)
         kept = kept.add(Ast.text(see_through(value), "id"))
       end
@@ -592,6 +596,16 @@ def kept_calls(ctx: Context, all: List[Json], locals: Set[String]) -> Set[String
   end
 
   return kept
+end
+
+# The values an expression may have: each side of `?:`, or itself.
+def values_of(node: Json) -> List[Json]
+  bare = see_through(node)
+  if Ast.kind(bare) == "ConditionalOperator"
+    return Ast.children(bare).drop(1).flat_map(&values_of)
+  end
+
+  return [node]
 end
 
 # The indices of the parameters of a function that take or free what a call passes: CC_OWNS and CC_FREES, the first
@@ -1121,6 +1135,16 @@ def assigned(b: Builder, name: String, value: Json) -> Assign
   marked = b.owners.marked.include?(name)
   if zero?(bare)
     return start.with(value: "null", shown: "NULL")
+  end
+
+  # A side of `?:` that gives an owned value makes it owned (the other side is null, or owned too).
+  if Ast.kind(bare) == "ConditionalOperator"
+    for branch in values_of(bare)
+      side = assigned(b, name, branch)
+      if side.value == "owned"
+        return start.with(value: "owned", shown: side.shown)
+      end
+    end
   end
 
   source = owner_named(b, bare)

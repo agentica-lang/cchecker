@@ -68,6 +68,7 @@ Feature: Ownership on every path
       | owning call handed on | void f(int n) { adopt(make(n)); }                                                                                                           |
       | owning call stored    | void f(struct box *x, int n) { x->held = make(n); }                                                                                         |
       | owning call returned  | CC_OWNS char *f(int n) { return make(n); }                                                                                                  |
+      | owning call in ?:     | void f(int n) { char *p = n ? make(n) : NULL; free(p); }                                                                                    |
       | owned parameter       | void f(CC_OWNS char *p) { if (!p) return; work(p); free(p); }                                                                               |
       | goto cleanup          | int f(int n) { int rc = -1; CC_OWNS char *b = malloc(n); if (!b) goto out; if (work(b)) goto out; rc = 0; out: free(b); return rc; }       |
       | realloc               | int f(int n) { CC_OWNS char *b = malloc(n); if (!b) return -1; char *t = realloc(b, 2 * n); if (!t) { free(b); return -1; } b = t; free(b); return 0; } |
