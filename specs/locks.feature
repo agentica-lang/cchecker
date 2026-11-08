@@ -43,7 +43,7 @@ Feature: Locks on every path
       | flag by address | 23   | int flip(int *x); int pop(struct queue *q, int locked) { if (locked) pthread_mutex_lock(&q->mu); flip(&locked); if (locked) pthread_mutex_unlock(&q->mu); return 0; }                                  |
       | nested break  | 5      | int pop(struct queue *q) { for (;;) { for (int i = 0; i < q->n; i++) { pthread_mutex_lock(&q->mu); if (work(q)) break; pthread_mutex_unlock(&q->mu); } return 0; } }                                      |
 
-  Scenario: A pointer freed through its address forgets the condition on it, and stays freed
+  Scenario: A pointer freed through its address forgets the condition on it, and is freed or null
     Given the C file "pop.c" holds:
       """
       #include <pthread.h>
@@ -69,9 +69,9 @@ Feature: Locks on every path
       """
       {"code":"CC-PATH-LOCK-NOT-RELEASED","tool":"rules","file":"$DIR/pop.c","line":8,"column":5,
       """
-    And the output includes:
+    And the output does not include:
       """
-      {"code":"CC-OWN-USE-AFTER-FREE","tool":"rules","file":"$DIR/pop.c","line":8,"column":5,
+      CC-OWN-USE-AFTER-FREE
       """
     And the output does not include:
       """

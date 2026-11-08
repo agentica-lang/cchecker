@@ -27,11 +27,14 @@ export DOUBLE_FREE = "CC-OWN-DOUBLE-FREE"
 export USE_AFTER_FREE = "CC-OWN-USE-AFTER-FREE"
 
 # The states of a pointer on a path; one that owns nothing is not in the state at all. A pointer is `unknown` after it
-# was lent to a call, which may have set it: it may be freed and handed on, and a path may end with it.
+# was lent to a call, which may have set it: it may be freed and handed on, and a path may end with it. A pointer is
+# `cleared` after a call freed it through its address (`free_and_null(&p)`): it is freed or null, so it may be read and
+# freed again, and a condition that says it is not null makes it freed.
 OWNED = "owned"
 FREED = "freed"
 MOVED = "moved"
 UNKNOWN = "unknown"
+CLEARED = "cleared"
 
 # The states the walk of one function may visit, with the conditions and then without them.
 MAX_STATES = 200_000
@@ -247,6 +250,8 @@ def after_call(body: Body, item: Item, site: Site) -> Outcome
         breaches = breaches.push(
           Breach(code: DOUBLE_FREE, name: root, message: message, path: ended_path(current, root, step)),
         )
+      some(state) if state == CLEARED -> next
+      some(_) if site.clears.include?(name) -> current = ended(current, root, CLEARED, step)
       some(_) -> current = ended(current, root, FREED, step)
       none -> next
     end
@@ -258,6 +263,7 @@ def after_call(body: Body, item: Item, site: Site) -> Outcome
     case current.state.owns.get(root)
       some(state) if state == FREED or state == MOVED ->
         breaches = breaches.push(used_after(body, current, root, step))
+      some(state) if state == CLEARED -> next
       some(_) -> current = ended(current, root, MOVED, step)
       none -> next
     end
@@ -286,6 +292,13 @@ def after_branch(walker: Walker, item: Item, fact: Fact) -> Outcome
 
   for name in fact.nulls
     state = nulled(state, owner(state, name))
+  end
+
+  for name in fact.set
+    root = owner(state, name)
+    if state.owns.get(root).map do |own| own == CLEARED end.unwrap_or(false)
+      state = state.with(owns: state.owns.put(root, FREED))
+    end
   end
 
   return went(item.with(state: state, path: item.path.push(step)))
@@ -327,6 +340,7 @@ def after_give(body: Body, item: Item, give: Give) -> Outcome
   case item.state.owns.get(root)
     some(state) if state == FREED or state == MOVED ->
       return Outcome(moved: Moved.Went(item), breaches: [used_after(body, item, root, step)])
+    some(state) if state == CLEARED -> return went(item)
     some(_) -> return went(ended(item, root, MOVED, step))
     none -> return went(item)
   end
@@ -338,7 +352,28 @@ def after_assign(body: Body, item: Item, assign: Assign) -> Outcome
   step = Step(text: "#{at} #{assign.name} = #{assign.shown}", name: assign.name, origin: true)
   breaches: List[Breach] = []
   state = item.state
-  if state.owns.get(assign.name).map do |own| own == OWNED end.unwrap_or(false)
+  owned = state.owns.get(assign.name).map do |own| own == OWNED end.unwrap_or(false)
+  # `old = *p; *p = v;` in a CC_FREES parameter: the locals that stood for the pointer keep its old value, in the state
+  # it had; the first one holds it and the others stand for it.
+  keepers = state.aliases.keys.sort.select do |alias| state.aliases[alias] == assign.name end
+  if assign.through and not keepers.empty?
+    holder = keepers.first
+    aliases = state.aliases.delete(holder)
+    for other in keepers.drop(1)
+      aliases = aliases.put(other, holder)
+    end
+
+    owns = state.owns
+    case state.owns.get(assign.name)
+      some(own) -> owns = owns.put(holder, own)
+      none -> owns = owns
+    end
+
+    state = state.with(aliases: aliases, owns: owns)
+    owned = false
+  end
+
+  if owned
     message = "#{body.name} does not free or hand on #{assign.name} on every path"
     path = from_last(item.path, assign.name, true).push(step)
     breaches = breaches.push(Breach(code: LEAK, name: assign.name, message: message, path: path))

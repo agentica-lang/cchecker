@@ -71,6 +71,11 @@ export def referenced_name(node: Json) -> String
   return text(JSON.get(node, "referencedDecl").unwrap_or(JSON.from("")), "name")
 end
 
+## Returns the id of the declaration that a reference names, or "".
+export def referenced_id(node: Json) -> String
+  return text(JSON.get(node, "referencedDecl").unwrap_or(JSON.from("")), "id")
+end
+
 ## Returns the place of a declaration: where its macro was expanded, when it comes from one.
 export def place_of(node: Json) -> Place
   case JSON.get(node, "cc_loc")

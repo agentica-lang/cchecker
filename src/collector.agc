@@ -53,13 +53,14 @@ end
 ## pointer to one: what is left of its text once the stars go (`value_t ()(int)`) names no type.
 export def collector_type?(marks: Marks, type: String) -> Bool
   name = type
-  for word in QUALIFIERS
-    name = name.replace(word, "")
-  end
-
   case name.index_of("[")
     some(at) -> name = name.slice(0, at)
     none -> name = name
+  end
+
+  name = Flow.unqualified(name)
+  for word in QUALIFIERS
+    name = name.replace(word, "")
   end
 
   stars = name.length - name.replace("*", "").length
@@ -242,8 +243,10 @@ def heap?(scope: Scope, node: Json) -> Bool
   parts = Ast.children(bare)
   case Ast.kind(bare)
     "DeclRefExpr" ->
-      name = Ast.referenced_name(bare)
-      return scope.heap.include?(Flow.variable_name(bare)) or scope.ctx.owning.globals.include?(name)
+      return (
+        scope.heap.include?(Flow.variable_name(bare)) or
+        scope.ctx.owning.globals.include?(Ast.referenced_id(bare))
+      )
     "MemberExpr" -> return scope.ctx.owning.fields.include?(Ast.text(bare, "referencedMemberDecl"))
     "CallExpr" -> return Known.OWNED.include?(Flow.callee_name(bare)) or Flow.owning_call?(scope.ctx, bare)
     "BinaryOperator" ->
