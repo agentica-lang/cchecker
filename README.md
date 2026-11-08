@@ -195,8 +195,8 @@ or a union (by record and field name, in an initializer or an assignment), a var
 An item of an initializer of a struct or an array counts designated or not (`{[3] = f}`). A cast is seen through,
 so a function kept in a `void *` or an `uintptr_t` is reached by a call through it, but not one kept in a table
 whose first item is a literal number (`uintptr_t t[] = {0, (uintptr_t)f}`): that is a table of numbers (below). A
-variable with `__attribute__((cleanup(f)))` calls `f`. A pointer that comes from anywhere else reaches nothing: a return value,
-the arguments of a variadic function, and a function handed to a library that calls it back (`qsort`, a libuv
+variable with `__attribute__((cleanup(f)))` calls `f`. A pointer that comes from anywhere else reaches nothing: a
+return value, the arguments of a variadic function, and a function handed to a library that calls it back (`qsort`, a libuv
 callback). A walk goes only through what the run read, so run it on all the files of the project: with a subset of
 the files, a call into a file that was not run reaches nothing. For the baseline, only a full run of a compile
 database covers the findings of the rules: a run of some files never counts them fixed and never drops them on
