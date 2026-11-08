@@ -39,6 +39,9 @@ Feature: Locks on every path
       | ternary       | 5      | int pop(struct queue *q) { pthread_mutex_lock(&q->mu); return q->n ? (pthread_mutex_unlock(&q->mu), 1) : 0; }                                                                                           |
       | statement expression | 5 | int pop(struct queue *q) { pthread_mutex_lock(&q->mu); int n = ({ int k = q->n; if (k == 0) return -1; k; }); pthread_mutex_unlock(&q->mu); return n; }                                              |
       | computed goto | 5      | int pop(struct queue *q) { void *next = &&out; pthread_mutex_lock(&q->mu); goto *next; pthread_mutex_unlock(&q->mu); out: return 0; }                                                                   |
+      | elvis         | 5      | int pop(struct queue *q) { pthread_mutex_lock(&q->mu); return q->n ?: (pthread_mutex_unlock(&q->mu), 0); }                                                                                              |
+      | flag by address | 23   | int flip(int *x); int pop(struct queue *q, int locked) { if (locked) pthread_mutex_lock(&q->mu); flip(&locked); if (locked) pthread_mutex_unlock(&q->mu); return 0; }                                  |
+      | nested break  | 5      | int pop(struct queue *q) { for (;;) { for (int i = 0; i < q->n; i++) { pthread_mutex_lock(&q->mu); if (work(q)) break; pthread_mutex_unlock(&q->mu); } return 0; } }                                      |
 
   Scenario Outline: A lock released on every path passes (<case>)
     Given the C file "pop.c" holds:
@@ -78,6 +81,12 @@ Feature: Locks on every path
       | or                | int pop(struct queue *q) { if (q->n == 0 \|\| pthread_mutex_trylock(&q->mu) != 0) return -1; q->n--; pthread_mutex_unlock(&q->mu); return 0; }                                                                            |
       | do while 0        | int pop(struct queue *q) { do { pthread_mutex_lock(&q->mu); } while (0); q->n--; pthread_mutex_unlock(&q->mu); return 0; }                                                                                                 |
       | struct by value   | CC_RELEASES(q->mu) void leave(struct queue *q); struct queue box; int pop(void) { pthread_mutex_lock(&box.mu); box.n--; leave(&box); return 0; }                                                                           |
+      | field by address  | int pop(struct queue *q) { if (q->n) pthread_mutex_lock(&q->mu); work(q); if (q->n) pthread_mutex_unlock(&q->mu); return 0; }                                                                                               |
+      | noreturn typedef  | typedef void fatal_fn(void) __attribute__((noreturn)); fatal_fn die; void check(struct queue *q) { pthread_mutex_lock(&q->mu); if (q->n >= 0) { pthread_mutex_unlock(&q->mu); return; } die(); }        |
+      | noreturn pointer  | struct stopper { void (*stop)(void) __attribute__((noreturn)); }; void check(struct queue *q, struct stopper *s) { pthread_mutex_lock(&q->mu); if (q->n >= 0) { pthread_mutex_unlock(&q->mu); return; } s->stop(); } |
+      | nested break      | int pop(struct queue *q) { for (;;) { pthread_mutex_lock(&q->mu); for (int i = 0; i < q->n; i++) { if (work(q)) break; } pthread_mutex_unlock(&q->mu); if (q->n) break; } return 0; }                          |
+      | nested continue   | int pop(struct queue *q) { for (int j = 0; j < 2; j++) { pthread_mutex_lock(&q->mu); for (int i = 0; i < q->n; i++) { if (work(q)) continue; q->n--; } pthread_mutex_unlock(&q->mu); } return 0; }             |
+      | switch in a loop  | int pop(struct queue *q) { for (int i = 0; i < q->n; i++) { pthread_mutex_lock(&q->mu); switch (work(q)) { case 0: break; default: pthread_mutex_unlock(&q->mu); continue; } pthread_mutex_unlock(&q->mu); } return 0; } |
 
   Scenario: The path of a finding goes from the lock to the return that leaves it held
     Given the C file "pop.c" holds:
@@ -100,6 +109,129 @@ Feature: Locks on every path
     And the output includes:
       """
       "path":["6:3 takes q->mu","7:7 true","8:5 returns"]
+      """
+
+  Scenario: The path starts at the last take of a lock left held, and at the last release of a lock not held
+    Given the C file "twice.c" holds:
+      """
+      #include <pthread.h>
+      struct queue { pthread_mutex_t mu; int n; };
+      int pop(struct queue *q) {
+        pthread_mutex_lock(&q->mu);
+        pthread_mutex_lock(&q->mu);
+        pthread_mutex_unlock(&q->mu);
+        return 0;
+      }
+      int push(struct queue *q) {
+        pthread_mutex_unlock(&q->mu);
+        pthread_mutex_unlock(&q->mu);
+        pthread_mutex_lock(&q->mu);
+        return 0;
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/twice.c"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "path":["5:3 takes q->mu","6:3 releases q->mu","7:3 returns"]
+      """
+    And the output includes:
+      """
+      "path":["11:3 releases q->mu","12:3 takes q->mu","13:3 returns"]
+      """
+
+  Scenario: Long chains of else-if and of || take little memory
+    Given the C file "chain.c" holds, with ITEMS as 1000 times " else if (q->n == 7) work(7);":
+      """
+      #include <pthread.h>
+      struct queue { pthread_mutex_t mu; int n; };
+      int work(int n);
+      int pop(struct queue *q) {
+        pthread_mutex_lock(&q->mu);
+        if (q->n == 0) work(0);ITEMS
+        pthread_mutex_unlock(&q->mu);
+        return 0;
+      }
+      """
+    And the C file "or.c" holds, with ITEMS as 1000 times " || q->n == 7":
+      """
+      #include <pthread.h>
+      struct queue { pthread_mutex_t mu; int n; };
+      int pop(struct queue *q) {
+        pthread_mutex_lock(&q->mu);
+        int r = q->n == 0ITEMS;
+        pthread_mutex_unlock(&q->mu);
+        return r;
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/chain.c $DIR/or.c" in at most 1500 MiB
+    Then the exit code is 0
+
+  Scenario: A function too large for the path rules is an error of the tool, and the rest of the run is checked
+    Given the C file "huge.c" holds, with ITEMS as 6000 times " work(7);":
+      """
+      #include <pthread.h>
+      struct queue { pthread_mutex_t mu; int n; };
+      int work(int n);
+      int pop(struct queue *q) {
+        pthread_mutex_lock(&q->mu);
+       ITEMS
+        return 0;
+      }
+      int push(struct queue *q) {
+        pthread_mutex_lock(&q->mu);
+        return 0;
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/huge.c"
+    Then the exit code is 2
+    And the output includes:
+      """
+      "errors":[{"tool":"rules","file":"$DIR/huge.c",
+      """
+    And the output includes:
+      """
+      {"code":"CC-PATH-LOCK-NOT-RELEASED","tool":"rules","file":"$DIR/huge.c","line":9,"column":5,
+      """
+    And the output does not include:
+      """
+      "line":4,
+      """
+
+  Scenario: A function with more paths than the walk follows is counted, and the run says so
+    Given the C file "many.c" holds:
+      """
+      #include <pthread.h>
+      pthread_mutex_t m[20];
+      int pick(int i);
+      void many(void) {
+        if (pick(0)) pthread_mutex_lock(&m[0]);
+        if (pick(1)) pthread_mutex_lock(&m[1]);
+        if (pick(2)) pthread_mutex_lock(&m[2]);
+        if (pick(3)) pthread_mutex_lock(&m[3]);
+        if (pick(4)) pthread_mutex_lock(&m[4]);
+        if (pick(5)) pthread_mutex_lock(&m[5]);
+        if (pick(6)) pthread_mutex_lock(&m[6]);
+        if (pick(7)) pthread_mutex_lock(&m[7]);
+        if (pick(8)) pthread_mutex_lock(&m[8]);
+        if (pick(9)) pthread_mutex_lock(&m[9]);
+        if (pick(10)) pthread_mutex_lock(&m[10]);
+        if (pick(11)) pthread_mutex_lock(&m[11]);
+        if (pick(12)) pthread_mutex_lock(&m[12]);
+        if (pick(13)) pthread_mutex_lock(&m[13]);
+        if (pick(14)) pthread_mutex_lock(&m[14]);
+        if (pick(15)) pthread_mutex_lock(&m[15]);
+        if (pick(16)) pthread_mutex_lock(&m[16]);
+        if (pick(17)) pthread_mutex_lock(&m[17]);
+        if (pick(18)) pthread_mutex_lock(&m[18]);
+        if (pick(19)) pthread_mutex_lock(&m[19]);
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/many.c"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "incomplete_functions":1
       """
 
   Scenario: A lock released by a function that did not take it is a finding, and so is another lock left held

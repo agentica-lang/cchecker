@@ -49,8 +49,10 @@ export struct Lock
 end
 
 ## A call of a function, by name and key (`name@file` for a static one), and what it does to the locks: those it takes,
-## releases, and waits on (a condition wait gives its lock back while it waits). For ownership: the pointers that own
-## which it frees and which it takes (`hands`), and whether it returns an owned value that nothing keeps (`lost`).
+## releases, and waits on (a condition wait gives its lock back while it waits). A call through a function pointer
+## (`pointer`) has the text of the pointer as its name and no key. `tried` is a trylock, which never waits for its lock.
+## For ownership: the pointers that own which it frees and which it takes (`hands`), and whether it returns an owned
+## value that nothing keeps (`lost`).
 export struct Site
   name: String
   key: String
@@ -60,6 +62,8 @@ export struct Site
   drops: List[Lock]
   stops: Bool
   waits: List[Lock] = []
+  pointer: Bool = false
+  tried: Bool = false
   frees: List[String] = []
   hands: List[String] = []
   lost: Bool = false
@@ -174,13 +178,14 @@ export struct Owning
 end
 
 ## What the graphs of one translation unit need: the functions that say something about locks, by key, the keys of
-## its static functions by name, the class of each field by id (`queue.mu`), the names of its global variables, and
+## its static functions by name, the class of each field by id (`queue.mu`), the class of each global variable by
+## the id of its declaration (its name, `name@file` for a static one), so a local of the same name is not it, and
 ## what its functions say about ownership.
 export struct Context
   callees: Map[String, Callee]
   statics: Map[String, String]
   fields: Map[String, String]
-  globals: Set[String]
+  globals: Map[String, String]
   owning: Owning
 end
 
@@ -713,16 +718,32 @@ def block(b: Builder, node: Json, preds: List[Int]) -> Built
   return Built(b: closed, exits: cleaned.exits)
 end
 
+# An `if` and the `else if` chain after it, in a loop: a recursion would keep every builder of the chain alive.
 def if_statement(b: Builder, node: Json, preds: List[Int]) -> Built
-  parts = Ast.children(node)
-  split = condition(b, parts[0], preds)
-  then_part = statement(split.b, parts[1], split.yes)
-  if Ast.flag?(node, "hasElse")
-    else_part = statement(then_part.b, parts[2], split.no)
-    return Built(b: else_part.b, exits: then_part.exits.concat(else_part.exits))
+  current = node
+  built = b
+  pending = preds
+  exits: List[Int] = []
+  while true
+    parts = Ast.children(current)
+    split = condition(built, parts[0], pending)
+    then_part = statement(split.b, parts[1], split.yes)
+    exits = exits.concat(then_part.exits)
+    if not Ast.flag?(current, "hasElse")
+      return Built(b: then_part.b, exits: exits.concat(split.no))
+    end
+
+    if Ast.kind(parts[2]) != "IfStmt"
+      else_part = statement(then_part.b, parts[2], split.no)
+      return Built(b: else_part.b, exits: exits.concat(else_part.exits))
+    end
+
+    current = parts[2]
+    built = then_part.b
+    pending = split.no
   end
 
-  return Built(b: then_part.b, exits: then_part.exits.concat(split.no))
+  return Built(b: built, exits: exits)
 end
 
 def while_loop(b: Builder, node: Json, preds: List[Int]) -> Built
@@ -1017,8 +1038,14 @@ def expression(b: Builder, node: Json, preds: List[Int]) -> Built
       end
 
       inner = expression(b, operand, preds)
-      if opcode == "++" or opcode == "--" or opcode == "&"
+      if opcode == "++" or opcode == "--"
         return add(inner.b, Event.Writes([target_root(operand)]), inner.exits)
+      end
+
+      # The address of a variable lets a callee change it; the address of `q->mu` does not change `q`.
+      root = storage_root(operand)
+      if opcode == "&" and root != ""
+        return add(inner.b, Event.Writes([root]), inner.exits)
       end
 
       return inner
@@ -1028,6 +1055,12 @@ def expression(b: Builder, node: Json, preds: List[Int]) -> Built
       chosen = expression(split.b, parts[1], split.yes)
       other = expression(chosen.b, parts[2], split.no)
       return Built(b: other.b, exits: chosen.exits.concat(other.exits))
+    "BinaryConditionalOperator" ->
+      # `x ?: y`: the value of `x` when it is true, else `y`.
+      parts = Ast.children(node)
+      split = condition(b, parts[0], preds)
+      other = expression(split.b, parts.last, split.no)
+      return Built(b: other.b, exits: split.yes.concat(other.exits))
     "StmtExpr" -> return in_order_statements(b, Ast.children(node), preds)
     "UnaryExprOrTypeTraitExpr" -> return Built(b: b, exits: preds)
     _ -> return in_order(b, Ast.children(node), preds)
@@ -1195,7 +1228,27 @@ def call(b: Builder, node: Json, preds: List[Int], tried: Bool) -> Built
   args = parts.drop(1)
   if Ast.kind(callee) != "DeclRefExpr" or Ast.referenced_kind(callee) != "FunctionDecl"
     built = in_order(b, args, preds)
-    return expression(built.b, parts.first, built.exits)
+    # A call through a pointer: the rules on held locks follow the functions stored in it. One whose type does not
+    # return ends the path too.
+    pointer = expression(built.b, parts.first, built.exits)
+    place = Ast.start_of(node)
+    site = Site(
+      name: text_of(pointer.b, parts.first, false),
+      key: "",
+      line: place.line,
+      column: place.column,
+      takes: [],
+      drops: [],
+      stops: type_text(parts.first).include?(NORETURN_TYPE),
+      pointer: true,
+    )
+
+    through = add(pointer.b, Event.Call(site), pointer.exits)
+    if site.stops
+      return Built(b: through.b, exits: [])
+    end
+
+    return through
   end
 
   # A pointer that the call frees or takes is not read by it.
@@ -1209,8 +1262,7 @@ def call(b: Builder, node: Json, preds: List[Int], tried: Bool) -> Built
   end
 
   # The type of the declaration: the reference to a builtin such as `__builtin_abort` has no type of its own.
-  declared = JSON.get(callee, "referencedDecl").unwrap_or(JSON.from(""))
-  type = Ast.text(JSON.get(declared, "type").unwrap_or(JSON.from("")), "qualType")
+  type = type_text(JSON.get(callee, "referencedDecl").unwrap_or(JSON.from("")))
   site = site_of(
     built.b,
     Ast.referenced_name(callee),
@@ -1321,16 +1373,14 @@ def aliased_class(b: Builder, node: Json, depth: Int) -> String
 
   case Ast.kind(bare)
     "MemberExpr" -> return b.ctx.fields.get(Ast.text(bare, "referencedMemberDecl")).unwrap_or("")
+    "ArraySubscriptExpr" -> return aliased_class(b, Ast.children(bare).first, depth)
     "DeclRefExpr" ->
       name = Ast.referenced_name(bare)
       case b.aliases.get(name)
         some(value) if depth < ALIAS_DEPTH -> return aliased_class(b, value, depth + 1)
         _ ->
-          if b.ctx.globals.include?(name)
-            return name
-          end
-
-          return ""
+          declared = JSON.get(bare, "referencedDecl").unwrap_or(JSON.from(""))
+          return b.ctx.globals.get(Ast.text(declared, "id")).unwrap_or("")
       end
 
     _ -> return ""
@@ -1354,16 +1404,8 @@ def condition(b: Builder, node: Json, preds: List[Int]) -> Split
     return Split(b: inner.b, yes: inner.no, no: inner.yes)
   end
 
-  if kind == "BinaryOperator" and opcode == "&&"
-    left = condition(b, parts[0], preds)
-    right = condition(left.b, parts[1], left.yes)
-    return Split(b: right.b, yes: right.yes, no: left.no.concat(right.no))
-  end
-
-  if kind == "BinaryOperator" and opcode == "||"
-    left = condition(b, parts[0], preds)
-    right = condition(left.b, parts[1], left.no)
-    return Split(b: right.b, yes: left.yes.concat(right.yes), no: right.no)
+  if kind == "BinaryOperator" and (opcode == "&&" or opcode == "||")
+    return chain(b, operands_of(bare, opcode), opcode == "&&", preds)
   end
 
   if kind == "IntegerLiteral"
@@ -1378,6 +1420,44 @@ def condition(b: Builder, node: Json, preds: List[Int]) -> Split
     some(tried) -> return trial(b, tried, preds)
     none -> return branch(b, bare, preds)
   end
+end
+
+# The operands of `a && b && c` (or of `||`) from left to right. clang nests such a chain to the left, so the walk
+# goes down it in a loop.
+def operands_of(node: Json, opcode: String) -> List[Json]
+  rights: List[Json] = []
+  current = node
+  while Ast.kind(current) == "BinaryOperator" and Ast.text(current, "opcode") == opcode
+    parts = Ast.children(current)
+    rights = rights.push(parts[1])
+    current = see_through(parts[0])
+  end
+
+  return [current].concat(rights.reverse)
+end
+
+# The operands of `&&` (`all`) or `||` in order: each one after the previous one gave the value that goes on.
+def chain(b: Builder, operands: List[Json], all: Bool, preds: List[Int]) -> Split
+  built = b
+  pending = preds
+  out: List[Int] = []
+  for operand in operands
+    split = condition(built, operand, pending)
+    built = split.b
+    if all
+      out = out.concat(split.no)
+      pending = split.yes
+    else
+      out = out.concat(split.yes)
+      pending = split.no
+    end
+  end
+
+  if all
+    return Split(b: built, yes: pending, no: out)
+  end
+
+  return Split(b: built, yes: out, no: pending)
 end
 
 # A condition of any other form: its calls, then a node for each of its values.
@@ -1473,7 +1553,12 @@ def trial(b: Builder, tried: Tried, preds: List[Int]) -> Split
   name = callee_name(tried.call)
   passed = args.map do |arg| arg_of(called.b, arg) end
   site = site_of(called.b, name, passed, Ast.start_of(tried.call), "")
-  taken = add(called.b, Event.Call(site.with(takes: lock_of(passed, 0))), called.exits)
+  taken = add(
+    called.b,
+    Event.Call(site.with(takes: lock_of(passed, 0), tried: Known.NO_WAIT.include?(name))),
+    called.exits,
+  )
+
   if tried.zero_is_true
     return Split(b: taken.b, yes: taken.exits, no: called.exits)
   end
@@ -1576,6 +1661,35 @@ def target_root(node: Json) -> String
     "UnaryOperator" -> return target_root(Ast.children(bare).first)
     _ -> return ""
   end
+end
+
+# The variable whose own storage an expression is: `x`, `x.a`, `x[i]` of an array `x`; "" through a pointer (`q->mu`,
+# `*p`, `p[i]`), whose variable a write through the address does not change.
+def storage_root(node: Json) -> String
+  bare = see_through(node)
+  case Ast.kind(bare)
+    "DeclRefExpr" -> return Ast.referenced_name(bare)
+    "MemberExpr" ->
+      if Ast.flag?(bare, "isArrow")
+        return ""
+      end
+
+      return storage_root(Ast.children(bare).first)
+    "ArraySubscriptExpr" ->
+      base = Ast.children(bare).first
+      if Ast.text(base, "castKind") != "ArrayToPointerDecay"
+        return ""
+      end
+
+      return storage_root(Ast.children(base).first)
+    _ -> return ""
+  end
+end
+
+# The type of a node as clang writes it and without its typedefs, so a `noreturn` behind a typedef shows.
+def type_text(node: Json) -> String
+  type = JSON.get(node, "type").unwrap_or(JSON.from(""))
+  return "#{Ast.text(type, "qualType")} #{Ast.text(type, "desugaredQualType")}"
 end
 
 def see_through(node: Json) -> Json

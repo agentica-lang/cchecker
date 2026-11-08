@@ -4,8 +4,7 @@
 
 import Effects from "effects"
 import Flow from "flow"
-import {Lock, Site} from "flow"
-import Known from "known"
+import {Body, Lock, Site} from "flow"
 import {Unit} from "unit"
 
 ## The code of a system call or a blocking call under a lock marked CC_NO_SYSCALL_UNDER.
@@ -66,7 +65,7 @@ export def rules_of(units: List[Unit], graph: Effects.Graph) -> Rules
       for node in body.nodes
         case node.event
           Flow.Event.Call(site) ->
-            for lock in site.takes
+            for lock in waited(site)
               if lock.class != ""
                 classes = classes.add(lock.class)
               end
@@ -83,27 +82,27 @@ export def rules_of(units: List[Unit], graph: Effects.Graph) -> Rules
   return Rules(graph: graph, quiet: quiet, levels: levels, takes: takes)
 end
 
-## Returns the rules that a call breaks while the path holds `held`. The caller is `name`; `at` is the step of the call
+## Returns the rules that a call of `body` breaks while the path holds `held`; `at` is the step of the call
 ## (`LINE:COL`).
-export def at_call(rules: Rules, name: String, held: List[Held], site: Site, at: String) -> List[Breach]
-  return under_quiet(rules, name, held, site, at).concat(out_of_order(rules, name, held, site, at))
+export def at_call(rules: Rules, body: Body, held: List[Held], site: Site, at: String) -> List[Breach]
+  return under_quiet(rules, body, held, site, at).concat(out_of_order(rules, body, held, site, at))
 end
 
 # A call under a quiet lock that is, or reaches, a system call. The release of the lock and a wait on it are how the
 # lock works.
-def under_quiet(rules: Rules, name: String, held: List[Held], site: Site, at: String) -> List[Breach]
+def under_quiet(rules: Rules, body: Body, held: List[Held], site: Site, at: String) -> List[Breach]
   quiet = held.select do |h| h.quiet or rules.quiet.include?(h.lock.class) end
   if quiet.empty?
     return []
   end
 
-  path = system_call(rules, site)
+  path = system_call(rules, body, site)
   if path.empty?
     return []
   end
 
   step = "#{at} calls #{site.name}"
-  if path.size > 1
+  if path.size > 1 or site.pointer
     step = "#{step}: #{path.join(" -> ")}"
   end
 
@@ -115,7 +114,7 @@ def under_quiet(rules: Rules, name: String, held: List[Held], site: Site, at: St
         Breach(
           id: "#{SYSCALL_UNDER_LOCK} #{h.lock.key} #{site.name}",
           code: SYSCALL_UNDER_LOCK,
-          message: "#{name} calls #{site.name} while holding #{h.lock.shown}",
+          message: "#{body.name} calls #{site.name} while holding #{h.lock.shown}",
           path: h.path.push(step),
         ),
       )
@@ -125,37 +124,41 @@ def under_quiet(rules: Rules, name: String, held: List[Held], site: Site, at: St
   return found
 end
 
-# The call path from the call to a system call: [the call] for a known one, [the call, ..., the system call] for a
-# function of the project that reaches one, [] for neither.
-def system_call(rules: Rules, site: Site) -> List[String]
-  if not Effects.defined?(rules.graph, site.key)
-    if Known.SYSTEM.include?(site.name) or Known.BLOCKING.include?(site.name)
-      return [site.name]
-    end
-
-    return []
+# The call path from the call to a system call: [the call] for a system or blocking call (a CC_BLOCKING function
+# included), [the call, ..., the system call] for a function of the project that reaches one, [] for neither. A call
+# through a pointer goes to the functions stored in it, and the path starts at the first of them that reaches one.
+def system_call(rules: Rules, body: Body, site: Site) -> List[String]
+  if not site.pointer
+    return Effects.system_path(rules.graph, site.key).unwrap_or([])
   end
 
-  return Effects.system_path(rules.graph, site.key).unwrap_or([])
+  for target in Effects.pointer_targets(rules.graph, body.key, site.line, site.column)
+    case Effects.system_path(rules.graph, target)
+      some(path) -> return path
+      none -> next
+    end
+  end
+
+  return []
 end
 
 # A lock with a level taken while a lock of the same or a higher level is held: by the call itself, or by a function
 # of the project that the call reaches.
-def out_of_order(rules: Rules, name: String, held: List[Held], site: Site, at: String) -> List[Breach]
+def out_of_order(rules: Rules, body: Body, held: List[Held], site: Site, at: String) -> List[Breach]
   leveled = held.select do |h| rules.levels.key?(h.lock.class) end
   if leveled.empty?
     return []
   end
 
   found: List[Breach] = []
-  for lock in site.takes
+  for lock in waited(site)
     for h in leveled
       if lock.key != h.lock.key and higher_or_same?(rules, h.lock.class, lock.class)
         found = found.push(
           Breach(
             id: "#{LOCK_ORDER} #{h.lock.key} #{lock.key}",
             code: LOCK_ORDER,
-            message: "#{name} takes #{lock.shown} while holding #{h.lock.shown}",
+            message: "#{body.name} takes #{lock.shown} while holding #{h.lock.shown}",
             path: h.path.push("#{at} takes #{lock.shown}"),
           ),
         )
@@ -169,14 +172,14 @@ def out_of_order(rules: Rules, name: String, held: List[Held], site: Site, at: S
 
   # A function that takes the class of a lock held may take that very lock again, which a lock that counts its nested
   # takes allows: only another class is out of order.
-  for class in reached_takes(rules, site.key)
+  for class in reached_by(rules, body, site)
     for h in leveled
       if h.lock.class != class and higher_or_same?(rules, h.lock.class, class)
         found = found.push(
           Breach(
             id: "#{LOCK_ORDER} #{h.lock.key} #{site.name} #{class}",
             code: LOCK_ORDER,
-            message: "#{name} calls #{site.name}, which takes #{class}, while holding #{h.lock.shown}",
+            message: "#{body.name} calls #{site.name}, which takes #{class}, while holding #{h.lock.shown}",
             path: h.path.push("#{at} calls #{site.name}, which takes #{class}"),
           ),
         )
@@ -192,6 +195,26 @@ def higher_or_same?(rules: Rules, held: String, taken: String) -> Bool
     some(level) -> return rules.levels[held] >= level
     none -> return false
   end
+end
+
+# The locks a call waits for: a trylock waits for none, so it never takes part in a cycle of waits.
+def waited(site: Site) -> List[Lock]
+  if site.tried
+    return []
+  end
+
+  return site.takes
+end
+
+# The classes that a call takes through the functions it reaches: those of the callee, or of every function stored in
+# the pointer it calls.
+def reached_by(rules: Rules, body: Body, site: Site) -> List[String]
+  if not site.pointer
+    return reached_takes(rules, site.key)
+  end
+
+  targets = Effects.pointer_targets(rules.graph, body.key, site.line, site.column)
+  return targets.flat_map do |target| reached_takes(rules, target) end.uniq
 end
 
 # The classes that a function of the project takes, in its body or in the functions it reaches.

@@ -13,7 +13,7 @@ Feature: What runs while a lock is held
       #include "cchecker.h"
 
       struct queue { CC_NO_SYSCALL_UNDER() pthread_mutex_t mu; pthread_cond_t cv; int fd; int n; };
-      pthread_mutex_t other; void flush(struct queue *q);
+      pthread_mutex_t other; void flush(struct queue *q); void wait_disk(struct queue *q);
 
       <code>
       """
@@ -34,6 +34,7 @@ Feature: What runs while a lock is held
       | blocking        | calls usleep                | void push(struct queue *q) { pthread_mutex_lock(&q->mu); usleep(1); pthread_mutex_unlock(&q->mu); }                                         |
       | another lock    | calls pthread_mutex_lock    | void push(struct queue *q) { pthread_mutex_lock(&q->mu); pthread_mutex_lock(&other); pthread_mutex_unlock(&other); pthread_mutex_unlock(&q->mu); } |
       | through a call  | calls flush: flush -> write | void push(struct queue *q) { pthread_mutex_lock(&q->mu); flush(q); pthread_mutex_unlock(&q->mu); } void flush(struct queue *q) { write(q->fd, "x", 1); } |
+      | a blocking function | calls wait_disk         | void push(struct queue *q) { pthread_mutex_lock(&q->mu); wait_disk(q); pthread_mutex_unlock(&q->mu); } CC_BLOCKING void wait_disk(struct queue *q) { q->n++; } |
       | a wait on other | calls pthread_cond_wait     | void push(struct queue *q) { pthread_mutex_lock(&q->mu); pthread_mutex_lock(&other); pthread_cond_wait(&q->cv, &other); pthread_mutex_unlock(&other); pthread_mutex_unlock(&q->mu); } |
 
   Scenario Outline: What runs under a CC_NO_SYSCALL_UNDER lock passes when it makes no system call (<case>)
@@ -177,3 +178,144 @@ Feature: What runs while a lock is held
       """
       "path":["5:3 takes q->mu","6:3 calls write"]
       """
+
+  Scenario: A call through a function pointer under a lock reaches the functions stored in the pointer
+    Given the C file "cb.c" holds:
+      """
+      #include <pthread.h>
+      #include <unistd.h>
+      #include "cchecker.h"
+
+      struct queue { CC_NO_SYSCALL_UNDER() CC_LOCK_LEVEL(2) pthread_mutex_t mu; void (*cb)(struct queue *q); int fd; };
+      struct runtime { CC_LOCK_LEVEL(1) pthread_mutex_t sync; };
+      struct runtime rt;
+      static void flush(struct queue *q) { write(q->fd, "x", 1); }
+      static void sync_up(struct queue *q) { (void)q; pthread_mutex_lock(&rt.sync); pthread_mutex_unlock(&rt.sync); }
+      void setup(struct queue *q) { q->cb = flush; }
+      void push(struct queue *q) {
+        pthread_mutex_lock(&q->mu);
+        q->cb(q);
+        pthread_mutex_unlock(&q->mu);
+      }
+      void each(struct queue *q, void (*f)(struct queue *)) {
+        pthread_mutex_lock(&q->mu);
+        f(q);
+        pthread_mutex_unlock(&q->mu);
+      }
+      void run(struct queue *q) { each(q, sync_up); }
+      """
+    When I run cchecker with "--tools rules --json $DIR/cb.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      {"code":"CC-PATH-SYSCALL-UNDER-LOCK","tool":"rules","file":"$DIR/cb.c","line":11,"column":6,
+      """
+    And the output includes:
+      """
+      "13:3 calls q->cb: flush -> write"]
+      """
+    And the output includes:
+      """
+      {"code":"CC-PATH-LOCK-ORDER","tool":"rules","file":"$DIR/cb.c","line":16,"column":6,
+      """
+    And the output includes:
+      """
+      "18:3 calls f, which takes runtime.sync"]
+      """
+
+  Scenario: Locks are classed through arrays, const pointers and their own declarations, and a trylock waits for none
+    Given the C file "classes.c" holds:
+      """
+      #include <pthread.h>
+      #include "cchecker.h"
+
+      struct pool { CC_LOCK_LEVEL(1) pthread_mutex_t m[4]; };
+      struct queue { CC_LOCK_LEVEL(2) pthread_mutex_t mu; };
+      CC_ACQUIRES(p->m[0]) void pool_lock(struct pool *const p);
+      CC_RELEASES(p->m[0]) void pool_unlock(struct pool *const p);
+      CC_LOCK_LEVEL(1) pthread_mutex_t gate;
+      void array(struct queue *q, struct pool *p) {
+        pthread_mutex_lock(&q->mu); pthread_mutex_lock(&p->m[1]); pthread_mutex_unlock(&p->m[1]); pthread_mutex_unlock(&q->mu);
+      }
+      void constant(struct queue *q, struct pool *p) {
+        pthread_mutex_lock(&q->mu); pool_lock(p); pool_unlock(p); pthread_mutex_unlock(&q->mu);
+      }
+      void shadow(struct queue *q, pthread_mutex_t *gate) {
+        pthread_mutex_lock(&q->mu); pthread_mutex_lock(gate); pthread_mutex_unlock(gate); pthread_mutex_unlock(&q->mu);
+      }
+      void attempt(struct queue *q, struct pool *p) {
+        pthread_mutex_lock(&q->mu);
+        if (pthread_mutex_trylock(&p->m[2]) == 0) pthread_mutex_unlock(&p->m[2]);
+        pthread_mutex_unlock(&q->mu);
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/classes.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      {"code":"CC-PATH-LOCK-ORDER","tool":"rules","file":"$DIR/classes.c","line":9,"column":6,
+      """
+    And the output includes:
+      """
+      {"code":"CC-PATH-LOCK-ORDER","tool":"rules","file":"$DIR/classes.c","line":12,"column":6,
+      """
+    And the output does not include:
+      """
+      "line":15,
+      """
+    And the output does not include:
+      """
+      "line":18,
+      """
+
+  Scenario: A static lock is its own file's
+    Given the C file "q.h" holds:
+      """
+      #include <pthread.h>
+      #include "cchecker.h"
+      struct queue { CC_LOCK_LEVEL(2) pthread_mutex_t mu; };
+      """
+    And the C file "a.c" holds:
+      """
+      #include "q.h"
+      static CC_LOCK_LEVEL(1) pthread_mutex_t lk;
+      void a(struct queue *q) { pthread_mutex_lock(&q->mu); pthread_mutex_lock(&lk); pthread_mutex_unlock(&lk); pthread_mutex_unlock(&q->mu); }
+      """
+    And the C file "b.c" holds:
+      """
+      #include "q.h"
+      static pthread_mutex_t lk;
+      void b(struct queue *q) { pthread_mutex_lock(&q->mu); pthread_mutex_lock(&lk); pthread_mutex_unlock(&lk); pthread_mutex_unlock(&q->mu); }
+      """
+    When I run cchecker with "--tools rules --json $DIR/a.c $DIR/b.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      {"code":"CC-PATH-LOCK-ORDER","tool":"rules","file":"$DIR/a.c","line":3,"column":6,
+      """
+    And the output does not include:
+      """
+      "file":"$DIR/b.c"
+      """
+
+  Scenario Outline: A lock mark that cannot be read is an error of the tool (<case>)
+    Given the C file "marks.c" holds:
+      """
+      #include "pthread.h" /* found in the system folders */
+      #include "cchecker.h"
+
+      <code>
+      void touch(void) { }
+      """
+    When I run cchecker with "--tools rules --json $DIR/marks.c -- -I../include"
+    Then the exit code is 2
+    And the output includes:
+      """
+      "errors":[{"tool":"rules","file":"$DIR/marks.c",
+      """
+
+    Examples:
+      | case               | code                                                                |
+      | a level not a number | struct box { CC_LOCK_LEVEL(0x2) pthread_mutex_t mu; };            |
+      | a lock named on a field | struct box { CC_NO_SYSCALL_UNDER(mu) pthread_mutex_t mu; };    |
+      | a field with no class | struct { CC_LOCK_LEVEL(1) pthread_mutex_t mu; } box;              |
