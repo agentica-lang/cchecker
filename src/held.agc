@@ -4,8 +4,7 @@
 
 import Effects from "effects"
 import Flow from "flow"
-import {Body, Lock, Site} from "flow"
-import Known from "known"
+import {Body, Event, Lock, Site} from "flow"
 import {Unit} from "unit"
 
 ## The code of a system call or a blocking call under a lock marked CC_NO_SYSCALL_UNDER.
@@ -19,12 +18,14 @@ QUIET_MARK = "no_syscall_under()"
 LEVEL_PREFIX = "lock_level("
 
 ## What the rules know of the project: its call graph, the classes of the locks marked CC_NO_SYSCALL_UNDER(), the level
-## of each class with CC_LOCK_LEVEL, and the classes each function takes in its own body.
+## of each class with CC_LOCK_LEVEL, the classes each function takes in its own body, and the graphs of the functions
+## that take or release a lock, by key.
 export struct Rules
   graph: Effects.Graph
   quiet: Set[String]
   levels: Map[String, Int]
   takes: Map[String, Set[String]]
+  bodies: Map[String, Body] = {}
 end
 
 ## A lock that a path holds at a call, and the steps of the path from its take to the call. `quiet` is a lock that the
@@ -49,6 +50,7 @@ export def rules_of(units: List[Unit], graph: Effects.Graph) -> Rules
   quiet: Set[String] = Set.new([])
   levels: Map[String, Int] = {}
   takes: Map[String, Set[String]] = {}
+  bodies: Map[String, Body] = {}
   for unit in units
     for mark in unit.lock_marks
       if mark.mark == QUIET_MARK
@@ -62,6 +64,7 @@ export def rules_of(units: List[Unit], graph: Effects.Graph) -> Rules
     end
 
     for body in unit.bodies
+      bodies = bodies.put(body.key, body)
       classes = takes.get(body.key).unwrap_or(Set.new([]))
       for node in body.nodes
         case node.event
@@ -80,7 +83,7 @@ export def rules_of(units: List[Unit], graph: Effects.Graph) -> Rules
     end
   end
 
-  return Rules(graph: graph, quiet: quiet, levels: levels, takes: takes)
+  return Rules(graph: graph, quiet: quiet, levels: levels, takes: takes, bodies: bodies)
 end
 
 ## Returns the rules that a call of `body` breaks while the path holds `held`; `at` is the step of the call
@@ -91,18 +94,19 @@ end
 
 # A call under a quiet lock that is, or reaches, a system call. The release of the lock and a wait on it are how the
 # lock works, and so is the release of a lock taken under it, whose take is the finding. A function of the project
-# that releases (CC_RELEASES) is held to its other system calls: one before its unlock is still a finding.
+# that releases (CC_RELEASES) is held to the system calls it may make before its release.
 def under_quiet(rules: Rules, body: Body, held: List[Held], site: Site, at: String) -> List[Breach]
   quiet = held.select do |h| h.quiet or rules.quiet.include?(h.lock.class) end
   if quiet.empty?
     return []
   end
 
+  reached = system_call(rules, body, site)
   found: List[Breach] = []
   for h in quiet
-    path = system_call(rules, body, site)
+    path = reached
     if releases?(held, h, site)
-      path = besides_release(rules, site)
+      path = before_release(rules, site)
     end
 
     if not path.empty?
@@ -137,14 +141,51 @@ def releases?(held: List[Held], h: Held, site: Site) -> Bool
   end
 end
 
-# The system calls of a call that releases a lock, past the release itself: none for a call of the library (the unlock,
-# the wait), and for a function of the project those it makes besides its calls that release or wait.
-def besides_release(rules: Rules, site: Site) -> List[String]
-  if site.pointer or not Effects.defined?(rules.graph, site.key)
-    return []
-  end
+# The call path to a system call that a call which releases a lock makes before the release: none for a call of the
+# library (the unlock, the wait), which has no graph, and for a function of the project the first system call on a
+# path of its body from its start to a call that releases or waits on a lock of its own CC_RELEASES.
+def before_release(rules: Rules, site: Site) -> List[String]
+  case rules.bodies.get(site.key)
+    some(helper) ->
+      released = Set.new(released_keys(rules, site.key))
+      seen = Set.new([0])
+      queue = [0]
+      i = 0
+      while i < queue.size
+        node = helper.nodes[queue[i]]
+        i += 1
+        # The walk goes no further than a release of the helper's own lock.
+        stops = false
+        case node.event
+          Event.Call(call) ->
+            stops = call.drops.concat(call.waits).any? do |lock| released.include?(lock.key) end
+            path = system_call(rules, helper, call)
+            if not stops and not path.empty?
+              return [site.name].concat(path)
+            end
 
-  return Effects.system_path_besides(rules.graph, site.key, Known.DROPS.union(Known.WAITS)).unwrap_or([])
+          _ -> stops = false
+        end
+
+        for after in node.next
+          if not stops and not seen.include?(after)
+            seen = seen.add(after)
+            queue = queue.push(after)
+          end
+        end
+      end
+
+      return []
+    none -> return []
+  end
+end
+
+# The keys of the locks that a function releases by its marks (`releases(q->mu)`), in the names of its parameters.
+def released_keys(rules: Rules, key: String) -> List[String]
+  marks = rules.graph.functions.get(key).map do |f| f.marks end.unwrap_or([])
+  return marks.select do |mark| mark.start_with?("releases(") and mark.end_with?(")") end
+    .flat_map do |mark| mark.slice(9, mark.length - 10).split(",") end
+    .map do |lock| Flow.key_of(lock.strip) end
 end
 
 # The call path from the call to a system call: [the call] for a system or blocking call (a CC_BLOCKING function

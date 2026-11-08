@@ -191,10 +191,17 @@ an unlock of another lock included, and a `CC_BLOCKING` function) or reaches one
 through the functions of the project, a call through a function pointer included
 (the functions stored in it), except the release of the lock itself and a wait
 on a condition with it. A lock taken under it is one finding, at its take: its
-release is none. A `CC_RELEASES` helper that releases the lock is held to its
-other system calls: one it makes before its unlock (a `write`, the signal of a
-condition) is a finding at its call. `CC_NO_SYSCALL_UNDER(lock)` on a function
-says the same of one lock of that function, in the names of its parameters.
+release is none, by a library call or a `CC_RELEASES` helper. A `CC_RELEASES`
+helper that releases the quiet lock is held to the system calls it may make
+before its own release, on any path of its body (a `write`, the signal of a
+condition, the unlock of another lock); what it does after the release, or after
+a wait with the lock, is no finding. A call through a function pointer releases
+nothing, so it is never such a release. Limits: a lock taken under the quiet
+lock is told by the order of the takes on the path, so the release of a quiet
+lock taken again (a recursive mutex) counts as the release of the quiet lock,
+and a helper that takes two locks in one call has them both taken at that call,
+neither under the other. `CC_NO_SYSCALL_UNDER(lock)` on a function says the same
+of one lock of that function, in the names of its parameters.
 
 `CC_LOCK_LEVEL(n)` on the field of a lock (or a global lock) orders the locks: a
 path takes a lock with a level only while every lock it holds with a level has a
