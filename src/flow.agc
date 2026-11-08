@@ -356,12 +356,14 @@ end
 ## Returns the lock text of an annotation (`q->mu`) for a call that passes `args`, the texts of its arguments, to a
 ## function whose parameters are `params`; "" when the lock names a parameter that the call passes no text for.
 export def substituted(lock: String, params: List[String], args: List[String]) -> String
-  written = lock.replace(" ", "")
-  prefix = ""
-  while written.start_with?("&") or written.start_with?("*")
-    prefix = prefix + written.slice(0, 1)
-    written = written.slice(1, written.length - 1)
+  whole = lock.replace(" ", "")
+  marks = 0
+  while marks < whole.length and ["&", "*"].include?(whole.slice(marks, 1))
+    marks += 1
   end
+
+  prefix = whole.slice(0, marks)
+  written = whole.slice(marks, whole.length - marks)
 
   root = written.length
   for i in 0...written.length

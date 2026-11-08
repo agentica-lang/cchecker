@@ -584,7 +584,7 @@ The tests are Agentica too: BDD features in `specs/` that run cchecker on the C 
 tests in `test/`. They need `gcc`, `clang`, `clang-tidy` and `sh`.
 
 ```sh
-make check       # agentica check
+make check       # agentica check, then agentica lint --strict (make lint alone)
 make fmt-check   # agentica fmt --check; `agentica fmt` fixes it
 make test        # agentica test --jobs 4 without the @slow scenarios, from the root of the repository
 make test-slow   # the @slow scenarios only (the bounds of specs/limits.feature, the property tests on many cases)
