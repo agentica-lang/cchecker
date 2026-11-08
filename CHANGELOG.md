@@ -24,6 +24,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `open` and `openat` with `O_NONBLOCK`, and `recv`, `send`, `recvfrom` and `sendto` with `MSG_DONTWAIT`, are not
   blocking for `CC_SHORT` when the flag is a constant, with the values of the target (Linux and macOS);
   `[library] libc_nonblocking_flags` turns it off. `open` of a regular file can still wait for the disk.
+- `[assume] stop_fields`: the function-pointer fields (`request.call`) whose calls no rule follows.
 - Short locks: taking a lock marked `CC_NO_SYSCALL_UNDER()`, or named in `[assume] short_locks` (`queue.mu`), is not
   blocking for `CC_SHORT`.
 - A file whose `#include` is not found is not checked, with `cchecker: warning: FILE not checked: HEADER not

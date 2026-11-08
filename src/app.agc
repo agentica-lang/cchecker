@@ -137,13 +137,16 @@ export def run(options: Options) -> Result[Int]
     end
   end
 
-  assumes = not (config.trusted.empty? and config.stops.empty? and config.short_locks.empty?)
+  assumes = not (
+    config.trusted.empty? and config.stops.empty? and config.short_locks.empty? and config.stop_fields.empty?
+  )
+
   if options.tools.include?(Tool.Rules) and assumes
     if not scope.full
       IO.warn("cchecker: the names of [assume] were not checked: only a full run of a compile database sees them all")
     elsif not collected.missing_assumed.empty?
       missing = collected.missing_assumed.join(", ")
-      return error("#{config.origin}: no function or lock of the compile database is named #{missing}")
+      return error("#{config.origin}: no function, lock or field of the compile database is named #{missing}")
     end
   end
 
@@ -521,6 +524,7 @@ def collect(options: Options, config: Config.Config, jobs: List[Tools.Job], cwd:
   end
 
   # `[assume]` holds for every rule, as the marks it stands for.
+  cut_missing = Effects.missing_fields(units, config)
   units = Effects.assumed(units, config)
   checked = Profile.measure("effects") do Effects.check(units, config, options.infer, options.all_paths, cwd) end
   locked = Profile.measure("locking") do Locking.check(units) end
@@ -539,7 +543,7 @@ def collect(options: Options, config: Config.Config, jobs: List[Tools.Job], cwd:
     incomplete_functions: locked.incomplete + owned.incomplete,
     unresolved: checked.unresolved,
     missing_roots: checked.missing_roots,
-    missing_assumed: checked.missing_assumed,
+    missing_assumed: checked.missing_assumed.concat(cut_missing),
     unknown_targets: checked.unknown_targets,
     unchecked: unchecked.group_by do |u| "#{u.file}\n#{u.missing}" end
       .values
