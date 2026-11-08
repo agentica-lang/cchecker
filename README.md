@@ -250,7 +250,8 @@ of one lock of that function, in the names of its parameters.
 
 `CC_LOCK_LEVEL(n)` on the field of a lock (or a global lock) orders the locks: a path takes a lock with a level only
 while every lock it holds with a level has a lower one, and it calls a function that takes one (in its body or in the
-functions it reaches) only then. Two locks of the same level are never held together.
+functions it reaches) only then. Two locks of the same level are never held together; a called function that takes
+the class of a lock held again (a counted lock, taken once more by the same thread) is not out of order.
 
 ```c
 struct runtime { CC_LOCK_LEVEL(1) pthread_mutex_t sync; ... };
