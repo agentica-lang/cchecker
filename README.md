@@ -548,7 +548,7 @@ make bench       # the rules on the C VM of Agentica: wall time and peak RSS (BE
 `make bench` fetches Agentica at a pinned commit (`AGENTICA_BENCH_COMMIT`) into `.bench/`, with only the submodules
 whose headers its VM reads, and runs `--tools rules` on the 84 files of `vm/`; it fails when a file is not checked. It
 needs `git`, `make`, GNU time and the headers of libgc, OpenSSL and zlib (Debian: `libgc-dev libssl-dev zlib1g-dev
-pkg-config`). On an 8-core machine it takes 10.6 s and 370 MB at -j 8, and 19.5 s and 405 MB at -j 2.
+pkg-config`). On an 8-core machine it takes 10.3 s and 415 MB at -j 8, and 17.9 s and 411 MB at -j 2.
 
 ## License
 
