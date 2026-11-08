@@ -174,6 +174,7 @@ export def run(job: Job) -> Result[Outcome]
 
   fifo = ""
   raws: List[String] = []
+  copy_error = ""
   if job.tool == Tool.Rules
     fifo = fifo_path(job.dump)
     args = ["-c", DUMP_SCRIPT, command].concat(args)
@@ -189,14 +190,22 @@ export def run(job: Job) -> Result[Outcome]
 
   process = try started
   if job.tool == Tool.Rules
-    copied = Profile.measure("clang") do copy_dump(job, fifo, process, timeout_ms) end
+    # The copy runs while clang writes. Its deadline starts with the call, so a wait for a thread of the compute
+    # pool does not count; past it clang is stopped. On another error clang's own outcome is still read: its
+    # failure comes first.
+    copied = Profile.measure("clang") do Scan.compact(fifo, job.dump, timeout_ms) end
     _ = Path.remove(fifo)
-    if not copied.ok?
-      Process.close(process)
-      _ = Path.remove(job.dump)
-    end
+    case copied
+      ok(found) -> raws = found
+      error(message) ->
+        _ = Path.remove(job.dump)
+        if message == Scan.TIMED_OUT
+          Process.close(process)
+          return error(message)
+        end
 
-    raws = try copied
+        copy_error = message
+    end
   end
 
   output = try Profile.measure("clang") do Process.output(process, timeout_ms) end
@@ -209,6 +218,11 @@ export def run(job: Job) -> Result[Outcome]
   done = outcome(job, "#{output.stdout}\n#{output.stderr}", code)
   if job.tool != Tool.Rules
     return ok(done)
+  end
+
+  if copy_error != ""
+    copy_failed = ToolError(tool: "rules", file: job.entry.file, message: copy_error)
+    return ok(done.with(errors: done.errors.push(copy_failed)))
   end
 
   # The dump of a file whose header is not found is the part before the #include: nothing to read.
@@ -271,18 +285,6 @@ end
 ## Returns the path of the FIFO that clang writes the dump into: the dump's, `N.fifo` for `N.json`.
 export def fifo_path(dump: String) -> String
   return "#{dump.slice(0, dump.length - ".json".length)}.fifo"
-end
-
-# Copies the dump from the FIFO while clang writes it, until clang closes it, and gives the files it names
-# (`Scan.compact`). Past the timeout clang is stopped, with the error that `Process.output` gives on a timeout.
-def copy_dump(job: Job, fifo: String, process: Process, timeout_ms: Int) -> Result[List[String]]
-  copying = Task.spawn do Scan.compact(fifo, job.dump) end
-  case Task.await(copying, timeout_ms)
-    Await.Done(copied) -> return copied
-    Await.TimedOut ->
-      Process.close(process)
-      return error("process: operation timed out")
-  end
 end
 
 def executable(job: Job) -> String

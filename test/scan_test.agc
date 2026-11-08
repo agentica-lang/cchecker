@@ -279,6 +279,24 @@ def test_the_scan_in_c_gives_what_the_scan_in_agentica_gives() -> Result[Void]
   return result
 end
 
+# A FIFO that no writer opens (a clang that never started, or was killed before its redirect) ends the copy at its
+# timeout, and holds no thread of the compute pool for the rest of the run.
+def test_the_copy_of_a_fifo_that_no_one_opens_ends_at_its_timeout() -> Result[Void]
+  folder = "#{System.env("TMPDIR").unwrap_or("/tmp")}/cchecker-fifo-test-#{System.pid()}"
+  try Dir.mkdir_private(folder)
+  fifo = "#{folder}/0.fifo"
+  made = Scan.fifo(fifo)
+  copied = Scan.compact(fifo, "#{folder}/0.json", 200)
+  _ = Path.remove(fifo)
+  _ = Path.remove("#{folder}/0.json")
+  _ = Path.remove(folder)
+  try made
+  case copied
+    ok(_) -> return Test.eq("copied", Scan.TIMED_OUT)
+    error(message) -> return Test.eq(message, Scan.TIMED_OUT)
+  end
+end
+
 # Dumps that clang does not write but a file may hold: CRLF line ends and no final one, and a location with a line
 # longer than the 1 MiB block of the C scan after its `col`, then a `"cc_file": ` line of its own, which is no place.
 def test_the_scan_in_c_reads_crafted_lines_as_the_scan_in_agentica() -> Result[Void]
@@ -355,7 +373,7 @@ end
 # Whether the copy of a dump by `Scan.compact`, with its indents cut short, scans as the dump, pruned and not.
 def same_copy(path: String, root: String) -> Result[Bool]
   copy = "#{path}.copy"
-  raws = try Scan.compact(path, copy)
+  raws = try Scan.compact(path, copy, 10_000)
   copied = Scan.decls_in(copy, raws, root, root, false)
   copied_pruned = Scan.decls_in(copy, raws, root, root)
   _ = Path.remove(copy)

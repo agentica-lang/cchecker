@@ -14,6 +14,9 @@ import Paths from "paths"
 # The longest line the scan reads. A line of the dump is short, except a string literal of the source, which is one.
 LINE_BYTES = 16_777_216
 
+## The error of `compact` past its timeout: the text of `Process.output` on one.
+export TIMED_OUT = "process: operation timed out"
+
 # The most lines the scan keeps of one declaration, so that a generated table cannot take all the memory. A large
 # function of an interpreter loop has some 190 thousand. A declaration over it is an error when it names a function,
 # before the cap or past it, since its calls are lost; one that names none (a table of enum values or of structs of
@@ -220,12 +223,13 @@ end
 # pool.
 extern module "cchecker_scan"
   ## Makes the FIFO at `path` that clang writes its dump into, for `compact`.
-  export def fifo(path: String) -> Result[Bool]
+  export compute def fifo(path: String) -> Result[Bool]
   ## Copies the dump that clang writes into the FIFO `from` to the file `to`, until clang closes it, with the indent of
   ## each line cut short, and gives the values of its `"file": ` lines for `decls_in`. clang indents a node two spaces
   ## per level, so the dump of a deep tree (a chain of else-if) is gigabytes of spaces; the copy scans as the dump
-  ## would, and stays the size of the tree.
-  export compute def compact(from: String, to: String) -> Result[List[String]]
+  ## would, and stays the size of the tree. Past `timeout_ms` from the start of the call (a writer that never opens
+  ## the FIFO included) it gives the error TIMED_OUT.
+  export compute def compact(from: String, to: String, timeout_ms: Int) -> Result[List[String]]
   compute def files(path: String) -> Result[List[String]]
   compute def scan(path: String, places: List[Place], prune: Bool) -> Result[NativeDump]
 end
