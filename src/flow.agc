@@ -230,10 +230,10 @@ struct Builder
 end
 
 # The pointers of a function that own or may stand for one that does, by name (`names`): its parameters that own
-# (`params`), those that free it only (`freed`, CC_FREES), its locals marked CC_OWNS (`marked`), and the locals that get an owned value or a pointer of one of
-# them. `locals` are the names of its parameters and local variables, `kept` the ids of the calls of a function that
-# returns an owned pointer whose value is kept (in a local, a CC_OWNS place, a return or a parameter that takes it),
-# and `calls` whether it calls such a function at all.
+# (`params`), those that free it only (`freed`, CC_FREES), its locals marked CC_OWNS (`marked`), and the locals that
+# get an owned value or a pointer of one of them. `locals` are the names of its parameters and local variables, `kept`
+# the ids of the calls of a function that returns an owned pointer whose value is kept (in a local, a CC_OWNS place, a
+# return or a parameter that takes it), and `calls` whether it calls such a function at all.
 struct Owners
   params: List[String]
   freed: Set[String]
@@ -516,9 +516,12 @@ def owners_of(ctx: Context, key: String, node: Json) -> Owners
   indices = ctx.owning.takes.get(key, []).concat(ctx.owning.frees.get(key, [])).uniq.sort
   params = indices.select do |i| i < names_of_params.size end.map do |i| names_of_params[i] end
   takes = ctx.owning.takes.get(key, [])
-  freed = ctx.owning.frees.get(key, [])
+  freed = ctx.owning
+    .frees
+    .get(key, [])
     .select do |i| i < names_of_params.size and not takes.include?(i) end
     .map do |i| names_of_params[i] end
+
   decls = all.select do |n| Ast.kind(n) == "VarDecl" end
   locals = Set.new(
     names_of_params.concat(
