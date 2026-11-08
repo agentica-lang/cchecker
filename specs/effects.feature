@@ -168,13 +168,32 @@ Feature: Effects on the call graph
     And the folder "$DIR/tmp" is empty
 
   Scenario: The findings of the rules go into the baseline like the others
-    When I run cchecker with "--tools rules -b $DIR/base.json --update-baseline fixtures/effects/hot.c -- -I../include"
+    Given the C file "hot.c" holds:
+      """
+      #include <stdlib.h>
+      #include "cchecker.h"
+
+      CC_HOT void *grab(size_t n) { return malloc(n); }
+      """
+    When I run cchecker with "--tools rules -b $DIR/base.json --update-baseline $DIR/hot.c -- -I../include"
     Then the exit code is 0
-    When I run cchecker with "--tools rules -b $DIR/base.json --json fixtures/effects/hot.c -- -I../include"
+    When I run cchecker with "--tools rules -b $DIR/base.json --json $DIR/hot.c -- -I../include"
     Then the exit code is 0
     And the output includes:
       """
-      "findings":[],"baselined":2
+      "findings":[],"baselined":1,"fixed":0
+      """
+    Given the C file "hot.c" holds:
+      """
+      #include "cchecker.h"
+
+      CC_HOT int grab(int n) { return n; }
+      """
+    When I run cchecker with "--tools rules -b $DIR/base.json --json $DIR/hot.c -- -I../include"
+    Then the exit code is 0
+    And the output includes:
+      """
+      "findings":[],"baselined":0,"fixed":1
       """
 
   Scenario: The rules run by default

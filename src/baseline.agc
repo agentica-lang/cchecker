@@ -161,7 +161,7 @@ def covered?(scope: Scope, entry: Entry) -> Bool
   return scope.pairs.include?(pair(tool, entry.file))
 end
 
-# The tool that makes the codes with this prefix; a code of a later phase has no tool and is never covered.
+# The tool that makes the codes with this prefix; a code of no known tool is never covered.
 def tool_of(code: String) -> String
   if code.start_with?("CC-GCC-")
     return "gcc"
@@ -169,6 +169,10 @@ def tool_of(code: String) -> String
 
   if code.start_with?("CC-TIDY-")
     return "clang-tidy"
+  end
+
+  if code.start_with?("CC-EFFECT-")
+    return "rules"
   end
 
   return ""
