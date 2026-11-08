@@ -141,6 +141,54 @@ TABLES = <<~JSON
   }
 JSON
 
+# A table of a typedef'd function pointer whose first item is a null pointer: `{0, f}`.
+NULLS = <<~JSON
+  {
+    "kind": "TranslationUnitDecl",
+    "inner": [
+      {
+        "kind": "VarDecl",
+        "loc": {
+          "file": "t.c",
+          "line": 3,
+          "col": 11
+        },
+        "name": "table",
+        "type": {
+          "qualType": "fn[2]"
+        },
+        "inner": [
+          {
+            "kind": "InitListExpr",
+            "inner": [
+              {
+                "kind": "ImplicitCastExpr",
+                "type": {
+                  "qualType": "fn"
+                },
+                "castKind": "NullToPointer",
+                "inner": [
+                  {
+                    "kind": "IntegerLiteral",
+                    "value": "0"
+                  }
+                ]
+              },
+              {
+                "kind": "DeclRefExpr",
+                "referencedDecl": {
+                  "kind": "FunctionDecl",
+                  "name": "f"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+JSON
+
 struct Dump
   decls: List[Decl]
 end
@@ -192,4 +240,10 @@ def test_a_table_of_a_typedef_is_dropped_by_its_numbers_and_kept_by_a_function()
   state = TABLES.split("\n").reduce(Scan.start("/proj", "/proj"), &Scan.step)
   dump = try JSON.decode("{\"decls\": #{Scan.finish(state)}}", Names)
   return Test.eq(dump.decls.map do |d| d.name end, ["OPS"])
+end
+
+def test_a_null_pointer_first_item_is_no_number() -> Result[Void]
+  state = NULLS.split("\n").reduce(Scan.start("/proj", "/proj"), &Scan.step)
+  dump = try JSON.decode("{\"decls\": #{Scan.finish(state)}}", Names)
+  return Test.eq(dump.decls.map do |d| d.name end, ["table"])
 end
