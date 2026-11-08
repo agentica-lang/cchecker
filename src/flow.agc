@@ -1609,7 +1609,6 @@ def lock_of(args: List[Arg], index: Int) -> List[Lock]
   return locks_of([args[index].text]).map do |lock| lock.with(class: args[index].class) end
 end
 
-# The lock of an annotation, in the texts of the arguments of the call.
 # The key of a lock of CC_RELEASES in the names of the parameters of the definition, which may not be those of the
 # prototype that wrote it; "" for the restore of a pair.
 def released_key(lock: Annotated, names: List[String]) -> String
@@ -1620,6 +1619,7 @@ def released_key(lock: Annotated, names: List[String]) -> String
   return key_of(substituted(lock.text, lock.params, names))
 end
 
+# The lock of an annotation, in the texts of the arguments of the call.
 def annotated_lock(lock: Annotated, texts: List[String]) -> List[Lock]
   return locks_of([substituted(lock.text, lock.params, texts)]).map do |found|
     found.with(class: lock.class, pair: lock.pair)

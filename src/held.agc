@@ -175,7 +175,7 @@ end
 def before_release(rules: Rules, body: Body, site: Site, quiet: Optional[Held]) -> List[String]
   case rules.bodies.get(site.key)
     some(helper) ->
-      stops_at = quiet.map do |h| stop_keys(helper, site, h) end.unwrap_or(Set.new([]))
+      stops_at = quiet.map do |h| stop_keys(rules, helper, site, h) end.unwrap_or(Set.new([]))
       seen = Set.new([0])
       queue = [0]
       i = 0
@@ -214,8 +214,14 @@ def before_release(rules: Rules, body: Body, site: Site, quiet: Optional[Held]) 
 end
 
 # The keys of the helper's own locks that the call releases as `h`. The locks of a call of the helper are those of its
-# CC_RELEASES in order, one each; when the call has fewer (one it cannot name), any of them is.
-def stop_keys(helper: Body, site: Site, h: Held) -> Set[String]
+# CC_RELEASES in order, one each; when the call has fewer (one it cannot name), any of them is. When the unit of the
+# definition did not see the marked prototype (`releases` is empty), they are the marks merged from all declarations,
+# in the names of the prototype that wrote them.
+def stop_keys(rules: Rules, helper: Body, site: Site, h: Held) -> Set[String]
+  if helper.releases.empty?
+    return Set.new(marked_releases(rules, helper.key))
+  end
+
   if helper.releases.size != site.drops.size
     return Set.new(helper.releases)
   end
@@ -223,6 +229,14 @@ def stop_keys(helper: Body, site: Site, h: Held) -> Set[String]
   return Set.new(
     (0...site.drops.size).to_a.select do |i| site.drops[i].key == h.lock.key end.map do |i| helper.releases[i] end,
   )
+end
+
+# The keys of the locks of a function's CC_RELEASES marks, merged from all its declarations, as written.
+def marked_releases(rules: Rules, key: String) -> List[String]
+  marks = rules.graph.functions.get(key).map do |f| f.marks end.unwrap_or([])
+  return marks.select do |mark| mark.start_with?("releases(") and mark.end_with?(")") end
+    .flat_map do |mark| mark.slice(9, mark.length - 10).split(",") end
+    .map do |lock| Flow.key_of(lock.strip) end
 end
 
 # The call path from the call to a system call: [the call] for a system or blocking call (a CC_BLOCKING function

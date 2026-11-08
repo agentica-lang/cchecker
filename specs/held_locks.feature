@@ -535,3 +535,21 @@ Feature: What runs while a lock is held
       """
       calls restore_signals: restore_signals -> sigprocmask"]
       """
+
+  Scenario: A call of a CC_RELEASES helper that cannot name one of its locks stops the walk at any of them
+    Given the C file "push.c" holds:
+      """
+      #include "pthread.h" /* found in the system folders */
+      #include "unistd.h"
+      #include "cchecker.h"
+
+      struct queue { CC_NO_SYSCALL_UNDER() pthread_mutex_t mu; int fd; int n; }; struct box { pthread_mutex_t mu; };
+      struct box *box_of(struct queue *q);
+      CC_RELEASES(a->mu, b->mu) void unlock_both(struct queue *a, struct box *b) { pthread_mutex_unlock(&b->mu); write(a->fd, "x", 1); pthread_mutex_unlock(&a->mu); }
+      void push(struct queue *q) { pthread_mutex_lock(&q->mu); q->n++; unlock_both(q, box_of(q)); }
+      """
+    When I run cchecker with "--tools rules --json $DIR/push.c -- -I../include"
+    Then the output does not include:
+      """
+      calls unlock_both
+      """
