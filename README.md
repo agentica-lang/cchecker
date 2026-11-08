@@ -118,8 +118,11 @@ p = malloc(n);
 q = malloc(n); // cchecker: ignore CC-GCC-ANALYZER-*, CC-TIDY-CLANG-ANALYZER-UNIX-MALLOC: same as above
 ```
 
+Name only the codes that fire there: each code that matches nothing is reported (below).
+
 A finding of the rules belongs to a function: `CC_IGNORE("CC-EFFECT-SHORT-BLOCKS", "reason")` on any declaration of
-the function suppresses it (see Annotations); it takes codes of the rules only. A suppression without a code or a
+the function suppresses it (see Annotations); it takes codes of the rules only (checked when the rules run, so a run
+with `--tools gcc` does not see a wrong one). A suppression without a code or a
 reason, or with a code of no tool, is a usage error (exit 2). When two suppressions hold for a finding, the reason of
 the nearer one is shown, and both count as used.
 `--json` lists the suppressed findings under `suppressed`, each with its `reason`, and the summary line counts them. A
@@ -131,8 +134,9 @@ gets better. Suppressions apply before the baseline, so a suppressed finding nev
 
 A suppression is per code, not per message: one `CC-GCC-ANALYZER-MALLOC-LEAK` on a line hides every leak of that line,
 a new one too. A finding is where its tool puts it: gcc reports one inside a macro at the line of the `#define`, so the
-comment goes there, not at the use. A suppression in a block that the build leaves out (`#ifdef` of a macro that is
-not defined) matches nothing and is reported unused after a full run: put it outside the block. A `//` comment that
+comment goes there, not at the use. A suppression in a block that a configuration leaves out (`#ifdef` of a macro that is
+not defined) is reported unused on a run of that configuration; a project that checks several configurations sees it
+reported in those that skip the block. A `//` comment that
 ends with `\` goes on to the next line, and that line counts as a line of the comment.
 
 ### Options

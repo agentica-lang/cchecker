@@ -333,6 +333,52 @@ Feature: Suppressions
       CC-UNUSED-IGNORE
       """
 
+  Scenario: Each code of a comment is used on its own, and a stale one is reported
+    Given the C file "two.c" holds:
+      """
+      #include "cchecker.h"
+      unsigned int sleep(unsigned int seconds);
+      CC_SHORT int f(void) { return (int)sleep(1); } // cchecker: ignore CC-EFFECT-SHORT-BLOCKS, CC-EFFECT-HOT-SYSCALL: two
+      """
+    And the C file "compile_commands.json" holds:
+      """
+      [{"directory": ".", "file": "two.c", "arguments": ["cc", "-I../../../include", "-c", "two.c"]}]
+      """
+    When I run cchecker with "--tools rules --json -p $DIR"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "code":"CC-UNUSED-IGNORE","tool":"rules","file":"$DIR/two.c","line":3,
+      """
+    And the output includes:
+      """
+      "message":"the suppression of CC-EFFECT-HOT-SYSCALL matches no finding: two"
+      """
+    And the output includes:
+      """
+      "suppressed":[{"code":"CC-EFFECT-SHORT-BLOCKS",
+      """
+
+  Scenario: A line comment that ends with a backslash goes on to the next line
+    Given the C file "note.c" holds:
+      """
+      #include "cchecker.h"
+      unsigned int sleep(unsigned int seconds);
+      // a note that goes on \
+      CC_SHORT int f(void) { return (int)sleep(1); } // cchecker: ignore CC-EFFECT-SHORT-BLOCKS: inside the note
+      int g(void) { return 0; }
+      """
+    And the C file "compile_commands.json" holds:
+      """
+      [{"directory": ".", "file": "note.c", "arguments": ["cc", "-I../../../include", "-c", "note.c"]}]
+      """
+    When I run cchecker with "--tools rules --json -p $DIR"
+    Then the exit code is 0
+    And the output does not include:
+      """
+      CC-UNUSED-IGNORE
+      """
+
   Scenario: A suppressed finding never goes into the baseline
     Given the C file "leak.c" holds:
       """

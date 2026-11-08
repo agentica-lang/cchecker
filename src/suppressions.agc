@@ -158,7 +158,7 @@ export def apply(findings: List[Finding], ignores: List[Ignore], ran: Set[String
     ignore = ignores[i]
     stale = ignore.codes.select do |code| not used.include?("#{i} #{code}") and checked?(ignore, code, ran) end
     if not stale.empty?
-      kept = kept.push(unused(ignore, stale))
+      kept = kept.concat(unused(ignore, stale))
     end
   end
 
@@ -265,7 +265,13 @@ end
 
 # `open` when the line ends with a `\` that continues it on the next line, else "".
 def continued(line: String, open: String) -> String
-  if line.end_with?("\\")
+  # gcc and clang also splice a `\` followed by blanks (with a warning), and a line of a CRLF file ends with `\r`.
+  end_at = line.length
+  while end_at > 0 and BLANKS.include?(line.at(end_at - 1))
+    end_at -= 1
+  end
+
+  if end_at > 0 and line.at(end_at - 1) == "\\"
     return open
   end
 
@@ -338,7 +344,7 @@ def parsed(file: String, line: Int, column: Int, text: String, function: Bool) -
   case text.index_of(":")
     some(at) ->
       spaced = text.slice(0, at).replace(",", " ").replace("\t", " ").replace("\r", " ")
-      codes = spaced.split(" ").select do |code| code != "" end
+      codes = spaced.split(" ").select do |code| code != "" end.uniq
       reason = text.slice(at + 1, text.length - at - 1).strip
       if codes.empty? or reason == "" or not codes.all? do |code| known_code?(code) end
         return error("#{file}:#{line}: #{USAGE}")
@@ -402,14 +408,11 @@ def tool_of(code: String) -> String
   return Baseline.tool_of(code.replace("*", ""))
 end
 
-# The finding of a suppression with codes that matched nothing (`stale`), each code tracked on its own.
-def unused(ignore: Ignore, stale: List[String]) -> Finding
-  return Finding(
-    code: UNUSED,
-    tool: tool_of(stale.first),
-    file: ignore.file,
-    line: ignore.line,
-    column: ignore.column,
-    message: "the suppression of #{stale.join(", ")} matches no finding: #{ignore.reason}",
-  )
+# The findings of a suppression with codes that matched nothing (`stale`), each code tracked on its own: one for each
+# tool of those codes, so a baseline or a filter by tool sees it.
+def unused(ignore: Ignore, stale: List[String]) -> List[Finding]
+  return stale.map do |code| tool_of(code) end.uniq.map do |tool|
+    codes = stale.select do |code| tool_of(code) == tool end
+    Finding(code: UNUSED, tool: tool, file: ignore.file, line: ignore.line, column: ignore.column, message: "the suppression of #{codes.join(", ")} matches no finding: #{ignore.reason}")
+  end
 end
