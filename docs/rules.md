@@ -190,8 +190,11 @@ no call is a system call or a blocking call (the lists of the effects, a lock or
 an unlock of another lock included, and a `CC_BLOCKING` function) or reaches one
 through the functions of the project, a call through a function pointer included
 (the functions stored in it), except the release of the lock itself and a wait
-on a condition with it. `CC_NO_SYSCALL_UNDER(lock)` on a function says the same
-of one lock of that function, in the names of its parameters.
+on a condition with it. A lock taken under it is one finding, at its take: its
+release is none. A `CC_RELEASES` helper that releases the lock is held to its
+other system calls: one it makes before its unlock (a `write`, the signal of a
+condition) is a finding at its call. `CC_NO_SYSCALL_UNDER(lock)` on a function
+says the same of one lock of that function, in the names of its parameters.
 
 `CC_LOCK_LEVEL(n)` on the field of a lock (or a global lock) orders the locks: a
 path takes a lock with a level only while every lock it holds with a level has a

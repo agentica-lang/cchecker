@@ -183,6 +183,12 @@ end
 ## included: [`key`'s name, ..., the call]; none when it makes none. A library function is a path of its own name when
 ## it is a system call.
 export def system_path(graph: Graph, key: String) -> Optional[List[String]]
+  return system_path_besides(graph, key, Set.new([]))
+end
+
+## Returns what `system_path` returns, without the paths that end at a call of `besides` (the release of a lock in a
+## helper that releases it).
+export def system_path_besides(graph: Graph, key: String, besides: Set[String]) -> Optional[List[String]]
   # A function of the project marked CC_BLOCKING is one itself, whatever its body does. Every blocking call enters the
   # kernel whatever the `[library]` flags say, so the families passed do not change what a system call is.
   families = Known.BLOCKING_FAMILIES
@@ -195,14 +201,16 @@ export def system_path(graph: Graph, key: String) -> Optional[List[String]]
   end
 
   # The lock rules follow every call, cold ones included: `[effects] follow_cold` is about the roots of the
-  # effect rules.
-  walk = Walk(families: families, follow_cold: true, all: false, short_locks: Set.new([]))
-  paths = search(graph, walk, key, Effect.System)
-  if paths.empty?
-    return none
+  # effect rules. With `besides`, every bad call is searched, to skip those.
+  walk = Walk(families: families, follow_cold: true, all: not besides.empty?, short_locks: Set.new([]))
+  for path in search(graph, walk, key, Effect.System)
+    names = path.map do |k| name_of(graph, k) end
+    if not besides.include?(names.last)
+      return some(names)
+    end
   end
 
-  return some(paths.first.map do |k| name_of(graph, k) end)
+  return none
 end
 
 ## Returns the functions that a call through a pointer at `line`:`column` of `caller` reaches: those stored in its slot.

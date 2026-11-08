@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Under a `CC_NO_SYSCALL_UNDER` lock, a `CC_RELEASES` helper that makes a system call before its unlock is a finding
+  (`CC-PATH-SYSCALL-UNDER-LOCK`), and a lock taken under it is one finding at its take, no longer a second at its
+  release.
 - `--update-baseline` with `-c FILE` is refused when the file leaves out a `short` or `hot` name of `[roots]` of the
   project settings, and the refusal names only its causes.
 - The `first:` unresolved callback shown is one inside the working directory when there is one.

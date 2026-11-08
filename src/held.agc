@@ -5,6 +5,7 @@
 import Effects from "effects"
 import Flow from "flow"
 import {Body, Lock, Site} from "flow"
+import Known from "known"
 import {Unit} from "unit"
 
 ## The code of a system call or a blocking call under a lock marked CC_NO_SYSCALL_UNDER.
@@ -89,27 +90,27 @@ export def at_call(rules: Rules, body: Body, held: List[Held], site: Site, at: S
 end
 
 # A call under a quiet lock that is, or reaches, a system call. The release of the lock and a wait on it are how the
-# lock works.
+# lock works, and so is the release of a lock taken under it, whose take is the finding. A function of the project
+# that releases (CC_RELEASES) is held to its other system calls: one before its unlock is still a finding.
 def under_quiet(rules: Rules, body: Body, held: List[Held], site: Site, at: String) -> List[Breach]
   quiet = held.select do |h| h.quiet or rules.quiet.include?(h.lock.class) end
   if quiet.empty?
     return []
   end
 
-  path = system_call(rules, body, site)
-  if path.empty?
-    return []
-  end
-
-  step = "#{at} calls #{site.name}"
-  if path.size > 1 or site.pointer
-    step = "#{step}: #{path.join(" -> ")}"
-  end
-
   found: List[Breach] = []
   for h in quiet
-    own = site.drops.concat(site.waits).any? do |lock| lock.key == h.lock.key end
-    if not own
+    path = system_call(rules, body, site)
+    if releases?(held, h, site)
+      path = besides_release(rules, site)
+    end
+
+    if not path.empty?
+      step = "#{at} calls #{site.name}"
+      if path.size > 1 or site.pointer
+        step = "#{step}: #{path.join(" -> ")}"
+      end
+
       found = found.push(
         Breach(
           id: "#{SYSCALL_UNDER_LOCK} #{h.lock.key} #{site.name}",
@@ -122,6 +123,28 @@ def under_quiet(rules: Rules, body: Body, held: List[Held], site: Site, at: Stri
   end
 
   return found
+end
+
+# Whether a call releases or waits on `h`, or releases a lock taken while `h` was held: the path of a held lock starts
+# at its last take, so a lock taken later has a shorter one.
+def releases?(held: List[Held], h: Held, site: Site) -> Bool
+  if site.drops.concat(site.waits).any? do |lock| lock.key == h.lock.key end
+    return true
+  end
+
+  return site.drops.any? do |lock|
+    held.any? do |other| other.lock.key == lock.key and other.path.size < h.path.size end
+  end
+end
+
+# The system calls of a call that releases a lock, past the release itself: none for a call of the library (the unlock,
+# the wait), and for a function of the project those it makes besides its calls that release or wait.
+def besides_release(rules: Rules, site: Site) -> List[String]
+  if site.pointer or not Effects.defined?(rules.graph, site.key)
+    return []
+  end
+
+  return Effects.system_path_besides(rules.graph, site.key, Known.DROPS.union(Known.WAITS)).unwrap_or([])
 end
 
 # The call path from the call to a system call: [the call] for a system or blocking call (a CC_BLOCKING function

@@ -86,6 +86,62 @@ Feature: What runs while a lock is held
       | a lock not marked    | void put(struct box *b) { pthread_mutex_lock(&b->mu); write(b->fd, "x", 1); pthread_mutex_unlock(&b->mu); }                         |
       | a call that computes | static int count(struct queue *q) { return q->n + 1; } void push(struct queue *q) { pthread_mutex_lock(&q->mu); q->n = count(q); pthread_mutex_unlock(&q->mu); } |
 
+  Scenario Outline: A CC_RELEASES helper releases its lock without a finding, but a system call before it is one (<case>)
+    Given the C file "push.c" holds:
+      """
+      #include "pthread.h" /* found in the system folders */
+      #include "unistd.h"
+      #include "cchecker.h"
+
+      struct queue { CC_NO_SYSCALL_UNDER() pthread_mutex_t mu; pthread_cond_t cv; int fd; int n; };
+      CC_RELEASES(q->mu) void unlock_queue(struct queue *q) { <helper> pthread_mutex_unlock(&q->mu); }
+      void push(struct queue *q) { pthread_mutex_lock(&q->mu); q->n++; unlock_queue(q); }
+      """
+    When I run cchecker with "--tools rules --json $DIR/push.c -- -I../include"
+    Then the exit code is <exit>
+    And the output <includes>:
+      """
+      "path":["7:30 takes q->mu","7:66 calls unlock_queue: unlock_queue -> <call>"]
+      """
+
+    Examples:
+      | case                       | helper                       | exit | includes         | call                |
+      | the release alone          | q->n--;                      | 0    | does not include | pthread_mutex_unlock |
+      | a write before the unlock  | write(q->fd, "x", 1);        | 1    | includes         | write               |
+      | a signal before the unlock | pthread_cond_signal(&q->cv); | 1    | includes         | pthread_cond_signal |
+
+  Scenario: A lock taken under a CC_NO_SYSCALL_UNDER lock is one finding of the rule, and its release none
+    Given the C file "push.c" holds:
+      """
+      #include "pthread.h" /* found in the system folders */
+      #include "cchecker.h"
+
+      struct queue { CC_NO_SYSCALL_UNDER() CC_LOCK_LEVEL(2) pthread_mutex_t mu; int n; };
+      CC_LOCK_LEVEL(1) pthread_mutex_t other;
+
+      void push(struct queue *q) {
+        pthread_mutex_lock(&q->mu);
+        pthread_mutex_lock(&other);
+        q->n++;
+        pthread_mutex_unlock(&other);
+        pthread_mutex_unlock(&q->mu);
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/push.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "path":["8:3 takes q->mu","9:3 calls pthread_mutex_lock"]
+      """
+    And the output includes:
+      """
+      "code":"CC-PATH-LOCK-ORDER"
+      """
+    And the output does not include:
+      """
+      calls pthread_mutex_unlock
+      """
+
   Scenario: The [library] flags do not turn off a blocking call under a CC_NO_SYSCALL_UNDER lock: it is a system call
     Given the C file "push.c" holds:
       """

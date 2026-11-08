@@ -288,6 +288,37 @@ Feature: Locks on every path
       "file":"$DIR/queue.c"
       """
 
+  Scenario: A lock taken more than twice on a path counts as taken twice, the limit that ends a loop
+    Given the C file "thrice.c" holds:
+      """
+      #include <pthread.h>
+      struct queue { pthread_mutex_t mu; int n; };
+      void two(struct queue *q) {
+        pthread_mutex_lock(&q->mu);
+        pthread_mutex_lock(&q->mu);
+        pthread_mutex_unlock(&q->mu);
+        pthread_mutex_unlock(&q->mu);
+      }
+      void three(struct queue *q) {
+        pthread_mutex_lock(&q->mu);
+        pthread_mutex_lock(&q->mu);
+        pthread_mutex_lock(&q->mu);
+        pthread_mutex_unlock(&q->mu);
+        pthread_mutex_unlock(&q->mu);
+        pthread_mutex_unlock(&q->mu);
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/thrice.c"
+    Then the exit code is 1
+    And the output includes:
+      """
+      {"code":"CC-PATH-LOCK-NOT-HELD","tool":"rules","file":"$DIR/thrice.c","line":9,"column":6,
+      """
+    And the output does not include:
+      """
+      "line":3,
+      """
+
   Scenario: An annotation of a prototype counts once for a caller after the definition, whatever the names of its parameters there
     Given the C file "pop.c" holds:
       """
