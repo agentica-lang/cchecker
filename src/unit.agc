@@ -183,8 +183,8 @@ def context_of(tables: Tables, nodes: List[Json]) -> Flow.Context
   return Flow.Context(callees: callees, statics: tables.static_functions, fields: fields, globals: globals)
 end
 
-# The class of the lock of an annotation, through the types of the parameters: `vm->rt->sync` of `agc_vm *vm` is
-# `agc_runtime.sync`; a global is its name. "" when a type on the way is not a struct of the project.
+# The class of the lock of an annotation, through the types of the parameters: `s->pool->mu` of `struct server *s` is
+# `pool.mu`; a global is its name. "" when a type on the way is not a struct of the project.
 def class_of_text(
   tables: Tables,
   globals: Set[String],
@@ -229,7 +229,7 @@ def class_of_text(
   return ""
 end
 
-# The name of the struct of a type as clang writes it: `struct agc_vm *` and `const agc_vm *` are `agc_vm`.
+# The name of the struct of a type as clang writes it: `struct server *` and `const server *` are `server`.
 def type_name(type: String) -> String
   name = type
   for word in ["const ", "volatile ", "struct ", "union ", "restrict", "*"]

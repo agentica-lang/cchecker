@@ -265,7 +265,7 @@ struct runq { CC_NO_SYSCALL_UNDER() CC_LOCK_LEVEL(3) pthread_mutex_t lock; ... }
 
 A field is known by its struct and its name (`runq.lock`, the name of a typedef for an anonymous struct), and a global
 by its name. A lock of a `CC_ACQUIRES` is followed to its field through the types of the parameters
-(`CC_ACQUIRES(vm->rt->sync)` on `void sync_take(struct vm *vm)` takes `runtime.sync`). The path of a finding goes from
+(`CC_ACQUIRES(s->pool->mu)` on `void pool_lock(struct server *s)` takes `pool.mu`). The path of a finding goes from
 the take of the lock held to the call, and the call path to the system call when there is one: `13:3 calls bump: bump
 -> pthread_mutex_lock`.
 

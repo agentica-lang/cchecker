@@ -167,8 +167,8 @@ def out_of_order(rules: Rules, name: String, held: List[Held], site: Site, at: S
     return found
   end
 
-  # A function that takes the class of a lock held may take that lock again, which a counted lock allows (the
-  # nested takes of one runtime's lock): only another class is out of order.
+  # A function that takes the class of a lock held may take that very lock again, which a lock that counts its nested
+  # takes allows: only another class is out of order.
   for class in reached_takes(rules, site.key)
     for h in leveled
       if h.lock.class != class and higher_or_same?(rules, h.lock.class, class)
