@@ -12,6 +12,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A library call that never returns (`_exit`, `abort`, ...) is an error exit the effect walks skip, as a project
   `_Noreturn` function is; `follow_cold` follows it.
 - A noreturn function type followed by a calling convention (`__attribute__((noreturn, regparm(1)))`) ends a path.
+- Under a `CC_NO_SYSCALL_UNDER` lock, a `CC_RELEASES` helper that may make a system call before it releases that
+  lock is a finding (`CC-PATH-SYSCALL-UNDER-LOCK`), as is one that releases a lock taken under it and makes any. A
+  lock taken under it is one finding at its take, no longer a second at its release.
 - `libuv_callbacks_short` also infers the callbacks of `uv_listen`, the idle, prepare, check and signal handles,
   `uv_tcp_close_reset`, UDP, `uv_getaddrinfo`, `uv_getnameinfo`, `uv_random`, the fs event and poll handles, and the
   `uv_fs_*` requests; the libuv lists match libuv 1.50.
