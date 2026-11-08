@@ -281,7 +281,8 @@ every path that returns, as a lock is by its unlock (the same graph and the same
 itself it says so in every function that calls `set`. The two are functions, by name, whatever their arguments: a
 cleanup function counts as a call. A `restore` with no `set` before it on the path does nothing, so restoring twice is
 no finding; a `set` twice needs two restores. `set` and `restore` are two functions (a pair of one function, such as
-`umask`, never gives a finding).
+`umask`, never gives a finding). The body of a `set` that carries its own `CC_PAIR` is how the pair works (a
+wrapper of `GC_disable`), so it may leave another pair set for its caller.
 
 ```c
 CC_PAIR(mask_signals, restore_signals) void mask_signals(sigset_t *old);   /* in every caller */
