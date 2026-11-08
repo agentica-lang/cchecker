@@ -156,6 +156,24 @@ Feature: What a baseline covers
       "findings":[],"baselined":1,"fixed":0
       """
 
+  Scenario: A run that skipped a file of the database does not count the entries of other files as fixed
+    Given the C file "old.json" holds:
+      """
+      {
+        "version": 1,
+        "findings": [
+          {"code": "CC-GCC-ANALYZER-MALLOC-LEAK", "file": "fixtures/leak.c", "message": "leak of 'buf'", "count": 1},
+          {"code": "CC-GCC-ANALYZER-MALLOC-LEAK", "file": "gone.c", "message": "leak of 'p'", "count": 1}
+        ]
+      }
+      """
+    When I run cchecker with "--json --tools gcc -p fixtures/outside -b $DIR/old.json"
+    Then the exit code is 0
+    And the output includes:
+      """
+      "findings":[],"baselined":1,"fixed":0
+      """
+
   Scenario: An update with the flags that show another finding of a header keeps the first one
     Given the C file "h.h" holds:
       """
