@@ -15,8 +15,10 @@ freed twice and not used after; and a value of the collector (`CC_GC`, `CC_GC_AL
 
 ## Install
 
-cchecker needs Agentica 0.26.1 or later, and `gcc` 10 or later, `clang` and `clang-tidy` on PATH, and `sh`. Clone the
-repository and run it with `agentica`, or compile it to bytecode:
+cchecker needs Agentica 0.26.1 or later, and `gcc` 10 or later, `clang` and `clang-tidy` on PATH, and `sh`. The scan
+of clang's AST is a small native module in C (`native/`), which the first run (or `agentica compile`) builds with the
+system C compiler (`cc`); a module that cannot be built or loaded is a tool error. Clone the repository and run it with
+`agentica`, or compile it to bytecode:
 
 ```sh
 agentica cchecker.agc [options] FILE... -- COMPILER-FLAGS...
@@ -540,7 +542,13 @@ tests in `test/`. They need `gcc`, `clang`, `clang-tidy` and `sh`.
 make check       # agentica check
 make fmt-check   # agentica fmt --check; `agentica fmt` fixes it
 make test        # agentica test --jobs 4, from the root of the repository
+make bench       # the rules on the C VM of Agentica: wall time and peak RSS (BENCH_JOBS=2 for -j 2)
 ```
+
+`make bench` fetches Agentica at a pinned commit (`AGENTICA_BENCH_COMMIT`) into `.bench/`, with only the submodules
+whose headers its VM reads, and runs `--tools rules` on the 84 files of `vm/`; it fails when a file is not checked. It
+needs `git`, `make`, GNU time and the headers of libgc, OpenSSL and zlib (Debian: `libgc-dev libssl-dev zlib1g-dev
+pkg-config`). On an 8-core machine it takes 10.6 s and 370 MB at -j 8, and 19.5 s and 405 MB at -j 2.
 
 ## License
 

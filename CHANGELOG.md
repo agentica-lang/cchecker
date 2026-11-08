@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The rules run 2.4 times faster with half the memory (the 84 files of the VM of Agentica at -j 2: 47.0 s and 732 MB
+  before, 19.5 s and 405 MB now): a native module in C scans clang's AST. `-j` defaults to the number of cores, and
+  the jobs of the largest files start first.
 - **Breaking:** a `uv_fs_*` call run at once whose libc call does not block (`uv_fs_close`, `uv_fs_stat`,
   `uv_fs_unlink`, `uv_fs_mkdir`, ...) is a system call (`CC-EFFECT-HOT-SYSCALL`), no longer a blocking call
   (`CC-EFFECT-SHORT-BLOCKS`): a baseline that holds such a finding counts it fixed.
