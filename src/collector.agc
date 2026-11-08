@@ -46,7 +46,8 @@ struct Scope
 end
 
 ## Returns whether a type (as clang writes it) is that of a value of the collector: a type marked CC_GC or a pointer to
-## one, or a record that holds one, or an array of those. A function or a pointer to one is not.
+## one, or a record that holds one, or an array of those. A function, a pointer to a function and a pointer to a
+## pointer (an array of them, wherever it is) are not.
 export def collector_type?(marks: Marks, type: String) -> Bool
   if type.include?("(")
     return false
@@ -62,13 +63,13 @@ export def collector_type?(marks: Marks, type: String) -> Bool
     none -> name = name
   end
 
-  pointer = name.include?("*")
+  stars = name.length - name.replace("*", "").length
   base = name.replace("*", "").strip
   if base == ""
     return false
   end
 
-  return marks.types.include?(base) or (not pointer and marks.holders.include?(base))
+  return (stars <= 1 and marks.types.include?(base)) or (stars == 0 and marks.holders.include?(base))
 end
 
 ## Returns the findings of the rule in a function definition, at the function: `key` and `name` are the function's, at
@@ -298,7 +299,12 @@ def shown(node: Json) -> String
 
       return "#{shown(parts.first)}.#{Ast.text(bare, "name")}"
     "ArraySubscriptExpr" -> return "#{shown(parts[0])}[#{shown(parts[1])}]"
-    "UnaryOperator" -> return "#{Ast.text(bare, "opcode")}#{shown(parts.first)}"
+    "UnaryOperator" ->
+      if Ast.flag?(bare, "isPostfix")
+        return "#{shown(parts.first)}#{Ast.text(bare, "opcode")}"
+      end
+
+      return "#{Ast.text(bare, "opcode")}#{shown(parts.first)}"
     "IntegerLiteral" -> return Ast.text(bare, "value")
     _ -> return "?"
   end

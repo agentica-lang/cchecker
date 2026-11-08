@@ -90,6 +90,7 @@ Feature: Values of the collector kept where it sees them
       | a static of numbers      | static int count; void f(int n) { count = n; }                                  |
       | a function pointer       | typedef value_t (*make_fn)(int); static make_fn maker; void f(make_fn m) { maker = m; } |
       | a constant static        | static const value_t none; void f(value_t *v) { *v = none; }                    |
+      | a pointer to pointers    | void f(struct obj **list) { struct obj ***a = malloc(8); a[0] = list; free(a); } |
 
   Scenario: A variable of static storage of a collector type is a finding at the variable
     Given the C file "gc.c" holds:
