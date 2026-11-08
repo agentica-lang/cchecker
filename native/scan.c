@@ -1,8 +1,8 @@
 /* The scan of src/scan.agc in C: the same state machine over the lines of clang's JSON AST, at the speed of a read.
  * src/scan.agc stays the reference (test/scan_test.agc compares both on real dumps); keep the two in step.
  *
- * Two calls, both short: a dump of 40 MiB takes some hundred milliseconds, which is not worth the hop to the compute
- * pool (measured on the VM of Agentica).
+ * Two calls, both dirty (`compute def`): they read a file of tens of MiB, some hundred milliseconds, which would hold
+ * a scheduler and the tasks queued on it (the readers of clang's pipes among them).
  *   files(path)        the distinct values of the `"file": ` lines, as written (JSON text), for the caller to resolve
  *                      with Paths: where a file is and whether it is in the project stay Agentica's.
  *   scan(path, places, prune)
@@ -130,9 +130,11 @@ typedef struct {
   char *data;
   size_t cap, start, end;
   bool eof;
-  bool any_bytes; /* files() reads only ASCII keys: it leaves the UTF-8 check to scan() */
+  bool any_bytes; /* files() checks only the values it keeps: it leaves the rest of the UTF-8 check to scan() */
   const char *error;
 } lines;
+
+static const char not_utf8[] = "the AST dump is not UTF-8";
 
 /* Gives the next line in *line, or *done at the end. On false, `error` says why. */
 static bool next_line(lines *r, slice *line, bool *done) {
@@ -142,6 +144,11 @@ static bool next_line(lines *r, slice *line, bool *done) {
     char *at = r->data + r->start;
     if (nl) {
       n = (size_t)(nl - at);
+      /* File.foreach wants the LF inside the first LINE_BYTES bytes, a CR before it counted. */
+      if (n >= LINE_BYTES) {
+        r->error = "a line of the AST dump is longer than 16777216 bytes";
+        return false;
+      }
       r->start += n + 1;
       if (n > 0 && at[n - 1] == '\r') n--;
     } else if (r->eof) {
@@ -153,7 +160,9 @@ static bool next_line(lines *r, slice *line, bool *done) {
       r->start = r->end;
     } else {
       size_t rest = r->end - r->start;
-      if (rest > LINE_BYTES + 1) {
+      /* More than LINE_BYTES bytes and no LF: too long, whatever follows. Exactly LINE_BYTES may still be the last
+       * line, without an LF. */
+      if (rest > LINE_BYTES) {
         r->error = "a line of the AST dump is longer than 16777216 bytes";
         return false;
       }
@@ -161,7 +170,7 @@ static bool next_line(lines *r, slice *line, bool *done) {
       r->start = 0;
       r->end = rest;
       if (r->cap - r->end < BLOCK_BYTES / 2) {
-        size_t cap = r->cap ? r->cap * 2 : BLOCK_BYTES;
+        size_t cap = r->cap * 2;
         char *grown = realloc(r->data, cap);
         if (!grown) {
           r->error = "out of memory reading the AST dump";
@@ -186,7 +195,7 @@ static bool next_line(lines *r, slice *line, bool *done) {
       return false;
     }
     if (!r->any_bytes && !utf8((const unsigned char *)at, n)) {
-      r->error = "the AST dump is not UTF-8";
+      r->error = not_utf8;
       return false;
     }
     *line = (slice){at, n};
@@ -217,6 +226,14 @@ static bool open_lines(an_env *env, an_term path_term, lines *r, an_term *failur
     *failure = an_error(env, message, sizeof message - 1);
     return false;
   }
+  r->data = malloc(BLOCK_BYTES);
+  if (!r->data) {
+    fclose(r->f);
+    r->f = NULL;
+    *failure = an_raise(env, "out of memory");
+    return false;
+  }
+  r->cap = BLOCK_BYTES;
   return true;
 }
 
@@ -234,7 +251,11 @@ static an_term files(an_env *env, int argc, const an_term *argv) {
   r.any_bytes = true;
   /* Few distinct files (some hundreds), each seen many times: a linear search over the seen ones, last hit first. */
   buf seen = {0};
-  size_t *offsets = NULL, count = 0, cap = 0, last = 0;
+  /* Each value at seen.data + at, n bytes long: a value may hold a NUL. */
+  struct {
+    size_t at, n;
+  } *values = NULL;
+  size_t count = 0, cap = 0, last = 0;
   bool done = false, failed = false;
   slice line;
   while (next_line(&r, &line, &done) && !done) {
@@ -244,22 +265,25 @@ static an_term files(an_env *env, int argc, const an_term *argv) {
     bool found = false;
     for (size_t k = 0; k < count && !found; k++) {
       size_t at = (last + k) % count;
-      const char *s = seen.data + offsets[at];
-      if (strlen(s) == v.n && memcmp(s, v.s, v.n) == 0) found = true, last = at;
+      if (values[at].n == v.n && memcmp(seen.data + values[at].at, v.s, v.n) == 0) found = true, last = at;
     }
     if (found) continue;
+    if (!utf8((const unsigned char *)v.s, v.n)) {
+      r.error = not_utf8;
+      break;
+    }
     if (count == cap) {
       cap = cap ? cap * 2 : 64;
-      size_t *grown = realloc(offsets, cap * sizeof *offsets);
+      void *grown = realloc(values, cap * sizeof *values);
       if (!grown) {
         failed = true;
         break;
       }
-      offsets = grown;
+      values = grown;
     }
-    offsets[count++] = seen.len;
+    values[count].at = seen.len;
+    values[count++].n = v.n;
     put(&seen, v.s, v.n);
-    put(&seen, "", 1);
   }
   an_term result;
   if (r.error) {
@@ -269,13 +293,10 @@ static an_term files(an_env *env, int argc, const an_term *argv) {
   } else {
     an_list_builder b;
     an_list_begin(env, &b, count);
-    for (size_t k = 0; k < count; k++) {
-      const char *s = seen.data + offsets[k];
-      an_list_push(env, &b, an_string(env, s, strlen(s)));
-    }
+    for (size_t k = 0; k < count; k++) an_list_push(env, &b, an_string(env, seen.data + values[k].at, values[k].n));
     result = an_ok(env, an_list_end(env, &b));
   }
-  free(offsets);
+  free(values);
   free(seen.data);
   close_lines(&r);
   return result;
@@ -310,11 +331,11 @@ typedef struct {
   size_t frame_count;
   bool has_expansion_key, has_direct, has_expansion;
   buf direct, expansion; /* `FILE, LINE, COL` as JSON text */
-  slice col; /* the `col` of the location line being kept, set by located() */
+  slice col; /* the `col` of the line that located() is keeping; empty outside that call */
   buf marked; /* the location line being written, kept between lines to spare an allocation for each */
   buf out; /* the kept declarations, joined by ",\n" */
   size_t kept;
-  buf oversized; /* the names, each ended by a NUL */
+  buf oversized; /* the names, each after its length (a size_t): a name may hold a NUL */
   size_t oversized_count;
   int64_t skipped;
   bool ended;
@@ -389,7 +410,8 @@ static void close_location(state *s) {
 
 /* A line inside a location of `prune`: only the places and the objects around them matter. */
 static void in_location(state *s, slice text) {
-  if (starts(text, LIT("\"cc_file\": "))) {
+  /* Only the line that located() builds: a `"cc_file": ` line of the dump itself is no place. */
+  if (s->col.s && starts(text, LIT("\"cc_file\": "))) {
     if (s->frame_count == 0) {
       set_place(s, &s->direct);
       s->has_direct = true;
@@ -470,8 +492,8 @@ static void drop_lines(state *s) {
 }
 
 static void push_oversized(state *s) {
+  put(&s->oversized, (const char *)&s->name.len, sizeof s->name.len);
   put(&s->oversized, s->name.data ? s->name.data : "", s->name.len);
-  put(&s->oversized, "", 1);
   s->oversized_count++;
 }
 
@@ -586,13 +608,15 @@ static bool to_int(slice v, int64_t *out) {
   bool negative = false;
   if (k < v.n && (v.s[k] == '-' || v.s[k] == '+')) negative = v.s[k] == '-', k++;
   if (k == v.n) return false;
-  int64_t n = 0;
+  /* The per-digit bound of agc_parse_int: INT64_MIN is read too. */
+  uint64_t limit = negative ? (uint64_t)INT64_MAX + 1 : (uint64_t)INT64_MAX, n = 0;
   for (; k < v.n; k++) {
     if (v.s[k] < '0' || v.s[k] > '9') return false;
-    if (n > (INT64_MAX - 9) / 10) return false;
-    n = n * 10 + (v.s[k] - '0');
+    uint64_t digit = (uint64_t)(v.s[k] - '0');
+    if (n > (limit - digit) / 10) return false;
+    n = n * 10 + digit;
   }
-  *out = negative ? -n : n;
+  *out = negative ? (n == (uint64_t)INT64_MAX + 1 ? INT64_MIN : -(int64_t)n) : (int64_t)n;
   return true;
 }
 
@@ -611,6 +635,8 @@ static void located(state *s, slice text) {
   if (s->phase == OPEN && !s->spelling) s->phase = s->inside ? KEPT : DROPPED;
   if (marked->failed) s->out.failed = true;
   keep(s, (slice){marked->data ? marked->data : "", marked->len});
+  /* `col` points into the line, which the next read may move. */
+  s->col = (slice){NULL, 0};
 }
 
 /* `text` is the line without its indent. */
@@ -741,9 +767,11 @@ static an_term scan(an_env *env, int argc, const an_term *argv) {
     an_list_builder b;
     an_list_begin(env, &b, s.oversized_count);
     for (size_t at = 0; at < s.oversized.len;) {
-      size_t n = strlen(s.oversized.data + at);
+      size_t n;
+      memcpy(&n, s.oversized.data + at, sizeof n);
+      at += sizeof n;
       an_list_push(env, &b, an_string(env, s.oversized.data + at, n));
-      at += n + 1;
+      at += n;
     }
     an_term fields[4] = {an_string(env, s.out.data, s.out.len), an_list_end(env, &b), an_int(env, s.skipped),
                          an_bool(env, s.ended)};
@@ -768,8 +796,8 @@ static const an_type types[] = {
 };
 
 static const an_function functions[] = {
-  {"files", "(String) -> Result[List[String]]", files, AN_SHORT},
-  {"scan", "(String, List[Place], Bool) -> Result[NativeDump]", scan, AN_SHORT},
+  {"files", "(String) -> Result[List[String]]", files, AN_DIRTY},
+  {"scan", "(String, List[Place], Bool) -> Result[NativeDump]", scan, AN_DIRTY},
 };
 
 AN_MODULE_TYPES("cchecker_scan", functions, types, NULL)

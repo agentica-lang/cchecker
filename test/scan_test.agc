@@ -279,6 +279,46 @@ def test_the_scan_in_c_gives_what_the_scan_in_agentica_gives() -> Result[Void]
   return result
 end
 
+# Dumps that clang does not write but a file may hold: CRLF line ends and no final one, and a line longer than the
+# 1 MiB block of the C scan, after which a location holds a `"cc_file": ` line of its own.
+def test_the_scan_in_c_reads_crafted_lines_as_the_scan_in_agentica() -> Result[Void]
+  # The long line is written in parts: one text call writes at most 1 MiB.
+  marker = "XLONGX"
+  next = "      {\n        \"kind\": \"FunctionDecl\",\n        \"loc\": {\n          \"cc_file\": 1,\n"
+  long = "\"name\": \"g\",\n        \"cc_note\": \"#{marker}\"\n      },\n#{next}"
+  long = "#{long}          \"col\": 2\n        },\n        \"name\": \"h\""
+  parts = DUMP.replace("\"name\": \"g\"", long).split(marker)
+  folder = "#{System.env("TMPDIR").unwrap_or("/tmp")}/cchecker-crafted-test-#{System.pid()}"
+  try Dir.mkdir_private(folder)
+  dumps = ["#{folder}/crlf.json", "#{folder}/long.json"]
+  try File.write_text(dumps[0], DUMP.strip.replace("\n", "\r\n"))
+  try File.write_text(dumps[1], parts[0])
+  for _ in 0...3
+    try File.append_text(dumps[1], "x" * 500_000)
+  end
+
+  try File.append_text(dumps[1], parts[1])
+  result = crafted_scans(dumps)
+  for path in dumps
+    _ = Path.remove(path)
+  end
+
+  _ = Path.remove(folder)
+  return result
+end
+
+def crafted_scans(dumps: List[String]) -> Result[Void]
+  for path in dumps
+    fast = try Scan.project_decls(path, "/proj", "/proj", false)
+    reference = try Scan.reference_decls(path, "/proj", "/proj")
+    try Test.eq(fast.decls.length > 2, true)
+    try Test.eq(fast.decls, reference.decls)
+    _ = try Scan.project_decls(path, "/proj", "/proj")
+  end
+
+  return ok()
+end
+
 def same_scans(dumps: List[String], cwd: String) -> Result[Void]
   for k in 0...dumps.size
     path = dumps[k]

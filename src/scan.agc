@@ -205,12 +205,12 @@ export def plain_array?(type: String) -> Bool
 end
 
 # The scan of `step` in C, for speed: the dump of one file is tens of MiB. The module is built from native/ by
-# the first
-# run; a failed build or load stops the run. Where a file is stays here: `files` lists the values of the `"file": `
-# lines, which are resolved below, and `scan` takes them.
+# the first run; a failed build or load stops the run. Where a file is stays here: `files` lists the values of the
+# `"file": ` lines, which are resolved below, and `scan` takes them. Both read the dump, so they run on the compute
+# pool.
 extern module "cchecker_scan"
-  def files(path: String) -> Result[List[String]]
-  def scan(path: String, places: List[Place], prune: Bool) -> Result[NativeDump]
+  compute def files(path: String) -> Result[List[String]]
+  compute def scan(path: String, places: List[Place], prune: Bool) -> Result[NativeDump]
 end
 
 # The lines of a location move the file and the line; every other line is kept or dropped with its declaration.
