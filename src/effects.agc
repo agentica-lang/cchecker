@@ -16,6 +16,9 @@ export ASSUME_SHORT = "assume_short"
 ## The mark of a function that no walk goes into (CC_STOP, `[assume] stop`).
 export STOP = "stop"
 
+# The mark of a short lock: a field or a global marked CC_NO_SYSCALL_UNDER().
+SHORT_LOCK_MARK = "no_syscall_under()"
+
 # The effects a rule looks for.
 enum Effect
   Blocks
@@ -25,20 +28,24 @@ end
 
 ## The call graph of the project. A function is merged from all its declarations: the marks of each, and the place of
 ## its definition. A slot holds every function stored in it. `pointers` are the slots of each call through a pointer,
-## by its caller and place (`caller LINE:COL`).
+## by its caller and place (`caller LINE:COL`). `locks` are the classes of the locks that a function takes with each
+## call of a lock function, by caller and callee (`caller>callee`), "" for a lock the rules cannot tell.
 export struct Graph
   functions: Map[String, Function]
   edges: Map[String, List[Target]]
   slots: Map[String, List[String]]
   pointers: Map[String, List[String]] = {}
+  locks: Map[String, List[String]] = {}
 end
 
 # How a rule walks the graph: the families of blocking calls that are on, whether it goes into the functions that never
-# return or are cold, and whether it finds every bad call or stops at the first.
+# return or are cold, whether it finds every bad call or stops at the first, and the classes of the short locks, whose
+# taking is not blocking.
 struct Walk
   families: List[Known.Family]
   follow_cold: Bool
   all: Bool
+  short_locks: Set[String]
 end
 
 ## What the rules found: the findings, and the callbacks of libuv calls they could not follow to a function.
@@ -66,7 +73,13 @@ end
 export def check(units: List[Unit], config: Config, infer: Bool, all_paths: Bool, cwd: String) -> Checked
   graph = graph_of(units)
   families = Known.BLOCKING_FAMILIES.select do |family| not config.off.include?(family.flag) end
-  walk = Walk(families: families, follow_cold: config.follow_cold, all: all_paths)
+  walk = Walk(
+    families: families,
+    follow_cold: config.follow_cold,
+    all: all_paths,
+    short_locks: short_locks_of(units, config),
+  )
+
   inferred = Inferred(roots: {}, unresolved: [])
   if infer and not config.off.include?(Known.CALLBACKS_FLAG)
     inferred = inferred_of(graph, units, cwd)
@@ -98,7 +111,7 @@ export def check(units: List[Unit], config: Config, infer: Bool, all_paths: Bool
     findings: findings,
     unresolved: inferred.unresolved,
     missing_roots: missing_roots(graph, config),
-    missing_assumed: missing_assumed(graph, config),
+    missing_assumed: missing_assumed(graph, config).concat(missing_locks(units, graph, config)),
   )
 end
 
@@ -138,7 +151,7 @@ export def system_path(graph: Graph, key: String) -> Optional[List[String]]
 
   # The lock rules follow every call, cold ones included: `[effects] follow_cold` is about the roots of the
   # effect rules.
-  walk = Walk(families: families, follow_cold: true, all: false)
+  walk = Walk(families: families, follow_cold: true, all: false, short_locks: Set.new([]))
   paths = search(graph, walk, key, Effect.System)
   if paths.empty?
     return none
@@ -176,6 +189,7 @@ export def graph_of(units: List[Unit]) -> Graph
   functions: Map[String, Function] = {}
   edges: Map[String, List[Target]] = {}
   pointers: Map[String, List[String]] = {}
+  locks: Map[String, List[String]] = {}
   stores: List[Store] = []
   for unit in units
     for function in unit.functions
@@ -189,6 +203,9 @@ export def graph_of(units: List[Unit]) -> Graph
       end
 
       case call.target
+        Target.Direct(to) if Known.TAKES.include?(name_of_key(functions, to)) ->
+          at = "#{call.caller}>#{to}"
+          locks = locks.put(at, locks.get(at).unwrap_or([]).push(call.lock))
         Target.Slot(slot) if call.line > 0 ->
           at = "#{call.caller} #{call.line}:#{call.column}"
           pointers = pointers.put(at, pointers.get(at).unwrap_or([]).push(slot))
@@ -199,7 +216,43 @@ export def graph_of(units: List[Unit]) -> Graph
     stores = stores.concat(unit.stores)
   end
 
-  return Graph(functions: functions, edges: edges, slots: slots_of(stores), pointers: pointers)
+  return Graph(functions: functions, edges: edges, slots: slots_of(stores), pointers: pointers, locks: locks)
+end
+
+# The classes of the short locks: those marked CC_NO_SYSCALL_UNDER() and those of `[assume] short_locks`.
+def short_locks_of(units: List[Unit], config: Config) -> Set[String]
+  marked = units.flat_map do |unit| unit.lock_marks end
+    .select do |m| m.mark == SHORT_LOCK_MARK end
+    .map do |m| m.class end
+
+  return Set.new(marked.concat(config.short_locks))
+end
+
+# Whether every call of the lock function `callee` in `key` takes a short lock, so the short rule does not count it.
+def short_takes?(graph: Graph, walk: Walk, key: String, callee: String) -> Bool
+  classes = graph.locks.get("#{key}>#{callee}").unwrap_or([])
+  return not classes.empty? and classes.all? do |c| c != "" and walk.short_locks.include?(c) end
+end
+
+# The classes of `[assume] short_locks` that no lock of the units has: none taken and none marked, with their key.
+def missing_locks(units: List[Unit], graph: Graph, config: Config) -> List[String]
+  if config.short_locks.empty?
+    return []
+  end
+
+  known = Set.new(
+    graph.locks
+      .values
+      .flat_map do |classes| classes end
+      .concat(units.flat_map do |unit| unit.lock_marks end.map do |m| m.class end),
+  )
+
+  return config.short_locks.uniq.select do |c| not known.include?(c) end.map do |c| "#{c} (assume.short_locks)" end
+end
+
+# The name of a function by key, or the key itself for one the units do not declare.
+def name_of_key(functions: Map[String, Function], key: String) -> String
+  return functions.get(key).map do |f| f.name end.unwrap_or(key)
 end
 
 # A function with the marks of `[assume]` that name it.
@@ -381,6 +434,10 @@ def search(graph: Graph, walk: Walk, start: String, effect: Effect) -> List[List
     i += 1
     for callee in callees(graph, key)
       if callers.key?(callee) or cut?(graph, walk, callee, effect, not walk.follow_cold)
+        next
+      end
+
+      if effect == Effect.Blocks and short_takes?(graph, walk, key, callee)
         next
       end
 

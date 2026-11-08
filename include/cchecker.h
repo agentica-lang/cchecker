@@ -17,6 +17,7 @@
  *                               on `set` itself, in every function that calls it
  *   CC_NO_SYSCALL_UNDER(lock)   the function makes no system call while `lock` is held; on the field of a lock (or a
  *                               global lock), CC_NO_SYSCALL_UNDER() says it of every function that holds that lock
+ *                               and makes it a short lock: taking it is not blocking for CC_SHORT
  *   CC_LOCK_LEVEL(n)            on the field of a lock (or a global lock), n a decimal number: take it only while
  *                               the locks held have a lower level
  *   CC_ACQUIRES(lock)           the function returns with `lock` held, for its caller to release

@@ -209,6 +209,7 @@ follow_cold = false
 [assume]
 short = ["run_or_queue"]
 stop = ["trace_emit"]
+short_locks = ["queue.mu"]
 ```
 
 `[library]` turns each family of library knowledge on or off. All are on by default. A finding of the rules says in
@@ -253,6 +254,14 @@ passed to it as a function pointer included. A function that blocks itself (`CC_
 mark wins. `CC_STOP` wins over every other mark, `CC_BLOCKING` included. A name is that of the function (a static
 function of that name in any file, as in `[roots]`), and a name that no function of the compile database declares is an
 error (exit 2) that names its key (`trace (assume.stop)`), checked as those of `[roots]` are.
+
+A short lock is one held for a few instructions: a lock whose field or global is marked `CC_NO_SYSCALL_UNDER()`, or
+whose class `[assume] short_locks` names (`queue.mu` for the field `mu` of `struct queue`, or the name of a global).
+Taking it (`pthread_mutex_lock(&q->mu)`) is not blocking for `CC_SHORT`; the rule on what runs under it still checks
+that no system call does, and `CC_HOT` still counts the call. A lock that the rules cannot tell (one named through a
+local or a parameter that points to it) is not short. A lock wrapper is assumed short with `CC_ASSUME_SHORT` or
+`[assume] short`. A class of `short_locks` that no lock of the compile database has (none taken, none marked) is an
+error, as for the names.
 
 A suppression and an assumption answer different questions. A suppression (`cchecker: ignore`, `CC_IGNORE`) says
 that one finding is wrong, at one place; it stays next to that code and shows when the finding goes away
