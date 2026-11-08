@@ -30,11 +30,12 @@ DESUGARED_KEY = "        \"desugaredQualType\": "
 TYPE_KEY = "        \"qualType\": "
 
 # The kind of the initializer of a top-level variable, and the kinds of an item in it: a cast or a zero fill is looked
-# through, and a literal number tells a table of numbers.
+# through, and a literal number tells a table of numbers, unless a cast made it a null pointer (`{0, f}`).
 INIT_LIST = "          \"kind\": \"InitListExpr\","
 KIND_KEY = "\"kind\": "
 SEEN_THROUGH = Set.new(["\"ImplicitCastExpr\"", "\"ImplicitValueInitExpr\""])
 LITERALS = Set.new(["\"IntegerLiteral\"", "\"FloatingLiteral\"", "\"CharacterLiteral\""])
+NULL_CAST = "\"castKind\": \"NullToPointer\""
 
 # A function that a declaration names, at any depth: a `referencedDecl`, or the declaration itself.
 FUNCTION_KIND = "\"kind\": \"FunctionDecl\","
@@ -242,7 +243,8 @@ def top_key(state: State, line: String) -> State
 end
 
 # The lines below the keys of the declaration: whether it names a function, and, for an array whose type does not tell
-# (a typedef), whether its first item is a number.
+# (a typedef), whether its first item is a number. A null pointer (`0` cast to a pointer) is not one: the array holds
+# pointers.
 def deeper_key(state: State, line: String) -> State
   if state.phase != Phase.Kept
     return state
@@ -265,6 +267,10 @@ def deeper_key(state: State, line: String) -> State
   end
 
   text = line.strip
+  if text.start_with?(NULL_CAST)
+    return state.with(array: false)
+  end
+
   if not text.start_with?(KIND_KEY)
     return state
   end
