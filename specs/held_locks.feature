@@ -138,6 +138,7 @@ Feature: What runs while a lock is held
       struct runtime { CC_LOCK_LEVEL(1) pthread_mutex_t sync; struct queue *q; };
       CC_ACQUIRES(rt->sync) void rt_lock(runtime_t *rt);
       CC_RELEASES(rt->sync) void rt_unlock(runtime_t *rt);
+      void nested(runtime_t *rt) { rt_lock(rt); rt_unlock(rt); }
 
       <code>
       """
@@ -148,6 +149,7 @@ Feature: What runs while a lock is held
       | case           | code                                                                                                                                        |
       | in order       | void f(runtime_t *rt) { rt_lock(rt); pthread_mutex_lock(&rt->q->mu); pthread_mutex_unlock(&rt->q->mu); rt_unlock(rt); }                   |
       | one after one  | void f(runtime_t *rt) { pthread_mutex_lock(&rt->q->mu); pthread_mutex_unlock(&rt->q->mu); rt_lock(rt); rt_unlock(rt); }                   |
+      | a nested take  | void f(runtime_t *rt) { rt_lock(rt); nested(rt); rt_unlock(rt); }                                                                         |
       | no level       | void f(runtime_t *rt) { pthread_mutex_lock(&rt->q->mu); pthread_mutex_lock(&rt->q->free_mu); pthread_mutex_unlock(&rt->q->free_mu); pthread_mutex_unlock(&rt->q->mu); } |
 
   Scenario: The levels and the marks of a field hold in the other files of the run
