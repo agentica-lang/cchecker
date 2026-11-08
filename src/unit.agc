@@ -402,6 +402,10 @@ def with_call(tables: Tables, scope: Scope, node: Json, found: Found) -> Found
       stores = stores.concat(stored(tables, scope, "param:#{key}:#{i - 1}", parts[i]))
     end
 
+    if async_fs?(Ast.referenced_name(callee), parts)
+      return with_stores(found, stores)
+    end
+
     called = found.with(calls: found.calls.push(Call(caller: scope.caller, target: Target.Direct(key))))
     return with_stores(called, stores)
   end
@@ -410,6 +414,17 @@ def with_call(tables: Tables, scope: Scope, node: Json, found: Found) -> Found
     some(slot) -> return found.with(calls: found.calls.push(Call(caller: scope.caller, target: Target.Slot(slot))))
     none -> return found
   end
+end
+
+# A call of libuv's file functions with a callback, its last argument, only starts the work: the loop runs it on a
+# thread of its own. Without one (NULL or 0) it runs at once on the calling thread.
+def async_fs?(name: String, parts: List[Json]) -> Bool
+  if not name.start_with?("uv_fs_") or parts.size < 2
+    return false
+  end
+
+  last = bare(parts.last)
+  return not (Ast.kind(last) == "IntegerLiteral" and Ast.text(last, "value") == "0")
 end
 
 # `__attribute__((cleanup(f)))` on a variable calls f when the variable goes out of scope.
