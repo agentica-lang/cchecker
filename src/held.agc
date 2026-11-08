@@ -219,7 +219,7 @@ end
 
 # The classes that a function of the project takes, in its body or in the functions it reaches.
 def reached_takes(rules: Rules, start: String) -> List[String]
-  if not Effects.defined?(rules.graph, start)
+  if not Effects.defined?(rules.graph, start) or Effects.stopped?(rules.graph, start)
     return []
   end
 
@@ -232,7 +232,11 @@ def reached_takes(rules: Rules, start: String) -> List[String]
     i += 1
     classes = classes.union(rules.takes.get(key).unwrap_or(Set.new([])))
     for callee in Effects.callees(rules.graph, key)
-      if not seen.include?(callee) and Effects.defined?(rules.graph, callee)
+      if (
+        not seen.include?(callee) and
+        Effects.defined?(rules.graph, callee) and
+        not Effects.stopped?(rules.graph, callee)
+      )
         seen = seen.add(callee)
         queue = queue.push(callee)
       end

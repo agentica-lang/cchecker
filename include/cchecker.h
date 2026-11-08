@@ -22,6 +22,8 @@
  *   CC_ACQUIRES(lock)           the function returns with `lock` held, for its caller to release
  *   CC_RELEASES(lock)           the function releases `lock`, which its caller took
  *   CC_NORETURN                 a call of the function never comes back (it jumps out or ends the thread)
+ *   CC_ASSUME_SHORT             the function counts as fine for CC_SHORT: the short rule does not walk into it
+ *   CC_STOP                     no rule walks into the function: what it calls counts for none of them
  *   CC_IGNORE("CODE", "reason") a finding of the rules on the function is a false positive, for this reason
  *
  * Put an annotation before the declaration, or before the type of a parameter:
@@ -60,6 +62,8 @@
 #define CC_ACQUIRES(...) CC_ANNOTATE_ARGS_("acquires", __VA_ARGS__)
 #define CC_RELEASES(...) CC_ANNOTATE_ARGS_("releases", __VA_ARGS__)
 #define CC_NORETURN CC_ANNOTATE_("noreturn")
+#define CC_ASSUME_SHORT CC_ANNOTATE_("assume_short")
+#define CC_STOP CC_ANNOTATE_("stop")
 #define CC_LOCK_LEVEL(...) CC_ANNOTATE_ARGS_("lock_level", __VA_ARGS__)
 /* The code and the reason are string literals: `CC_IGNORE("CC-EFFECT-SHORT-BLOCKS", "...")` is "ignore(CODE: ...)". */
 #define CC_IGNORE(code, reason) CC_ANNOTATE_("ignore(" code ": " reason ")")
@@ -76,6 +80,8 @@
 #define CC_ACQUIRES(...)
 #define CC_RELEASES(...)
 #define CC_NORETURN
+#define CC_ASSUME_SHORT
+#define CC_STOP
 #define CC_LOCK_LEVEL(...)
 #define CC_IGNORE(code, reason)
 #endif

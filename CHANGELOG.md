@@ -15,6 +15,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Assumptions of a project: `CC_ASSUME_SHORT` and `[assume] short` name a function that counts as fine for
+  `CC_SHORT` (the short rule does not walk into it); `CC_STOP` and `[assume] stop` one that no rule walks into. A name
+  of `[assume]` that no function of the compile database declares is an error.
 - A file whose `#include` is not found is not checked, with `cchecker: warning: FILE not checked: HEADER not
   found` and an entry in `unchecked_files` of `--json`; the other files are checked and the exit code does not change.
 - `--all-paths`: a finding of the rules for each distinct bad call that a root reaches, each with its shortest path.
