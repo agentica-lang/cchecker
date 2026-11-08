@@ -2,7 +2,8 @@ Feature: Pairs of calls restored on every path
   CC_PAIR(set, restore) on a function says that in its body, every call of `set` is followed by a call of `restore`
   on every path that returns. On the declaration of `set` itself, it says so in every function that calls `set`. A
   call of `restore` with no `set` before it does nothing, and a path that ends in a call that does not return does
-  not need the restore.
+  not need the restore. The body of a `set` that carries its own CC_PAIR is how the pair works: it may leave another
+  pair set for its caller.
 
   Scenario Outline: A call of a set that a path does not restore is a finding at the function (<case>)
     Given the C file "guard.c" holds:
@@ -52,6 +53,7 @@ Feature: Pairs of calls restored on every path
       | another function  | CC_PAIR(mask_signals, restore_signals) int guarded(int n); int other(int n) { mask_signals(); return work(n); }                                                                                           |
       | set form          | CC_PAIR(mask_signals, restore_signals) void mask_signals(void); int guarded(int n) { mask_signals(); work(n); restore_signals(); return 0; }                                                              |
       | set defined       | CC_PAIR(mask_signals, restore_signals) void mask_signals(void); void mask_signals(void) { work(0); } int guarded(int n) { mask_signals(); restore_signals(); return n; }                                  |
+      | a set that wraps  | CC_PAIR(mask_signals, restore_signals) void mask_signals(void); CC_PAIR(enter_quiet, leave_quiet) void enter_quiet(void); void leave_quiet(void); void enter_quiet(void) { mask_signals(); } void leave_quiet(void) { restore_signals(); } |
       | restore alone     | CC_PAIR(mask_signals, restore_signals) void mask_signals(void); int reset(int n) { restore_signals(); return n; }                                                                                         |
 
   Scenario: The path of a finding goes from the set to the return that skips the restore
