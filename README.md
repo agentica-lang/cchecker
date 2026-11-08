@@ -100,8 +100,9 @@ ran. A header that the run did not name keeps the larger count of its entry, as 
 it (`#ifdef`); only a full run lowers it. It refuses to write, and leaves the file as it was, when a tool failed, when
 the database has a file that was skipped (outside the working directory), with `--checks` (a baseline made with
 other checks would lose the findings of the default ones), and, when the rules run, with `--no-infer`, a `[library]`
-flag set to false (Settings), or a file of `-c` that leaves out a name of `[roots]` of the project's settings, for the
-same reason. The exit code is `2` in each case.
+flag set to false (Settings), or a file of `-c` that leaves out a name of `short` or `hot` of `[roots]` of the
+project's settings, for the same reason (only `[roots]` is compared: `follow_cold` and `[assume]` are not). The exit
+code is `2` in each case.
 
 ### Suppressions
 

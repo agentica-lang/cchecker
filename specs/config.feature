@@ -271,7 +271,7 @@ Feature: The settings of a project
       no [tool.cchecker] table
       """
 
-  Scenario: --update-baseline with -c is refused when the file has fewer [roots] than the project settings
+  Scenario: --update-baseline with -c is refused when the file leaves out a short root, even named as hot
     Given the C file "more.c" holds:
       """
       unsigned int sleep(unsigned int seconds);
@@ -284,14 +284,14 @@ Feature: The settings of a project
       """
     And the file "other.toml" holds:
       """
-      [effects]
-      follow_cold = true
+      [roots]
+      hot = ["tock"]
       """
     When I run cchecker in its folder with "--tools rules -b base.json --update-baseline -c other.toml more.c"
     Then the exit code is 2
     And the errors include:
       """
-      tock
+      (short: tock)
       """
     And the file "$DIR/base.json" does not exist
     When I run cchecker in its folder with "--tools rules -b base.json --update-baseline more.c"

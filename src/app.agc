@@ -195,7 +195,8 @@ export def run(options: Options) -> Result[Int]
 end
 
 # A baseline written with a check off, or with fewer roots than the project names, would drop the accepted findings of
-# that check or root, as --checks would: --update-baseline is refused then, naming what causes it.
+# that check or root, as --checks would: --update-baseline is refused then, naming what causes it. Of the settings only
+# [roots] is compared: follow_cold and [assume] can also change the findings and are not checked.
 def full_rules(options: Options, config: Config.Config, cwd: String) -> Result[Void]
   causes: List[String] = []
   if not options.infer
@@ -208,9 +209,9 @@ def full_rules(options: Options, config: Config.Config, cwd: String) -> Result[V
 
   if options.config.some?
     project = try Config.load(none, cwd)
-    missing = project.short.concat(project.hot).select do |name| not config.short.concat(config.hot).include?(name) end
+    missing = left_out("short", project.short, config.short).concat(left_out("hot", project.hot, config.hot))
     if not missing.empty?
-      causes = causes.push("name the [roots] of #{project.origin} in #{config.origin} (#{missing.join(", ")})")
+      causes = causes.push("name the [roots] of #{project.origin} in #{config.origin} (#{missing.join("; ")})")
     end
   end
 
@@ -219,9 +220,19 @@ def full_rules(options: Options, config: Config.Config, cwd: String) -> Result[V
   end
 
   return error(
-    "--update-baseline needs every check of the rules on: #{causes.join("; ")}, or the baseline would " +
-    "lose their findings",
+    "--update-baseline needs every check of the rules on: #{causes.join(", and ")}, or the baseline would " +
+    "lose their findings (of the settings, only [roots] is compared)",
   )
+end
+
+# The names of a list of [roots] of the project that the file of -c leaves out, as "short: a, b", or nothing.
+def left_out(key: String, project: List[String], given: List[String]) -> List[String]
+  names = project.uniq.select do |name| not given.include?(name) end
+  if names.empty?
+    return []
+  end
+
+  return ["#{key}: #{names.join(", ")}"]
 end
 
 # The accepted findings, read before any tool runs so that a baseline that cannot be read costs no time. A baseline

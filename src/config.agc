@@ -119,7 +119,6 @@ export def flags() -> List[String]
   )
 end
 
-# The settings of the project folder: cchecker.toml, else the table of cchecker in agentica.toml, else the defaults.
 # The note of an unknown key of a file of -c read whole: only a file that looks like a manifest of Agentica (it has a
 # `name`) gets it, as it may lack its [tool.cchecker] table; a plain file of cchecker does not.
 def manifest_note(document: Toml.Value) -> String
@@ -130,6 +129,7 @@ def manifest_note(document: Toml.Value) -> String
   return ""
 end
 
+# The settings of the project folder: cchecker.toml, else the table of cchecker in agentica.toml, else the defaults.
 def found_in(folder: String) -> Result[Config]
   own = try Path.join([folder, OWN_FILE])
   if File.stat(own).ok?
