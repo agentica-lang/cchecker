@@ -34,6 +34,7 @@ struct Collected
   units: List[Unit]
   skipped_declarations: Int = 0
   unresolved: List[UnresolvedCallback] = []
+  missing_roots: List[String] = []
 end
 
 # The jobs of a run, the files that were left out because they are outside the working directory, and the entries of
@@ -49,6 +50,14 @@ end
 export def run(options: Options) -> Result[Int]
   cwd = try Paths.working_directory()
   config = try Config.load(options.config, cwd)
+  # A baseline written with a check off would drop the accepted findings of that check, as --checks would.
+  if options.update_baseline and options.tools.include?(Tool.Rules) and (not options.infer or not config.off.empty?)
+    return error(
+      "--update-baseline needs every check of the rules on: drop --no-infer and the [library] flags set to false " +
+      "(#{config.origin}), or the baseline would lose their findings",
+    )
+  end
+
   if not options.json
     IO.warn("cchecker: settings: #{config.origin}")
   end
@@ -85,9 +94,13 @@ export def run(options: Options) -> Result[Int]
   scope = scope_of(options, plan, collected)
 
   # Only a run of the whole database sees every function: one of some files would miss the roots of the others.
-  missing = Effects.missing_roots(collected.units, config)
-  if scope.full and options.tools.include?(Tool.Rules) and not missing.empty?
-    return error("#{config.origin}: no function of the compile database is named #{missing.join(", ")} ([roots])")
+  if options.tools.include?(Tool.Rules) and not (config.short.empty? and config.hot.empty?)
+    if not scope.full
+      IO.warn("cchecker: the names of [roots] were not checked: only a full run of a compile database sees them all")
+    elsif not collected.missing_roots.empty?
+      missing = collected.missing_roots.join(", ")
+      return error("#{config.origin}: no function of the compile database is named #{missing} ([roots])")
+    end
   end
 
   ignores = try ignores_of(found, plan, collected.units, cwd)
@@ -424,6 +437,7 @@ def collect(options: Options, config: Config.Config, jobs: List[Tools.Job], cwd:
     units: units,
     skipped_declarations: skipped_declarations,
     unresolved: checked.unresolved,
+    missing_roots: checked.missing_roots,
   )
 end
 

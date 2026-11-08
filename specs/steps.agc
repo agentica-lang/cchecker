@@ -25,6 +25,7 @@ def main() -> Void
     BDD.step("I run cchecker with {string}", &run_cchecker),
     BDD.step("I run cchecker with {string} and TMPDIR {string}", &run_with_tmpdir),
     BDD.step("I run cchecker in its folder with {string}", &run_in_folder),
+    BDD.step("I run cchecker in its folder {string} with {string}", &run_in_subfolder),
     BDD.step("the folder {string} is empty", &folder_empty),
     BDD.step("clang dumps the AST of {string}", &dump_ast),
     BDD.step("clang dumps the JSON AST of {string}", &dump_json_ast),
@@ -87,10 +88,19 @@ end
 
 # A run whose project folder is the folder of the scenario, for the settings files that cchecker looks for there.
 def run_in_folder(ctx: BDD.Context, args: List[String]) -> BDD.Context
+  return run_in(ctx, ".", args[0])
+end
+
+# The same in a subfolder of the folder of the scenario, for a file outside the project folder.
+def run_in_subfolder(ctx: BDD.Context, args: List[String]) -> BDD.Context
+  return run_in(ctx, args[0], args[1])
+end
+
+def run_in(ctx: BDD.Context, sub: String, line: String) -> BDD.Context
   started = ensure_folder(ctx)
   program = Path.resolve(Path.join([SPECS, PROGRAM]).unwrap!).unwrap!
-  words = args[0].split(" ").select do |word| word != "" end
-  return run_program(started, "agentica", [program].concat(words), {}, "#{SPECS}/#{folder_of(started)}")
+  words = line.split(" ").select do |word| word != "" end
+  return run_program(started, "agentica", [program].concat(words), {}, "#{SPECS}/#{folder_of(started)}/#{sub}")
 end
 
 # TMPDIR is the folder, made empty first, where the run writes its AST dumps.

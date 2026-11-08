@@ -20,6 +20,9 @@ export DEFAULTS = "defaults"
 # The table of cchecker in a manifest.
 TOOL_TABLE = "tool.cchecker"
 
+# What an unknown key of a file of -c without that table adds: the file may be a manifest that lacks it.
+WHOLE_NOTE = " (no [tool.cchecker] table; read as a cchecker file)"
+
 ## The settings of a run. `origin` is the file they were read from, as the user wrote it, or "defaults". `off` holds
 ## the `[library]` flags that are false; `short` and `hot` are the names of `[roots]`.
 export struct Config
@@ -37,7 +40,7 @@ export def load(explicit: Optional[String], folder: String) -> Result[Config]
       document = try parse(path, text)
       case Toml.get(document, TOOL_TABLE)
         ok(table) -> return from_table(path, "#{TOOL_TABLE}.", table)
-        error(_) -> return from_table(path, "", document)
+        error(_) -> return from_table(path, "", document, WHOLE_NOTE)
       end
 
     none -> return found_in(folder)
@@ -46,13 +49,13 @@ end
 
 ## Returns the settings of a table: the whole file, or the table of cchecker in a manifest, whose keys start with
 ## `prefix` in the errors.
-export def from_table(origin: String, prefix: String, table: Toml.Value) -> Result[Config]
+export def from_table(origin: String, prefix: String, table: Toml.Value, note: String = "") -> Result[Config]
   config = defaults().with(origin: origin)
   entries = try table_of(origin, TOOL_TABLE, table)
   for key in entries.keys
     value = entries.get(key).unwrap!
     case key
-      "library" -> config = config.with(off: try library_of(origin, "#{prefix}library", value))
+      "library" -> config = config.with(off: try library_of(origin, "#{prefix}library", value, note))
       "roots" ->
         roots = try table_of(origin, "#{prefix}roots", value)
         for name in roots.keys
@@ -60,11 +63,11 @@ export def from_table(origin: String, prefix: String, table: Toml.Value) -> Resu
           case name
             "short" -> config = config.with(short: try names_of(origin, path, roots.get(name).unwrap!))
             "hot" -> config = config.with(hot: try names_of(origin, path, roots.get(name).unwrap!))
-            _ -> return error(unknown(origin, path))
+            _ -> return error(unknown(origin, path, note))
           end
         end
 
-      _ -> return error(unknown(origin, "#{prefix}#{key}"))
+      _ -> return error(unknown(origin, "#{prefix}#{key}", note))
     end
   end
 
@@ -100,13 +103,13 @@ def found_in(folder: String) -> Result[Config]
   return ok(defaults())
 end
 
-def library_of(origin: String, path: String, value: Toml.Value) -> Result[Set[String]]
+def library_of(origin: String, path: String, value: Toml.Value, note: String) -> Result[Set[String]]
   entries = try table_of(origin, path, value)
   off: Set[String] = Set.new([])
   known = flags()
   for flag in entries.keys
     if not known.include?(flag)
-      return error(unknown(origin, "#{path}.#{flag}"))
+      return error(unknown(origin, "#{path}.#{flag}", note))
     end
 
     case entries.get(flag).unwrap!
@@ -145,8 +148,8 @@ def table_of(origin: String, path: String, value: Toml.Value) -> Result[Map[Stri
   end
 end
 
-def unknown(origin: String, path: String) -> String
-  return "#{origin}: #{path} is not a setting of cchecker"
+def unknown(origin: String, path: String, note: String) -> String
+  return "#{origin}: #{path} is not a setting of cchecker#{note}"
 end
 
 def read(path: String) -> Result[String]

@@ -91,8 +91,9 @@ database. `fixed` counts the accepted findings of that scope that no tool found 
 replaces the entries of that scope and keeps the others, so `--tools gcc` or a subset of FILEs updates only what it
 ran. A header that the run did not name keeps the larger count of its entry, as other flags can show other findings in
 it (`#ifdef`); only a full run lowers it. It refuses to write, and leaves the file as it was, when a tool failed, when
-the database has a file that was skipped (outside the working directory), or with `--checks` (a baseline made with
-other checks would lose the findings of the default ones). The exit code is `2` in each case.
+the database has a file that was skipped (outside the working directory), with `--checks` (a baseline made with
+other checks would lose the findings of the default ones), and, when the rules run, with `--no-infer` or a `[library]`
+flag set to false (Settings), for the same reason. The exit code is `2` in each case.
 
 ### Suppressions
 
@@ -193,8 +194,9 @@ hot = ["dispatch"]
 ```
 
 `[library]` turns each family of library knowledge on or off. All are on by default. A finding of the rules says in
-`source` of `--json` the flag that made it: that of the inferred root it starts from, else the family of the blocking
-call it reaches, so a project knows which one to turn off. The lists are in `src/known.agc`.
+`source` of `--json` the flags that made it, so a project knows which one to turn off: the family of the blocking call
+it reaches (`libc_blocking`), and for an inferred root the inference before it (`libuv_callbacks_short+libc_blocking`).
+`source` is not part of the baseline key. The lists are in `src/known.agc`.
 
 | Flag | What it adds |
 |---|---|
@@ -211,7 +213,7 @@ system call whatever the flags.
 (a static function of that name in any file). A finding of a root of `[roots]` is the same as that of the mark, and a
 function both marked and listed is one root. A name that no function of the compile database defines is an error
 (exit 2), so a rename cannot leave a rule that checks nothing. Only a full run of a compile database can tell (a run of
-some files does not see the others), so only it checks the names.
+some files does not see the others), so only it checks the names; another run says on standard error that it did not.
 
 ### Roots
 
@@ -228,8 +230,9 @@ A function that is a root in more than one way is one root. The callback of an i
 the call, or a pointer that the rules follow to the functions stored in it (see Rules), such as a parameter that
 callers pass a function to. `NULL` or 0 is no callback. A callback that leads to no function (the return value of a
 call, a parameter that no caller passes a function to) is listed in `unresolved_callbacks` of `--json`, each with
-`call`, `argument` (its place, from 0), `file` and `line`, and a run without `--json` says how many in one line on
-standard error, so a root is never lost without a word.
+`call`, `argument` (its place, from 0), `file` and `line` (absolute for a call outside the working directory, such as
+a body that includes a file from outside), and a run without `--json` says how many in one line on standard error, so
+a root is never lost without a word.
 
 A finding of an inferred root has its place in `root` of `--json` (`callback of uv_read_start at src/net.c:41`), and
 the printed line ends with it:

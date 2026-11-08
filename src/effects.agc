@@ -26,9 +26,11 @@ struct Graph
 end
 
 ## What the rules found: the findings, and the callbacks of libuv calls they could not follow to a function.
+## `missing_roots` are the names of `[roots]` that no function of the units defines.
 export struct Checked
   findings: List[Finding]
   unresolved: List[UnresolvedCallback]
+  missing_roots: List[String] = []
 end
 
 # The CC_SHORT roots inferred from the callbacks of libuv, by function key, each with the call that made it, and the
@@ -41,7 +43,7 @@ end
 ## Returns the findings of the rules on the units of a run. A root is a function marked in the C, named in the
 ## `[roots]` of the settings, or, when `infer`, passed as a callback to a libuv call that runs it on the loop. The
 ## `[library]` flags that are off take their families out of the blocking calls. `cwd` shortens the paths of the
-## inferred roots and of the unresolved callbacks; those outside it are left out, as findings are.
+## inferred roots and of the unresolved callbacks; one outside it stays absolute.
 export def check(units: List[Unit], config: Config, infer: Bool, cwd: String) -> Checked
   graph = graph_of(units)
   families = Known.BLOCKING_FAMILIES.select do |family| not config.off.include?(family.flag) end
@@ -60,7 +62,7 @@ export def check(units: List[Unit], config: Config, infer: Bool, cwd: String) ->
         root = inferred.roots.get(function.key).unwrap!
         findings = findings.concat(
           broken(graph, families, function, Effect.Blocks).map do |f|
-            f.with(source: Known.CALLBACKS_FLAG, root: root)
+            f.with(source: inferred_source(f.source), root: root)
           end,
         )
       end
@@ -72,18 +74,33 @@ export def check(units: List[Unit], config: Config, infer: Bool, cwd: String) ->
     end
   end
 
-  return Checked(findings: findings, unresolved: inferred.unresolved)
-end
-
-## Returns the names of `[roots]` that no function the units define has.
-export def missing_roots(units: List[Unit], config: Config) -> List[String]
-  defined = Set.new(functions(units).select do |f| f.defined end.map do |f| f.name end)
-  return config.short.concat(config.hot).uniq.select do |name| not defined.include?(name) end
+  return Checked(findings: findings, unresolved: inferred.unresolved, missing_roots: missing_roots(graph, config))
 end
 
 ## Returns the functions of the units, each merged from all its declarations.
 export def functions(units: List[Unit]) -> List[Function]
   return graph_of(units).functions.values
+end
+
+# The names of `[roots]` that no function of the graph defines.
+def missing_roots(graph: Graph, config: Config) -> List[String]
+  names = config.short.concat(config.hot).uniq
+  if names.empty?
+    return []
+  end
+
+  defined = Set.new(graph.functions.values.select do |f| f.defined end.map do |f| f.name end)
+  return names.select do |name| not defined.include?(name) end
+end
+
+# The source of a finding of an inferred root: the flag of the inference, and that of the family of the blocking call
+# when one made it, as either flag turns the finding off.
+def inferred_source(family: String) -> String
+  if family == ""
+    return Known.CALLBACKS_FLAG
+  end
+
+  return "#{Known.CALLBACKS_FLAG}+#{family}"
 end
 
 # The callbacks in the order of their places, so that the root of a function passed at several places is the first.
@@ -94,25 +111,21 @@ def inferred_of(graph: Graph, units: List[Unit], cwd: String) -> Inferred
   roots: Map[String, String] = {}
   unresolved: List[UnresolvedCallback] = []
   for callback in callbacks
-    case Paths.inside(cwd, callback.file)
-      some(shown) ->
-        # A library function (`free`) leads somewhere too, but has no body to check: it is no root.
-        keys = callback.sources.flat_map do |source| keys_of(graph, source) end
+    # A call outside the working directory (a body that includes a file from outside) keeps its absolute path.
+    shown = Paths.inside(cwd, callback.file).unwrap_or(callback.file)
+    # A library function (`free`) leads somewhere too, but has no body to check: it is no root.
+    keys = callback.sources.flat_map do |source| keys_of(graph, source) end
+    # A header reached by several files holds the same call once for each.
+    if keys.empty? and not unresolved.any? do |u| same?(u, callback, shown) end
+      unresolved = unresolved.push(
+        UnresolvedCallback(call: callback.call, argument: callback.argument, file: shown, line: callback.line),
+      )
+    end
 
-        # A header reached by several files holds the same call once for each.
-        if keys.empty? and not unresolved.any? do |u| same?(u, callback, shown) end
-          unresolved = unresolved.push(
-            UnresolvedCallback(call: callback.call, argument: callback.argument, file: shown, line: callback.line),
-          )
-        end
-
-        for key in keys
-          if defined?(graph, key) and not roots.key?(key)
-            roots = roots.put(key, "callback of #{callback.call} at #{shown}:#{callback.line}")
-          end
-        end
-
-      none -> next
+    for key in keys
+      if defined?(graph, key) and not roots.key?(key)
+        roots = roots.put(key, "callback of #{callback.call} at #{shown}:#{callback.line}")
+      end
     end
   end
 

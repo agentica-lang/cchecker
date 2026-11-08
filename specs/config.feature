@@ -236,3 +236,57 @@ Feature: The settings of a project
       """
       tock
       """
+
+  Scenario: A file of -c without a [tool.cchecker] table is read whole, and the error says so
+    Given the file "sub/agentica.toml" holds:
+      """
+      name = "demo"
+      """
+    When I run cchecker in its folder with "--tools rules -c sub/agentica.toml blocks.c -- -I../../../include"
+    Then the exit code is 2
+    And the errors include:
+      """
+      (no [tool.cchecker] table; read as a cchecker file)
+      """
+
+  Scenario: A run of some files says that it did not check the names of [roots]
+    Given the file "cchecker.toml" holds:
+      """
+      [roots]
+      short = ["tock"]
+      """
+    When I run cchecker in its folder with "--tools rules blocks.c -- -I../../../include"
+    Then the exit code is 1
+    And the errors include:
+      """
+      cchecker: the names of [roots] were not checked
+      """
+
+  Scenario: A name of [roots] holds for the static functions of that name in every file
+    Given the C file "a.c" holds:
+      """
+      unsigned int sleep(unsigned int seconds);
+      static int tick(void) { return (int)sleep(1); }
+      int a(void) { return tick(); }
+      """
+    And the C file "b.c" holds:
+      """
+      unsigned int sleep(unsigned int seconds);
+      static int tick(void) { return (int)sleep(2); }
+      int b(void) { return tick(); }
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [roots]
+      short = ["tick"]
+      """
+    When I run cchecker in its folder with "--tools rules --json a.c b.c"
+    Then the exit code is 1
+    And the output includes:
+      """
+      {"code":"CC-EFFECT-SHORT-BLOCKS","tool":"rules","file":"a.c","line":2,
+      """
+    And the output includes:
+      """
+      {"code":"CC-EFFECT-SHORT-BLOCKS","tool":"rules","file":"b.c","line":2,
+      """

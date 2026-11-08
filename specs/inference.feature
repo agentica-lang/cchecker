@@ -22,7 +22,7 @@ Feature: Roots inferred from libuv callbacks
       """
     And the output includes:
       """
-      "path":["slow","sleep"],"source":"libuv_callbacks_short","root":"callback of <call> at loop.c:6"}
+      "path":["slow","sleep"],"source":"libuv_callbacks_short+libc_blocking","root":"callback of <call> at loop.c:6"}
       """
 
     Examples:
@@ -177,3 +177,65 @@ Feature: Roots inferred from libuv callbacks
       """
       "baselined":2
       """
+
+  Scenario: A callback of a call outside the working directory is listed with its absolute path
+    Given the file "body.inc" holds:
+      """
+      uv_timer_start(h, pick(), 0, 0);
+      """
+    And the C file "sub/loop.c" holds:
+      """
+      typedef void (*timer_cb)(void *);
+      int uv_timer_start(void *handle, timer_cb cb, unsigned long timeout, unsigned long repeat);
+      timer_cb pick(void);
+
+      void start(void *h) {
+      #include "../body.inc"
+      }
+      """
+    When I run cchecker in its folder "sub" with "--tools rules --json loop.c"
+    Then the exit code is 0
+    And the output includes:
+      """
+      "unresolved_callbacks":[{"call":"uv_timer_start","argument":1,"file":"/
+      """
+    And the output includes:
+      """
+      /body.inc","line":1}]
+      """
+
+  Scenario Outline: --update-baseline is refused while a check is turned off, as it would drop accepted findings
+    Given the C file "loop.c" holds:
+      """
+      unsigned int sleep(unsigned int seconds);
+      typedef void (*timer_cb)(void *);
+      int uv_timer_start(void *handle, timer_cb cb, unsigned long timeout, unsigned long repeat);
+
+      static void on_tick(void *handle) { (void)handle; sleep(1); }
+      void start(void *handle) { uv_timer_start(handle, on_tick, 10, 0); }
+      """
+    And the file "off.toml" holds:
+      """
+      [library]
+      <flag> = false
+      """
+    When I run cchecker in its folder with "--tools rules -b base.json --update-baseline loop.c"
+    Then the exit code is 0
+    When I run cchecker in its folder with "--tools rules -b base.json --update-baseline <options> loop.c"
+    Then the exit code is 2
+    And the errors include:
+      """
+      --update-baseline
+      """
+    When I run cchecker in its folder with "--tools rules -b base.json --json loop.c"
+    Then the exit code is 0
+    And the output includes:
+      """
+      "baselined":1
+      """
+
+    Examples:
+      | flag                  | options     |
+      | libc_blocking         | --no-infer  |
+      | libuv_callbacks_short | -c off.toml |
+      | libc_blocking         | -c off.toml |
