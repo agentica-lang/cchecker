@@ -48,3 +48,33 @@ jobs:
       # The features of specs/ run cchecker on the C fixtures; test/ has the unit tests of the parsers.
       - name: Test
         run: make test
+
+  # The scenarios tagged @slow: large generated inputs, each under a bound on memory and time (specs/limits.feature).
+  # They run on every PR, apart from the default tests, so that `make test` stays quick.
+  slow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container: debian:trixie
+    steps:
+      - name: Install the tools
+        run: |
+          apt-get -o Acquire::Retries=3 update
+          apt-get -o Acquire::Retries=3 install -y --no-install-recommends ca-certificates curl git make gcc libc6-dev clang clang-tidy
+
+      - name: Check that the tools are there
+        run: |
+          for tool in gcc clang clang-tidy; do
+            command -v "$tool" || { echo "$tool is missing"; exit 1; }
+            "$tool" --version | head -n 1
+          done
+
+      - uses: actions/checkout@v4
+
+      - name: Install the pinned Agentica release
+        uses: agentica-lang/setup-agentica@v1
+        with:
+          version: 0.26.1
+          sha256: 68c3e825cb14148e45c47b21b6ef66036c5ad17a2cdf36948f47e1415bae5524 # linux-x86_64
+
+      - name: Slow tests
+        run: make test-slow
