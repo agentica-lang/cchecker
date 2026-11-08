@@ -12,6 +12,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- A file whose `#include` is not found is not checked, with `cchecker: warning: FILE not checked: HEADER not
+  found` and an entry in `unchecked_files` of `--json`; the other files are checked and the exit code does not change.
 - `--all-paths`: a finding of the rules for each distinct bad call that a root reaches, each with its shortest path.
   The nearest one keeps its baseline key; the others are keyed by the call their message names.
 - The effect walk does not go into a function that is `_Noreturn`, `[[noreturn]]`, `CC_NORETURN`,

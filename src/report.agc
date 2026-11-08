@@ -1,6 +1,6 @@
 ## What a run prints.
 
-import {Finding, ToolError, UnresolvedCallback} from "findings"
+import {Finding, ToolError, UncheckedFile, UnresolvedCallback} from "findings"
 import {Suppressed} from "suppressions"
 
 ## The result of a run. `findings` are the new ones; `baselined` were accepted by the baseline, and `fixed` are
@@ -9,7 +9,8 @@ import {Suppressed} from "suppressions"
 ## did not read because they are too large and name no function (tables of numbers, mostly). `incomplete_functions`
 ## counts the functions with more paths than the path rules follow. `suppressed` are the findings that a suppression
 ## took out. `config` is the settings file that was read, or "defaults". `unresolved_callbacks` are the callbacks of
-## libuv calls that the inference of roots could not follow to a function.
+## libuv calls that the inference of roots could not follow to a function. `unchecked_files` are the files that were
+## not checked because a header they include is not found.
 export struct Report
   findings: List[Finding]
   baselined: Int
@@ -21,6 +22,7 @@ export struct Report
   suppressed: List[Suppressed] = []
   config: String = "defaults"
   unresolved_callbacks: List[UnresolvedCallback] = []
+  unchecked_files: List[UncheckedFile] = []
 end
 
 # The JSON form of a report, which says in `clean` whether the run is clean.
@@ -36,6 +38,7 @@ struct Encoded
   suppressed: List[Suppressed]
   config: String
   unresolved_callbacks: List[UnresolvedCallback]
+  unchecked_files: List[UncheckedFile]
 end
 
 ## Returns the report for people: one line for each finding, then a summary line.
@@ -59,6 +62,7 @@ export def json(report: Report) -> String
       suppressed: report.suppressed,
       config: report.config,
       unresolved_callbacks: report.unresolved_callbacks,
+      unchecked_files: report.unchecked_files,
     ),
   )
 end
@@ -66,6 +70,11 @@ end
 ## Returns the lines for standard error: one for each tool error.
 export def error_lines(report: Report) -> List[String]
   return report.errors.map do |e| "cchecker: error: #{e.tool} on #{e.file}: #{e.message}" end
+end
+
+## Returns the lines for standard error: one for each file that was not checked.
+export def unchecked_lines(report: Report) -> List[String]
+  return report.unchecked_files.map do |u| "cchecker: warning: #{u.file} not checked: #{u.missing} not found" end
 end
 
 ## Returns the line for standard error about the callbacks that the inference of roots could not follow, or none.

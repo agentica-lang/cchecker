@@ -51,7 +51,9 @@ cchecker: 2 new findings in 1 file
 `column`, `message`, `path`, the call path of a finding of the rules, `source`, the `[library]` flag that made it or
 `""`, and `root`, where an inferred root comes from or `""`), `baselined`, `fixed`, `errors` (a tool that did not run
 or could not compile a file: `tool`, `file` and `message`), `skipped`, `suppressed` (below), `config`, the settings
-file that was read or `"defaults"` (Settings), and `unresolved_callbacks` (Roots).
+file that was read or `"defaults"` (Settings), `unresolved_callbacks` (Roots), and `unchecked_files`: the files that
+were not checked because a header they include is not found (`file` and `missing`, the header as the `#include` wrote
+it). Such a file is skipped with a warning on standard error and does not change the exit code.
 
 Exit codes: `0` no new findings, `1` new findings, `2` a usage error or a tool error. A tool error is a tool that
 is missing, ends in a timeout or exits with a non-zero code, except for the `1` of a compiler that found errors in the

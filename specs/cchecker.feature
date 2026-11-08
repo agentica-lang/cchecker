@@ -115,6 +115,46 @@ Feature: Running the analyzers on C files
       "errors":[{"tool":"gcc","file":"fixtures/broken.c"
       """
 
+  Scenario: A file whose header is not there is not checked, with a warning, and the run goes on
+    Given the C file "lonely.c" holds:
+      """
+      #include "not_installed/thing.h"
+      int f(void) { return 0; }
+      """
+    When I run cchecker with "--json $DIR/lonely.c"
+    Then the exit code is 0
+    And the output includes:
+      """
+      "unchecked_files":[{"file":"$DIR/lonely.c","missing":"not_installed/thing.h"}]
+      """
+    And the output includes:
+      """
+      "errors":[]
+      """
+    When I run cchecker with "$DIR/lonely.c"
+    Then the exit code is 0
+    And the errors include:
+      """
+      cchecker: warning: $DIR/lonely.c not checked: not_installed/thing.h not found
+      """
+
+  Scenario: The other files of a run with a missing header are still checked
+    Given the C file "lonely.c" holds:
+      """
+      #include <not_installed.h>
+      int f(void) { return 0; }
+      """
+    When I run cchecker with "--json $DIR/lonely.c fixtures/leak.c"
+    Then the exit code is 1
+    And the output includes:
+      """
+      CC-GCC-ANALYZER-MALLOC-LEAK
+      """
+    And the output includes:
+      """
+      "unchecked_files":[{"file":"$DIR/lonely.c","missing":"not_installed.h"}]
+      """
+
   Scenario Outline: An excluded file or folder is skipped
     When I run cchecker with "--exclude <exclude> fixtures/nested/deep_leak.c fixtures/clean.c"
     Then the exit code is 0

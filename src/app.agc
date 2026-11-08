@@ -5,7 +5,7 @@ import Commands from "commands"
 import Config from "config"
 import Effects from "effects"
 import Findings from "findings"
-import {Finding, ToolError, UnresolvedCallback} from "findings"
+import {Finding, ToolError, UncheckedFile, UnresolvedCallback} from "findings"
 import Locking from "locking"
 import {Options} from "options"
 import Ownership from "ownership"
@@ -28,7 +28,8 @@ SCRATCH_PREFIX = "cchecker-"
 PRIVATE_MODE = 448
 
 # What the tools made of all the jobs, before the paths are shortened and the repeats taken out. `units` are the
-# translation units of the rules, which also hold the CC_IGNORE of the functions.
+# translation units of the rules, which also hold the CC_IGNORE of the functions. `unchecked` are the files whose
+# header was not found, once each.
 struct Collected
   findings: List[Finding]
   errors: List[ToolError]
@@ -38,6 +39,7 @@ struct Collected
   incomplete_functions: Int = 0
   unresolved: List[UnresolvedCallback] = []
   missing_roots: List[String] = []
+  unchecked: List[UncheckedFile] = []
 end
 
 # The jobs of a run, the files that were left out because they are outside the working directory, and the entries of
@@ -138,6 +140,7 @@ export def run(options: Options) -> Result[Int]
             suppressed: applied.suppressed,
             config: config.origin,
             unresolved_callbacks: collected.unresolved,
+            unchecked_files: collected.unchecked,
           ),
         ),
       )
@@ -156,6 +159,7 @@ export def run(options: Options) -> Result[Int]
             suppressed: applied.suppressed,
             config: config.origin,
             unresolved_callbacks: collected.unresolved,
+            unchecked_files: collected.unchecked,
           ),
         ),
       )
@@ -206,6 +210,10 @@ def finish(options: Options, report: Report.Report) -> Int
   end
 
   for line in Report.error_lines(report)
+    IO.warn(line)
+  end
+
+  for line in Report.unchecked_lines(report)
     IO.warn(line)
   end
 
@@ -314,7 +322,8 @@ def scope_of(options: Options, plan: Plan, collected: Collected) -> Baseline.Sco
     options.exclude.empty? and
     plan.skipped.empty? and
     plan.ignored.empty? and
-    collected.errors.empty?
+    collected.errors.empty? and
+    collected.unchecked.empty?
   )
 
   rules = Baseline.pair(ToolKind.name(Tool.Rules), "")
@@ -418,11 +427,12 @@ def collect_in_scratch(
 end
 
 def collect(options: Options, config: Config.Config, jobs: List[Tools.Job], cwd: String) -> Collected
-  results = Task.map(jobs, options.jobs, Tools.limit_ms(options), &Tools.run)
+  results = Profile.measure("jobs") do Task.map(jobs, options.jobs, Tools.limit_ms(options), &Tools.run) end
   findings: List[Finding] = []
   errors: List[ToolError] = []
   ran: List[String] = []
   units: List[Unit] = []
+  unchecked: List[UncheckedFile] = []
   skipped_declarations = 0
   for i in 0...jobs.size
     job = jobs[i]
@@ -432,7 +442,8 @@ def collect(options: Options, config: Config.Config, jobs: List[Tools.Job], cwd:
         errors = errors.concat(outcome.errors)
         units = units.concat(outcome.units)
         skipped_declarations = skipped_declarations + outcome.skipped_declarations
-        if outcome.errors.empty?
+        unchecked = unchecked.concat(outcome.unchecked)
+        if outcome.errors.empty? and outcome.unchecked.empty?
           ran = ran.push(Baseline.pair(ToolKind.name(job.tool), job.shown))
         end
 
@@ -441,9 +452,9 @@ def collect(options: Options, config: Config.Config, jobs: List[Tools.Job], cwd:
     end
   end
 
-  checked = Effects.check(units, config, options.infer, options.all_paths, cwd)
-  locked = Locking.check(units)
-  owned = Ownership.check(units)
+  checked = Profile.measure("effects") do Effects.check(units, config, options.infer, options.all_paths, cwd) end
+  locked = Profile.measure("locking") do Locking.check(units) end
+  owned = Profile.measure("ownership") do Ownership.check(units) end
   return Collected(
     findings: (
       findings.concat(checked.findings)
@@ -458,6 +469,10 @@ def collect(options: Options, config: Config.Config, jobs: List[Tools.Job], cwd:
     incomplete_functions: locked.incomplete + owned.incomplete,
     unresolved: checked.unresolved,
     missing_roots: checked.missing_roots,
+    unchecked: unchecked.group_by do |u| "#{u.file}\n#{u.missing}" end
+      .values
+      .map do |same| same.first end
+      .sort_by do |u| u.file end,
   )
 end
 

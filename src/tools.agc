@@ -2,7 +2,7 @@
 
 import Commands from "commands"
 import Diagnostics from "diagnostics"
-import {Finding, ToolError} from "findings"
+import {Finding, ToolError, UncheckedFile} from "findings"
 import {Options} from "options"
 import Paths from "paths"
 import Scan from "scan"
@@ -36,6 +36,10 @@ AST_FLAGS = ["-w", "-DCCHECKER_AST"]
 # The JSON AST of a file is tens of MiB, more than `Process.output` holds: a shell writes it to a file.
 DUMP_SCRIPT = "exec \"$0\" \"$@\" > \"$CCHECKER_DUMP\""
 
+# How gcc and clang end the message of an `#include` they did not find.
+GCC_MISSING = ": No such file or directory"
+CLANG_MISSING = "' file not found"
+
 # The time a wrapped run has beyond the timeout for the kill and the exit, so `timeout` ends the run before
 # cchecker does.
 WRAPPER_MS = 6_000
@@ -55,12 +59,14 @@ end
 
 ## What a job found, and what kept it from finding more. A job of the rules finds nothing alone: it gives the unit
 ## that the rules check with the units of the other files, and the count of declarations too large to read that name
-## no function.
+## no function. `unchecked` names the file when a header it includes is not found: the job then has no findings and
+## no errors.
 export struct Outcome
   findings: List[Finding]
   errors: List[ToolError]
   units: List[Unit] = []
   skipped_declarations: Int = 0
+  unchecked: List[UncheckedFile] = []
 end
 
 # What a diagnostic of a tool is for cchecker.
@@ -107,7 +113,7 @@ export def run(job: Job) -> Result[Outcome]
   end
 
   process = try start(command, args, job.entry.directory, timeout_ms, program, env)
-  output = try Process.output(process, timeout_ms)
+  output = try Profile.measure("clang") do Process.output(process, timeout_ms) end
   code = try Process.wait(process, timeout_ms)
   Process.close(process)
   if output.truncated
@@ -116,6 +122,12 @@ export def run(job: Job) -> Result[Outcome]
 
   done = outcome(job, "#{output.stdout}\n#{output.stderr}", code)
   if job.tool != Tool.Rules
+    return ok(done)
+  end
+
+  # The dump of a file whose header is not found is the part before the #include: nothing to read.
+  if not done.unchecked.empty?
+    _ = Path.remove(job.dump)
     return ok(done)
   end
 
@@ -185,9 +197,12 @@ def with_unit(job: Job, done: Outcome) -> Result[Outcome]
     return ok(done)
   end
 
-  dump = try Scan.project_decls(job.dump, job.entry.directory, job.cwd)
-  decls = try JSON.parse(dump.decls)
-  unit = try UnitReader.read(decls)
+  scanned = Profile.measure("scan") do Scan.project_decls(job.dump, job.entry.directory, job.cwd) end
+  dump = try scanned
+  parsed = Profile.measure("json") do JSON.parse(dump.decls) end
+  decls = try parsed
+  read = Profile.measure("unit") do UnitReader.read(decls) end
+  unit = try read
   # A declaration too large to keep leaves the graph incomplete: the run says so, and the rest is checked.
   errors = dump.oversized.map do |name|
     ToolError(
@@ -276,12 +291,36 @@ def outcome(job: Job, text: String, code: Int) -> Outcome
     end
   end
 
+  # A missing header stops the compiler before it reads the rest: the file is not checked, and the run goes on.
+  missing = Diagnostics.parse(text).flat_map do |d| missing_header(d) end
+  if code != 0 and not missing.empty?
+    return Outcome(findings: [], errors: [], unchecked: [UncheckedFile(file: job.shown, missing: missing.first)])
+  end
+
   if code != 0 and not (code == 1 and (not errors.empty? or (promoted > 0 and treated_as_errors?(text))))
     message = failure(job.wrapped, job.options.timeout_s, text, code)
     errors = errors.push(ToolError(tool: tool, file: job.entry.file, message: message + hint(job.tool, code)))
   end
 
   return Outcome(findings: findings, errors: errors)
+end
+
+# The header of an `#include` that the compiler did not find, as gcc (`x.h: No such file or directory`) and clang
+# (`'x.h' file not found`) say it in the C locale; empty for any other diagnostic.
+def missing_header(d: Diagnostics.Diagnostic) -> List[String]
+  if d.severity == "warning"
+    return []
+  end
+
+  if d.message.end_with?(GCC_MISSING)
+    return [d.message.slice(0, d.message.length - GCC_MISSING.length)]
+  end
+
+  if d.message.start_with?("'") and d.message.end_with?(CLANG_MISSING)
+    return [d.message.slice(1, d.message.length - CLANG_MISSING.length - 1)]
+  end
+
+  return []
 end
 
 # The shell gives 127 for a program it cannot find. The rules are on by default, so a missing clang says how to go
