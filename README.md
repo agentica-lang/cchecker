@@ -10,7 +10,8 @@ graph (a `CC_SHORT` function never reaches a blocking call, and a `CC_HOT` funct
 call) and locks on every path of a function: a lock taken is released, a lock released is held, no system call runs
 under a lock marked `CC_NO_SYSCALL_UNDER`, locks are taken in the order of their `CC_LOCK_LEVEL`, and the set of a
 `CC_PAIR` is restored. It also checks ownership on every path: a pointer marked `CC_OWNS` is freed or handed on, not
-freed twice and not used after. The plan is in [issue 1](https://github.com/agentica-lang/cchecker/issues/1).
+freed twice and not used after; and a value of the collector (`CC_GC`, `CC_GC_ALLOC`) is never stored in memory from
+`malloc` or in a static. The plan is in [issue 1](https://github.com/agentica-lang/cchecker/issues/1).
 
 ## Install
 
@@ -148,7 +149,7 @@ tools that are running (they end by themselves or at the timeout); see
 
 `include/cchecker.h` defines the macros that the rules read: `CC_SHORT`, `CC_BLOCKING`, `CC_HOT`, `CC_ACQUIRES(lock)`,
 `CC_RELEASES(lock)`, `CC_NORETURN`, `CC_NO_SYSCALL_UNDER(lock)`, `CC_LOCK_LEVEL(n)`, `CC_PAIR(set, restore)`,
-`CC_OWNS`, `CC_FREES` and `CC_IGNORE("CODE", "reason")` (a suppression). With clang each is
+`CC_OWNS`, `CC_FREES`, `CC_GC`, `CC_GC_ALLOC` and `CC_IGNORE("CODE", "reason")` (a suppression). With clang each is
 `__attribute__((annotate("cchecker:...")))`; with any other compiler it is empty. When cchecker dumps the AST it
 defines `CCHECKER_AST`, and the macros become `deprecated("cchecker:...")`: the JSON AST of clang 19 drops the text of
 `annotate` and keeps the message of `deprecated`. The dump runs with `-w`, so this gives no warning.
@@ -341,6 +342,41 @@ A `malloc` into a local without a mark is not checked: `gcc -fanalyzer` reports 
 contract part of the code. The rules do not follow a pointer into a struct or an array (a store into a `CC_OWNS` field
 is where they stop), through a function pointer, or out through a parameter (`int open_buf(char **out)`: the caller
 lends `&p` to be set). Two locals of the same name in one function are one pointer.
+
+### Values of the collector
+
+A collector frees what no pointer that it sees points to. It scans its own heap and its roots (the stacks, and the
+statics for some), never memory from `malloc`: a pointer kept there, or in a static that it does not scan, does not
+keep the value alive. The rule keeps them out of both. `CC_GC` on a struct, a union or a typedef says that the
+collector manages its values, and `CC_GC_ALLOC` on a function that it returns memory of the collector; the allocators
+of the Boehm collector (`GC_malloc`, `GC_malloc_atomic`, `GC_realloc`, ...) are known.
+
+```c
+struct CC_GC object { ... };                     /* a struct object, or a pointer to one */
+typedef struct { uint64_t bits; } value CC_GC;   /* a value, or a pointer to one */
+CC_GC_ALLOC void *gc_alloc(size_t size);         /* the memory it returns */
+```
+
+A value of the collector is a value of a marked type, a pointer to one, a struct that holds one (by value or by
+pointer), the value of an allocator of the collector, or a local that got one of those; a cast does not hide it. The
+rule reads each store of a function (`a[i] = v`, `p->f = v`, `*p = v`, `x = v`):
+
+| Code | |
+|---|---|
+| `CC-OWN-GC-IN-MALLOC` | a value of the collector is stored in memory from `malloc`: what a pointer points to when it got the value of `malloc`, `calloc`, `realloc`, `strdup` or a `CC_OWNS` function, or is marked `CC_OWNS` (a local, a parameter, a field or a global) |
+| `CC-OWN-GC-IN-STATIC` | a value of the collector is stored in a variable of static storage (a global, a static local, or a field or an item of one), or such a variable has a collector type |
+
+The finding of a store is at the function, once for each code and target, with the store as its path:
+
+```text
+src/table.c:6:8 CC-OWN-GC-IN-MALLOC table stores a value of the collector in memory from malloc: items[i]: 9:5 stores gc_alloc in items[i]
+```
+
+A variable of static storage of a collector type is a finding at the variable (a global or a file static, at its
+definition, not at an `extern`), and at the function for a static local. The rule does not follow the paths: a local
+that got memory from `malloc` anywhere in the function points to it everywhere in it. Memory it cannot tell (a
+parameter that is not marked, a field that is not `CC_OWNS`) is not reported, nor is a copy that is no store
+(`memcpy`, a value passed to a function that stores it).
 
 The AST of a file is tens of MiB with its system headers, more than a process output holds in Agentica (1 MiB):
 `sh` writes it to a file in a private folder under `$TMPDIR`, and cchecker reads it line by line and keeps only the
