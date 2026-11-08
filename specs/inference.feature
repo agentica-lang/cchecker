@@ -26,20 +26,71 @@ Feature: Roots inferred from libuv callbacks
       """
 
     Examples:
-      | call             | args                  |
-      | uv_timer_start   | h, slow, 0, 0         |
-      | uv_poll_start    | h, 0, slow            |
-      | uv_async_init    | h, h, slow            |
-      | uv_close         | h, slow               |
-      | uv_read_start    | h, slow, quick        |
-      | uv_read_start    | h, quick, slow        |
-      | uv_write         | h, h, h, 1, slow      |
-      | uv_write2        | h, h, h, 1, h, slow   |
-      | uv_shutdown      | h, h, slow            |
-      | uv_tcp_connect   | h, h, h, slow         |
-      | uv_pipe_connect  | h, h, h, slow         |
-      | uv_pipe_connect2 | h, h, h, 0, 0, slow   |
-      | uv_queue_work    | h, h, quick, slow     |
+      | call                    | args                   |
+      | uv_timer_start          | h, slow, 0, 0          |
+      | uv_poll_start           | h, 0, slow             |
+      | uv_async_init           | h, h, slow             |
+      | uv_close                | h, slow                |
+      | uv_read_start           | h, slow, quick         |
+      | uv_read_start           | h, quick, slow         |
+      | uv_write                | h, h, h, 1, slow       |
+      | uv_write2               | h, h, h, 1, h, slow    |
+      | uv_shutdown             | h, h, slow             |
+      | uv_tcp_connect          | h, h, h, slow          |
+      | uv_pipe_connect         | h, h, h, slow          |
+      | uv_pipe_connect2        | h, h, h, 0, 0, slow    |
+      | uv_queue_work           | h, h, quick, slow      |
+      | uv_listen               | h, h, slow             |
+      | uv_idle_start           | h, slow                |
+      | uv_prepare_start        | h, slow                |
+      | uv_check_start          | h, slow                |
+      | uv_signal_start         | h, slow, h             |
+      | uv_signal_start_oneshot | h, slow, h             |
+      | uv_tcp_close_reset      | h, slow                |
+      | uv_udp_recv_start       | h, slow, quick         |
+      | uv_udp_recv_start       | h, quick, slow         |
+      | uv_udp_send             | h, h, h, h, h, slow    |
+      | uv_getaddrinfo          | h, h, slow, h, h, h    |
+      | uv_getnameinfo          | h, h, slow, h, h       |
+      | uv_random               | h, h, h, h, h, slow    |
+      | uv_fs_event_start       | h, slow, h, h          |
+      | uv_fs_poll_start        | h, slow, h, h          |
+      | uv_fs_access            | h, h, h, h, slow       |
+      | uv_fs_chmod             | h, h, h, h, slow       |
+      | uv_fs_chown             | h, h, h, h, h, slow    |
+      | uv_fs_close             | h, h, h, slow          |
+      | uv_fs_closedir          | h, h, h, slow          |
+      | uv_fs_copyfile          | h, h, h, h, h, slow    |
+      | uv_fs_fchmod            | h, h, h, h, slow       |
+      | uv_fs_fchown            | h, h, h, h, h, slow    |
+      | uv_fs_fdatasync         | h, h, h, slow          |
+      | uv_fs_fstat             | h, h, h, slow          |
+      | uv_fs_fsync             | h, h, h, slow          |
+      | uv_fs_ftruncate         | h, h, h, h, slow       |
+      | uv_fs_futime            | h, h, h, h, h, slow    |
+      | uv_fs_lchown            | h, h, h, h, h, slow    |
+      | uv_fs_link              | h, h, h, h, slow       |
+      | uv_fs_lstat             | h, h, h, slow          |
+      | uv_fs_lutime            | h, h, h, h, h, slow    |
+      | uv_fs_mkdir             | h, h, h, h, slow       |
+      | uv_fs_mkdtemp           | h, h, h, slow          |
+      | uv_fs_mkstemp           | h, h, h, slow          |
+      | uv_fs_open              | h, h, h, h, h, slow    |
+      | uv_fs_opendir           | h, h, h, slow          |
+      | uv_fs_read              | h, h, h, h, h, h, slow |
+      | uv_fs_readdir           | h, h, h, slow          |
+      | uv_fs_readlink          | h, h, h, slow          |
+      | uv_fs_realpath          | h, h, h, slow          |
+      | uv_fs_rename            | h, h, h, h, slow       |
+      | uv_fs_rmdir             | h, h, h, slow          |
+      | uv_fs_scandir           | h, h, h, h, slow       |
+      | uv_fs_sendfile          | h, h, h, h, h, h, slow |
+      | uv_fs_stat              | h, h, h, slow          |
+      | uv_fs_statfs            | h, h, h, slow          |
+      | uv_fs_symlink           | h, h, h, h, h, slow    |
+      | uv_fs_unlink            | h, h, h, slow          |
+      | uv_fs_utime             | h, h, h, h, h, slow    |
+      | uv_fs_write             | h, h, h, h, h, h, slow |
 
   Scenario Outline: A function libuv runs off the loop or at no callback place, or of a library, is no root
     Given the C file "loop.c" holds:
