@@ -21,7 +21,8 @@ src/              one module per topic (`ls src/`): the compile database, runnin
                   (the settings: -c, cchecker.toml, [tool.cchecker] of agentica.toml); suppressions
                   (`cchecker: ignore`, CC_IGNORE)
 include/          cchecker.h: the annotation macros that the rules read (CC_SHORT, ...)
-specs/            .feature files (BDD through the CLI) and steps.agc; props.agc, the generators and laws of the
+specs/            .feature files (BDD through the CLI) and steps.agc; props.agc (tables of function pointers) and
+                  lock_props.agc (the lock walk against an oracle of all paths), the generators and laws of the
                   property tests; specs/fixtures/ holds the small C files and a compile_commands.json for them
 test/             unit tests of the pure helpers (the parsers, the scan of the AST dump)
 .github/          CI
@@ -52,7 +53,7 @@ test/             unit tests of the pure helpers (the parsers, the scan of the A
 - A scenario on a large generated input (a limit of the rules, a bound on time or memory) is tagged `@slow` and goes
   in `specs/limits.feature`, with its bounds in the step (`in at most N MiB and S seconds`); each scenario has 30 s.
   The memory bound is `ulimit -v`: virtual size, not peak RSS, and the tests run on Linux only.
-- Property tests use the `prop` package (`agentica.lock`, `make deps`): a law in `specs/props.agc` generates small C
+- Property tests use the `prop` package (`agentica.lock`, `make deps`): a law in `specs/*props.agc` generates small C
   files, runs the compiled cchecker on each and returns the C file of a failing case in its message (`Prop.check`
   shrinks it, in at most 30 runs). A scenario of `specs/properties.feature` runs a few cases; its `@slow` twin runs
   many, in rows of about 100 so that each fits the 30 s of a scenario. A failure gives its seed:

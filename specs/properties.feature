@@ -30,3 +30,18 @@ Feature: Laws of the rules on generated C files
       | batch |
       | 1     |
       | 2     |
+
+  Scenario: The lock walk finds every path that leaves the lock held or releases it unheld, and only those
+    Then the lock walk agrees with the oracle on 15 generated functions
+
+  @slow
+  Scenario Outline: The lock walk agrees with the oracle on many functions (<batch>)
+    Then the lock walk agrees with the oracle on 100 generated functions
+
+    Examples:
+      | batch |
+      | 1     |
+      | 2     |
+      | 3     |
+      | 4     |
+      | 5     |

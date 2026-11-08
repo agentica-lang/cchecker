@@ -8,7 +8,7 @@ RUN_MS = 30_000
 
 # The most runs of cchecker that shrinking a miss may take: at about 0.25 s a run, a miss found late in a scenario
 # still prints its shrunk C file and seed before the 30 s of the scenario.
-SHRINKS = 30
+export SHRINKS = 30
 
 ## A table that stores a function among filler items, and the call through it. `shape` is the kind of table: an array
 ## of function pointers, of structs, of nested structs, a struct with an array of function pointers in it, or an array
@@ -26,8 +26,8 @@ export struct Table
   style: Int
 end
 
-# What one run of cchecker gave.
-struct Output
+## What one run of cchecker gave.
+export struct Output
   code: Int
   stdout: String
   stderr: String
@@ -59,6 +59,18 @@ export def scanner_blames_nothing(program: String, folder: String, runs: Int, se
   end
 end
 
+## One run of cchecker (the bytecode `program`) on the C file `source`, written in the folder of the scenario.
+export def run(program: String, folder: String, source: String) -> Result[Output]
+  path = "#{folder}/case.c"
+  try File.write_text("specs/#{path}", source)
+  args = ["run", "--", program, "--tools", "rules", "--json", path, "--", "-I../include"]
+  process = try Process.spawn_captured("agentica", args, "specs", RUN_MS, {})
+  output = try Process.output(process, RUN_MS)
+  code = try Process.wait(process, RUN_MS)
+  Process.close(process)
+  return ok(Output(code: code, stdout: output.stdout, stderr: output.stderr))
+end
+
 def table_of(parts: Prop.Pair[Prop.Pair[Prop.Pair[Int, Int], Int], Prop.Pair[List[Int], Prop.Pair[Int, Int]]]) -> Table
   return Table(
     shape: parts.first.first.first,
@@ -68,18 +80,6 @@ def table_of(parts: Prop.Pair[Prop.Pair[Prop.Pair[Int, Int], Int], Prop.Pair[Lis
     at: parts.second.second.first,
     style: parts.second.second.second,
   )
-end
-
-# One run of cchecker on the C file, written in the folder of the scenario.
-def run(program: String, folder: String, source: String) -> Result[Output]
-  path = "#{folder}/case.c"
-  try File.write_text("specs/#{path}", source)
-  args = ["run", "--", program, "--tools", "rules", "--json", path, "--", "-I../include"]
-  process = try Process.spawn_captured("agentica", args, "specs", RUN_MS, {})
-  output = try Process.output(process, RUN_MS)
-  code = try Process.wait(process, RUN_MS)
-  Process.close(process)
-  return ok(Output(code: code, stdout: output.stdout, stderr: output.stderr))
 end
 
 # The finding of `slow`: its code and its path, in the same finding.
