@@ -50,8 +50,8 @@ option in capitals (`-Wanalyzer-malloc-leak` is `CC-GCC-ANALYZER-MALLOC-LEAK`,
 also when `-Werror` made it `-Werror=analyzer-malloc-leak`), and `CC-TIDY-` by
 the clang-tidy check (`clang-analyzer-unix.Malloc` is
 `CC-TIDY-CLANG-ANALYZER-UNIX-MALLOC`). A diagnostic without a name is
-`CC-GCC-WARNING` or `CC-TIDY-WARNING`. The codes of the rules are in the README
-and described in [Rules](rules.md) and [Ownership](ownership.md).
+`CC-GCC-WARNING` or `CC-TIDY-WARNING`. The codes of the rules are listed in the
+README and described in [Rules](rules.md) and [Ownership](ownership.md).
 
 ## Options
 

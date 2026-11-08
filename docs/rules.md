@@ -2,7 +2,8 @@
 
 The `rules` tool checks the effects of functions, locks, pairs of calls and (in
 [ownership.md](ownership.md)) the ownership of pointers and the values of the
-collector. The codes are in the README.
+collector. The codes are listed in the README and described below and in
+[ownership.md](ownership.md).
 
 ## Annotations
 

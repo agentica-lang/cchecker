@@ -21,7 +21,7 @@ src/              one module per topic (`ls src/`): the compile database, runnin
                   (the settings: -c, cchecker.toml, [tool.cchecker] of agentica.toml); suppressions
                   (`cchecker: ignore`, CC_IGNORE)
 include/          cchecker.h: the annotation macros that the rules read (CC_SHORT, ...)
-docs/             the reference by topic (usage, suppressions, settings, rules, ownership); README.md is the short guide
+docs/             the reference by topic (usage, suppressions, settings, rules, ownership); README.md: the short guide
 specs/            .feature files (BDD through the CLI) and steps.agc; props.agc (tables of function pointers),
                   lock_props.agc (the lock walk against an oracle of all paths) and suppression_props.agc (ignore
                   comments and CC_IGNORE against the rule), the generators and laws of the property tests;

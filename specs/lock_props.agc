@@ -1,8 +1,8 @@
 ## The property tests of the lock walk: a generated function takes and releases one lock `m` under if/else, loops with
 ## break and continue, a switch with fallthrough, early returns and a goto to a cleanup label, all on conditions that
-## cchecker cannot know. An oracle runs the function over all its paths, counting the lock as docs/rules.md says (at most
-## twice either way), and cchecker must report a code of the lock rules if and only if a path breaks its rule. The law
-## compares the codes only, not the path a finding shows.
+## cchecker cannot know. An oracle runs the function over all its paths, counting the lock as docs/rules.md says (at
+## most twice either way), and cchecker must report a code of the lock rules if and only if a path breaks its rule. The
+## law compares the codes only, not the path a finding shows.
 
 import Prop from "pkg/prop/prop"
 import Props from "props"

@@ -16,16 +16,16 @@ int load(int n) {
 ```
 
 The rules follow every path of a function that has a pointer that owns, with the
-graph and the walk of the locks and their limits (a function with too many paths
-counts in `incomplete_functions`, once for each walk). A parameter marked
-`CC_OWNS` or `CC_FREES` owns from the entry, a local marked `CC_OWNS` owns the
-value it gets (other than `NULL`), and a local that gets the value of a
-`CC_OWNS` function owns it without a mark. On every path that returns, each one
-is freed or handed on: returned, stored in a `CC_OWNS` field (or an item of one,
-`q->items[i] = p`, or a `CC_OWNS` global), or passed to a `CC_OWNS` parameter.
-Stored anywhere else or passed to another parameter, it is lent and still owns.
-A condition that tells that a pointer is null (`if (!p)`, `if ((p = malloc(n))
-== NULL)`) leaves it owning nothing on that side.
+graph and the walk of the [locks](rules.md#locks-on-every-path) and their limits
+(a function with too many paths counts in `incomplete_functions`, once for each
+walk). A parameter marked `CC_OWNS` or `CC_FREES` owns from the entry, a local
+marked `CC_OWNS` owns the value it gets (other than `NULL`), and a local that
+gets the value of a `CC_OWNS` function owns it without a mark. On every path
+that returns, each one is freed or handed on: returned, stored in a `CC_OWNS`
+field (or an item of one, `q->items[i] = p`, or a `CC_OWNS` global), or passed
+to a `CC_OWNS` parameter. Stored anywhere else or passed to another parameter,
+it is lent and still owns. A condition that tells that a pointer is null (`if
+(!p)`, `if ((p = malloc(n)) == NULL)`) leaves it owning nothing on that side.
 
 A local without a mark that gets a pointer that owns (`char *c = p`) stands for
 it: freeing `c` frees `p`; a `malloc` into it later owns nothing, as in any
@@ -84,7 +84,7 @@ keep the value alive. The rule keeps them out of both. `CC_GC` on a struct, a
 union or a typedef says that the collector manages its values, and `CC_GC_ALLOC`
 on a function that it returns memory of the collector; the allocators of the
 Boehm collector (`GC_malloc`, `GC_malloc_atomic`, `GC_realloc`, ...) are known
-(`[library]` `libgc_alloc`).
+(`[library]` `libgc_alloc`; see [Settings](settings.md)).
 
 ```c
 struct CC_GC object { ... };                     /* a struct object, or a pointer to one */
