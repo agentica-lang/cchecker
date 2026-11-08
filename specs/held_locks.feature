@@ -110,31 +110,39 @@ Feature: What runs while a lock is held
       | a signal after the unlock    | pthread_mutex_unlock(&q->mu); pthread_cond_signal(&q->cv);                                   | 0    | does not include | pthread_cond_signal  |
       | a write after the unlock     | pthread_mutex_unlock(&q->mu); write(q->fd, "x", 1);                                          | 0    | does not include | write                |
       | a wait, then the unlock      | while (!q->n) pthread_cond_wait(&q->cv, &q->mu); pthread_mutex_unlock(&q->mu); write(q->fd, "x", 1); | 0 | does not include | write          |
+      | an unlock through an alias   | pthread_mutex_t *m = &q->mu; pthread_mutex_unlock(m);                                        | 0    | does not include | pthread_mutex_unlock |
+      | a write after a wait         | pthread_cond_wait(&q->cv, &q->mu); write(q->fd, "x", 1); pthread_mutex_unlock(&q->mu);       | 1    | includes         | write                |
       | a write before the unlock    | write(q->fd, "x", 1); pthread_mutex_unlock(&q->mu);                                          | 1    | includes         | write                |
       | a signal before the unlock   | pthread_cond_signal(&q->cv); pthread_mutex_unlock(&q->mu);                                   | 1    | includes         | pthread_cond_signal  |
       | a write on one branch        | if (q->n) write(q->fd, "x", 1); pthread_mutex_unlock(&q->mu);                                | 1    | includes         | write                |
-      | another lock's unlock first  | pthread_mutex_unlock(&other); pthread_mutex_unlock(&q->mu);                                  | 1    | includes         | pthread_mutex_unlock |
+      | another lock's unlock first  | pthread_mutex_unlock(&other); write(q->fd, "x", 1); pthread_mutex_unlock(&q->mu);            | 1    | includes         | write                |
 
-  Scenario: A CC_RELEASES helper that releases a lock taken under a CC_NO_SYSCALL_UNDER lock is no finding
+  Scenario Outline: A CC_RELEASES helper that releases a lock taken under a CC_NO_SYSCALL_UNDER lock is held to all its system calls (<case>)
     Given the C file "push.c" holds:
       """
       #include "pthread.h" /* found in the system folders */
+      #include "unistd.h"
       #include "cchecker.h"
 
       struct queue { CC_NO_SYSCALL_UNDER() pthread_mutex_t mu; int n; }; pthread_mutex_t other;
-      CC_RELEASES(m) void drop(pthread_mutex_t *m) { pthread_mutex_unlock(m); }
+      CC_RELEASES(m) void drop(pthread_mutex_t *m) { <body> }
       void push(struct queue *q) { pthread_mutex_lock(&q->mu); pthread_mutex_lock(&other); q->n++; drop(&other); pthread_mutex_unlock(&q->mu); }
       """
     When I run cchecker with "--tools rules --json $DIR/push.c -- -I../include"
     Then the exit code is 1
     And the output includes:
       """
-      "path":["6:30 takes q->mu","6:58 calls pthread_mutex_lock"]
+      "path":["7:30 takes q->mu","7:58 calls pthread_mutex_lock"]
       """
-    And the output does not include:
+    And the output <includes>:
       """
-      calls drop
+      calls drop: drop -> write"]
       """
+
+    Examples:
+      | case                     | body                                         | includes         |
+      | the release alone        | pthread_mutex_unlock(m);                     | does not include |
+      | a write after the unlock | pthread_mutex_unlock(m); write(1, "x", 1);   | includes         |
 
   Scenario: A lock taken under a CC_NO_SYSCALL_UNDER lock is one finding of the rule, and its release none
     Given the C file "push.c" holds:

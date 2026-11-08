@@ -94,7 +94,8 @@ end
 
 # A call under a quiet lock that is, or reaches, a system call. The release of the lock and a wait on it are how the
 # lock works, and so is the release of a lock taken under it, whose take is the finding. A function of the project
-# that releases (CC_RELEASES) is held to the system calls it may make before its release.
+# that releases (CC_RELEASES) the quiet lock is held to the system calls it may make before that release, and one that
+# releases a lock taken under it to all of them.
 def under_quiet(rules: Rules, body: Body, held: List[Held], site: Site, at: String) -> List[Breach]
   quiet = held.select do |h| h.quiet or rules.quiet.include?(h.lock.class) end
   if quiet.empty?
@@ -105,8 +106,10 @@ def under_quiet(rules: Rules, body: Body, held: List[Held], site: Site, at: Stri
   found: List[Breach] = []
   for h in quiet
     path = reached
-    if releases?(held, h, site)
-      path = before_release(rules, site)
+    if site.drops.concat(site.waits).any? do |lock| lock.key == h.lock.key end
+      path = before_release(rules, site, true)
+    elsif nested_release?(held, h, site)
+      path = before_release(rules, site, false)
     end
 
     if not path.empty?
@@ -129,22 +132,20 @@ def under_quiet(rules: Rules, body: Body, held: List[Held], site: Site, at: Stri
   return found
 end
 
-# Whether a call releases or waits on `h`, or releases a lock taken while `h` was held: the path of a held lock starts
-# at its last take, so a lock taken later has a shorter one.
-def releases?(held: List[Held], h: Held, site: Site) -> Bool
-  if site.drops.concat(site.waits).any? do |lock| lock.key == h.lock.key end
-    return true
-  end
-
+# Whether a call releases a lock taken while `h` was held: the path of a held lock starts at its last take, so a lock
+# taken later has a shorter one.
+def nested_release?(held: List[Held], h: Held, site: Site) -> Bool
   return site.drops.any? do |lock|
     held.any? do |other| other.lock.key == lock.key and other.path.size < h.path.size end
   end
 end
 
-# The call path to a system call that a call which releases a lock makes before the release: none for a call of the
-# library (the unlock, the wait), which has no graph, and for a function of the project the first system call on a
-# path of its body from its start to a call that releases or waits on a lock of its own CC_RELEASES.
-def before_release(rules: Rules, site: Site) -> List[String]
+# The call path to a system call that a call which releases a lock makes while the quiet lock is held: none for a call
+# of the library (the unlock, the wait), which has no graph, and for a function of the project the first system call
+# on a path of its body, up to an unlock of a lock of its own CC_RELEASES when `own` (the release of the quiet lock),
+# through the whole body otherwise. An unlock or a wait in the body is a release, never the system call: its lock may
+# be one under another name (`m = &q->mu`).
+def before_release(rules: Rules, site: Site, own: Bool) -> List[String]
   case rules.bodies.get(site.key)
     some(helper) ->
       released = Set.new(released_keys(rules, site.key))
@@ -154,13 +155,13 @@ def before_release(rules: Rules, site: Site) -> List[String]
       while i < queue.size
         node = helper.nodes[queue[i]]
         i += 1
-        # The walk goes no further than a release of the helper's own lock.
+        # The walk goes no further than the release of the quiet lock; after a wait it is held again.
         stops = false
         case node.event
           Event.Call(call) ->
-            stops = call.drops.concat(call.waits).any? do |lock| released.include?(lock.key) end
+            stops = own and call.drops.any? do |lock| released.include?(lock.key) end
             path = system_call(rules, helper, call)
-            if not stops and not path.empty?
+            if call.drops.concat(call.waits).empty? and not path.empty?
               return [site.name].concat(path)
             end
 
