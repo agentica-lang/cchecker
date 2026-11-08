@@ -59,6 +59,34 @@ Feature: What runs while a lock is held
       | a lock not marked    | void put(struct box *b) { pthread_mutex_lock(&b->mu); write(b->fd, "x", 1); pthread_mutex_unlock(&b->mu); }                         |
       | a call that computes | static int count(struct queue *q) { return q->n + 1; } void push(struct queue *q) { pthread_mutex_lock(&q->mu); q->n = count(q); pthread_mutex_unlock(&q->mu); } |
 
+  Scenario: The [library] flags do not turn off a blocking call under a CC_NO_SYSCALL_UNDER lock: it is a system call
+    Given the C file "push.c" holds:
+      """
+      #include "pthread.h" /* found in the system folders */
+      #include "unistd.h"
+      #include "cchecker.h"
+
+      struct queue { CC_NO_SYSCALL_UNDER() pthread_mutex_t mu; int n; };
+
+      void push(struct queue *q) { pthread_mutex_lock(&q->mu); usleep(1); pthread_mutex_unlock(&q->mu); }
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [library]
+      libc_blocking = false
+      pthread_blocking = false
+      """
+    When I run cchecker in its folder with "--tools rules --json push.c -- -I../../../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      {"code":"CC-PATH-SYSCALL-UNDER-LOCK","tool":"rules","file":"push.c","line":7,"column":6,
+      """
+    And the output includes:
+      """
+      "config":"cchecker.toml"
+      """
+
   Scenario: CC_NO_SYSCALL_UNDER(lock) on a function holds for that lock in that function
     Given the C file "put.c" holds:
       """
