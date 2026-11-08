@@ -1,0 +1,5 @@
+name = "cchecker"
+
+# Every bare `end` is followed by an empty line (AGENTS.md).
+[style]
+blank_line_after_end = true
