@@ -255,3 +255,11 @@ export FREES = Set.new(["free"])
 ## The calls that move the memory of their first argument to the pointer they return; when that pointer is null, the
 ## first argument still owns it.
 export RESIZES = Set.new(["realloc", "reallocarray"])
+
+## The allocators of the Boehm collector whose memory it manages (not the uncollectable ones, which are roots).
+export COLLECTED = Set.new([
+  "GC_malloc", "GC_malloc_atomic", "GC_realloc", "GC_strdup", "GC_strndup", "GC_malloc_ignore_off_page",
+  "GC_malloc_atomic_ignore_off_page", "GC_debug_malloc", "GC_debug_malloc_atomic", "GC_debug_realloc",
+  "GC_debug_strdup", "GC_debug_strndup", "GC_debug_malloc_ignore_off_page", "GC_debug_malloc_atomic_ignore_off_page",
+  "GC_memalign",
+])

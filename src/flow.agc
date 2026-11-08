@@ -15,8 +15,8 @@ import Known from "known"
 ## and the calls of `restore` release: no lock expression of the code looks like it.
 export PAIR_PREFIX = "pair:"
 
-# The nodes that do not change the value of the expression inside them.
-SEE_THROUGH = Set.new(["ImplicitCastExpr", "CStyleCastExpr", "ParenExpr", "ConstantExpr", "ExprWithCleanups"])
+## The nodes that do not change the value of the expression inside them: casts and parentheses.
+export SEE_THROUGH = Set.new(["ImplicitCastExpr", "CStyleCastExpr", "ParenExpr", "ConstantExpr", "ExprWithCleanups"])
 
 ASSIGNMENTS = Set.new(["=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>="])
 
@@ -238,8 +238,8 @@ struct Owners
   calls: Bool
 end
 
-# A local variable or a parameter that gets a value: at its declaration or in an assignment.
-struct Written
+## A local variable or a parameter that gets a value: at its declaration or in an assignment.
+export struct Written
   name: String
   value: Json
 end
@@ -389,6 +389,101 @@ export def shown_of(lock: String) -> String
   return written
 end
 
+## Returns whether a declaration is marked CC_OWNS.
+export def marked_owner?(node: Json) -> Bool
+  return Ast.children(node).any? do |child|
+    Ast.kind(child) == "DeprecatedAttr" and Ast.text(child, "message") == OWNS_MARK
+  end
+end
+
+## Returns the values that the local variables and the parameters (`locals`) get among the nodes `all`: at their
+## declaration and in a plain assignment.
+export def writes_of(all: List[Json], locals: Set[String]) -> List[Written]
+  found: List[Written] = []
+  for n in all
+    if Ast.kind(n) == "VarDecl"
+      values = Ast.children(n).select do |child| not Ast.kind(child).end_with?("Attr") end
+      if values.size == 1
+        found = found.push(Written(name: Ast.text(n, "name"), value: values.first))
+      end
+    elsif Ast.kind(n) == "BinaryOperator" and Ast.text(n, "opcode") == "="
+      parts = Ast.children(n)
+      name = variable_name(parts.first)
+      if locals.include?(name)
+        found = found.push(Written(name: name, value: parts[1]))
+      end
+    end
+  end
+
+  return found
+end
+
+## Returns whether an expression is a call of a function that returns an owned pointer (CC_OWNS on the function).
+export def owning_call?(ctx: Context, node: Json) -> Bool
+  bare = see_through(node)
+  if Ast.kind(bare) != "CallExpr"
+    return false
+  end
+
+  name = callee_name(bare)
+  return name != "" and ctx.owning.returns.include?(key_of_function(ctx, name))
+end
+
+## Returns the name of the local variable or the parameter that an expression is, through casts and parentheses; ""
+## for any other.
+export def variable_name(node: Json) -> String
+  bare = see_through(node)
+  if Ast.kind(bare) == "DeclRefExpr" and VARIABLES.include?(Ast.referenced_kind(bare))
+    return Ast.referenced_name(bare)
+  end
+
+  return ""
+end
+
+## Returns every node under the given ones.
+export def descendants(nodes: List[Json]) -> List[Json]
+  found: List[Json] = []
+  pending = nodes.reverse
+  while not pending.empty?
+    node = pending.last
+    pending = pending.take(pending.size - 1)
+    found = found.push(node)
+    pending = pending.concat(Ast.children(node).reverse)
+  end
+
+  return found
+end
+
+## Returns an expression without the casts and parentheses around it.
+export def see_through(node: Json) -> Json
+  bare = node
+  while SEE_THROUGH.include?(Ast.kind(bare)) and not Ast.children(bare).empty?
+    bare = Ast.children(bare).first
+  end
+
+  return bare
+end
+
+## Returns the name of the function that a call names, or "" for a call through a pointer.
+export def callee_name(node: Json) -> String
+  parts = Ast.children(node)
+  if parts.empty?
+    return ""
+  end
+
+  callee = see_through(parts.first)
+  if Ast.kind(callee) != "DeclRefExpr" or Ast.referenced_kind(callee) != "FunctionDecl"
+    return ""
+  end
+
+  return Ast.referenced_name(callee)
+end
+
+## Returns the key of a function of the unit by name: `name@file` for a static one.
+export def key_of_function(ctx: Context, name: String) -> String
+  return ctx.statics.get(name).unwrap_or(name)
+end
+
 # The pointers of a function that own, or may stand for one that does. A local is one when it gets an owned value (a
 # call of a function that returns one, or a realloc of a pointer that owns) or a pointer that owns; the walk tells at
 # each point whether it owns.
@@ -445,33 +540,6 @@ def owning_node?(ctx: Context, node: Json) -> Bool
   return Ast.children(node).any? do |child| owning_node?(ctx, child) end
 end
 
-def marked_owner?(node: Json) -> Bool
-  return Ast.children(node).any? do |child|
-    Ast.kind(child) == "DeprecatedAttr" and Ast.text(child, "message") == OWNS_MARK
-  end
-end
-
-# The values that the local variables and the parameters get: at their declaration and in a plain assignment.
-def writes_of(all: List[Json], locals: Set[String]) -> List[Written]
-  found: List[Written] = []
-  for n in all
-    if Ast.kind(n) == "VarDecl"
-      values = Ast.children(n).select do |child| not Ast.kind(child).end_with?("Attr") end
-      if values.size == 1
-        found = found.push(Written(name: Ast.text(n, "name"), value: values.first))
-      end
-    elsif Ast.kind(n) == "BinaryOperator" and Ast.text(n, "opcode") == "="
-      parts = Ast.children(n)
-      name = variable_name(parts.first)
-      if locals.include?(name)
-        found = found.push(Written(name: name, value: parts[1]))
-      end
-    end
-  end
-
-  return found
-end
-
 # Whether a value makes the variable that gets it stand for an owned pointer: a call that returns one, a realloc of a
 # pointer in `names`, or a pointer in `names`.
 def gets_owner?(ctx: Context, names: Set[String], value: Json) -> Bool
@@ -526,17 +594,6 @@ def kept_calls(ctx: Context, all: List[Json], locals: Set[String]) -> Set[String
   return kept
 end
 
-# Whether an expression is a call of a function that returns an owned pointer (CC_OWNS on the function).
-def owning_call?(ctx: Context, node: Json) -> Bool
-  bare = see_through(node)
-  if Ast.kind(bare) != "CallExpr"
-    return false
-  end
-
-  name = callee_name(bare)
-  return name != "" and ctx.owning.returns.include?(key_of_function(ctx, name))
-end
-
 # The indices of the parameters of a function that take or free what a call passes: CC_OWNS and CC_FREES, the first
 # of `free`, and the first of a realloc, which moves it.
 def taken(ctx: Context, name: String, key: String) -> List[Int]
@@ -571,16 +628,6 @@ def place_owns?(ctx: Context, node: Json) -> Bool
     "DeclRefExpr" -> return ctx.owning.globals.include?(Ast.referenced_name(bare))
     _ -> return false
   end
-end
-
-# The name of a local variable or a parameter that an expression is, through casts and parentheses; "" for any other.
-def variable_name(node: Json) -> String
-  bare = see_through(node)
-  if Ast.kind(bare) == "DeclRefExpr" and VARIABLES.include?(Ast.referenced_kind(bare))
-    return Ast.referenced_name(bare)
-  end
-
-  return ""
 end
 
 def identifier_char?(c: String) -> Bool
@@ -639,20 +686,6 @@ def label_blocks(nodes: List[Json], around: List[String]) -> Map[String, List[St
     for label in nested.keys
       found = found.put(label, nested[label])
     end
-  end
-
-  return found
-end
-
-# Every node under the given ones.
-def descendants(nodes: List[Json]) -> List[Json]
-  found: List[Json] = []
-  pending = nodes.reverse
-  while not pending.empty?
-    node = pending.last
-    pending = pending.take(pending.size - 1)
-    found = found.push(node)
-    pending = pending.concat(Ast.children(node).reverse)
   end
 
   return found
@@ -1552,33 +1585,6 @@ def target_root(node: Json) -> String
     "UnaryOperator" -> return target_root(Ast.children(bare).first)
     _ -> return ""
   end
-end
-
-def see_through(node: Json) -> Json
-  bare = node
-  while SEE_THROUGH.include?(Ast.kind(bare)) and not Ast.children(bare).empty?
-    bare = Ast.children(bare).first
-  end
-
-  return bare
-end
-
-def callee_name(node: Json) -> String
-  parts = Ast.children(node)
-  if parts.empty?
-    return ""
-  end
-
-  callee = see_through(parts.first)
-  if Ast.kind(callee) != "DeclRefExpr" or Ast.referenced_kind(callee) != "FunctionDecl"
-    return ""
-  end
-
-  return Ast.referenced_name(callee)
-end
-
-def key_of_function(ctx: Context, name: String) -> String
-  return ctx.statics.get(name).unwrap_or(name)
 end
 
 def last_child(node: Json) -> Json

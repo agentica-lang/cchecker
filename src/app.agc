@@ -391,7 +391,12 @@ def collect(options: Options, jobs: List[Tools.Job]) -> Collected
   end
 
   return Collected(
-    findings: findings.concat(Effects.check(units)).concat(Locking.check(units)).concat(Ownership.check(units)),
+    findings: (
+      findings.concat(Effects.check(units))
+        .concat(Locking.check(units))
+        .concat(Ownership.check(units))
+        .concat(units.flat_map do |unit| unit.collected end)
+    ),
     errors: errors,
     ran: ran,
     units: units,
