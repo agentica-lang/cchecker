@@ -206,14 +206,15 @@ finding. A `CC_RELEASES` helper that releases the quiet lock is held to the
 system calls it may make before that release, on any path of its body (a
 `write`, the signal of a condition), a wait with the lock included, as the lock
 is held again after it; what it does after the release of the quiet lock is no
-finding. A helper that releases a lock taken under the quiet lock is held to all
-its system calls. An unlock or a wait in a helper is a release, never its system
-call. A call through a function pointer releases nothing, so it is never such a
-release. Limits: a lock taken under the quiet lock is told by the order of the
-takes on the path, so the release of a quiet lock taken again (a recursive
-mutex) counts as the release of the quiet lock, a lock taken both before and
-after the quiet lock counts as taken after it, and a helper that takes two locks
-in one call has them both taken at that call, neither under the other.
+finding. A helper that releases a lock taken under the quiet lock, or the
+restore of a `CC_PAIR` whose set ran under it, is held to all its system calls.
+An unlock or a wait in a helper is a release, never its system call. A call
+through a function pointer releases nothing, so it is never such a release.
+Limits: a lock taken under the quiet lock is told by the order of the takes on
+the path, so the release of a quiet lock taken again (a recursive mutex) counts
+as the release of the quiet lock, a lock taken both before and after the quiet
+lock counts as taken after it, and a helper that takes two locks in one call has
+them both taken at that call, neither under the other.
 `CC_NO_SYSCALL_UNDER(lock)` on a function says the same of one lock of that
 function, in the names of its parameters.
 

@@ -148,7 +148,8 @@ end
 
 ## The graph of one function, at the place of its definition. `owned` are its parameters that own what the caller
 ## passes, and `owns` says whether the ownership rules read the function: it has a pointer that owns, or calls a
-## function that returns one.
+## function that returns one. `releases` are the keys of the locks of its CC_RELEASES in the names of its parameters,
+## in the order of its marks ("" for the restore of a pair).
 export struct Body
   key: String
   name: String
@@ -158,6 +159,7 @@ export struct Body
   nodes: List[Node]
   owned: List[String] = []
   owns: Bool = false
+  releases: List[String] = []
 end
 
 ## A lock of a CC_ACQUIRES (`takes`) or a CC_RELEASES, as written, with the names of the parameters of the
@@ -343,6 +345,8 @@ export def body_of(ctx: Context, key: String, node: Json) -> Body
   end
 
   linked = with_gotos(built.b)
+  names = params_named(node)
+  dropped = ctx.callees.get(key).map do |callee| callee.locks.select do |lock| not lock.takes end end.unwrap_or([])
   return Body(
     key: key,
     name: Ast.text(node, "name"),
@@ -352,6 +356,7 @@ export def body_of(ctx: Context, key: String, node: Json) -> Body
     nodes: linked.nodes,
     owned: owners.params,
     owns: owners.calls or not owners.names.empty?,
+    releases: dropped.map do |lock| released_key(lock, names) end,
   )
 end
 
@@ -1602,6 +1607,16 @@ def lock_of(args: List[Arg], index: Int) -> List[Lock]
   end
 
   return locks_of([args[index].text]).map do |lock| lock.with(class: args[index].class) end
+end
+
+# The key of a lock of CC_RELEASES in the names of the parameters of the definition, which may not be those of the
+# prototype that wrote it; "" for the restore of a pair.
+def released_key(lock: Annotated, names: List[String]) -> String
+  if lock.pair != ""
+    return ""
+  end
+
+  return key_of(substituted(lock.text, lock.params, names))
 end
 
 # The lock of an annotation, in the texts of the arguments of the call.
