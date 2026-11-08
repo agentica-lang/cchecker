@@ -15,6 +15,8 @@ SPECS = "specs"
 SCRATCH = "scratch"
 PROGRAM = "../cchecker.agc"
 RUN_MS = 120_000
+# The seed of the property steps: CCHECKER_PROP_SEED replays the cases of a failure, whose message gives its seed.
+PROP_SEED = "CCHECKER_PROP_SEED"
 
 def main() -> Void
   BDD.run([
@@ -41,6 +43,7 @@ def main() -> Void
     BDD.step("the file {string} does not exist", &file_missing),
     BDD.step("the process written in {string} has ended", &process_ended),
     BDD.step("cchecker finds the blocking function of {int} generated tables", &tables_hold),
+    BDD.step("cchecker finds nothing in {int} generated tables of a function that does not block", &tables_clean),
   ])
 end
 
@@ -291,8 +294,20 @@ def check(ctx: BDD.Context, result: Result[Void]) -> BDD.Context
   end
 end
 
-# cchecker is compiled once into the folder of the scenario, so that each generated case is one short run.
 def tables_hold(ctx: BDD.Context, args: List[String]) -> BDD.Context
+  return with_compiled(ctx, args[0].to_i!, &Props.scanner_keeps_paths)
+end
+
+def tables_clean(ctx: BDD.Context, args: List[String]) -> BDD.Context
+  return with_compiled(ctx, args[0].to_i!, &Props.scanner_blames_nothing)
+end
+
+# cchecker is compiled once into the folder of the scenario, so that each generated case is one short run.
+def with_compiled(
+  ctx: BDD.Context,
+  runs: Int,
+  law: Fn[String, String, Int, Optional[Int], Result[Void]],
+) -> BDD.Context
   started = ensure_folder(ctx)
   program = "#{folder_of(started)}/cchecker.agcb"
   compiled = run_program(started, "agentica", ["compile", PROGRAM, "-o", program])
@@ -300,6 +315,13 @@ def tables_hold(ctx: BDD.Context, args: List[String]) -> BDD.Context
     return BDD.assert(compiled, false, "cannot compile cchecker: #{text(compiled, "stderr")}")
   end
 
-  held = Props.scanner_keeps_paths(program, folder_of(compiled), args[0].to_i!)
-  return BDD.assert(compiled, held.ok?, held.message)
+  seed: Optional[Int] = none
+  case System.env(PROP_SEED)
+    ok(value) -> seed = some(value.to_i!)
+    error(_) -> seed = none
+  end
+
+  held = law.call(program, folder_of(compiled), runs, seed)
+  replay = "replay it with #{PROP_SEED}=<the seed above> agentica test --only \"NAME\" specs/properties.feature"
+  return BDD.assert(compiled, held.ok?, "#{held.message}\n#{replay}")
 end
