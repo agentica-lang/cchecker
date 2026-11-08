@@ -43,7 +43,7 @@ end
 
 ## What the rules found: the findings, and the callbacks of libuv calls they could not follow to a function.
 ## `missing_roots` are the names of `[roots]` that no function of the units defines, and `missing_assumed` those of
-## `[assume]` that no function of the units declares.
+## `[assume]` that no function of the units declares, each with its key (`trace (assume.stop)`).
 export struct Checked
   findings: List[Finding]
   unresolved: List[UnresolvedCallback]
@@ -216,15 +216,16 @@ def with_assumed(function: Function, config: Config) -> Function
   return function.with(marks: marks.uniq)
 end
 
-# The names of `[assume]` that no function of the graph has, defined or declared.
+# The names of `[assume]` that no function of the graph has, defined or declared, each with its key.
 def missing_assumed(graph: Graph, config: Config) -> List[String]
-  names = config.trusted.concat(config.stops).uniq
-  if names.empty?
+  if config.trusted.empty? and config.stops.empty?
     return []
   end
 
   known = Set.new(graph.functions.values.map do |f| f.name end)
-  return names.select do |name| not known.include?(name) end
+  short = config.trusted.uniq.select do |name| not known.include?(name) end.map do |name| "#{name} (assume.short)" end
+  stop = config.stops.uniq.select do |name| not known.include?(name) end.map do |name| "#{name} (assume.stop)" end
+  return short.concat(stop)
 end
 
 def marked?(graph: Graph, key: String, mark: String) -> Bool
@@ -346,10 +347,6 @@ end
 # The findings of a rule on a function, when the function reaches what the rule forbids: one for each bad call the
 # walk finds, each with its shortest call path.
 def broken(graph: Graph, walk: Walk, function: Function, effect: Effect) -> List[Finding]
-  if cut?(graph, walk, function.key, effect, false)
-    return []
-  end
-
   return search(graph, walk, function.key, effect).map do |path|
     names = path.map do |key| name_of(graph, key) end
     # The message has no path, so the baseline holds when the path changes; the report prints the path. It names the
@@ -405,7 +402,9 @@ end
 # Whether the walk of a rule does not go into a function: it is stopped, trusted for the short rule, or (with `cold`)
 # it never returns or is cold.
 def cut?(graph: Graph, walk: Walk, key: String, effect: Effect, cold: Bool) -> Bool
-  if stopped?(graph, key) or (effect == Effect.Blocks and marked?(graph, key, ASSUME_SHORT))
+  # A function that blocks itself (CC_BLOCKING) cannot be assumed short; CC_STOP wins over every mark.
+  trusted = marked?(graph, key, ASSUME_SHORT) and not marked?(graph, key, "blocking")
+  if stopped?(graph, key) or (effect == Effect.Blocks and trusted)
     return true
   end
 

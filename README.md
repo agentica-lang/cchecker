@@ -159,11 +159,12 @@ tools that are running (they end by themselves or at the timeout); see
 
 `include/cchecker.h` defines the macros that the rules read: `CC_SHORT`, `CC_BLOCKING`, `CC_HOT`, `CC_ACQUIRES(lock)`,
 `CC_RELEASES(lock)`, `CC_NORETURN`, `CC_NO_SYSCALL_UNDER(lock)`, `CC_LOCK_LEVEL(n)`, `CC_PAIR(set, restore)`,
-`CC_OWNS`, `CC_FREES`, `CC_GC`, `CC_GC_ALLOC`, `CC_ASSUME_SHORT` and `CC_STOP` (assumptions, see Settings) and
-`CC_IGNORE("CODE", "reason")` (a suppression). With clang each is
-`__attribute__((annotate("cchecker:...")))`; with any other compiler it is empty. When cchecker dumps the AST it
-defines `CCHECKER_AST`, and the macros become `deprecated("cchecker:...")`: the JSON AST of clang 19 drops the text of
-`annotate` and keeps the message of `deprecated`. The dump runs with `-w`, so this gives no warning.
+`CC_OWNS`, `CC_FREES`, `CC_GC`, `CC_GC_ALLOC`, `CC_ASSUME_SHORT` (the function counts as fine for `CC_SHORT`),
+`CC_STOP` (no rule walks into the function; both are assumptions, see Settings) and `CC_IGNORE("CODE", "reason")` (a
+suppression). With clang each is `__attribute__((annotate("cchecker:...")))`; with any other compiler it is empty. When
+cchecker dumps the AST it defines `CCHECKER_AST`, and the macros become `deprecated("cchecker:...")`: the JSON AST of
+clang 19 drops the text of `annotate` and keeps the message of `deprecated`. The dump runs with `-w`, so this gives no
+warning.
 
 ```c
 #include "cchecker.h"
@@ -237,13 +238,21 @@ function both marked and listed is one root. A name that no function of the comp
 (exit 2), so a rename cannot leave a rule that checks nothing. Only a full run of a compile database can tell (a run of
 some files does not see the others), so only it checks the names; another run says on standard error that it did not.
 
-`[assume]` says what the project knows of its own functions and cchecker cannot see in the C, as `CC_ASSUME_SHORT`
-and `CC_STOP` do on a declaration. `short` names the functions that count as fine for `CC_SHORT`: the short rule does
-not walk into them (a helper that runs a request inline only on the loop thread and queues it otherwise, a read of a
-descriptor that never blocks); the other rules still do. `stop` names the functions that no rule walks into, and
-whose calls count for none of them (a trace call behind a runtime flag): the effect rules, the system calls under a
-`CC_NO_SYSCALL_UNDER` lock, and the lock levels. A name that no function of the compile database declares is an error
-(exit 2), checked as those of `[roots]` are.
+`[assume]` says what the project knows of its own functions and cchecker cannot see in the C, as `CC_ASSUME_SHORT` and
+`CC_STOP` do on a declaration. `short` names the functions that count as fine for `CC_SHORT`: the short rule does not
+walk into them (a helper that runs a request inline only on the loop thread and queues it otherwise, a read of a
+descriptor that never blocks); the other rules still do. `stop` names the functions that no rule walks into, and whose
+calls count for none of them (a trace call behind a runtime flag): the effect rules, the system calls under a
+`CC_NO_SYSCALL_UNDER` lock, and the lock levels. Either holds for every root, inferred roots included, and for every
+path of `--all-paths`; the ownership rules and the rule on values of the collector, which read one function at a time,
+do not change.
+
+An assumption cuts the walk into the function, not the function itself: a root that is assumed short or stopped still
+has its own body checked, as a caller does not walk into it. What the function calls is not walked either, a callback
+passed to it as a function pointer included. A function that blocks itself (`CC_BLOCKING`) cannot be assumed short: its
+mark wins. `CC_STOP` wins over every other mark, `CC_BLOCKING` included. A name is that of the function (a static
+function of that name in any file, as in `[roots]`), and a name that no function of the compile database declares is an
+error (exit 2) that names its key (`trace (assume.stop)`), checked as those of `[roots]` are.
 
 A suppression and an assumption answer different questions. A suppression (`cchecker: ignore`, `CC_IGNORE`) says
 that one finding is wrong, at one place; it stays next to that code and shows when the finding goes away
