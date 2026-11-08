@@ -24,6 +24,7 @@ def main() -> Void
     BDD.step("there is a folder {string} holding {string}", &make_open_folder),
     BDD.step("I run cchecker with {string}", &run_cchecker),
     BDD.step("I run cchecker with {string} and TMPDIR {string}", &run_with_tmpdir),
+    BDD.step("I run cchecker with {string} in at most {int} MiB", &run_capped),
     BDD.step("I run cchecker in its folder with {string}", &run_in_folder),
     BDD.step("I run cchecker in its folder {string} with {string}", &run_in_subfolder),
     BDD.step("the folder {string} is empty", &folder_empty),
@@ -84,6 +85,14 @@ end
 def run_cchecker(ctx: BDD.Context, args: List[String]) -> BDD.Context
   words = args[0].replace("$DIR", folder_of(ctx)).split(" ").select do |word| word != "" end
   return run_program(ctx, "agentica", [PROGRAM].concat(words))
+end
+
+# The run under `ulimit -v`: a run that needs more memory fails instead of taking the machine's.
+def run_capped(ctx: BDD.Context, args: List[String]) -> BDD.Context
+  words = args[0].replace("$DIR", folder_of(ctx)).split(" ").select do |word| word != "" end
+  limit = args[1].to_i! * 1024
+  script = "ulimit -v #{limit} && exec agentica \"$@\""
+  return run_program(ctx, "sh", ["-c", script, "sh", PROGRAM].concat(words))
 end
 
 # A run whose project folder is the folder of the scenario, for the settings files that cchecker looks for there.
@@ -161,14 +170,15 @@ def exit_code_is(ctx: BDD.Context, args: List[String]) -> BDD.Context
   return BDD.assert(ctx, code == args[0].to_i!, "exit code #{code}, stderr: #{text(ctx, "stderr")}")
 end
 
+# $DIR in the text is the folder of the scenario, as the report shows it.
 def output_includes(ctx: BDD.Context, args: List[String]) -> BDD.Context
-  expected = BDD.doc_string(ctx).strip
+  expected = BDD.doc_string(ctx).strip.replace("$DIR", folder_of(ctx))
   shown = text(ctx, "stdout")
   return BDD.assert(ctx, shown.include?(expected), "the output does not include #{expected}: #{shown}")
 end
 
 def output_excludes(ctx: BDD.Context, args: List[String]) -> BDD.Context
-  unwanted = BDD.doc_string(ctx).strip
+  unwanted = BDD.doc_string(ctx).strip.replace("$DIR", folder_of(ctx))
   shown = text(ctx, "stdout")
   return BDD.assert(ctx, not shown.include?(unwanted), "the output includes #{unwanted}: #{shown}")
 end

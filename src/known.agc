@@ -99,6 +99,35 @@ export SYSTEM = Set.new([
   "uv_cond_broadcast", "uv_mutex_unlock",
 ])
 
+## The calls that take the lock of their first argument, and wait for it.
+export TAKES = Set.new([
+  "pthread_mutex_lock", "pthread_spin_lock", "pthread_rwlock_rdlock", "pthread_rwlock_wrlock", "mtx_lock",
+  "uv_mutex_lock", "uv_rwlock_rdlock", "uv_rwlock_wrlock", "EnterCriticalSection", "AcquireSRWLockExclusive",
+  "AcquireSRWLockShared",
+])
+
+## The calls that take the lock of their first argument only when they return 0: in a condition, the lock is held on
+## the branch where the call gave 0. The calls of `TAKES` that return a number count as these in a condition.
+export TRIES = Set.new([
+  "pthread_mutex_trylock", "pthread_spin_trylock", "pthread_rwlock_tryrdlock", "pthread_rwlock_trywrlock",
+  "pthread_mutex_timedlock", "pthread_mutex_clocklock", "pthread_rwlock_timedrdlock", "pthread_rwlock_timedwrlock",
+  "mtx_trylock", "mtx_timedlock", "uv_mutex_trylock", "uv_rwlock_tryrdlock", "uv_rwlock_trywrlock",
+  "pthread_mutex_lock", "pthread_spin_lock", "pthread_rwlock_rdlock", "pthread_rwlock_wrlock", "mtx_lock",
+])
+
+## The calls that release the lock of their first argument.
+export DROPS = Set.new([
+  "pthread_mutex_unlock", "pthread_spin_unlock", "pthread_rwlock_unlock", "mtx_unlock", "uv_mutex_unlock",
+  "uv_rwlock_rdunlock", "uv_rwlock_wrunlock", "LeaveCriticalSection", "ReleaseSRWLockExclusive",
+  "ReleaseSRWLockShared",
+])
+
+## The calls that never come back, besides those whose type says `noreturn`.
+export NORETURN = Set.new([
+  "abort", "exit", "_exit", "_Exit", "quick_exit", "longjmp", "siglongjmp", "_longjmp", "pthread_exit", "thrd_exit",
+  "__assert_fail", "__builtin_unreachable", "__builtin_trap", "err", "errx", "verr", "verrx",
+])
+
 ## A family of library knowledge: the flag of `[library]` that turns it on or off, and the calls it says block.
 export struct Family
   flag: String

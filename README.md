@@ -6,8 +6,9 @@ baseline file accepts the findings a project has today, so CI fails only on new 
 [Agentica](https://github.com/agentica-lang/agentica).
 
 The rules read clang's JSON AST and the annotations of `include/cchecker.h`. This version checks effects on the call
-graph: a `CC_SHORT` function never reaches a blocking call, and a `CC_HOT` function never allocates or makes a system
-call. Locks and paired state on every path, and ownership, come in later phases; the plan is in [issue
+graph (a `CC_SHORT` function never reaches a blocking call, and a `CC_HOT` function never allocates or makes a system
+call) and locks on every path of a function (a lock taken is released, and a lock released is held). Locks under
+system calls, the lock order, paired state and ownership come in later phases; the plan is in [issue
 1](https://github.com/agentica-lang/cchecker/issues/1).
 
 ## Install
@@ -72,7 +73,7 @@ A code is stable: a baseline holds it. `CC-GCC-` is followed by the gcc warning 
 (`-Wanalyzer-malloc-leak` is `CC-GCC-ANALYZER-MALLOC-LEAK`, also when `-Werror` made it
 `-Werror=analyzer-malloc-leak`), and `CC-TIDY-` by the clang-tidy check (`clang-analyzer-unix.Malloc` is
 `CC-TIDY-CLANG-ANALYZER-UNIX-MALLOC`). A diagnostic without a name is `CC-GCC-WARNING` or `CC-TIDY-WARNING`. The
-rules have `CC-EFFECT-` codes (below).
+rules have `CC-EFFECT-` and `CC-PATH-` codes (below).
 
 ### Baseline
 
@@ -100,8 +101,8 @@ flag set to false (Settings), for the same reason. The exit code is `2` in each 
 A finding that is a false positive, where the check cannot be made smarter, is suppressed next to the code, with the
 reason. A comment that trails code holds for the findings of its line; a comment alone on its line holds for its line
 and the line below it. Only a comment that starts with `cchecker: ignore` counts (not a string or a comment that
-mentions it). It takes one or more codes, each of a tool (`CC-GCC-`, `CC-TIDY-` or `CC-EFFECT-`), and a code that ends
-with `*` is a prefix:
+mentions it). It takes one or more codes, each of a tool (`CC-GCC-`, `CC-TIDY-`, `CC-EFFECT-` or `CC-PATH-`), and a
+code that ends with `*` is a prefix:
 
 ```c
 /* cchecker: ignore CC-GCC-ANALYZER-MALLOC-LEAK: conn_free frees it through the struct */
@@ -149,9 +150,9 @@ tools that are running (they end by themselves or at the timeout); see
 
 ## Annotations
 
-`include/cchecker.h` defines the macros that the rules read: `CC_SHORT`, `CC_BLOCKING`, `CC_HOT`, `CC_OWNS`,
-`CC_PAIR(set, restore)`, `CC_NO_SYSCALL_UNDER(lock)` (these three for later phases) and `CC_IGNORE("CODE",
-"reason")` (a suppression). With clang each is
+`include/cchecker.h` defines the macros that the rules read: `CC_SHORT`, `CC_BLOCKING`, `CC_HOT`, `CC_ACQUIRES(lock)`,
+`CC_RELEASES(lock)`, `CC_NORETURN`, `CC_OWNS`, `CC_PAIR(set, restore)`, `CC_NO_SYSCALL_UNDER(lock)` (these three for
+later phases) and `CC_IGNORE("CODE", "reason")` (a suppression). With clang each is
 `__attribute__((annotate("cchecker:...")))`; with any other compiler it is empty. When cchecker dumps the AST it
 defines `CCHECKER_AST`, and the macros become `deprecated("cchecker:...")`: the JSON AST of clang 19 drops the text of
 `annotate` and keeps the message of `deprecated`. The dump runs with `-w`, so this gives no warning.
@@ -285,6 +286,61 @@ root of its own, see Roots). A walk goes only through what the run read, so run 
 with a subset of the files, a call into a file that was not run reaches nothing. For the baseline, only a full run of a
 compile database covers the findings of the rules: a run of some files never counts them fixed and never drops them on
 `--update-baseline`.
+
+### Locks on every path
+
+The rules build a control flow graph of each function that takes or releases a lock, and follow every path through
+it: `if`, `switch` with its fallthrough and without a `default`, loops with `break` and `continue`, `goto` (a computed
+one may go to any label), `return`, `&&`, `||`, `?:`, `x ?: y` and statement expressions. A path ends at a `return`,
+at the end of the body, or at a call that never comes back (`abort`, a `_Noreturn` or `noreturn` function, through a
+typedef or a function pointer too, or one marked `CC_NORETURN`, such as a function that jumps out with `longjmp`); a
+lock held there is not a finding. The cleanup
+function of a variable with `__attribute__((cleanup(f)))` runs on every way out of its block.
+
+| Code | |
+|---|---|
+| `CC-PATH-LOCK-NOT-RELEASED` | a path returns with a lock that the function took |
+| `CC-PATH-LOCK-NOT-HELD` | a path releases a lock that the function did not take |
+
+The finding is at the function, once for each code and lock, and `path` is a shortest path that breaks the rule, from
+the last call that took the lock (or released it, for `NOT-HELD`) to the end: `7:7 true` is the condition at line 7,
+column 7, taken as true.
+
+```text
+src/queue.c:5:5 CC-PATH-LOCK-NOT-RELEASED pop does not release q->mu on every path: 6:3 takes q->mu -> 7:7 true -> 8:5 returns
+```
+
+A lock is the expression the call names, by its field path: `&q->mu`, `q->mu` and `(&q->mu)` are one lock, and `&a->mu`
+and `&b->mu` are two. A local variable that is set once, where it is declared, stands for its value (`pthread_mutex_t
+*m = &q->mu`). The known calls take or release the lock of their first argument: the mutexes, spin locks and read-write
+locks of pthread, C11 and libuv, and the critical sections and SRW locks of Windows (`src/known.agc`). A call that may
+fail to take its lock (`pthread_mutex_trylock`, and `pthread_mutex_lock`, which returns an error code) takes it when it
+is a condition compared with 0, on the side where it gave 0: `if (pthread_mutex_trylock(&q->mu) != 0) return;`. A wait
+on a condition (`pthread_cond_wait(&cv, &q->mu)`) gives the lock back before it returns, so it changes nothing.
+
+A path does not go where a condition that the function tests twice would have to be true and false, so `if (locked)
+lock(); ...; if (locked) unlock();` passes; a write to a variable of the condition, or a call given its address
+(`f(&locked)`), forgets its value; a call given `&q->mu` does not change `q`. A function whose paths would take more
+than 200 000 states to follow is walked again without these conditions; when that is not enough either, its findings
+are those of the paths followed, and the run counts it in `incomplete_functions` of `--json` and says so on standard
+error (the exit code does not change). A function whose AST has more than 20 000 nodes (about four times the largest
+of the Agentica VM) gets no graph: that is an error of the `rules` tool on its file, so the exit code is 2, and the
+rest of the run is checked.
+
+A function that takes a lock for its caller, or releases the caller's lock, says so on its prototype:
+`CC_ACQUIRES(lock)` or `CC_RELEASES(lock)`, with the lock written in the names of its parameters (or a global). A call
+then takes or releases that lock in the words of the call: for `CC_ACQUIRES(q->mu) void queue_lock(struct queue *q)`,
+`queue_lock(vm->q)` takes `vm->q->mu`. Such a function is a lock helper: its own body is trusted (a count of nested
+takes, a spin before the wait), and its callers are checked. Without an annotation, a function that takes a lock and
+returns with it is a finding, so a forgotten unlock never passes for a helper. Put the annotation on the prototype that
+the callers include: a caller sees the declarations of its own file. A function that takes or releases a lock only on
+some of its returns (`false` when it dropped the lock) is beyond these rules: suppress its findings with `CC_IGNORE`,
+with the reason. A call through a function pointer does nothing to the locks.
+
+Limits: a lock is counted by its text, so a lock taken in a loop over several objects (`lock(&a[i]->mu)`), locks
+taken hand over hand, or a pointer that is set again between the lock and the unlock (`q = q->next`) can give false
+findings; the result of a lock stored before the test (`r = trylock(&q->mu); if (r == 0)`) takes nothing; a global
+that a called function changes keeps the value the path knew.
 
 The AST of a file is tens of MiB with its system headers, more than a process output holds in Agentica (1 MiB):
 `sh` writes it to a file in a private folder under `$TMPDIR`, and cchecker reads it line by line and keeps
