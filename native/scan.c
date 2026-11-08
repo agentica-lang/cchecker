@@ -296,6 +296,16 @@ typedef struct {
   size_t decl_lines; /* the lines kept, pruned ones included, as the reference counts them for MAX_DECL_LINES */
   bool prune;
   size_t skip_depth; /* > 0 inside the object or list of a pruned key */
+  /* A location written in short (prune): the `"loc": {` of a node, or a `"begin": {` or `"end": {` of its
+   * `"range": {`. `frames` are the objects open inside it ('E' expansionLoc, 'O' another), `direct` the place at its
+   * own level and `expansion` the one in its expansionLoc. */
+  bool in_range;
+  const char *located_key; /* NULL outside a location */
+  char frames[8];
+  size_t frame_count;
+  bool has_expansion_key, has_direct, has_expansion;
+  buf direct, expansion; /* `FILE, LINE, COL` as JSON text */
+  slice col; /* the `col` of the location line being kept, set by located() */
   buf out; /* the kept declarations, joined by ",\n" */
   size_t kept;
   buf oversized; /* the names, each ended by a NUL */
@@ -343,6 +353,88 @@ static void append(state *s, slice text) {
   put(&s->decl, text.s, text.n);
 }
 
+/* The place of a location line (`"cc_file": ..., "cc_line": ..., "col": ...`), as `FILE, LINE, COL`. */
+static void set_place(state *s, buf *at) {
+  char number[32];
+  int written = snprintf(number, sizeof number, ", %lld, ", (long long)s->line);
+  at->len = 0;
+  put(at, s->encoded, s->encoded_n);
+  put(at, number, (size_t)written);
+  put(at, s->col.s, s->col.n);
+}
+
+/* The end of a location: the key it was under, with the place that Ast.expanded reads from it (that of its
+ * expansionLoc when it has one, else its own; "" and 0 for what it lacks). */
+static void close_location(state *s) {
+  bool expansion = s->has_expansion_key;
+  bool found = expansion ? s->has_expansion : s->has_direct;
+  buf *at = expansion ? &s->expansion : &s->direct;
+  buf line = {0};
+  puts_(&line, s->located_key);
+  puts_(&line, "[");
+  if (found) put(&line, at->data, at->len);
+  else puts_(&line, "\"\", 0, 0");
+  puts_(&line, "],");
+  if (line.failed) s->out.failed = true;
+  append(s, (slice){line.data ? line.data : "", line.len});
+  free(line.data);
+  s->located_key = NULL;
+}
+
+/* A line inside a location of `prune`: only the places and the objects around them matter. */
+static void in_location(state *s, slice text) {
+  if (starts(text, LIT("\"cc_file\": "))) {
+    if (s->frame_count == 0) {
+      set_place(s, &s->direct);
+      s->has_direct = true;
+    } else if (s->frame_count == 1 && s->frames[0] == 'E') {
+      set_place(s, &s->expansion);
+      s->has_expansion = true;
+    }
+  } else if (starts(text, LIT("\"expansionLoc\": "))) {
+    s->has_expansion_key = true;
+    if (opens(text) && s->frame_count < sizeof s->frames) s->frames[s->frame_count++] = 'E';
+  } else if (opens(text)) {
+    if (s->frame_count < sizeof s->frames) s->frames[s->frame_count++] = 'O';
+  } else if (closes(text)) {
+    if (s->frame_count > 0) s->frame_count--;
+    else close_location(s);
+  }
+}
+
+static void open_location(state *s, const char *key) {
+  s->located_key = key;
+  s->frame_count = 0;
+  s->has_expansion_key = s->has_direct = s->has_expansion = false;
+}
+
+/* `prune` writes the locations of a node in the short form that Ast reads first: `cc_loc`, `cc_begin` and `cc_end`,
+ * each `[FILE, LINE, COL]`, in place of `loc` and `range`, which hold some ten values and three objects each. Returns
+ * whether the line was taken. An empty location (`{}`) is left out: Ast reads a missing one as "" and 0, as it reads
+ * an empty one. */
+static bool located_line(state *s, slice text) {
+  if (s->located_key) {
+    in_location(s, text);
+    return true;
+  }
+  if (s->in_range) {
+    if (eq(text, LIT("\"begin\": {"))) open_location(s, "\"cc_begin\": ");
+    else if (eq(text, LIT("\"end\": {"))) open_location(s, "\"cc_end\": ");
+    else if (closes(text)) s->in_range = false;
+    return true;
+  }
+  if (eq(text, LIT("\"loc\": {"))) {
+    open_location(s, "\"cc_loc\": ");
+    return true;
+  }
+  if (eq(text, LIT("\"range\": {"))) {
+    s->in_range = true;
+    return true;
+  }
+  return eq(text, LIT("\"loc\": {},")) || eq(text, LIT("\"loc\": {}")) || eq(text, LIT("\"range\": {},")) ||
+         eq(text, LIT("\"range\": {}"));
+}
+
 static void keep(state *s, slice line) {
   if (s->phase != OPEN && s->phase != KEPT) return;
   slice text = strip(line);
@@ -358,6 +450,7 @@ static void keep(state *s, slice line) {
       if (opens(text)) s->skip_depth = 1;
       return;
     }
+    if (located_line(s, text)) return;
   }
   append(s, text);
 }
@@ -366,6 +459,8 @@ static void drop_lines(state *s) {
   s->decl.len = 0;
   s->decl_lines = 0;
   s->skip_depth = 0;
+  s->in_range = false;
+  s->located_key = NULL;
 }
 
 static void push_oversized(state *s) {
@@ -507,6 +602,7 @@ static void located(state *s, slice line, slice text) {
   put(&marked, number, (size_t)written);
   puts_(&marked, ", ");
   put(&marked, text.s, text.n);
+  s->col = value_of(text, LIT("\"col\": "));
   if (s->phase == OPEN && !s->spelling) s->phase = s->inside ? KEPT : DROPPED;
   if (marked.failed) s->out.failed = true;
   keep(s, (slice){marked.data ? marked.data : "", marked.len});
@@ -630,7 +726,8 @@ static an_term scan(an_env *env, int argc, const an_term *argv) {
   slice line;
   while (next_line(&r, &line, &done) && !done) step(&s, line);
   puts_(&s.out, "]");
-  bool failed = s.out.failed || s.decl.failed || s.name.failed || s.desugared.failed || s.oversized.failed;
+  bool failed = s.out.failed || s.decl.failed || s.name.failed || s.desugared.failed || s.oversized.failed ||
+                s.direct.failed || s.expansion.failed;
   if (r.error) {
     result = an_error(env, r.error, strlen(r.error));
   } else if (failed) {
@@ -652,6 +749,8 @@ static an_term scan(an_env *env, int argc, const an_term *argv) {
   free(s.out.data);
   free(s.name.data);
   free(s.desugared.data);
+  free(s.direct.data);
+  free(s.expansion.data);
   free(s.oversized.data);
   close_lines(&r);
   return result;
