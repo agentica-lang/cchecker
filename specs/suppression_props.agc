@@ -1,0 +1,279 @@
+## The property tests of suppressions: a generated file holds CC_SHORT functions that block or not, and ignore
+## comments and CC_IGNORE marks in random places, with the right code, a prefix, a wrong code, or no reason. An oracle
+## applies the rule of the README (a trailing comment holds for its line, one alone for its line and the next, a
+## CC_IGNORE for its function) and cchecker must agree on the findings left, the findings suppressed, the unused
+## suppressions (CC-UNUSED-IGNORE) and the exit code.
+
+import Prop from "pkg/prop/prop"
+import Props from "props"
+
+# The kinds of a line.
+BLOCKING = 0
+CLEAN = 1
+ALONE = 2
+BLANK = 3
+OTHER = 4
+
+# What a line of code carries: nothing, a trailing comment, or a CC_IGNORE (on a function only).
+NOTHING = 0
+TRAILING = 1
+MARK = 2
+
+# A reason of this value is left out: a usage error.
+NO_REASON = 9
+
+# The codes a suppression names: the finding's, a prefix of it, and one of the same tool that never matches here.
+CODES = ["CC-EFFECT-SHORT-BLOCKS", "CC-EFFECT-*", "CC-EFFECT-HOT-SYSCALL"]
+SHORT_BLOCKS = "CC-EFFECT-SHORT-BLOCKS"
+UNUSED = "CC-UNUSED-IGNORE"
+
+# The compile command of the generated file, in the folder of the scenario under specs/scratch/.
+ARGUMENTS = "[\"cc\", \"-I../../../include\", \"-c\", \"case.c\"]"
+
+# The lines before the generated ones.
+HEADER = ["#include \"cchecker.h\"", "unsigned int sleep(unsigned int seconds);"]
+
+## A line of the generated file. `kind` is a function that blocks or not, a comment alone, a blank line or an
+## unrelated line of code; `attach` what a line of code carries; `code` the index in CODES of the code of its
+## suppression; `reason` is NO_REASON for a comment with no reason.
+export struct Line
+  kind: Int
+  code: Int
+  attach: Int
+  reason: Int
+end
+
+# A suppression as the oracle sees it: its line, its code, and whether it is alone on its line or a CC_IGNORE.
+struct Ignore
+  line: Int
+  code: String
+  alone: Bool
+  mark: Bool
+end
+
+# What a run gives: the findings (`CODE@LINE`), the suppressed findings (`CODE@LINE`) and the exit code.
+struct Outcome
+  findings: List[String]
+  suppressed: List[String]
+  code: Int
+end
+
+## The generator of files: up to 8 lines.
+export def files() -> Prop.Gen[List[Line]]
+  parts = Prop.pair(Prop.pair(Prop.int(0, OTHER), Prop.int(0, 2)), Prop.pair(Prop.int(0, MARK), Prop.int(0, 9)))
+  return Prop.list(Prop.map(parts, &line_of), 8)
+end
+
+## Checks `runs` files, from `seed` when it is given, with cchecker (the bytecode `program`, run in specs/ on a compile
+## database in `folder`): its findings, suppressed findings and exit code are the oracle's.
+export def suppressions_agree(program: String, folder: String, runs: Int, seed: Optional[Int]) -> Result[Void]
+  return check(program, folder, runs, seed, false)
+end
+
+## The negative control: the same files with no function that blocks. Nothing is suppressed, and every suppression
+## with a reason is unused.
+export def nothing_to_suppress(program: String, folder: String, runs: Int, seed: Optional[Int]) -> Result[Void]
+  return check(program, folder, runs, seed, true)
+end
+
+def check(program: String, folder: String, runs: Int, seed: Optional[Int], clean: Bool) -> Result[Void]
+  config = Prop.Config(runs: runs, seed: seed, shrinks: Props.SHRINKS)
+  return Prop.check(files(), config) do |generated|
+    lines = generated
+    if clean
+      lines = generated.map do |line| without_blocking(line) end
+    end
+
+    agrees(program, folder, lines)
+  end
+end
+
+def line_of(parts: Prop.Pair[Prop.Pair[Int, Int], Prop.Pair[Int, Int]]) -> Line
+  return Line(
+    kind: parts.first.first,
+    code: parts.first.second,
+    attach: parts.second.first,
+    reason: parts.second.second,
+  )
+end
+
+def without_blocking(line: Line) -> Line
+  if line.kind == BLOCKING
+    return line.with(kind: CLEAN)
+  end
+
+  return line
+end
+
+def agrees(program: String, folder: String, lines: List[Line]) -> Result[Void]
+  source = c_file(lines)
+  try File.write_text("specs/#{folder}/case.c", source)
+  database = "[{\"directory\": \".\", \"file\": \"case.c\", \"arguments\": #{ARGUMENTS}}]"
+  try File.write_text("specs/#{folder}/compile_commands.json", database)
+  output = try Props.run_with(program, ["--tools", "rules", "--json", "-p", folder])
+  expected = oracle(lines)
+  if expected.code == 2 or output.code == 2
+    if output.code == expected.code
+      return ok()
+    end
+
+    return error("expected exit code #{expected.code}, got #{output.code}, in:\n#{source}\n#{output.stderr}")
+  end
+
+  got = outcome_of(output)
+  if got.findings != expected.findings or got.suppressed != expected.suppressed or got.code != expected.code
+    return error("expected #{shown(expected)}, got #{shown(got)}, in:\n#{source}")
+  end
+
+  return ok()
+end
+
+def shown(outcome: Outcome) -> String
+  findings = outcome.findings.join(", ")
+  return "findings [#{findings}], suppressed [#{outcome.suppressed.join(", ")}], exit code #{outcome.code}"
+end
+
+# The findings and suppressed findings of cchecker's --json.
+def outcome_of(output: Props.Output) -> Outcome
+  parsed = JSON.parse(output.stdout).unwrap_or(JSON.from(""))
+  return Outcome(findings: listed(parsed, "findings"), suppressed: listed(parsed, "suppressed"), code: output.code)
+end
+
+def listed(parsed: Json, key: String) -> List[String]
+  items: List[Json] = JSON.list(JSON.get(parsed, key).unwrap_or(JSON.from(""))).unwrap_or([])
+  named = items.map do |item|
+    code = JSON.string(JSON.get(item, "code").unwrap_or(JSON.from(""))).unwrap_or("")
+    line = JSON.int(JSON.get(item, "line").unwrap_or(JSON.from(0))).unwrap_or(0)
+    "#{code}@#{line}"
+  end
+
+  return named.sort
+end
+
+# The oracle: the rule of the README applied to the lines.
+def oracle(lines: List[Line]) -> Outcome
+  ignores: List[Ignore] = []
+  blocking: List[Int] = []
+  usage = false
+  number = HEADER.size
+  for line in lines
+    number += 1
+    code = CODES[line.code]
+    if line.kind == BLOCKING
+      blocking = blocking.push(number)
+    end
+
+    if line.kind == ALONE
+      ignores = ignores.push(Ignore(line: number, code: code, alone: true, mark: false))
+      usage = usage or line.reason == NO_REASON
+    elsif line.kind != BLANK and line.attach == TRAILING
+      ignores = ignores.push(Ignore(line: number, code: code, alone: false, mark: false))
+      usage = usage or line.reason == NO_REASON
+    elsif function?(line) and line.attach == MARK
+      ignores = ignores.push(Ignore(line: number, code: mark_code(line.code), alone: false, mark: true))
+    end
+  end
+
+  if usage
+    return Outcome(findings: [], suppressed: [], code: 2)
+  end
+
+  findings: List[String] = []
+  suppressed: List[String] = []
+  used: List[Int] = []
+  for at in blocking
+    holding = ignores.select do |ignore| holds?(ignore, at) end
+    if holding.empty?
+      findings = findings.push("#{SHORT_BLOCKS}@#{at}")
+    else
+      suppressed = suppressed.push("#{SHORT_BLOCKS}@#{at}")
+      used = used.concat(holding.map do |ignore| ignore.line end)
+    end
+  end
+
+  for ignore in ignores
+    if not used.include?(ignore.line)
+      findings = findings.push("#{UNUSED}@#{ignore.line}")
+    end
+  end
+
+  code = 0
+  if not findings.empty?
+    code = 1
+  end
+
+  return Outcome(findings: findings.sort, suppressed: suppressed.sort, code: code)
+end
+
+def holds?(ignore: Ignore, at: Int) -> Bool
+  prefix = ignore.code.end_with?("*") and SHORT_BLOCKS.start_with?(ignore.code.replace("*", ""))
+  if ignore.code != SHORT_BLOCKS and not prefix
+    return false
+  end
+
+  return at == ignore.line or (ignore.alone and at == ignore.line + 1)
+end
+
+def function?(line: Line) -> Bool
+  return line.kind == BLOCKING or line.kind == CLEAN
+end
+
+# A CC_IGNORE takes whole codes: the prefix is written as the finding's code.
+def mark_code(code: Int) -> String
+  if code == 1
+    return SHORT_BLOCKS
+  end
+
+  return CODES[code]
+end
+
+# The C file of the lines.
+def c_file(lines: List[Line]) -> String
+  body: List[String] = []
+  i = 0
+  for line in lines
+    body = body.push(text_of(line, i))
+    i += 1
+  end
+
+  return HEADER.concat(body).join("\n") + "\n"
+end
+
+def text_of(line: Line, i: Int) -> String
+  comment = comment_of(line, i)
+  if line.kind == ALONE
+    return comment
+  elsif line.kind == BLANK
+    return ""
+  end
+
+  code = "static int v#{i} = 0;"
+  if line.kind == BLOCKING
+    code = "CC_SHORT int f#{i}(void) { return (int)sleep(1); }"
+  elsif line.kind == CLEAN
+    code = "CC_SHORT int f#{i}(void) { return 0; }"
+  end
+
+  if function?(line) and line.attach == MARK
+    return "CC_IGNORE(\"#{mark_code(line.code)}\", \"generated\") #{code}"
+  elsif line.attach == TRAILING
+    return "#{code} #{comment}"
+  end
+
+  return code
+end
+
+# A comment that suppresses the code of the line, `//` or `/* */` by turns.
+def comment_of(line: Line, i: Int) -> String
+  reason = " generated"
+  if line.reason == NO_REASON
+    reason = ""
+  end
+
+  text = "cchecker: ignore #{CODES[line.code]}:#{reason}"
+  if i % 2 == 0
+    return "// #{text}"
+  end
+
+  return "/* #{text} */"
+end

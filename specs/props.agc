@@ -63,7 +63,12 @@ end
 export def run(program: String, folder: String, source: String) -> Result[Output]
   path = "#{folder}/case.c"
   try File.write_text("specs/#{path}", source)
-  args = ["run", "--", program, "--tools", "rules", "--json", path, "--", "-I../include"]
+  return run_with(program, ["--tools", "rules", "--json", path, "--", "-I../include"])
+end
+
+## One run of cchecker (the bytecode `program`) in specs/ with the options `options`.
+export def run_with(program: String, options: List[String]) -> Result[Output]
+  args = ["run", "--", program].concat(options)
   process = try Process.spawn_captured("agentica", args, "specs", RUN_MS, {})
   output = try Process.output(process, RUN_MS)
   code = try Process.wait(process, RUN_MS)
