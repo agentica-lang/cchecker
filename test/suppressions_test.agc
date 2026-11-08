@@ -13,8 +13,18 @@ def usage_error?(text: String) -> Bool
 end
 
 def test_doc_comment_openers_hold_a_suppression() -> Result[Void]
-  text = "/// cchecker: ignore #{LEAK}: doc\nint a;\n//! cchecker: ignore #{LEAK}: inner doc\n"
-  return Test.eq(try read(text), ["1 #{LEAK} true", "3 #{LEAK} true"])
+  text = [
+    "/// cchecker: ignore #{LEAK}: doc",
+    "int a;",
+    "//! cchecker: ignore #{LEAK}: inner doc",
+    "int b;",
+    "/*! cchecker: ignore #{LEAK}: a block doc */",
+    "int c; ///< cchecker: ignore #{LEAK}: a trailing doc",
+    "int d; /**< cchecker: ignore #{LEAK}: a trailing block doc */",
+  ].join("\n")
+
+  expected = ["1 #{LEAK} true", "3 #{LEAK} true", "5 #{LEAK} true", "6 #{LEAK} false", "7 #{LEAK} false"]
+  return Test.eq(try read(text), expected)
 end
 
 def test_codes_split_on_tabs_as_on_spaces() -> Result[Void]
@@ -41,14 +51,20 @@ def test_quotes_in_literals_do_not_hide_a_trailing_comment() -> Result[Void]
     "int n = 1'000'000; // cchecker: ignore #{LEAK}: digit separators",
     "long h = 0xff'ff; // cchecker: ignore #{LEAK}: hex separators",
     "char w = L'x'; // cchecker: ignore #{LEAK}: a wide char",
+    "double f = 0x1.f'fp0; // cchecker: ignore #{LEAK}: a hex float",
+    "double g = 0x1.fp1'0; // cchecker: ignore #{LEAK}: a separator in the exponent",
   ].join("\n")
 
-  return Test.eq((try read(text)).size, 6)
+  return Test.eq((try read(text)).size, 8)
 end
 
-def test_an_error_directive_opens_no_literal() -> Result[Void]
+def test_an_error_directive_opens_no_char_literal_but_a_string_still() -> Result[Void]
   text = "#error it's not built here // cchecker: ignore #{LEAK}: in the directive\n"
-  return Test.eq(try read(text), ["1 #{LEAK} false"])
+  try Test.eq(try read(text), ["1 #{LEAK} false"])
+  spaced = "#  warning it's old // cchecker: ignore #{LEAK}: a spaced directive\n"
+  try Test.eq(try read(spaced), ["1 #{LEAK} false"])
+  quoted = "#error \"see // cchecker: ignore #{LEAK}: in a string\"\n"
+  return Test.eq(try read(quoted), [])
 end
 
 def test_a_block_comment_carries_across_lines_and_hides_what_is_inside() -> Result[Void]

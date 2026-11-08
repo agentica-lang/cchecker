@@ -16,10 +16,10 @@ export UNUSED = "CC-UNUSED-IGNORE"
 MARKER = "cchecker:"
 WORD = "ignore"
 BLANKS = Set.new([" ", "\t", "\r"])
-# What may stand before the marker in a comment: blanks, the `*` of a block comment's line, and the third `/` or the
-# `!` of a doc comment (`///`, `//!`, `/**`, `/*!`).
-LEADING = Set.new([" ", "\t", "\r", "*", "/", "!"])
-# The directives whose text is not made of tokens, so a `'` or a `"` there opens no literal (`#error it's`).
+# What may stand before the marker in a comment: blanks, the `*` of a block comment's line, and the third `/`, the
+# `!` and the `<` of a doc comment (`///`, `//!`, `/**`, `/*!`, `///<`).
+LEADING = Set.new([" ", "\t", "\r", "*", "/", "!", "<"])
+# The directives whose text is not made of tokens, so a `'` there opens no literal (`#error it's`); a `"` still does.
 TEXT_DIRECTIVES = ["error", "warning"]
 MARK_PREFIX = "ignore("
 USAGE = (
@@ -190,9 +190,6 @@ def lexed_line(line: String, in_block: Bool) -> Lexed
     elsif c == "'" and (prose or separator?(chars, i))
       code = true
       i += 1
-    elsif c == "\"" and prose
-      code = true
-      i += 1
     elsif c == "\"" or c == "'"
       code = true
       i += 1
@@ -217,11 +214,11 @@ def lexed_line(line: String, in_block: Bool) -> Lexed
   return Lexed(comments: comments, code: code, in_block: block)
 end
 
-# Whether the `'` at `i` is a digit separator of C23 (`1'000`, `0xff'ff`): it stands inside a number, a token that
-# starts with a digit.
+# Whether the `'` at `i` is a digit separator of C23 (`1'000`, `0xff'ff`, `0x1.f'fp0`): it stands inside a number, a
+# token that starts with a digit (the dot of a floating number is part of it).
 def separator?(chars: List[String], i: Int) -> Bool
   start = i
-  while start > 0 and (identifier_char?(chars[start - 1]) or chars[start - 1] == "'")
+  while start > 0 and (identifier_char?(chars[start - 1]) or chars[start - 1] == "'" or chars[start - 1] == ".")
     start -= 1
   end
 
@@ -234,6 +231,10 @@ end
 
 # Whether the line is an `#error` or `#warning` directive.
 def text_directive?(line: String) -> Bool
+  if not line.strip.start_with?("#")
+    return false
+  end
+
   words = line.strip.replace("#", "# ").split(" ").select do |word| word != "" end
   return words.size >= 2 and words[0] == "#" and TEXT_DIRECTIVES.include?(words[1])
 end
