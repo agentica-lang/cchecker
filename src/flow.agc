@@ -118,11 +118,13 @@ export struct Give
   column: Int
 end
 
-## A point of a path worth naming in a finding: `returns`, `ends`, `case`, `default`, `no case`.
+## A point of a path worth naming in a finding: `returns`, `ends`, `case`, `default`, `no case`. `failed` is true for a
+## return of an error value (see `error_value?`).
 export struct Mark
   word: String
   line: Int
   column: Int
+  failed: Bool = false
 end
 
 ## What happens at a node.
@@ -506,6 +508,35 @@ export def noreturn_type?(node: Json) -> Bool
     Ast.text(type, "qualType").end_with?(NORETURN_TYPE) or
     Ast.text(type, "desugaredQualType").end_with?(NORETURN_TYPE)
   )
+end
+
+## Returns whether a returned value is an error by the usual C convention: a negative integer constant (or a negated
+## enum constant), a null pointer constant, or a false bool, by the type after typedefs. Any other value, 0 of an int
+## and a variable included, may be a success.
+export def error_value?(node: Json) -> Bool
+  type_node = JSON.get(node, "type").unwrap_or(JSON.from(""))
+  type = Ast.text(type_node, "desugaredQualType")
+  if type == ""
+    type = Ast.text(type_node, "qualType")
+  end
+
+  type = unqualified(type)
+  bare = see_through(node)
+  if type.end_with?("*") or type == "_Bool" or type == "bool"
+    return (
+      zero?(node) or
+      Ast.kind(bare) == "CXXNullPtrLiteralExpr" or
+      (Ast.kind(bare) == "CXXBoolLiteralExpr" and not Ast.flag?(bare, "value"))
+    )
+  end
+
+  if Ast.kind(bare) != "UnaryOperator" or Ast.text(bare, "opcode") != "-" or Ast.children(bare).empty?
+    return false
+  end
+
+  value = see_through(Ast.children(bare).first)
+  constant = Ast.kind(value) == "DeclRefExpr" and Ast.referenced_kind(value) == "EnumConstantDecl"
+  return constant or (Ast.kind(value) == "IntegerLiteral" and Ast.text(value, "value") != "0")
 end
 
 ## Returns whether an expression is the constant 0, through casts and parentheses.
@@ -1019,7 +1050,9 @@ def return_statement(b: Builder, node: Json, preds: List[Int]) -> Built
 
   left = leaving(value.b, 0, value.exits)
   place = Ast.start_of(node)
-  ended = add(left.b, Event.Exit(Mark(word: "returns", line: place.line, column: place.column)), left.exits)
+  failed = Ast.children(node).any?(&error_value?)
+  mark = Mark(word: "returns", line: place.line, column: place.column, failed: failed)
+  ended = add(left.b, Event.Exit(mark), left.exits)
   return Built(b: ended.b, exits: [])
 end
 
