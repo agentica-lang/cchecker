@@ -272,10 +272,9 @@ def owning_of(tables: Tables, nodes: List[Json]) -> Flow.Owning
 end
 
 # What the collector rule needs from the unit: the types marked CC_GC (a struct or a union by its name, a typedef by
-# its name and the name of the record it names, and a typedef of a marked record), the records that hold a value of one
-# of them (by value or by
-# pointer, directly or in a record they hold), the allocators marked CC_GC_ALLOC, and the variables of static storage
-# declared at the top of the file.
+# its name and the name of the record it names, and a typedef of a marked record), the records that hold a value of
+# one of them (by value or by pointer, directly or in a record they hold), the allocators marked CC_GC_ALLOC, and the
+# variables of static storage declared at the top of the file.
 def collector_marks(tables: Tables, nodes: List[Json]) -> Collector.Marks
   types: Set[String] = Set.new([])
   for nested in record_decls(nodes, "")
