@@ -270,6 +270,115 @@ Feature: Suppressions
     When I run cchecker with "--tools rules $DIR/hot.c -- -I../include"
     Then the exit code is 2
 
+  Scenario Outline: CC_IGNORE takes only codes of the rules
+    Given the C file "hot.c" holds:
+      """
+      #include "stdlib.h" /* found in the system folders */
+      #include "cchecker.h"
+
+      CC_IGNORE("<code>", "a reason") CC_HOT void *grab(size_t n) { return malloc(n); }
+      """
+    When I run cchecker with "--tools rules $DIR/hot.c -- -I../include"
+    Then the exit code is <exit>
+
+    Examples:
+      | code                        | exit |
+      | CC-EFFECT-HOT-ALLOCATES     | 0    |
+      | CC-EFFECT-*                 | 0    |
+      | CC-GCC-ANALYZER-MALLOC-LEAK | 2    |
+      | CC-TIDY-*                   | 2    |
+
+  Scenario: CC_IGNORE on the prototype in a header suppresses the finding of the definition
+    Given the C file "pool.h" holds:
+      """
+      #include <stddef.h>
+      #include "cchecker.h"
+
+      CC_IGNORE("CC-EFFECT-HOT-ALLOCATES", "the pool is warm") CC_HOT void *grab(size_t n);
+      """
+    And the C file "pool.c" holds:
+      """
+      #include <stdlib.h>
+      #include "pool.h"
+
+      void *grab(size_t n) { return malloc(n); }
+      """
+    And the C file "compile_commands.json" holds:
+      """
+      [{"directory": ".", "file": "pool.c", "arguments": ["cc", "-I../../../include", "-c", "pool.c"]}]
+      """
+    When I run cchecker with "--tools rules --json -p $DIR"
+    Then the exit code is 0
+    And the output includes:
+      """
+      "reason":"the pool is warm"
+      """
+
+  Scenario: A suppression in a file that does not compile is not unused, and the run is a tool error
+    Given the C file "broken.c" holds:
+      """
+      #include "cchecker.h"
+
+      /* cchecker: ignore CC-EFFECT-SHORT-BLOCKS: kept for later */
+      CC_IGNORE("CC-EFFECT-HOT-SYSCALL", "kept for later") CC_SHORT int f(void) { return missing; }
+      """
+    And the C file "compile_commands.json" holds:
+      """
+      [{"directory": ".", "file": "broken.c", "arguments": ["cc", "-I../../../include", "-c", "broken.c"]}]
+      """
+    When I run cchecker with "--tools rules --json -p $DIR"
+    Then the exit code is 2
+    And the output does not include:
+      """
+      CC-UNUSED-IGNORE
+      """
+
+  Scenario: Each code of a comment is used on its own, and a stale one is reported
+    Given the C file "two.c" holds:
+      """
+      #include "cchecker.h"
+      unsigned int sleep(unsigned int seconds);
+      CC_SHORT int f(void) { return (int)sleep(1); } // cchecker: ignore CC-EFFECT-SHORT-BLOCKS, CC-EFFECT-HOT-SYSCALL: two
+      """
+    And the C file "compile_commands.json" holds:
+      """
+      [{"directory": ".", "file": "two.c", "arguments": ["cc", "-I../../../include", "-c", "two.c"]}]
+      """
+    When I run cchecker with "--tools rules --json -p $DIR"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "code":"CC-UNUSED-IGNORE","tool":"rules","file":"$DIR/two.c","line":3,
+      """
+    And the output includes:
+      """
+      "message":"the suppression of CC-EFFECT-HOT-SYSCALL matches no finding: two"
+      """
+    And the output includes:
+      """
+      "suppressed":[{"code":"CC-EFFECT-SHORT-BLOCKS",
+      """
+
+  Scenario: A line comment that ends with a backslash goes on to the next line
+    Given the C file "note.c" holds:
+      """
+      #include "cchecker.h"
+      unsigned int sleep(unsigned int seconds);
+      // a note that goes on \
+      CC_SHORT int f(void) { return (int)sleep(1); } // cchecker: ignore CC-EFFECT-SHORT-BLOCKS: inside the note
+      int g(void) { return 0; }
+      """
+    And the C file "compile_commands.json" holds:
+      """
+      [{"directory": ".", "file": "note.c", "arguments": ["cc", "-I../../../include", "-c", "note.c"]}]
+      """
+    When I run cchecker with "--tools rules --json -p $DIR"
+    Then the exit code is 0
+    And the output does not include:
+      """
+      CC-UNUSED-IGNORE
+      """
+
   Scenario: A suppressed finding never goes into the baseline
     Given the C file "leak.c" holds:
       """

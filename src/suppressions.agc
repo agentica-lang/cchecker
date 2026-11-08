@@ -4,8 +4,8 @@
 ## code holds for the findings of its line; one alone on its line holds for its line and the line below. Strings are
 ## not read. `CC_IGNORE("CODE", "reason")` on a function holds for the findings of the rules at that function. A code
 ## that ends with `*` is a prefix, and every code names a tool (`CC-GCC-`, `CC-TIDY-`, `CC-EFFECT-`, `CC-PATH-` or
-## `CC-OWN-`). When several hold for a finding, the nearest gives the reason and all are used. A suppression that
-## matches no finding of a tool that ran on its file is a finding, CC-UNUSED-IGNORE, so a stale one shows.
+## `CC-OWN-`). When several hold for a finding, the nearest gives the reason and all are used. A code of a suppression
+## that matches no finding of a tool that ran on its file gives a finding, CC-UNUSED-IGNORE, so a stale one shows.
 
 import Baseline from "baseline"
 import {Finding} from "findings"
@@ -22,10 +22,16 @@ LEADING = Set.new([" ", "\t", "\r", "*", "/", "!", "<"])
 # The directives whose text is not made of tokens, so a `'` there opens no literal (`#error it's`); a `"` still does.
 TEXT_DIRECTIVES = ["error", "warning"]
 MARK_PREFIX = "ignore("
+# What a line leaves open for the next (Lexed.carry): a block comment, or a `//` comment continued with `\`.
+BLOCK = "*"
+LINE = "/"
+# The tool whose findings a CC_IGNORE holds for: only the rules know the function of a finding.
+RULES = "rules"
 USAGE = (
   "a suppression is `cchecker: ignore CODE[, CODE...]: reason`, " +
   "with codes that start with CC-GCC-, CC-TIDY-, CC-EFFECT-, CC-PATH- or CC-OWN-"
 )
+MARK_USAGE = "CC_IGNORE takes codes of the rules only (CC-EFFECT-, CC-PATH- or CC-OWN-)"
 
 ## One suppression. `file` is relative to the working directory. A comment holds for `line`, and for the line below
 ## when it is `alone` on its line; a CC_IGNORE (`function`) for the findings of the rules at `line` and `column`, the
@@ -46,11 +52,13 @@ struct Comment
   text: String
 end
 
-# The comments of one line, whether the line has code outside them, and whether a block comment goes on past it.
+# The comments of one line, whether the line has code outside them, and what goes on past its end (`carry`): "" for
+# nothing, BLOCK for a block comment, LINE for a `//` comment that ends with `\`, or the quote of a string or char
+# literal that ends with `\`.
 struct Lexed
   comments: List[Comment]
   code: Bool
-  in_block: Bool
+  carry: String
 end
 
 ## A finding that a suppression took out, with its reason.
@@ -78,11 +86,11 @@ export def in_text(file: String, text: String) -> Result[List[Ignore]]
     return ok(ignores)
   end
 
-  in_block = false
+  carry = ""
   lines = text.split("\n")
   for i in 0...lines.size
-    lexed = lexed_line(lines[i], in_block)
-    in_block = lexed.in_block
+    lexed = lexed_line(lines[i], carry)
+    carry = lexed.carry
     for comment in lexed.comments
       case body_of(comment.text)
         some(found) ->
@@ -97,7 +105,7 @@ export def in_text(file: String, text: String) -> Result[List[Ignore]]
 end
 
 ## Returns the suppression of an annotation of a function (`ignore(CODE: reason)`, from CC_IGNORE), or none for any
-## other annotation.
+## other annotation; an error for a code of another tool than the rules, which never report at a function.
 export def of_mark(file: String, line: Int, column: Int, mark: String) -> Result[Optional[Ignore]]
   if not mark.start_with?(MARK_PREFIX) or not mark.end_with?(")")
     return ok(none)
@@ -105,6 +113,10 @@ export def of_mark(file: String, line: Int, column: Int, mark: String) -> Result
 
   body = mark.slice(MARK_PREFIX.length, mark.length - MARK_PREFIX.length - 1)
   ignore = try parsed(file, line, column, body, true)
+  if not ignore.codes.all? do |code| tool_of(code) == RULES end
+    return error("#{file}:#{line}: #{MARK_USAGE}")
+  end
+
   return ok(some(ignore))
 end
 
@@ -114,11 +126,15 @@ end
 export def apply(findings: List[Finding], ignores: List[Ignore], ran: Set[String]) -> Applied
   kept: List[Finding] = []
   suppressed: List[Suppressed] = []
-  used: Set[Int] = Set.new([])
+  used: Set[String] = Set.new([])
   for f in findings
     matching = (0...ignores.size).to_a.select do |i| holds?(ignores[i], f) end
     for i in matching
-      used = used.add(i)
+      for code in ignores[i].codes
+        if matches?(code, f.code)
+          used = used.add("#{i} #{code}")
+        end
+      end
     end
 
     case nearest(f, ignores, matching)
@@ -139,8 +155,10 @@ export def apply(findings: List[Finding], ignores: List[Ignore], ran: Set[String
   end
 
   for i in 0...ignores.size
-    if not used.include?(i) and checked?(ignores[i], ran)
-      kept = kept.push(unused(ignores[i]))
+    ignore = ignores[i]
+    stale = ignore.codes.select do |code| not used.include?("#{i} #{code}") and checked?(ignore, code, ran) end
+    if not stale.empty?
+      kept = kept.concat(unused(ignore, stale))
     end
   end
 
@@ -148,15 +166,28 @@ export def apply(findings: List[Finding], ignores: List[Ignore], ran: Set[String
 end
 
 # Splits one line into its comments and the rest, skipping string and character literals, so a marker in a string is
-# not read. `in_block` says that the line starts inside a block comment.
-def lexed_line(line: String, in_block: Bool) -> Lexed
+# not read. `carry` is what the line before left open (Lexed): a block comment, a `//` comment or a literal continued
+# with `\`. A line of a continued comment is a comment line, as a line of a block comment is.
+def lexed_line(line: String, carry: String) -> Lexed
   chars = line.split("")
   n = chars.size
   comments: List[Comment] = []
+  if carry == LINE
+    return Lexed(comments: [Comment(start: 0, text: line)], code: false, carry: continued(line, LINE))
+  end
+
   code = false
-  block = in_block
-  prose = not in_block and text_directive?(line)
+  block = carry == BLOCK
+  prose = carry == "" and text_directive?(line)
   i = 0
+  if carry == "\"" or carry == "'"
+    code = true
+    i = literal_end(chars, 0, carry)
+    if i > n
+      return Lexed(comments: [], code: true, carry: continued(line, carry))
+    end
+  end
+
   while i < n
     if block
       j = i
@@ -183,7 +214,7 @@ def lexed_line(line: String, in_block: Bool) -> Lexed
 
     if c == "/" and following == "/"
       comments = comments.push(Comment(start: i + 2, text: line.slice(i + 2, n - i - 2)))
-      i = n
+      return Lexed(comments: comments, code: code, carry: continued(line, LINE))
     elsif c == "/" and following == "*"
       block = true
       i += 2
@@ -192,16 +223,10 @@ def lexed_line(line: String, in_block: Bool) -> Lexed
       i += 1
     elsif c == "\"" or c == "'"
       code = true
-      i += 1
-      while i < n and chars[i] != c
-        if chars[i] == "\\"
-          i += 1
-        end
-
-        i += 1
+      i = literal_end(chars, i + 1, c)
+      if i > n
+        return Lexed(comments: comments, code: true, carry: continued(line, c))
       end
-
-      i += 1
     else
       if not BLANKS.include?(c)
         code = true
@@ -211,7 +236,46 @@ def lexed_line(line: String, in_block: Bool) -> Lexed
     end
   end
 
-  return Lexed(comments: comments, code: code, in_block: block)
+  carry_out = ""
+  if block
+    carry_out = BLOCK
+  end
+
+  return Lexed(comments: comments, code: code, carry: carry_out)
+end
+
+# The index after the quote `quote` that closes a literal whose text starts at `from`, or past the end of the line
+# (n + 1) when the line ends first.
+def literal_end(chars: List[String], from: Int, quote: String) -> Int
+  i = from
+  while i < chars.size and chars[i] != quote
+    if chars[i] == "\\"
+      i += 1
+    end
+
+    i += 1
+  end
+
+  if i >= chars.size
+    return chars.size + 1
+  end
+
+  return i + 1
+end
+
+# `open` when the line ends with a `\` that continues it on the next line, else "".
+def continued(line: String, open: String) -> String
+  # gcc and clang also splice a `\` followed by blanks (with a warning), and a line of a CRLF file ends with `\r`.
+  end_at = line.length
+  while end_at > 0 and BLANKS.include?(line.at(end_at - 1))
+    end_at -= 1
+  end
+
+  if end_at > 0 and line.at(end_at - 1) == "\\"
+    return open
+  end
+
+  return ""
 end
 
 # Whether the `'` at `i` is a digit separator of C23 (`1'000`, `0xff'ff`, `0x1.f'fp0`): it stands inside a number, a
@@ -280,7 +344,7 @@ def parsed(file: String, line: Int, column: Int, text: String, function: Bool) -
   case text.index_of(":")
     some(at) ->
       spaced = text.slice(0, at).replace(",", " ").replace("\t", " ").replace("\r", " ")
-      codes = spaced.split(" ").select do |code| code != "" end
+      codes = spaced.split(" ").select do |code| code != "" end.uniq
       reason = text.slice(at + 1, text.length - at - 1).strip
       if codes.empty? or reason == "" or not codes.all? do |code| known_code?(code) end
         return error("#{file}:#{line}: #{USAGE}")
@@ -333,9 +397,10 @@ def matches?(pattern: String, code: String) -> Bool
   return code == pattern
 end
 
-# Whether every tool of the codes ran on the file and ended well, so a suppression that matched nothing is stale.
-def checked?(ignore: Ignore, ran: Set[String]) -> Bool
-  return ignore.codes.all? do |code| ran.include?(Baseline.pair(tool_of(code), ignore.file)) end
+# Whether the tool of a code ran on the file of the suppression and ended well, so the code, if it matched nothing,
+# is stale.
+def checked?(ignore: Ignore, code: String, ran: Set[String]) -> Bool
+  return ran.include?(Baseline.pair(tool_of(code), ignore.file))
 end
 
 # The tool of a code or of a prefix; "" for none, which no pair of a run has.
@@ -343,13 +408,11 @@ def tool_of(code: String) -> String
   return Baseline.tool_of(code.replace("*", ""))
 end
 
-def unused(ignore: Ignore) -> Finding
-  return Finding(
-    code: UNUSED,
-    tool: tool_of(ignore.codes.first),
-    file: ignore.file,
-    line: ignore.line,
-    column: ignore.column,
-    message: "the suppression of #{ignore.codes.join(", ")} matches no finding: #{ignore.reason}",
-  )
+# The findings of a suppression with codes that matched nothing (`stale`), each code tracked on its own: one for each
+# tool of those codes, so a baseline or a filter by tool sees it.
+def unused(ignore: Ignore, stale: List[String]) -> List[Finding]
+  return stale.map do |code| tool_of(code) end.uniq.map do |tool|
+    codes = stale.select do |code| tool_of(code) == tool end
+    Finding(code: UNUSED, tool: tool, file: ignore.file, line: ignore.line, column: ignore.column, message: "the suppression of #{codes.join(", ")} matches no finding: #{ignore.reason}")
+  end
 end

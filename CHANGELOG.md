@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `CC_IGNORE` takes codes of the rules only (another code is a usage error), and each code of a suppression is used
+  on its own: a stale second code is `CC-UNUSED-IGNORE`.
 - Suppression comments read `///`, `//!` and tabs between codes, and refuse near-miss markers (`ignored`).
 - The rules run 2.6 times faster with 44% less memory (the 84 files of the VM of Agentica at -j 2: 47.0 s and 732 MB
   before, 17.9 s and 411 MB now): a native module in C scans clang's AST. `-j` defaults to the number of cores, and
