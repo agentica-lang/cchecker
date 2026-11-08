@@ -6,10 +6,9 @@ import {Suppressed} from "suppressions"
 ## The result of a run. `findings` are the new ones; `baselined` were accepted by the baseline, and `fixed` are
 ## accepted findings of the tools and files of the run that no tool found this time. `skipped` counts the files that
 ## were left out because they are outside the working directory, and `skipped_declarations` the declarations the rules
-## did not read because they are too large and named no function in the lines read (tables of numbers, mostly; a
-## function past the cap is not seen). `suppressed` are the findings that a suppression took out. `config` is the
-## settings file that was read, or "defaults". `unresolved_callbacks` are the callbacks of libuv calls that the
-## inference of roots could not follow to a function.
+## did not read because they are too large and name no function (tables of numbers, mostly). `suppressed` are the
+## findings that a suppression took out. `config` is the settings file that was read, or "defaults".
+## `unresolved_callbacks` are the callbacks of libuv calls that the inference of roots could not follow to a function.
 export struct Report
   findings: List[Finding]
   baselined: Int

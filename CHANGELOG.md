@@ -18,8 +18,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   function reaches a blocking call (a `CC_BLOCKING` function, or a known blocking call of libc, pthread or libuv).
   `CC-EFFECT-HOT-ALLOCATES` and `CC-EFFECT-HOT-SYSCALL`: a `CC_HOT` function allocates or makes a system call. The
   printed line and the new `path` field of `--json` give the call path; the baseline matches the message without it.
-  A table too large to read that names no function in its first million lines is skipped (it may name one past them)
-  and counted in `skipped_declarations` of `--json`.
+  A table too large to read that names no function is skipped and counted in `skipped_declarations` of `--json`; one
+  that names a function, even past its first million lines, is a tool error.
 - **Breaking:** the default tools are now `gcc,clang-tidy,rules`, so `clang` is needed too; `--tools gcc,clang-tidy`
   runs without it.
 - Suppressions with a reason: a comment `cchecker: ignore CODE: reason` after the code of a finding's line or alone on

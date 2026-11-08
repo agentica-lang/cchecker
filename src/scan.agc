@@ -15,9 +15,9 @@ import Paths from "paths"
 LINE_BYTES = 16_777_216
 
 # The most lines the scan keeps of one declaration, so that a generated table cannot take all the memory. A large
-# function of an interpreter loop has some 190 thousand. A declaration over it that has named no function so far (a
-# table of
-# enum values or of structs of numbers) is skipped and counted; one that has is an error, since its calls are lost.
+# function of an interpreter loop has some 190 thousand. A declaration over it is an error when it names a function,
+# before the cap or past it, since its calls are lost; one that names none (a table of enum values or of structs of
+# numbers) is skipped and counted. Past the cap the scan keeps no line and reads on only for a function.
 MAX_DECL_LINES = 1_000_000
 
 DECL_START = "    {"
@@ -31,12 +31,15 @@ DESUGARED_KEY = "        \"desugaredQualType\": "
 TYPE_KEY = "        \"qualType\": "
 
 # The kind of the initializer of a top-level variable, and the kinds of an item in it: a cast or a zero fill is looked
-# through, and a literal number tells a table of numbers, unless a cast made it a null pointer (`{0, f}`).
+# through, and a literal number tells a table of numbers, unless a cast made it a pointer: a null pointer
+# (`{0, f}`), or an integer under `-Wno-int-conversion` (`{1, f}`).
 INIT_LIST = "          \"kind\": \"InitListExpr\","
 KIND_KEY = "\"kind\": "
 SEEN_THROUGH = Set.new(["\"ImplicitCastExpr\"", "\"ImplicitValueInitExpr\""])
 LITERALS = Set.new(["\"IntegerLiteral\"", "\"FloatingLiteral\"", "\"CharacterLiteral\""])
-NULL_CAST = "\"castKind\": \"NullToPointer\""
+CAST_KEY = "\"castKind\": "
+# The cast kinds whose result is a pointer from a number: `NullToPointer` and `IntegralToPointer`.
+TO_POINTER = "ToPointer\""
 
 # A function that a declaration names, at any depth: a `referencedDecl`, or the declaration itself.
 FUNCTION_KIND = "\"kind\": \"FunctionDecl\","
@@ -48,13 +51,14 @@ PLAIN_WORDS = Set.new([
   "volatile", "static",
 ])
 
-# Where the scan is: between two top-level declarations, in one whose place it does not know yet, or in one it keeps
-# or drops.
+# Where the scan is: between two top-level declarations, in one whose place it does not know yet, in one it keeps or
+# drops, or in one too large to keep that has named no function so far.
 enum Phase
   Between
   Open
   Kept
   Dropped
+  Oversized
 end
 
 ## The state of a scan. `directory` is where clang ran (its paths are relative to it) and `cwd` the root of the
@@ -82,7 +86,7 @@ export struct State
 end
 
 ## The declarations of the project in a dump, as the text of a JSON array, the names of those too large to keep whose
-## calls are lost, and the count of those too large to keep that named no function.
+## calls are lost, and the count of those too large to keep that name no function.
 export struct Dump
   decls: String
   oversized: List[String]
@@ -129,6 +133,10 @@ export def step(state: State, line: String) -> State
 
   if state.phase == Phase.Kept and state.lines.size >= MAX_DECL_LINES
     return oversized(state)
+  end
+
+  if state.phase == Phase.Oversized
+    return past_the_cap(state, line)
   end
 
   current = state
@@ -197,14 +205,23 @@ def located_or_kept(state: State, line: String) -> State
   return keep(state, line)
 end
 
-# A declaration too large to keep: an error when it named a function, as its calls are lost, and skipped otherwise.
+# A declaration too large to keep: an error when it named a function, as its calls are lost. One that has named none so
+# far is read on without its lines, since it may name one past the cap.
 def oversized(state: State) -> State
-  dropped = state.with(phase: Phase.Dropped, lines: [])
   if state.functions
-    return dropped.with(oversized: state.oversized.push(state.name))
+    return state.with(phase: Phase.Dropped, lines: [], oversized: state.oversized.push(state.name))
   end
 
-  return dropped.with(skipped: state.skipped + 1)
+  return state.with(phase: Phase.Oversized, lines: [])
+end
+
+# A line past the cap of a declaration that has named no function so far: a function makes it an error.
+def past_the_cap(state: State, line: String) -> State
+  if line.end_with?(FUNCTION_KIND)
+    return state.with(phase: Phase.Dropped, oversized: state.oversized.push(state.name))
+  end
+
+  return state
 end
 
 # The keys of the declaration itself and of its type: whether it is a variable, its name, and, at its type, whether a
@@ -244,8 +261,8 @@ def top_key(state: State, line: String) -> State
 end
 
 # The lines below the keys of the declaration: whether it names a function, and, for an array whose type does not tell
-# (a typedef), whether its first item is a number. A null pointer (`0` cast to a pointer) is not one: the array holds
-# pointers.
+# (a typedef), whether its first item is a number. A number cast to a pointer (`0`, or `1` under `-Wno-int-conversion`)
+# is not one: the array holds pointers.
 def deeper_key(state: State, line: String) -> State
   if state.phase != Phase.Kept
     return state
@@ -268,7 +285,7 @@ def deeper_key(state: State, line: String) -> State
   end
 
   text = line.strip
-  if text.start_with?(NULL_CAST)
+  if text.start_with?(CAST_KEY) and value_of(text, CAST_KEY).end_with?(TO_POINTER)
     return state.with(array: false)
   end
 
@@ -310,6 +327,11 @@ def close(state: State) -> State
   if state.phase == Phase.Kept
     decl = state.lines.push("    }").join("\n")
     return state.with(phase: Phase.Between, lines: [], decls: state.decls.push(decl))
+  end
+
+  # It ended without naming a function: it is skipped.
+  if state.phase == Phase.Oversized
+    return state.with(phase: Phase.Between, skipped: state.skipped + 1)
   end
 
   return state.with(phase: Phase.Between, lines: [])
