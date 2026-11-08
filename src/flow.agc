@@ -230,12 +230,13 @@ struct Builder
 end
 
 # The pointers of a function that own or may stand for one that does, by name (`names`): its parameters that own
-# (`params`), its locals marked CC_OWNS (`marked`), and the locals that get an owned value or a pointer of one of
-# them. `locals` are the names of its parameters and local variables, `kept` the ids of the calls of a function that
-# returns an owned pointer whose value is kept (in a local, a CC_OWNS place, a return or a parameter that takes it),
-# and `calls` whether it calls such a function at all.
+# (`params`), those that free it only (`freed`, CC_FREES), its locals marked CC_OWNS (`marked`), and the locals that
+# get an owned value or a pointer of one of them. `locals` are the names of its parameters and local variables, `kept`
+# the ids of the calls of a function that returns an owned pointer whose value is kept (in a local, a CC_OWNS place, a
+# return or a parameter that takes it), and `calls` whether it calls such a function at all.
 struct Owners
   params: List[String]
+  freed: Set[String]
   names: Set[String]
   marked: Set[String]
   locals: Set[String]
@@ -496,6 +497,12 @@ export def noreturn_type?(node: Json) -> Bool
   )
 end
 
+## Returns whether an expression is the constant 0, through casts and parentheses.
+export def zero?(node: Json) -> Bool
+  bare = see_through(node)
+  return Ast.kind(bare) == "IntegerLiteral" and Ast.text(bare, "value") == "0"
+end
+
 # The pointers of a function that own, or may stand for one that does. A local is one when it gets an owned value (a
 # call of a function that returns one, or a realloc of a pointer that owns) or a pointer that owns; the walk tells at
 # each point whether it owns.
@@ -508,6 +515,13 @@ def owners_of(ctx: Context, key: String, node: Json) -> Owners
 
   indices = ctx.owning.takes.get(key, []).concat(ctx.owning.frees.get(key, [])).uniq.sort
   params = indices.select do |i| i < names_of_params.size end.map do |i| names_of_params[i] end
+  takes = ctx.owning.takes.get(key, [])
+  freed = ctx.owning
+    .frees
+    .get(key, [])
+    .select do |i| i < names_of_params.size and not takes.include?(i) end
+    .map do |i| names_of_params[i] end
+
   decls = all.select do |n| Ast.kind(n) == "VarDecl" end
   locals = Set.new(
     names_of_params.concat(
@@ -535,6 +549,7 @@ def owners_of(ctx: Context, key: String, node: Json) -> Owners
 
   return Owners(
     params: params,
+    freed: Set.new(freed),
     names: names,
     marked: marked,
     locals: locals,
@@ -555,7 +570,8 @@ end
 # Whether a value makes the variable that gets it stand for an owned pointer: a call that returns one, a realloc of a
 # pointer in `names`, or a pointer in `names`.
 def gets_owner?(ctx: Context, names: Set[String], value: Json) -> Bool
-  if Ast.kind(see_through(value)) == "ConditionalOperator"
+  kind = Ast.kind(see_through(value))
+  if kind == "ConditionalOperator" or kind == "StmtExpr"
     return values_of(value).any? do |branch| gets_owner?(ctx, names, branch) end
   end
 
@@ -610,11 +626,15 @@ def kept_calls(ctx: Context, all: List[Json], locals: Set[String]) -> Set[String
   return kept
 end
 
-# The values an expression may have: each side of `?:`, or itself.
+# The values an expression may have: each side of `?:`, the last expression of a statement expression, or itself.
 def values_of(node: Json) -> List[Json]
   bare = see_through(node)
   if Ast.kind(bare) == "ConditionalOperator"
     return Ast.children(bare).drop(1).flat_map(&values_of)
+  end
+
+  if Ast.kind(bare) == "StmtExpr"
+    return values_of(last_child(last_child(bare)))
   end
 
   return [node]
@@ -1135,6 +1155,23 @@ def assignment(b: Builder, node: Json, preds: List[Int]) -> Built
       return owner_assigned(b, name, parts[1], preds)
     end
 
+    # `*p = v` in a CC_FREES parameter that points to the pointer gives the pointer a new value without reading it:
+    # null, or a value that goes back to the caller, which the function does not own.
+    pointed = pointee_owner(b, parts[0])
+    if pointed != ""
+      place = Ast.start_of(parts[1])
+      assign = Assign(name: pointed, value: "other", from: "", shown: "", line: place.line, column: place.column)
+      if zero?(parts[1])
+        assign = assign.with(value: "null", shown: "NULL")
+      else
+        assign = assign.with(shown: text_of(b, parts[1], false))
+      end
+
+      value = expression(b, parts[1], preds)
+      written = add(value.b, Event.Writes([pointed]), value.exits)
+      return add(written.b, Event.Assigns(assign), written.exits)
+    end
+
     given = owner_named(b, parts[1])
     if given != "" and place_owns?(b.ctx, parts[0])
       target = expression(b, parts[0], preds)
@@ -1157,6 +1194,25 @@ end
 
 # A pointer that owns, or may stand for one, gets a value. A pointer that it moves from is not read.
 def owner_assigned(b: Builder, name: String, value: Json, preds: List[Int]) -> Built
+  bare = see_through(value)
+  if Ast.kind(bare) == "ConditionalOperator"
+    # Each side gives its own value: `p = n ? make(n) : NULL` owns where `n` is true only.
+    parts = Ast.children(bare)
+    split = condition(b, parts[0], preds)
+    chosen = owner_assigned(split.b, name, parts[1], split.yes)
+    other = owner_assigned(chosen.b, name, parts[2], split.no)
+    return Built(b: other.b, exits: chosen.exits.concat(other.exits))
+  end
+
+  if Ast.kind(bare) == "StmtExpr"
+    # `({ char *q = make(n); ...; q; })`: its statements, then the value of the last one.
+    statements = Ast.children(last_child(bare))
+    if not statements.empty?
+      built = in_order_statements(b, statements.take(statements.size - 1), preds)
+      return owner_assigned(built.b, name, statements.last, built.exits)
+    end
+  end
+
   assign = assigned(b, name, value)
   built = Built(b: b, exits: preds)
   if assign.value != "moved" and assign.value != "alias"
@@ -1177,16 +1233,6 @@ def assigned(b: Builder, name: String, value: Json) -> Assign
     return start.with(value: "null", shown: "NULL")
   end
 
-  # A side of `?:` that gives an owned value makes it owned (the other side is null, or owned too).
-  if Ast.kind(bare) == "ConditionalOperator"
-    for branch in values_of(bare)
-      side = assigned(b, name, branch)
-      if side.value == "owned"
-        return start.with(value: "owned", shown: side.shown)
-      end
-    end
-  end
-
   source = owner_named(b, bare)
   if source != ""
     if marked
@@ -1203,11 +1249,10 @@ def assigned(b: Builder, name: String, value: Json) -> Assign
       return start.with(value: "resized", from: owner_of(b, parts[1]), shown: called)
     end
 
-    if Known.OWNED.include?(called) or b.ctx.owning.returns.include?(key_of_function(b.ctx, called))
-      return start.with(value: "owned", shown: called)
-    end
-
-    if marked
+    # An allocation owns in a pointer marked CC_OWNS (a local or a parameter) only: a local that is not marked tracks
+    # the calls of CC_OWNS functions and the pointers it stands for, not what it gets from `malloc`.
+    allocates = Known.OWNED.include?(called) and b.owners.params.include?(name)
+    if marked or allocates or b.ctx.owning.returns.include?(key_of_function(b.ctx, called))
       return start.with(value: "owned", shown: called)
     end
   end
@@ -1256,6 +1301,43 @@ def owner_of(b: Builder, node: Json) -> String
   return owner_named(b, bare)
 end
 
+# The CC_FREES parameter that `*p` stands for when the parameter points to the pointer it frees (`T **p`, a cleanup
+# function); "" for any other.
+def pointee_owner(b: Builder, node: Json) -> String
+  bare = see_through(node)
+  if Ast.kind(bare) != "UnaryOperator" or Ast.text(bare, "opcode") != "*" or not pointer_type?(bare)
+    return ""
+  end
+
+  name = owner_named(b, Ast.children(bare).first)
+  if not b.owners.freed.include?(name)
+    return ""
+  end
+
+  return name
+end
+
+# Whether the type of an expression is a pointer, as written or behind a typedef, `const` or not (`char *const`).
+def pointer_type?(node: Json) -> Bool
+  type = JSON.get(node, "type").unwrap_or(JSON.from(""))
+  return [Ast.text(type, "qualType"), Ast.text(type, "desugaredQualType")].any? do |text|
+    unqualified(text).end_with?("*")
+  end
+end
+
+# A type without the qualifiers at its end: `char *` for `char *const volatile`. clang writes no space between the
+# star and the qualifier.
+def unqualified(type: String) -> String
+  text = type.strip
+  for word in ["const", "volatile", "restrict"]
+    if text.end_with?(" #{word}") or text.end_with?("*#{word}")
+      return unqualified(text.slice(0, text.length - word.length))
+    end
+  end
+
+  return text
+end
+
 # A call: its arguments in order, then the call. A call that never comes back ends the path. `tried` leaves out the
 # lock that a call of `Known.TRIES` takes: the condition around it takes it on the branch where it worked.
 def call(b: Builder, node: Json, preds: List[Int], tried: Bool) -> Built
@@ -1296,8 +1378,12 @@ def call(b: Builder, node: Json, preds: List[Int], tried: Bool) -> Built
   taking = taken(b.ctx, name, key_of_function(b.ctx, name))
   built = Built(b: b, exits: preds)
   for i in 0...args.size
-    if not (taking.include?(i) and owner_of(b, args[i]) != "")
+    owner = owner_of(b, args[i])
+    if not (taking.include?(i) and owner != "")
       built = expression(built.b, args[i], built.exits)
+    elsif Ast.kind(see_through(args[i])) == "UnaryOperator" and Ast.text(see_through(args[i]), "opcode") == "&"
+      # `free_and_null(&p)` may set `p`: a condition on it is forgotten.
+      built = add(built.b, Event.Writes([owner]), built.exits)
     end
   end
 
@@ -1524,6 +1610,10 @@ end
 def null_test(b: Builder, node: Json) -> Optional[NullTest]
   bare = see_through(node)
   name = owner_named(b, bare)
+  if name == ""
+    name = pointee_owner(b, bare)
+  end
+
   if name != ""
     return some(NullTest(name: name, null_if: false))
   end
@@ -1579,11 +1669,6 @@ end
 def try_call?(node: Json) -> Bool
   bare = see_through(node)
   return Ast.kind(bare) == "CallExpr" and Known.TRIES.include?(callee_name(bare))
-end
-
-def zero?(node: Json) -> Bool
-  bare = see_through(node)
-  return Ast.kind(bare) == "IntegerLiteral" and Ast.text(bare, "value") == "0"
 end
 
 # The call, then on the branch where it gave 0 a node that takes its lock.

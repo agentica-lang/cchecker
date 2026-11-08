@@ -55,11 +55,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `CC-PATH-PAIR-NOT-RESTORED` for a path that returns after `set` without `restore`.
 - Ownership on every path: `CC_OWNS` on a local, a parameter, a function (it returns an owned pointer) or a field,
   and `CC_FREES` on a parameter. `CC-OWN-LEAK`: a path returns while a pointer still owns, overwrites it, or drops the
-  value of a `CC_OWNS` function; `CC-OWN-DOUBLE-FREE` and `CC-OWN-USE-AFTER-FREE`.
+  value of a `CC_OWNS` function; `CC-OWN-DOUBLE-FREE` and `CC-OWN-USE-AFTER-FREE`. Each side of `?:` and the last
+  expression of a statement expression give their own value, and `*p` of a `CC_FREES char **p` is the pointer.
 - Values of the collector: `CC_GC` on a type and `CC_GC_ALLOC` on an allocator (the Boehm allocators are known,
   `[library]` `libgc_alloc`).
   `CC-OWN-GC-IN-MALLOC` and `CC-OWN-GC-IN-STATIC`: such a value stored in memory from `malloc` or in a static, or a
-  static of a collector type.
+  static of a collector type, also through a typedef of a pointer. A store of `NULL` or `0` is no such value.
 - `--clang PROGRAM`, the clang that dumps the AST. Under `CCHECKER_AST`, `cchecker.h` writes the annotations as
   `deprecated` attributes, whose text clang 19 keeps in its JSON AST.
 

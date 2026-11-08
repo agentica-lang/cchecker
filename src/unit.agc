@@ -134,12 +134,14 @@ export struct Unit
   collected: List[Finding] = []
 end
 
-# A struct or union: its name (a typedef name for an anonymous one) and the ids and names of its fields.
+# A struct or union: its name (a typedef name for an anonymous one), the ids and names of its fields, and their types
+# as written and without their typedefs ("" for a type with none).
 struct Record
   name: String
   field_ids: List[String]
   fields: List[String]
   types: List[String] = []
+  desugared: List[String] = []
 end
 
 # The functions of a CC_PAIR(set, restore), by name.
@@ -379,7 +381,8 @@ def with_holders(marks: Collector.Marks, tables: Tables) -> Collector.Marks
   while grew
     grew = false
     for record in tables.record_ids.values
-      if not grown.holders.include?(record.name) and record.types.any? do |t| Collector.collector_type?(grown, t) end
+      types = record.types.concat(record.desugared)
+      if not grown.holders.include?(record.name) and types.any? do |t| Collector.collector_type?(grown, t) end
         grown = grown.with(holders: grown.holders.add(record.name))
         grew = true
       end
@@ -692,6 +695,7 @@ def records_of(nodes: List[Json]) -> Map[String, Record]
           field_ids: fields.map do |f| Ast.text(f, "id") end,
           fields: fields.map do |f| Ast.text(f, "name") end,
           types: fields.map do |f| Ast.text(JSON.get(f, "type").unwrap_or(JSON.from("")), "qualType") end,
+          desugared: fields.map do |f| Ast.text(JSON.get(f, "type").unwrap_or(JSON.from("")), "desugaredQualType") end,
         ),
       )
     end
