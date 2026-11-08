@@ -40,6 +40,7 @@ def main() -> Void
     BDD.step("the output includes:", &output_includes),
     BDD.step("the output does not include:", &output_excludes),
     BDD.step("the errors include:", &errors_include),
+    BDD.step("the errors do not include:", &errors_exclude),
     BDD.step("the errors include once:", &errors_include_once),
     BDD.step("the file {string} is removed", &remove_file),
     BDD.step("the file {string} exists", &file_exists),
@@ -223,6 +224,12 @@ def errors_include(ctx: BDD.Context, args: List[String]) -> BDD.Context
   expected = BDD.doc_string(ctx).strip.replace("$DIR", folder_of(ctx))
   shown = text(ctx, "stderr")
   return BDD.assert(ctx, shown.include?(expected), "the errors do not include #{expected}: #{shown}")
+end
+
+def errors_exclude(ctx: BDD.Context, args: List[String]) -> BDD.Context
+  unexpected = BDD.doc_string(ctx).strip.replace("$DIR", folder_of(ctx))
+  shown = text(ctx, "stderr")
+  return BDD.assert(ctx, not shown.include?(unexpected), "the errors include #{unexpected}: #{shown}")
 end
 
 def errors_include_once(ctx: BDD.Context, args: List[String]) -> BDD.Context

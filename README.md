@@ -99,8 +99,10 @@ replaces the entries of that scope and keeps the others, so `--tools gcc` or a s
 ran. A header that the run did not name keeps the larger count of its entry, as other flags can show other findings in
 it (`#ifdef`); only a full run lowers it. It refuses to write, and leaves the file as it was, when a tool failed, when
 the database has a file that was skipped (outside the working directory), with `--checks` (a baseline made with
-other checks would lose the findings of the default ones), and, when the rules run, with `--no-infer` or a `[library]`
-flag set to false (Settings), for the same reason. The exit code is `2` in each case.
+other checks would lose the findings of the default ones), and, when the rules run, with `--no-infer`, a `[library]`
+flag set to false (Settings), or a file of `-c` that leaves out a name of `short` or `hot` of `[roots]` of the
+project's settings, for the same reason (only `[roots]` is compared: `follow_cold` and `[assume]` are not). The exit
+code is `2` in each case.
 
 ### Suppressions
 
@@ -134,10 +136,11 @@ gets better. Suppressions apply before the baseline, so a suppressed finding nev
 
 A suppression is per code, not per message: one `CC-GCC-ANALYZER-MALLOC-LEAK` on a line hides every leak of that line,
 a new one too. A finding is where its tool puts it: gcc reports one inside a macro at the line of the `#define`, so the
-comment goes there, not at the use. A suppression in a block that a configuration leaves out (`#ifdef` of a macro that is
-not defined) is reported unused on a run of that configuration; a project that checks several configurations sees it
-reported in those that skip the block. A `//` comment that
-ends with `\` goes on to the next line, and that line counts as a line of the comment.
+comment goes there, not at the use. A suppression in a block that a configuration leaves out (`#ifdef` of a macro that
+is not defined) is reported unused on a run of that configuration; a project that checks several configurations sees
+it reported in those that skip the block. A suppression in a header is never reported unused: a header is read
+through the files that include it, each with its own configuration. A `//` comment that ends with `\` goes on to the
+next line, and that line counts as a line of the comment.
 
 ### Options
 
@@ -224,6 +227,7 @@ follow_cold = false
 short = ["run_or_queue"]
 stop = ["trace_emit"]
 short_locks = ["queue.mu"]
+stop_fields = ["request.call"]
 ```
 
 `[library]` turns each family of library knowledge on or off. All are on by default. A finding of the rules says in
@@ -279,6 +283,15 @@ call. A lock that the rules cannot tell is not short, so the call still counts: 
 through a local that points to it (`pthread_mutex_t *m = &q->mu; pthread_mutex_lock(m)`). A lock wrapper is assumed
 short with `CC_ASSUME_SHORT` or `[assume] short`. A class of `short_locks` that no lock of the compile database has
 (none taken, none marked) is an error, as for the names.
+
+`stop_fields` names the function-pointer fields that no walk follows, by struct and field (`request.call` for the field
+`call` of `struct request`, also when the code names it by a typedef such as `request_t`; for an anonymous struct, the
+name of its typedef, or of the record it is declared in): a call through the field reaches none of the functions stored
+in it, for every rule and every root, `--all-paths` included. Use it for a field that holds many kinds of work (one
+`call` slot of every request), whose functions every root would otherwise reach. Only a call through the field itself
+is cut: one through a local that got its value (`fn f = r->call; f(x)`) is still followed, and a store into the field
+still counts when cchecker infers the roots. A field that the compile database neither stores a function in nor calls
+through is an error (exit 2).
 
 A suppression and an assumption answer different questions. A suppression (`cchecker: ignore`, `CC_IGNORE`) says
 that one finding is wrong, at one place; it stays next to that code and shows when the finding goes away

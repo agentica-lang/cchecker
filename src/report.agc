@@ -84,7 +84,9 @@ export def unresolved_line(report: Report) -> Optional[String]
     return none
   end
 
-  first = report.unresolved_callbacks.first
+  # A callback inside the working directory first: its path is the short one, and the code the project can change.
+  inside = report.unresolved_callbacks.select do |u| not u.file.start_with?("/") end
+  first = inside.concat(report.unresolved_callbacks).first
   return some(
     "cchecker: #{count} #{plural(count, "callback")} of a libuv call could not be followed to a function, so " +
     "#{plural_it(count)} no root (first: #{first.call} at #{first.file}:#{first.line}); --json lists them",

@@ -28,7 +28,8 @@ WHOLE_NOTE = " (no [tool.cchecker] table; read as a cchecker file)"
 ## the `[library]` flags that are false; `short` and `hot` are the names of `[roots]`. `follow_cold` is
 ## `[effects] follow_cold`: the walk goes into the functions that never return or are cold. `trusted` and `stops` are
 ## `[assume] short` and `[assume] stop`: the functions that count as fine for CC_SHORT, and those no walk goes into;
-## `short_locks` is `[assume] short_locks`, the classes of the locks that taking is not blocking for CC_SHORT.
+## `short_locks` is `[assume] short_locks`, the classes of the locks that taking is not blocking for CC_SHORT, and
+## `stop_fields` is `[assume] stop_fields`, the function-pointer fields (`request.call`) whose calls no walk follows.
 export struct Config
   origin: String
   off: Set[String]
@@ -38,6 +39,7 @@ export struct Config
   trusted: List[String] = []
   stops: List[String] = []
   short_locks: List[String] = []
+  stop_fields: List[String] = []
 end
 
 ## Returns the settings of a run in `folder`, the project folder: those of `explicit` (the file of -c) when given.
@@ -48,7 +50,7 @@ export def load(explicit: Optional[String], folder: String) -> Result[Config]
       document = try parse(path, text)
       case Toml.get(document, TOOL_TABLE)
         ok(table) -> return from_table(path, "#{TOOL_TABLE}.", table)
-        error(_) -> return from_table(path, "", document, WHOLE_NOTE)
+        error(_) -> return from_table(path, "", document, manifest_note(document))
       end
 
     none -> return found_in(folder)
@@ -93,6 +95,7 @@ export def from_table(origin: String, prefix: String, table: Toml.Value, note: S
             "short" -> config = config.with(trusted: try names_of(origin, path, assume.get(name).unwrap!))
             "stop" -> config = config.with(stops: try names_of(origin, path, assume.get(name).unwrap!))
             "short_locks" -> config = config.with(short_locks: try names_of(origin, path, assume.get(name).unwrap!))
+            "stop_fields" -> config = config.with(stop_fields: try names_of(origin, path, assume.get(name).unwrap!))
             _ -> return error(unknown(origin, path, note))
           end
         end
@@ -117,6 +120,16 @@ export def flags() -> List[String]
       .push(Known.LIBGC_ALLOC_FLAG)
       .push(Known.NONBLOCKING_FLAG)
   )
+end
+
+# The note of an unknown key of a file of -c read whole: only a file that looks like a manifest of Agentica (it has a
+# `name`) gets it, as it may lack its [tool.cchecker] table; a plain file of cchecker does not.
+def manifest_note(document: Toml.Value) -> String
+  if Toml.get(document, "name").ok?
+    return WHOLE_NOTE
+  end
+
+  return ""
 end
 
 # The settings of the project folder: cchecker.toml, else the table of cchecker in agentica.toml, else the defaults.

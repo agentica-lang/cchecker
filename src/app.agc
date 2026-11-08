@@ -63,12 +63,8 @@ end
 export def run(options: Options) -> Result[Int]
   cwd = try Paths.working_directory()
   config = try Config.load(options.config, cwd)
-  # A baseline written with a check off would drop the accepted findings of that check, as --checks would.
-  if options.update_baseline and options.tools.include?(Tool.Rules) and (not options.infer or not config.off.empty?)
-    return error(
-      "--update-baseline needs every check of the rules on: drop --no-infer and the [library] flags set to false " +
-      "(#{config.origin}), or the baseline would lose their findings",
-    )
+  if options.update_baseline and options.tools.include?(Tool.Rules)
+    try full_rules(options, config, cwd)
   end
 
   if not options.json
@@ -137,13 +133,16 @@ export def run(options: Options) -> Result[Int]
     end
   end
 
-  assumes = not (config.trusted.empty? and config.stops.empty? and config.short_locks.empty?)
+  assumes = not (
+    config.trusted.empty? and config.stops.empty? and config.short_locks.empty? and config.stop_fields.empty?
+  )
+
   if options.tools.include?(Tool.Rules) and assumes
     if not scope.full
       IO.warn("cchecker: the names of [assume] were not checked: only a full run of a compile database sees them all")
     elsif not collected.missing_assumed.empty?
       missing = collected.missing_assumed.join(", ")
-      return error("#{config.origin}: no function or lock of the compile database is named #{missing}")
+      return error("#{config.origin}: no function, lock or field of the compile database is named #{missing}")
     end
   end
 
@@ -196,6 +195,47 @@ export def run(options: Options) -> Result[Int]
         ),
       )
   end
+end
+
+# A baseline written with a check off, or with fewer roots than the project names, would drop the accepted findings of
+# that check or root, as --checks would: --update-baseline is refused then, naming what causes it. Of the settings only
+# [roots] is compared: follow_cold and [assume] can also change the findings and are not checked.
+def full_rules(options: Options, config: Config.Config, cwd: String) -> Result[Void]
+  causes: List[String] = []
+  if not options.infer
+    causes = causes.push("drop --no-infer")
+  end
+
+  if not config.off.empty?
+    causes = causes.push("set the [library] flags of #{config.origin} to true (#{config.off.to_a.sort.join(", ")})")
+  end
+
+  if options.config.some?
+    project = try Config.load(none, cwd)
+    missing = left_out("short", project.short, config.short).concat(left_out("hot", project.hot, config.hot))
+    if not missing.empty?
+      causes = causes.push("name the [roots] of #{project.origin} in #{config.origin} (#{missing.join("; ")})")
+    end
+  end
+
+  if causes.empty?
+    return ok()
+  end
+
+  return error(
+    "--update-baseline needs every check of the rules on: #{causes.join(", and ")}, or the baseline would " +
+    "lose their findings (of the settings, only [roots] is compared)",
+  )
+end
+
+# The names of a list of [roots] of the project that the file of -c leaves out, as "short: a, b", or nothing.
+def left_out(key: String, project: List[String], given: List[String]) -> List[String]
+  names = project.uniq.select do |name| not given.include?(name) end
+  if names.empty?
+    return []
+  end
+
+  return ["#{key}: #{names.join(", ")}"]
 end
 
 # The accepted findings, read before any tool runs so that a baseline that cannot be read costs no time. A baseline
@@ -523,6 +563,7 @@ def collect(options: Options, config: Config.Config, jobs: List[Tools.Job], cwd:
   end
 
   # `[assume]` holds for every rule, as the marks it stands for.
+  cut_missing = Effects.missing_fields(units, config)
   units = Effects.assumed(units, config)
   checked = Profile.measure("effects") do Effects.check(units, config, options.infer, options.all_paths, cwd) end
   locked = Profile.measure("locking") do Locking.check(units) end
@@ -541,7 +582,7 @@ def collect(options: Options, config: Config.Config, jobs: List[Tools.Job], cwd:
     incomplete_functions: locked.incomplete + owned.incomplete,
     unresolved: checked.unresolved,
     missing_roots: checked.missing_roots,
-    missing_assumed: checked.missing_assumed,
+    missing_assumed: checked.missing_assumed.concat(cut_missing),
     unknown_targets: checked.unknown_targets,
     unchecked: unchecked.group_by do |u| "#{u.file}\n#{u.missing}" end
       .values
