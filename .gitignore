@@ -4,3 +4,4 @@ deps/
 tmp/
 dist/
 specs/scratch/
+.bench/

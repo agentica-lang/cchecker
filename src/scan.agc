@@ -93,8 +93,42 @@ export struct Dump
   skipped: Int
 end
 
-## Returns the declarations of the project in the dump at `path`, or an error when the dump ends early.
-export def project_decls(path: String, directory: String, cwd: String) -> Result[Dump]
+# What the native scan (native/scan.c) gives: `oversized` holds the names as the dump writes them (JSON text).
+struct NativeDump
+  decls: String
+  oversized: List[String]
+  skipped: Int
+  ended: Bool
+end
+
+# A value of a `"file": ` line of the dump (JSON text), with the file it names as the kept locations write it, and
+# whether that file is in the project.
+struct Place
+  raw: String
+  encoded: String
+  inside: Bool
+end
+
+## Returns the declarations of the project in the dump at `path`, or an error when the dump ends early. It gives what
+## `reference_decls` gives, in C; with `prune` (the default) without the keys that no rule reads, which hold a third
+## of the text.
+export def project_decls(path: String, directory: String, cwd: String, prune: Bool = true) -> Result[Dump]
+  raws = try files(path)
+  places = raws.map do |raw|
+    located = place_of(directory, cwd, raw)
+    Place(raw: raw, encoded: located.encoded, inside: located.inside)
+  end
+
+  dump = try scan(path, places, prune)
+  if not dump.ended
+    return error("the AST dump ends early")
+  end
+
+  return ok(Dump(decls: dump.decls, oversized: dump.oversized.map(&decoded_name), skipped: dump.skipped))
+end
+
+## Returns what `project_decls` returns, by the scan in Agentica: the reference that the C scan is tested against.
+export def reference_decls(path: String, directory: String, cwd: String) -> Result[Dump]
   state = try File.foreach(path, LINE_BYTES).reduce(start(directory, cwd), &step)
   if not state.ended
     return error("the AST dump ends early")
@@ -170,6 +204,15 @@ export def plain_array?(type: String) -> Bool
     .all? do |word| PLAIN_WORDS.include?(word) end
 end
 
+# The scan of `step` in C, for speed: the dump of one file is tens of MiB. The module is built from native/ by
+# the first run; a failed build or load stops the run. Where a file is stays here: `files` lists the values of the
+# `"file": ` lines, which are resolved below, and `scan` takes them. Both read the dump, so they run on the compute
+# pool.
+extern module "cchecker_scan"
+  compute def files(path: String) -> Result[List[String]]
+  compute def scan(path: String, places: List[Place], prune: Bool) -> Result[NativeDump]
+end
+
 # The lines of a location move the file and the line; every other line is kept or dropped with its declaration.
 def located_or_kept(state: State, line: String) -> State
   text = line.strip
@@ -236,8 +279,7 @@ def top_key(state: State, line: String) -> State
   end
 
   if line.start_with?(NAME_KEY)
-    name = value_of(line.strip, "\"name\": ")
-    return state.with(name: JSON.string(JSON.parse(name).unwrap_or(JSON.from(name))).unwrap_or(name))
+    return state.with(name: decoded_name(value_of(line.strip, "\"name\": ")))
   end
 
   if line.start_with?(DESUGARED_KEY)
@@ -349,13 +391,25 @@ end
 
 # A file of the dump is relative to where clang ran. `<built-in>` and `<scratch space>` are no files.
 def with_file(state: State, value: String) -> State
+  located = place_of(state.directory, state.cwd, value)
+  return state.with(encoded: located.encoded, inside: located.inside)
+end
+
+# The file of a `"file": ` value as the kept locations write it (absolute, JSON text), and whether it is in the
+# project.
+def place_of(directory: String, cwd: String, value: String) -> Place
   name = JSON.string(JSON.parse(value).unwrap_or(JSON.from(""))).unwrap_or("")
   if name == "" or name.start_with?("<")
-    return state.with(encoded: JSON.encode(name), inside: false)
+    return Place(raw: value, encoded: JSON.encode(name), inside: false)
   end
 
-  path = Paths.absolute(state.directory, name).unwrap_or(name)
-  return state.with(encoded: JSON.encode(path), inside: Paths.inside(state.cwd, path).some?)
+  path = Paths.absolute(directory, name).unwrap_or(name)
+  return Place(raw: value, encoded: JSON.encode(path), inside: Paths.inside(cwd, path).some?)
+end
+
+# The name of a declaration, written as JSON text in the dump.
+def decoded_name(name: String) -> String
+  return JSON.string(JSON.parse(name).unwrap_or(JSON.from(name))).unwrap_or(name)
 end
 
 # The value of a `"key": value,` line, without the comma.

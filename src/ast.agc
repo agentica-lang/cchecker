@@ -17,7 +17,12 @@ end
 ## or fewer items than the array holds) under `array_filler` instead of `inner`, as one list: the filler first, then
 ## the items.
 export def children(node: Json) -> List[Json]
-  return list_at(node, "inner").concat(list_at(node, "array_filler"))
+  # Most nodes have no filler: their `inner` is given as it is, with no new list.
+  inner = list_at(node, "inner")
+  case JSON.get(node, "array_filler")
+    ok(filler) -> return inner.concat(JSON.list(filler).unwrap_or([]))
+    error(_) -> return inner
+  end
 end
 
 ## Returns a string of a node, or "".
@@ -68,17 +73,28 @@ end
 
 ## Returns the place of a declaration: where its macro was expanded, when it comes from one.
 export def place_of(node: Json) -> Place
-  return expanded(JSON.get(node, "loc").unwrap_or(JSON.from("")))
+  case JSON.get(node, "cc_loc")
+    ok(short) -> return short_place(short)
+    error(_) -> return expanded(JSON.get(node, "loc").unwrap_or(JSON.from("")))
+  end
 end
 
 ## Returns where a statement or an expression starts in the code as written (where a macro was expanded).
 export def start_of(node: Json) -> Place
-  return expanded(JSON.get(JSON.get(node, "range").unwrap_or(JSON.from("")), "begin").unwrap_or(JSON.from("")))
+  case JSON.get(node, "cc_begin")
+    ok(short) -> return short_place(short)
+    error(_) ->
+      return expanded(JSON.get(JSON.get(node, "range").unwrap_or(JSON.from("")), "begin").unwrap_or(JSON.from("")))
+  end
 end
 
 ## Returns where a statement or an expression ends in the code as written.
 export def end_of(node: Json) -> Place
-  return expanded(JSON.get(JSON.get(node, "range").unwrap_or(JSON.from("")), "end").unwrap_or(JSON.from("")))
+  case JSON.get(node, "cc_end")
+    ok(short) -> return short_place(short)
+    error(_) ->
+      return expanded(JSON.get(JSON.get(node, "range").unwrap_or(JSON.from("")), "end").unwrap_or(JSON.from("")))
+  end
 end
 
 def expanded(loc: Json) -> Place
@@ -86,6 +102,20 @@ def expanded(loc: Json) -> Place
     ok(expansion) -> return place_in(expansion)
     error(_) -> return place_in(loc)
   end
+end
+
+# A place as the scan writes it in short (`cc_loc`, `cc_begin`, `cc_end`): `[FILE, LINE, COL]`, expanded already.
+def short_place(short: Json) -> Place
+  parts: List[Json] = JSON.list(short).unwrap_or([])
+  if parts.size != 3
+    return Place(file: "", line: 0, column: 0)
+  end
+
+  return Place(
+    file: JSON.string(parts[0]).unwrap_or(""),
+    line: JSON.int(parts[1]).unwrap_or(0),
+    column: JSON.int(parts[2]).unwrap_or(0),
+  )
 end
 
 def place_in(loc: Json) -> Place

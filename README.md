@@ -15,8 +15,10 @@ freed twice and not used after; and a value of the collector (`CC_GC`, `CC_GC_AL
 
 ## Install
 
-cchecker needs Agentica 0.26.1 or later, and `gcc` 10 or later, `clang` and `clang-tidy` on PATH, and `sh`. Clone the
-repository and run it with `agentica`, or compile it to bytecode:
+cchecker needs Agentica 0.26.1 or later, and `gcc` 10 or later, `clang` and `clang-tidy` on PATH, and `sh`. The scan
+of clang's AST is a small native module in C (`native/`), which the first run (or `agentica compile`) builds with the
+system C compiler (`cc`); a module that cannot be built or loaded is a tool error. Clone the repository and run it with
+`agentica`, or compile it to bytecode:
 
 ```sh
 agentica cchecker.agc [options] FILE... -- COMPILER-FLAGS...
@@ -51,7 +53,9 @@ cchecker: 2 new findings in 1 file
 `column`, `message`, `path`, the call path of a finding of the rules, `source`, the `[library]` flag that made it or
 `""`, and `root`, where an inferred root comes from or `""`), `baselined`, `fixed`, `errors` (a tool that did not run
 or could not compile a file: `tool`, `file` and `message`), `skipped`, `suppressed` (below), `config`, the settings
-file that was read or `"defaults"` (Settings), and `unresolved_callbacks` (Roots).
+file that was read or `"defaults"` (Settings), `unresolved_callbacks` (Roots), and `unchecked_files`: the files that
+were not checked because a header they include is not found (`file` and `missing`, the header as the `#include` wrote
+it). Such a file is skipped with a warning on standard error and does not change the exit code.
 
 Exit codes: `0` no new findings, `1` new findings, `2` a usage error or a tool error. A tool error is a tool that
 is missing, ends in a timeout or exits with a non-zero code, except for the `1` of a compiler that found errors in the
@@ -129,7 +133,7 @@ suppressed finding never goes into it, and neither does a `CC-UNUSED-IGNORE`: th
 | `-p, --compile-commands PATH` | the compile database: a file or its folder (default: `compile_commands.json` here) |
 | `-t, --tools LIST` | `gcc`, `clang-tidy` and `rules`, comma separated (default all three) |
 | `--checks LIST` | the clang-tidy checks, after those of a `.clang-tidy` file; default below |
-| `-j, --jobs N` | tool runs at once (default 4) |
+| `-j, --jobs N` | tool runs at once (default: the number of cores) |
 | `--timeout SECONDS` | for one tool on one file (default 300); a timeout is a tool error |
 | `-b, --baseline FILE`, `--update-baseline` | see above |
 | `--exclude LIST` | files or folders to skip, comma separated (`src/vendor`, `./gen/a.c`): whole path parts |
@@ -538,7 +542,13 @@ tests in `test/`. They need `gcc`, `clang`, `clang-tidy` and `sh`.
 make check       # agentica check
 make fmt-check   # agentica fmt --check; `agentica fmt` fixes it
 make test        # agentica test --jobs 4, from the root of the repository
+make bench       # the rules on the C VM of Agentica: wall time and peak RSS (BENCH_JOBS=2 for -j 2)
 ```
+
+`make bench` fetches Agentica at a pinned commit (`AGENTICA_BENCH_COMMIT`) into `.bench/`, with only the submodules
+whose headers its VM reads, and runs `--tools rules` on the 84 files of `vm/`; it fails when a file is not checked. It
+needs `git`, `make`, GNU time and the headers of libgc, OpenSSL and zlib (Debian: `libgc-dev libssl-dev zlib1g-dev
+pkg-config`). On an 8-core machine it takes 10.3 s and 415 MB at -j 8, and 17.9 s and 411 MB at -j 2.
 
 ## License
 

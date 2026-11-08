@@ -26,6 +26,13 @@ export struct UnresolvedCallback
   line: Int
 end
 
+## A file that was not checked because a header it includes is not found (`missing`, as the `#include` wrote it). It is
+## no tool error: a project often has headers that only its build makes or fetches.
+export struct UncheckedFile
+  file: String
+  missing: String
+end
+
 ## A tool that could not do its work on a file: it did not start, ran out of time or could not compile the file.
 export struct ToolError
   tool: String

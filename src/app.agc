@@ -5,7 +5,7 @@ import Commands from "commands"
 import Config from "config"
 import Effects from "effects"
 import Findings from "findings"
-import {Finding, ToolError, UnresolvedCallback} from "findings"
+import {Finding, ToolError, UncheckedFile, UnresolvedCallback} from "findings"
 import Locking from "locking"
 import {Options} from "options"
 import Ownership from "ownership"
@@ -21,6 +21,11 @@ import {Unit} from "unit"
 # The compile database that a run without FILE or -p reads.
 DEFAULT_DATABASE = "compile_commands.json"
 
+# The kept AST that the jobs of the rules parse and read at once, in MiB of its text (Tools.Budget). On the 84 files of
+# the VM of Agentica at -j 8 it took the peak memory from 721 MB to 336 MB for half a second more; 8 MiB saved nothing
+# more.
+READ_BUDGET_MIB = 16
+
 # The start of the name of the folder of the AST dumps of a run, in $TMPDIR.
 SCRATCH_PREFIX = "cchecker-"
 
@@ -28,7 +33,8 @@ SCRATCH_PREFIX = "cchecker-"
 PRIVATE_MODE = 448
 
 # What the tools made of all the jobs, before the paths are shortened and the repeats taken out. `units` are the
-# translation units of the rules, which also hold the CC_IGNORE of the functions.
+# translation units of the rules, which also hold the CC_IGNORE of the functions. `unchecked` are the files whose
+# header was not found, once each.
 struct Collected
   findings: List[Finding]
   errors: List[ToolError]
@@ -38,6 +44,7 @@ struct Collected
   incomplete_functions: Int = 0
   unresolved: List[UnresolvedCallback] = []
   missing_roots: List[String] = []
+  unchecked: List[UncheckedFile] = []
 end
 
 # The jobs of a run, the files that were left out because they are outside the working directory, and the entries of
@@ -138,6 +145,7 @@ export def run(options: Options) -> Result[Int]
             suppressed: applied.suppressed,
             config: config.origin,
             unresolved_callbacks: collected.unresolved,
+            unchecked_files: collected.unchecked,
           ),
         ),
       )
@@ -156,6 +164,7 @@ export def run(options: Options) -> Result[Int]
             suppressed: applied.suppressed,
             config: config.origin,
             unresolved_callbacks: collected.unresolved,
+            unchecked_files: collected.unchecked,
           ),
         ),
       )
@@ -206,6 +215,10 @@ def finish(options: Options, report: Report.Report) -> Int
   end
 
   for line in Report.error_lines(report)
+    IO.warn(line)
+  end
+
+  for line in Report.unchecked_lines(report)
     IO.warn(line)
   end
 
@@ -314,7 +327,8 @@ def scope_of(options: Options, plan: Plan, collected: Collected) -> Baseline.Sco
     options.exclude.empty? and
     plan.skipped.empty? and
     plan.ignored.empty? and
-    collected.errors.empty?
+    collected.errors.empty? and
+    collected.unchecked.empty?
   )
 
   rules = Baseline.pair(ToolKind.name(Tool.Rules), "")
@@ -398,6 +412,27 @@ def stale?(name: String) -> Bool
   return not File.stat("/proc/#{parts[0]}").ok?
 end
 
+# Runs the jobs, those of the largest source files first, so that a large file does not run alone at the end. The
+# results are in the order of the jobs.
+def run_largest_first(options: Options, jobs: List[Tools.Job]) -> List[Result[Tools.Outcome]]
+  sizes = jobs.map(&source_size)
+
+  order = (0...jobs.size).to_a.sort_by do |i| -sizes[i] end
+  ran = Task.map(order.map do |i| jobs[i] end, options.jobs, Tools.limit_ms(options), &Tools.run)
+  # The place of each job in `order`, to put its result back.
+  places = (0...order.size).to_a.sort_by do |k| order[k] end
+  return places.map do |k| ran[k] end
+end
+
+# The size of the source file of a job, or 0 when it cannot be read (the tool then says why).
+def source_size(job: Tools.Job) -> Int
+  path = Paths.absolute(job.entry.directory, job.entry.file).unwrap_or(job.entry.file)
+  case File.stat(path)
+    ok(info) -> return info.size_bytes
+    error(_) -> return 0
+  end
+end
+
 # Runs the jobs, with the folder of the dumps when the rules run. The rules check the units of all the files at once.
 def collect_in_scratch(
   options: Options,
@@ -418,11 +453,14 @@ def collect_in_scratch(
 end
 
 def collect(options: Options, config: Config.Config, jobs: List[Tools.Job], cwd: String) -> Collected
-  results = Task.map(jobs, options.jobs, Tools.limit_ms(options), &Tools.run)
+  budget = Tools.budget(READ_BUDGET_MIB)
+  budgeted = jobs.map do |job| job.with(budget: some(budget)) end
+  results = Profile.measure("jobs") do run_largest_first(options, budgeted) end
   findings: List[Finding] = []
   errors: List[ToolError] = []
   ran: List[String] = []
   units: List[Unit] = []
+  unchecked: List[UncheckedFile] = []
   skipped_declarations = 0
   for i in 0...jobs.size
     job = jobs[i]
@@ -432,7 +470,8 @@ def collect(options: Options, config: Config.Config, jobs: List[Tools.Job], cwd:
         errors = errors.concat(outcome.errors)
         units = units.concat(outcome.units)
         skipped_declarations = skipped_declarations + outcome.skipped_declarations
-        if outcome.errors.empty?
+        unchecked = unchecked.concat(outcome.unchecked)
+        if outcome.errors.empty? and outcome.unchecked.empty?
           ran = ran.push(Baseline.pair(ToolKind.name(job.tool), job.shown))
         end
 
@@ -441,9 +480,9 @@ def collect(options: Options, config: Config.Config, jobs: List[Tools.Job], cwd:
     end
   end
 
-  checked = Effects.check(units, config, options.infer, options.all_paths, cwd)
-  locked = Locking.check(units)
-  owned = Ownership.check(units)
+  checked = Profile.measure("effects") do Effects.check(units, config, options.infer, options.all_paths, cwd) end
+  locked = Profile.measure("locking") do Locking.check(units) end
+  owned = Profile.measure("ownership") do Ownership.check(units) end
   return Collected(
     findings: (
       findings.concat(checked.findings)
@@ -458,6 +497,10 @@ def collect(options: Options, config: Config.Config, jobs: List[Tools.Job], cwd:
     incomplete_functions: locked.incomplete + owned.incomplete,
     unresolved: checked.unresolved,
     missing_roots: checked.missing_roots,
+    unchecked: unchecked.group_by do |u| "#{u.file}\n#{u.missing}" end
+      .values
+      .map do |same| same.first end
+      .sort_by do |u| u.file end,
   )
 end
 

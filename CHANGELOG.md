@@ -6,12 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The rules run 2.6 times faster with 44% less memory (the 84 files of the VM of Agentica at -j 2: 47.0 s and 732 MB
+  before, 17.9 s and 411 MB now): a native module in C scans clang's AST. `-j` defaults to the number of cores, and
+  the jobs of the largest files start first.
 - **Breaking:** a `uv_fs_*` call run at once whose libc call does not block (`uv_fs_close`, `uv_fs_stat`,
   `uv_fs_unlink`, `uv_fs_mkdir`, ...) is a system call (`CC-EFFECT-HOT-SYSCALL`), no longer a blocking call
   (`CC-EFFECT-SHORT-BLOCKS`): a baseline that holds such a finding counts it fixed.
 
 ### Added
 
+- A file whose `#include` is not found is not checked, with `cchecker: warning: FILE not checked: HEADER not
+  found` and an entry in `unchecked_files` of `--json`; the other files are checked and the exit code does not change.
 - `--all-paths`: a finding of the rules for each distinct bad call that a root reaches, each with its shortest path.
   The nearest one keeps its baseline key; the others are keyed by the call their message names.
 - The effect walk does not go into a function that is `_Noreturn`, `[[noreturn]]`, `CC_NORETURN`,

@@ -1,4 +1,6 @@
 import Scan from "../src/scan"
+import Paths from "../src/paths"
+import UnitReader from "../src/unit"
 
 # A dump as clang writes it: a location leaves out the file and the line when they are those of the location before
 # it, and `includedFrom` names the file that included it, which is not the file of the location.
@@ -246,4 +248,116 @@ def test_a_null_pointer_first_item_is_no_number() -> Result[Void]
   state = NULLS.split("\n").reduce(Scan.start("/proj", "/proj"), &Scan.step)
   dump = try JSON.decode("{\"decls\": #{Scan.finish(state)}}", Names)
   return Test.eq(dump.decls.map do |d| d.name end, ["table"])
+end
+
+# The scan in C (native/scan.c) gives what the scan in Agentica gives, on the dumps above and on clang's dumps of the C
+# fixtures, which hold the system headers.
+def test_the_scan_in_c_gives_what_the_scan_in_agentica_gives() -> Result[Void]
+  cwd = try Paths.working_directory()
+  folder = "#{System.env("TMPDIR").unwrap_or("/tmp")}/cchecker-scan-test-#{System.pid()}"
+  try Dir.mkdir_private(folder)
+  dumps: List[String] = []
+  for text in [DUMP, TABLES, NULLS]
+    path = "#{folder}/#{dumps.size}.json"
+    try File.write_text(path, text)
+    dumps = dumps.push(path)
+  end
+
+  # The reference scan is slow: a few fixtures, which include system headers.
+  for name in ["specs/fixtures/annotated.c", "specs/fixtures/leak.c", "specs/fixtures/effects/cast_integer.c"]
+    path = "#{folder}/#{dumps.size}.json"
+    try clang_dump(name, path)
+    dumps = dumps.push(path)
+  end
+
+  result = same_scans(dumps, cwd)
+  for path in dumps
+    _ = Path.remove(path)
+  end
+
+  _ = Path.remove(folder)
+  return result
+end
+
+# Dumps that clang does not write but a file may hold: CRLF line ends and no final one, and a location with a line
+# longer than the 1 MiB block of the C scan after its `col`, then a `"cc_file": ` line of its own, which is no place.
+def test_the_scan_in_c_reads_crafted_lines_as_the_scan_in_agentica() -> Result[Void]
+  folder = "#{System.env("TMPDIR").unwrap_or("/tmp")}/cchecker-crafted-test-#{System.pid()}"
+  try Dir.mkdir_private(folder)
+  # The checks run after the cleanup: a failed assertion ends the test at once.
+  checks = crafted_scans(folder)
+  for name in ["crlf.json", "long.json"]
+    _ = Path.remove("#{folder}/#{name}")
+  end
+
+  _ = Path.remove(folder)
+  return Test.eq(try checks, [true, true, true, true, true, true])
+end
+
+# For each dump: the C scan keeps some declarations and gives the reference text; then the place of each pruned dump.
+def crafted_scans(folder: String) -> Result[List[Bool]]
+  crlf = "#{folder}/crlf.json"
+  long = "#{folder}/long.json"
+  try File.write_text(crlf, DUMP.strip.replace("\n", "\r\n"))
+  # The long line is written in parts: one text call writes at most 1 MiB.
+  marker = "XLONGX"
+  h = "    {\n      \"kind\": \"FunctionDecl\",\n      \"loc\": {\n        \"col\": 2,\n"
+  h = "#{h}        \"tokLen\": \"#{marker}\",\n        \"cc_file\": 1\n      },\n      \"name\": \"h\"\n    },\n"
+  parts = DUMP.replace("\"name\": \"g\"\n    },\n", "\"name\": \"g\"\n    },\n#{h}").split(marker)
+  try File.write_text(long, parts[0])
+  for _ in 0...3
+    try File.append_text(long, "x" * 500_000)
+  end
+
+  try File.append_text(long, parts[1])
+  checks: List[Bool] = []
+  for path in [crlf, long]
+    fast = try Scan.project_decls(path, "/proj", "/proj", false)
+    reference = try Scan.reference_decls(path, "/proj", "/proj")
+    checks = checks.push(fast.decls.length > 2).push(fast.decls == reference.decls)
+  end
+
+  pruned_crlf = try Scan.project_decls(crlf, "/proj", "/proj")
+  # The place of h is that of its own `col` line.
+  pruned_long = try Scan.project_decls(long, "/proj", "/proj")
+  checks = checks.push(pruned_crlf.decls.include?("\"cc_loc\": [\"/proj/src/a.h\", 7, 6]"))
+  return ok(checks.push(pruned_long.decls.include?("\"cc_loc\": [\"/proj/src/a.h\", 7, 2]")))
+end
+
+def same_scans(dumps: List[String], cwd: String) -> Result[Void]
+  for k in 0...dumps.size
+    path = dumps[k]
+    root = cwd
+    if k < 3
+      root = "/proj"
+    end
+
+    fast = try Scan.project_decls(path, root, root, false)
+    reference = try Scan.reference_decls(path, root, root)
+    try Test.eq(fast.decls.length > 2, true)
+    try Test.eq(fast.decls, reference.decls)
+    try Test.eq(fast.oversized, reference.oversized)
+    try Test.eq(fast.skipped, reference.skipped)
+    # The keys that the pruned text leaves out are none that the rules read: both give the same unit.
+    pruned = try Scan.project_decls(path, root, root)
+    try Test.eq(pruned.decls.length < fast.decls.length, true)
+    full_unit = try UnitReader.read(try JSON.parse(fast.decls))
+    pruned_unit = try UnitReader.read(try JSON.parse(pruned.decls))
+    try Test.eq(pruned_unit, full_unit)
+  end
+
+  return ok()
+end
+
+# The dump of a C file as the rules ask clang for it.
+def clang_dump(source: String, path: String) -> Result[Void]
+  script = "exec clang \"$@\" > \"$CCHECKER_DUMP\""
+  args = [
+    "-c", script, "clang", "-w", "-DCCHECKER_AST", "-Iinclude", "-fsyntax-only", "-Xclang", "-ast-dump=json", source,
+  ]
+
+  process = try Process.spawn_captured("sh", args, ".", 30_000, {"CCHECKER_DUMP": path})
+  code = try Process.wait(process, 30_000)
+  Process.close(process)
+  return Test.eq(code, 0)
 end

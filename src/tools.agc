@@ -2,7 +2,7 @@
 
 import Commands from "commands"
 import Diagnostics from "diagnostics"
-import {Finding, ToolError} from "findings"
+import {Finding, ToolError, UncheckedFile} from "findings"
 import {Options} from "options"
 import Paths from "paths"
 import Scan from "scan"
@@ -36,6 +36,10 @@ AST_FLAGS = ["-w", "-DCCHECKER_AST"]
 # The JSON AST of a file is tens of MiB, more than `Process.output` holds: a shell writes it to a file.
 DUMP_SCRIPT = "exec \"$0\" \"$@\" > \"$CCHECKER_DUMP\""
 
+# How gcc and clang end the message of an `#include` they did not find.
+GCC_MISSING = ": No such file or directory"
+CLANG_MISSING = "' file not found"
+
 # The time a wrapped run has beyond the timeout for the kill and the exit, so `timeout` ends the run before
 # cchecker does.
 WRAPPER_MS = 6_000
@@ -51,16 +55,29 @@ export struct Job
   wrapped: Bool
   dump: String = ""
   cwd: String = ""
+  budget: Optional[Budget] = none
+end
+
+## How much of the kept AST the jobs of the rules parse and read at once, in MiB of its text: the parsed tree is
+## some ten times the text, so a run with many large files at once would hold all their trees. A job takes its share
+## (1 MiB for each MiB of text, at most all of it) before it parses and gives it back when its unit is read. `turn`
+## lets one job take tokens at a time, so two jobs never wait on each other with half a share each.
+export struct Budget
+  turn: Channel[Int]
+  tokens: Channel[Int]
+  mib: Int
 end
 
 ## What a job found, and what kept it from finding more. A job of the rules finds nothing alone: it gives the unit
 ## that the rules check with the units of the other files, and the count of declarations too large to read that name
-## no function.
+## no function. `unchecked` names the file when a header it includes is not found: the job then has no findings and
+## no errors.
 export struct Outcome
   findings: List[Finding]
   errors: List[ToolError]
   units: List[Unit] = []
   skipped_declarations: Int = 0
+  unchecked: List[UncheckedFile] = []
 end
 
 # What a diagnostic of a tool is for cchecker.
@@ -73,6 +90,18 @@ end
 ## Returns the time in milliseconds after which nothing of a job is left to wait for.
 export def limit_ms(options: Options) -> Int
   return options.timeout_s * 1000 + WRAPPER_MS + 5_000
+end
+
+## Returns a budget of `mib` MiB, all of it free.
+export def budget(mib: Int) -> Budget
+  turn: Channel[Int] = Channel.new(1)
+  tokens: Channel[Int] = Channel.new(mib)
+  _ = Channel.send(turn, 0, 1_000)
+  for _ in 0...mib
+    _ = Channel.send(tokens, 1, 1_000)
+  end
+
+  return Budget(turn: turn, tokens: tokens, mib: mib)
 end
 
 ## Returns whether `timeout` of coreutils is installed. Without it a timeout stops the tool but not its children.
@@ -107,7 +136,7 @@ export def run(job: Job) -> Result[Outcome]
   end
 
   process = try start(command, args, job.entry.directory, timeout_ms, program, env)
-  output = try Process.output(process, timeout_ms)
+  output = try Profile.measure("clang") do Process.output(process, timeout_ms) end
   code = try Process.wait(process, timeout_ms)
   Process.close(process)
   if output.truncated
@@ -116,6 +145,12 @@ export def run(job: Job) -> Result[Outcome]
 
   done = outcome(job, "#{output.stdout}\n#{output.stderr}", code)
   if job.tool != Tool.Rules
+    return ok(done)
+  end
+
+  # The dump of a file whose header is not found is the part before the #include: nothing to read.
+  if not done.unchecked.empty?
+    _ = Path.remove(job.dump)
     return ok(done)
   end
 
@@ -185,9 +220,21 @@ def with_unit(job: Job, done: Outcome) -> Result[Outcome]
     return ok(done)
   end
 
-  dump = try Scan.project_decls(job.dump, job.entry.directory, job.cwd)
-  decls = try JSON.parse(dump.decls)
-  unit = try UnitReader.read(decls)
+  scanned = Profile.measure("scan") do Scan.project_decls(job.dump, job.entry.directory, job.cwd) end
+  dump = try scanned
+  share = 0
+  timeout_ms = job.options.timeout_s * 1000
+  if job.budget.some?
+    b = job.budget.unwrap!
+    share = try take(b, (dump.decls.length / 1_048_576 + 1).clamp(1, b.mib), timeout_ms)
+  end
+
+  read = parse_and_read(dump.decls)
+  if job.budget.some?
+    give_back(job.budget.unwrap!, share)
+  end
+
+  unit = try read
   # A declaration too large to keep leaves the graph incomplete: the run says so, and the rest is checked.
   errors = dump.oversized.map do |name|
     ToolError(
@@ -212,6 +259,37 @@ def with_unit(job: Job, done: Outcome) -> Result[Outcome]
       skipped_declarations: dump.skipped,
     ),
   )
+end
+
+# The unit of the kept declarations.
+def parse_and_read(decls: String) -> Result[Unit]
+  parsed = Profile.measure("json") do JSON.parse(decls) end
+  tree = try parsed
+  return Profile.measure("unit") do UnitReader.read(tree) end
+end
+
+# Takes `share` MiB of the budget, waiting for jobs that hold it; an error when they do not give it back in time.
+def take(b: Budget, share: Int, timeout_ms: Int) -> Result[Int]
+  _ = try Channel.recv(b.turn, timeout_ms)
+  taken = 0
+  while taken < share
+    case Channel.recv(b.tokens, timeout_ms)
+      ok(_) -> taken += 1
+      error(message) ->
+        give_back(b, taken)
+        _ = Channel.send(b.turn, 0, timeout_ms)
+        return error("the reading of the AST waited too long: #{message}")
+    end
+  end
+
+  _ = Channel.send(b.turn, 0, timeout_ms)
+  return ok(taken)
+end
+
+def give_back(b: Budget, share: Int) -> Void
+  for _ in 0...share
+    _ = Channel.send(b.tokens, 1, 1_000)
+  end
 end
 
 # LC_ALL=C keeps the messages in English with plain quotes, so a baseline holds on any machine.
@@ -276,12 +354,36 @@ def outcome(job: Job, text: String, code: Int) -> Outcome
     end
   end
 
+  # A missing header stops the compiler before it reads the rest: the file is not checked, and the run goes on.
+  missing = Diagnostics.parse(text).flat_map do |d| missing_header(d) end
+  if code != 0 and not missing.empty?
+    return Outcome(findings: [], errors: [], unchecked: [UncheckedFile(file: job.shown, missing: missing.first)])
+  end
+
   if code != 0 and not (code == 1 and (not errors.empty? or (promoted > 0 and treated_as_errors?(text))))
     message = failure(job.wrapped, job.options.timeout_s, text, code)
     errors = errors.push(ToolError(tool: tool, file: job.entry.file, message: message + hint(job.tool, code)))
   end
 
   return Outcome(findings: findings, errors: errors)
+end
+
+# The header of an `#include` that the compiler did not find, as gcc (`x.h: No such file or directory`) and clang
+# (`'x.h' file not found`) say it in the C locale; empty for any other diagnostic.
+def missing_header(d: Diagnostics.Diagnostic) -> List[String]
+  if d.severity == "warning"
+    return []
+  end
+
+  if d.message.end_with?(GCC_MISSING)
+    return [d.message.slice(0, d.message.length - GCC_MISSING.length)]
+  end
+
+  if d.message.start_with?("'") and d.message.end_with?(CLANG_MISSING)
+    return [d.message.slice(1, d.message.length - CLANG_MISSING.length - 1)]
+  end
+
+  return []
 end
 
 # The shell gives 127 for a program it cannot find. The rules are on by default, so a missing clang says how to go

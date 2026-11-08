@@ -3,3 +3,7 @@ name = "cchecker"
 # Every bare `end` is followed by an empty line (AGENTS.md).
 [style]
 blank_line_after_end = true
+
+# The scan of clang's JSON AST in C (src/scan.agc), built by the first run with the system C compiler.
+[native.cchecker_scan]
+build = { sources = ["native/scan.c"] }
