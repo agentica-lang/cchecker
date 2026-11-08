@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `CC_HOT` counts `link`, `linkat`, `symlink`, `symlinkat`, `lchown`, `utime`, `utimes`, `statfs`, `fstatfs` and
+  `mkdtemp` as system calls, as it does their `uv_fs_*` forms.
+- The lock of a `CC_ACQUIRES` or `CC_RELEASES` parameter is classed through `_Atomic`,
+  `__restrict__` and the nullability qualifiers (`struct pool *_Atomic p`).
 - `libuv_callbacks_short` also infers the callbacks of `uv_listen`, the idle, prepare, check and signal handles,
   `uv_tcp_close_reset`, UDP, `uv_getaddrinfo`, `uv_getnameinfo`, `uv_random`, the fs event and poll handles, and the
   `uv_fs_*` requests; the libuv lists match libuv 1.50.

@@ -99,14 +99,17 @@ function kept in a `void *` or an `uintptr_t` is reached by a call through it,
 but not one kept in a table whose first item is a literal number (`uintptr_t t[]
 = {0, (uintptr_t)f}`): that is a table of numbers (see [The AST
 dump](#the-ast-dump)). A variable with `__attribute__((cleanup(f)))` calls `f`.
-A pointer that comes from anywhere else reaches nothing: a return value, the
-arguments of a variadic function, and a function handed to a library that calls
-it back (`qsort`; a libuv callback is a root of its own, see
-[Roots](settings.md#roots)). A walk goes only through what the run read, so run
-it on all the files of the project: with a subset of the files, a call into a
-file that was not run reaches nothing. For the baseline, only a full run of a
-compile database covers the findings of the rules: a run of some files never
-counts them fixed and never drops them on `--update-baseline`.
+A pointer that comes from anywhere else reaches nothing: one that no checked
+file stores a function in (set outside the files of the run, or never set), a
+return value, the arguments of a variadic function, and a function handed to a
+library that calls it back (`qsort`; a libuv callback is a root of its own, see
+[Roots](settings.md#roots)). Two calls through pointers that start at the same
+place (`x->f(1)->g(2)`) are one call to the walk, and each reaches the functions
+of both: more findings, never fewer. A walk goes only through what the run read,
+so run it on all the files of the project: with a subset of the files, a call
+into a file that was not run reaches nothing. For the baseline, only a full run
+of a compile database covers the findings of the rules: a run of some files
+never counts them fixed and never drops them on `--update-baseline`.
 
 ## Locks on every path
 
@@ -150,10 +153,13 @@ returns, so it changes nothing.
 A path does not go where a condition that the function tests twice would have to
 be true and false, so `if (locked) lock(); ...; if (locked) unlock();` passes; a
 write to a variable of the condition, or a call given its address
-(`f(&locked)`), forgets its value; a call given `&q->mu` does not change `q`. A
-function whose paths would take more than 200 000 states to follow is walked
-again without these conditions; when that is not enough either, its findings are
-those of the paths followed, and the run counts it in `incomplete_functions` of
+(`f(&locked)`), forgets its value; a call given `&q->mu`, or the address of any
+other field (`atomic_store(&q->ready, 0)`, `f(&q->count)`), does not change `q`:
+the values of the conditions are kept by variable, not by field, so a condition
+on `q->ready` keeps its value after `atomic_store(&q->ready, 0)`. A function
+whose paths would take more than 200 000 states to follow is walked again
+without these conditions; when that is not enough either, its findings are those
+of the paths followed, and the run counts it in `incomplete_functions` of
 `--json` and says so on standard error (the exit code does not change). A
 function whose AST has more than 20 000 nodes (about four times the largest of
 the Agentica VM) gets no graph: that is an error of the `rules` tool on its

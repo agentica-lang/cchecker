@@ -58,6 +58,7 @@ Feature: Pairs of calls restored on every path
       | set form          | CC_PAIR(mask_signals, restore_signals) void mask_signals(void); int guarded(int n) { mask_signals(); work(n); restore_signals(); return 0; }                                                              |
       | set defined       | CC_PAIR(mask_signals, restore_signals) void mask_signals(void); void mask_signals(void) { work(0); } int guarded(int n) { mask_signals(); restore_signals(); return n; }                                  |
       | a set that wraps  | CC_PAIR(mask_signals, restore_signals) void mask_signals(void); CC_PAIR(enter_quiet, leave_quiet) void enter_quiet(void); void leave_quiet(void); void enter_quiet(void) { mask_signals(); } void leave_quiet(void) { restore_signals(); } |
+      | one restore of two sets | CC_PAIR(mask_signals, restore_signals) void mask_signals(void); CC_PAIR(enter_quiet, restore_signals) void enter_quiet(void); int f(int n) { mask_signals(); enter_quiet(); restore_signals(); return n; } |
       | restore alone     | CC_PAIR(mask_signals, restore_signals) void mask_signals(void); int reset(int n) { restore_signals(); return n; }                                                                                         |
 
   Scenario Outline: A restore with no set before it is a finding in a function that calls the set (<case>)
@@ -148,6 +149,25 @@ Feature: Pairs of calls restored on every path
       | restored on the error  | int    | restore_signals(); return -1;  | 0                          | 0    | does not include |
       | a positive value       | int    | return 1;                      | 0                          | 0    | does not include |
       | a zero int             | int    | return 0;                      | 0                          | 0    | does not include |
+
+  Scenario: Two pairs on one set each name their own restore
+    Given the C file "guard.c" holds:
+      """
+      #include "cchecker.h"
+
+      void mask_signals(void); void restore_signals(void); void log_restore(void);
+      CC_PAIR(mask_signals, restore_signals) CC_PAIR(mask_signals, log_restore) int guarded(int n) { mask_signals(); log_restore(); return n; }
+      """
+    When I run cchecker with "--tools rules --json $DIR/guard.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "message":"guarded calls mask_signals and does not call restore_signals after it on every path"
+      """
+    And the output does not include:
+      """
+      does not call log_restore
+      """
 
   Scenario: The path of a finding goes from the set to the return that skips the restore
     Given the C file "guard.c" holds:
