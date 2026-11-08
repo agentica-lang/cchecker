@@ -401,13 +401,14 @@ def collect(options: Options, jobs: List[Tools.Job]) -> Collected
   end
 
   locked = Locking.check(units)
+  owned = Ownership.check(units)
   return Collected(
-    findings: findings.concat(Effects.check(units)).concat(locked.findings).concat(Ownership.check(units)),
+    findings: findings.concat(Effects.check(units)).concat(locked.findings).concat(owned.findings),
     errors: errors,
     ran: ran,
     units: units,
     skipped_declarations: skipped_declarations,
-    incomplete_functions: locked.incomplete,
+    incomplete_functions: locked.incomplete + owned.incomplete,
   )
 end
 

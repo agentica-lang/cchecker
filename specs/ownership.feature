@@ -164,6 +164,82 @@ Feature: Ownership on every path
       "line":6,"column":5,"message":"f does not free or hand on b on every path","path":["9:21 b = malloc","10:8 true","12:7 true","13:5 returns"]
       """
 
+  Scenario: A function with more paths than the rules follow is checked on those it went through and counted
+    Given the C file "many.c" holds:
+      """
+      #include <stdlib.h>
+      #include "cchecker.h"
+      int pick(int i);
+      void many(void) {
+        CC_OWNS char *b0 = NULL;
+        CC_OWNS char *b1 = NULL;
+        CC_OWNS char *b2 = NULL;
+        CC_OWNS char *b3 = NULL;
+        CC_OWNS char *b4 = NULL;
+        CC_OWNS char *b5 = NULL;
+        CC_OWNS char *b6 = NULL;
+        CC_OWNS char *b7 = NULL;
+        CC_OWNS char *b8 = NULL;
+        CC_OWNS char *b9 = NULL;
+        CC_OWNS char *b10 = NULL;
+        CC_OWNS char *b11 = NULL;
+        CC_OWNS char *b12 = NULL;
+        CC_OWNS char *b13 = NULL;
+        CC_OWNS char *b14 = NULL;
+        CC_OWNS char *b15 = NULL;
+        CC_OWNS char *b16 = NULL;
+        CC_OWNS char *b17 = NULL;
+        CC_OWNS char *b18 = NULL;
+        CC_OWNS char *b19 = NULL;
+        if (pick(0)) b0 = malloc(8);
+        if (pick(1)) b1 = malloc(8);
+        if (pick(2)) b2 = malloc(8);
+        if (pick(3)) b3 = malloc(8);
+        if (pick(4)) b4 = malloc(8);
+        if (pick(5)) b5 = malloc(8);
+        if (pick(6)) b6 = malloc(8);
+        if (pick(7)) b7 = malloc(8);
+        if (pick(8)) b8 = malloc(8);
+        if (pick(9)) b9 = malloc(8);
+        if (pick(10)) b10 = malloc(8);
+        if (pick(11)) b11 = malloc(8);
+        if (pick(12)) b12 = malloc(8);
+        if (pick(13)) b13 = malloc(8);
+        if (pick(14)) b14 = malloc(8);
+        if (pick(15)) b15 = malloc(8);
+        if (pick(16)) b16 = malloc(8);
+        if (pick(17)) b17 = malloc(8);
+        if (pick(18)) b18 = malloc(8);
+        if (pick(19)) b19 = malloc(8);
+        free(b0);
+        free(b1);
+        free(b2);
+        free(b3);
+        free(b4);
+        free(b5);
+        free(b6);
+        free(b7);
+        free(b8);
+        free(b9);
+        free(b10);
+        free(b11);
+        free(b12);
+        free(b13);
+        free(b14);
+        free(b15);
+        free(b16);
+        free(b17);
+        free(b18);
+        free(b19);
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/many.c -- -I../include"
+    Then the exit code is 0
+    And the output includes:
+      """
+      "incomplete_functions":1
+      """
+
   Scenario: The marks of a prototype hold in the definition and in the callers that include it
     Given the C file "own.h" holds:
       """
