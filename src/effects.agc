@@ -5,7 +5,7 @@ import {Config} from "config"
 import {Finding, UnresolvedCallback} from "findings"
 import Known from "known"
 import Paths from "paths"
-import {Callback, Function, Source, Store, Target, Unit} from "unit"
+import {Call, Callback, Function, Source, Store, Target, Unit} from "unit"
 
 ## The tool name of the findings of the rules.
 export TOOL = "rules"
@@ -15,6 +15,9 @@ export ASSUME_SHORT = "assume_short"
 
 ## The mark of a function that no walk goes into (CC_STOP, `[assume] stop`).
 export STOP = "stop"
+
+# The start of the slot of a field (`field:request.call`).
+FIELD_SLOT = "field:"
 
 # The mark of a short lock: a field or a global marked CC_NO_SYSCALL_UNDER().
 SHORT_LOCK_MARK = "no_syscall_under()"
@@ -124,13 +127,46 @@ export def check(units: List[Unit], config: Config, infer: Bool, all_paths: Bool
   )
 end
 
-## Returns the units with the marks that `[assume]` gives the functions it names, as if the C had them.
+## Returns the units with the marks that `[assume]` gives the functions it names, as if the C had them, and without
+## the calls through the fields of `[assume] stop_fields`, which no walk follows. A call through a copy of such a field
+## (a local that got it) is still followed.
 export def assumed(units: List[Unit], config: Config) -> List[Unit]
-  if config.trusted.empty? and config.stops.empty?
+  if config.trusted.empty? and config.stops.empty? and config.stop_fields.empty?
     return units
   end
 
-  return units.map do |unit| unit.with(functions: unit.functions.map do |f| with_assumed(f, config) end) end
+  cut = Set.new(config.stop_fields.map do |field| "#{FIELD_SLOT}#{field}" end)
+  return units.map do |unit|
+    unit.with(
+      functions: unit.functions.map do |f| with_assumed(f, config) end,
+      calls: unit.calls.select do |call| not cut_call?(cut, call) end,
+    )
+  end
+end
+
+## Returns the fields of `[assume] stop_fields` that the units neither store a function in nor call through, each with
+## its key (`request.cal (assume.stop_fields)`). It reads the units before `assumed` takes the calls out.
+export def missing_fields(units: List[Unit], config: Config) -> List[String]
+  if config.stop_fields.empty?
+    return []
+  end
+
+  known: Set[String] = Set.new([])
+  for unit in units
+    for store in unit.stores
+      known = known.add(store.slot)
+    end
+
+    for call in unit.calls
+      case call.target
+        Target.Slot(slot) -> known = known.add(slot)
+        Target.Direct(_) -> next
+      end
+    end
+  end
+
+  missing = config.stop_fields.uniq.select do |field| not known.include?("#{FIELD_SLOT}#{field}") end
+  return missing.map do |field| "#{field} (assume.stop_fields)" end
 end
 
 ## Returns whether no walk goes into a function: it is marked CC_STOP or named in `[assume] stop`.
@@ -298,6 +334,14 @@ end
 def returns_at_once?(graph: Graph, walk: Walk, key: String, callee: String) -> Bool
   calls = graph.quiet.get("#{key}>#{callee}").unwrap_or([])
   return walk.flags and not calls.empty? and calls.all? do |set| set end
+end
+
+# Whether a call goes through one of the slots `cut`.
+def cut_call?(cut: Set[String], call: Call) -> Bool
+  case call.target
+    Target.Slot(slot) -> return cut.include?(slot)
+    Target.Direct(_) -> return false
+  end
 end
 
 # The classes of `[assume] short_locks` that no lock of the units has: none taken and none marked, with their key.
