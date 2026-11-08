@@ -3,17 +3,18 @@
 # RSS. Usage: bench/run.sh COMMIT [JOBS], from the root of the repository (`make bench` passes AGENTICA_BENCH_COMMIT
 # and BENCH_JOBS); JOBS defaults to cchecker's own default, the number of cores.
 #
-# It fetches Agentica into _build/bench/agentica (ignored): that commit only, with only the submodules whose headers
+# It fetches Agentica into .bench/agentica (ignored, and hidden: agentica hashes the files of a package with a native
+# module on each run, and skips hidden folders): that commit only, with only the submodules whose headers
 # the VM reads in its default Linux build (yyjson, libuv, picohttpparser, libffi), each at depth 1. libgc, OpenSSL and
 # zlib are the system's, as in that build (Debian: libgc-dev libssl-dev zlib1g-dev pkg-config). Agentica's own
 # Makefile gives the compile flags of its release build and generates the headers of libffi. It needs git, make,
-# agentica, clang and GNU time (/usr/bin/time). The compile database and the report go under _build/bench/.
+# agentica, clang and GNU time (/usr/bin/time). The compile database and the report go under .bench/ too.
 set -eu
 
 commit=$1
 jobs=${2:-}
 root=$(pwd)
-out=$root/_build/bench
+out=$root/.bench
 vm=$out/agentica
 submodules="vm/third_party/yyjson vm/third_party/libuv vm/third_party/picohttpparser vm/third_party/libffi"
 
