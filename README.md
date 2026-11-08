@@ -175,15 +175,16 @@ it on all the files of the project: with a subset of the files, a call into a fi
 For the baseline, only a full run of a compile database covers the findings of the rules: a run of some files never
 counts them fixed and never drops them on `--update-baseline`.
 
-The AST of a file is tens of MiB with its system headers, more than a process output holds in Agentica (1 MiB): `sh`
-writes it to a file in a private folder under `$TMPDIR`, and cchecker reads it line by line and keeps only the
+The AST of a file is tens of MiB with its system headers, more than a process output holds in Agentica (1 MiB):
+`sh` writes it to a file in a private folder under `$TMPDIR`, and cchecker reads it line by line and keeps only the
 declarations of the project. A table of numbers is not kept: an array of a number or character type, or whose first
-item is a number (`const uint8_t ROM[]`). A declaration of more than a million lines of the dump is left out: when it
-named no function so far (a table of enum values or of structs of numbers) it is counted in `skipped_declarations`
-of `--json` and in a line on standard error, and otherwise it is a tool error, while the rest of the file is checked.
-A dump that ends early is a tool error. The folder is removed at the end of the run, and a run removes the folders
-that killed runs left there: a folder of the same user, private, not a link, holding only dumps, whose process is
-gone. Runs in different PID namespaces that share `$TMPDIR` can remove each other's folders.
+item is a number (`const uint8_t ROM[]`); a null pointer item (`0`, `NULL`) is not a number. A declaration of more
+than a million lines of the dump is left out: when it named no function so far (a table of enum values or of structs
+of numbers) it is counted in `skipped_declarations` of `--json` and in a line on standard error (a function past the
+cap is not read), and otherwise it is a tool error, while the rest of the file is checked. A dump that ends early is
+a tool error. The folder is removed at the end of the run, and a run removes the folders that killed runs left there:
+a folder of the same user, private, not a link, holding only dumps, whose process is gone. Runs in different PID
+namespaces that share `$TMPDIR` can remove each other's folders.
 
 ## Development
 
