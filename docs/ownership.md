@@ -79,8 +79,8 @@ A store of a pointer that owns, or of the value of a `CC_OWNS` function, into an
 item of an array that owns hands it on to the array, as a store into a `CC_OWNS`
 field does: `argv[i] = p`, where `argv` owns or stands for a pointer that does,
 is marked `CC_OWNS`, or is a local that got `malloc`, `calloc` or `realloc`. In
-a store that hands a pointer on, each side of `?:` gives its own value (`x->held
-= n ? p : NULL`).
+a store or a return that hands a pointer on, each side of `?:` gives its own
+value (`x->held = n ? p : NULL`, `return n ? p : NULL`).
 
 | Code | |
 |---|---|
