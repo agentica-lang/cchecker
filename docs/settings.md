@@ -207,6 +207,7 @@ each with `call`, `argument` (its place, from 0; -1 for a function stored in
 (absolute for a call outside the working directory, such as a body that
 includes a file from outside), and a run without `--json` says how many in one
 line on standard error, so a root is never lost without a word.
+
 A finding of an inferred root has its place in `root` of `--json` (`callback of
 uv_read_start at src/net.c:41`), and the printed line ends with it:
 
