@@ -3,6 +3,7 @@
 import Files from "files"
 import Findings from "findings"
 import {Finding} from "findings"
+import Regex from "std/regex"
 
 # The version of the file format, for the day it changes.
 VERSION = 1
@@ -113,11 +114,27 @@ export def merged(entries: List[Entry], scope: Scope, findings: List[Finding]) -
   return combined.sort_by do |entry| "#{entry.file}\n#{entry.code}\n#{entry.message}" end
 end
 
-## Returns the versions for an updated baseline, by name in order: those of `stored`, and those of `current`, which win.
-## `current` holds only the tools that ran and named their version, so the others keep the version of the run that
-## wrote their entries.
-export def merged_tools(stored: Map[String, String], current: Map[String, String]) -> Map[String, String]
-  merged = stored
+## Returns the versions for an updated baseline, by name in order. Only a `whole` run (every file of its tools) writes
+## versions: it drops those of the tools in `ran` and adds those of `current` (a tool that printed none loses its
+## version, as its entries were just rewritten by an unknown one). A run of some files returns `stored`, as the entries
+## of the other files are still those of the old versions.
+export def updated_tools(
+  stored: Map[String, String],
+  current: Map[String, String],
+  ran: List[String],
+  whole: Bool,
+) -> Map[String, String]
+  if not whole
+    return stored
+  end
+
+  merged: Map[String, String] = {}
+  for tool in stored.keys
+    if not ran.include?(tool)
+      merged = merged.put(tool, stored[tool])
+    end
+  end
+
   for tool in current.keys
     merged = merged.put(tool, current[tool])
   end
@@ -131,9 +148,11 @@ export def merged_tools(stored: Map[String, String], current: Map[String, String
 end
 
 ## Returns the tools of `current` whose version is not the one in `stored`, in the order of the names. A tool of only
-## one of them is not compared: it did not run, or it did not name its version.
+## one of them is not compared: it did not run, or it did not name its version. Versions are compared by their number
+## (`14.2.0` of `gcc (Debian 14.2.0-19) 14.2.0`), so the build of another distribution of the same version is no
+## change; a line with no number is compared whole. The changes keep the full lines.
 export def changes(stored: Map[String, String], current: Map[String, String]) -> List[VersionChange]
-  names = stored.keys.select do |tool| current.key?(tool) and current[tool] != stored[tool] end
+  names = stored.keys.select do |tool| current.key?(tool) and number(current[tool]) != number(stored[tool]) end
   return names.sort.map do |tool| VersionChange(tool: tool, baseline: stored[tool], current: current[tool]) end
 end
 
@@ -214,6 +233,14 @@ export def tool_of(code: String) -> String
   end
 
   return ""
+end
+
+# The first dotted number of a version line, or the line.
+def number(line: String) -> String
+  case Regex.match(line, /\d+(\.\d+)+/)
+    ok(found) -> return found.text
+    error(_) -> return line
+  end
 end
 
 def larger(a: Int, b: Int) -> Int

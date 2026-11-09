@@ -128,7 +128,7 @@ export def target_of(clang: String, entry: Commands.Entry) -> String
   case Process.spawn_captured(clang, args, entry.directory, 5_000)
     ok(process) ->
       line = Process.read_line(process, 5_000).unwrap_or("")
-      code = Process.wait(process, 5_000).unwrap_or(1)
+      code = Process.wait(process, 1_000).unwrap_or(1)
       Process.close(process)
       if code != 0
         return ""
@@ -334,12 +334,13 @@ def program_of(options: Options, tool: Tool) -> String
 end
 
 # The first line of `PROGRAM --version`, or "" when it does not say. The C locale keeps the text the same from one
-# machine to the next.
+# machine to the next. The timeout of `spawn_captured` is not documented as a kill, so `close` ends a program that
+# is still running, and the waits are short: the first line is out by then.
 def version_line(program: String) -> String
   case Process.spawn_captured(program, ["--version"], ".", 5_000, {"LC_ALL": "C"})
     ok(process) ->
       line = Process.read_line(process, 5_000).unwrap_or("")
-      code = Process.wait(process, 5_000).unwrap_or(1)
+      code = Process.wait(process, 1_000).unwrap_or(1)
       Process.close(process)
       if code != 0
         return ""

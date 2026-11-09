@@ -104,7 +104,22 @@ def test_only_a_tool_in_both_with_another_version_is_a_change() -> Result[Void]
   )
 end
 
-def test_an_update_of_versions_keeps_the_tools_that_did_not_run() -> Result[Void]
-  merged = Baseline.merged_tools({"gcc": "gcc 13", "clang": "clang 19"}, {"gcc": "gcc 14"})
+def test_a_version_is_compared_by_its_number() -> Result[Void]
+  debian = {"gcc": "gcc (Debian 14.2.0-19) 14.2.0"}
+  try Test.eq(Baseline.changes(debian, {"gcc": "gcc (Ubuntu 14.2.0-4ubuntu2) 14.2.0"}), [])
+  later = "gcc (Debian 14.3.0-1) 14.3.0"
+  try Test.eq(Baseline.changes(debian, {"gcc": later}).map do |c| c.current end, [later])
+  return Test.eq(Baseline.changes({"gcc": "tip"}, {"gcc": "tip of tree"}).size, 1)
+end
+
+def test_an_update_of_every_file_replaces_the_versions_of_the_tools_that_ran() -> Result[Void]
+  stored = {"gcc": "gcc 13", "clang": "clang 19", "clang-tidy": "tidy 19"}
+  merged = Baseline.updated_tools(stored, {"gcc": "gcc 14"}, ["gcc", "clang-tidy"], true)
   return Test.eq(merged, {"clang": "clang 19", "gcc": "gcc 14"})
+end
+
+def test_an_update_of_some_files_keeps_the_stored_versions() -> Result[Void]
+  stored = {"gcc": "gcc 13"}
+  try Test.eq(Baseline.updated_tools(stored, {"gcc": "gcc 14", "clang": "clang 19"}, ["gcc", "clang"], false), stored)
+  return Test.eq(Baseline.updated_tools({}, {"gcc": "gcc 14"}, ["gcc"], false).size, 0)
 end

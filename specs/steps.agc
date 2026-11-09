@@ -46,6 +46,7 @@ def main() -> Void
     BDD.step("the errors include once:", &errors_include_once),
     BDD.step("the file {string} is removed", &remove_file),
     BDD.step("the file {string} includes:", &file_includes),
+    BDD.step("the file {string} does not include:", &file_excludes),
     BDD.step("the file {string} exists", &file_exists),
     BDD.step("the file {string} does not exist", &file_missing),
     BDD.step("the process written in {string} has ended", &process_ended),
@@ -270,6 +271,13 @@ def file_includes(ctx: BDD.Context, args: List[String]) -> BDD.Context
   expected = BDD.doc_string(ctx).strip
   held = File.read_text(path).unwrap_or("")
   return BDD.assert(ctx, held.include?(expected), "#{path} does not include #{expected}: #{held}")
+end
+
+def file_excludes(ctx: BDD.Context, args: List[String]) -> BDD.Context
+  path = host_path(ctx, args[0])
+  unwanted = BDD.doc_string(ctx).strip
+  held = File.read_text(path).unwrap_or("")
+  return BDD.assert(ctx, not held.include?(unwanted), "#{path} includes #{unwanted}: #{held}")
 end
 
 def file_exists(ctx: BDD.Context, args: List[String]) -> BDD.Context

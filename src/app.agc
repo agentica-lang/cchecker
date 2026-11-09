@@ -270,8 +270,8 @@ def baseline_file(options: Options) -> Result[Baseline.Loaded]
 end
 
 # Writes the baseline when every tool ran: a baseline made from a half run would accept less than the project has. The
-# entries of the tools and files that the run did not cover stay as they were. The versions of the tools that ran
-# replace the stored ones; a tool that did not run, or did not name its version, keeps the stored one.
+# entries of the tools and files that the run did not cover stay as they were. The versions of the tools are written
+# only by a run of every file (no FILE, no --exclude): see `Baseline.updated_tools`.
 def update(
   path: String,
   loaded: Baseline.Loaded,
@@ -287,8 +287,16 @@ def update(
   # An unused suppression is fixed by editing its comment, never accepted: the baseline could not tell when it goes.
   kept = findings.select do |f| f.code != Suppressions.UNUSED end
   entries = Baseline.merged(loaded.entries, scope, kept)
-  versions = Tools.versions_of(options, options.tools.map(&Tools.version_key))
-  try Baseline.write(path, entries, Baseline.merged_tools(loaded.tools, versions))
+  ran = options.tools.map(&Tools.version_key)
+  versions = Tools.versions_of(options, ran)
+  for tool in ran
+    if not versions.key?(tool)
+      IO.warn("cchecker: no version from #{tool}: its --version printed nothing or failed, so the baseline has none")
+    end
+  end
+
+  whole = options.files.empty? and options.exclude.empty?
+  try Baseline.write(path, entries, Baseline.updated_tools(loaded.tools, versions, ran, whole))
   puts("cchecker: wrote #{entries.reduce(0) do |total, entry| total + entry.count end} findings to #{path}")
   return ok(0)
 end
