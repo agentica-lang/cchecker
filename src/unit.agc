@@ -127,9 +127,10 @@ struct LockMarks
   errors: List[MarkError]
 end
 
-## A function pointer passed to a libuv call that runs it on the loop thread (`Known.LOOP_CALLBACKS`): the call, the
-## place of the argument (from 0), the place of the call (`file` absolute), and what the argument holds, which is empty
-## when it is neither a function nor a pointer that the rules follow.
+## A function pointer passed to a libuv call, or stored in a field that libuv calls, on the loop thread
+## (`Known.LOOP_CALLBACKS`, `Known.LOOP_CALLBACK_FIELDS`): the call (the field for a store), the place of the argument
+## (from 0; -1 for a store), the place of the call or store (`file` absolute), and what the argument holds, which is
+## empty when it is neither a function nor a pointer that the rules follow.
 export struct Callback
   call: String
   argument: Int
@@ -237,7 +238,7 @@ export def read(decls: Json) -> Result[Unit]
       "VarDecl" ->
         slot = "var:#{variable_key(tables, Ast.text(node, "name"))}"
         for value in values(node)
-          found = with_stores(found, stored(tables, file_scope(), slot, value))
+          found = with_field_stores(found, node, stored(tables, file_scope(), slot, value))
         end
 
       _ -> next
@@ -844,7 +845,11 @@ def walk(tables: Tables, scope: Scope, node: Json, found: Found) -> Found
     "BinaryOperator" -> with_assignment(tables, scope, node, found)
     "CleanupAttr" -> with_cleanup(tables, scope, node, found)
     "VarDecl" ->
-      with_stores(found, values(node).flat_map do |value| stored(tables, scope, local_slot(scope, node), value) end)
+      with_field_stores(
+        found,
+        node,
+        values(node).flat_map do |value| stored(tables, scope, local_slot(scope, node), value) end,
+      )
     _ -> found
   end
 
@@ -873,7 +878,7 @@ def with_call(tables: Tables, scope: Scope, node: Json, found: Found) -> Found
 
     noted = with_callbacks(found, callbacks_of(tables, scope, node, Ast.referenced_name(callee), parts))
     if async_fs?(Ast.referenced_name(callee), parts)
-      return with_stores(noted, stores)
+      return with_field_stores(noted, node, stores)
     end
 
     call = Call(caller: scope.caller, target: Target.Direct(key))
@@ -892,7 +897,7 @@ def with_call(tables: Tables, scope: Scope, node: Json, found: Found) -> Found
     end
 
     called = noted.with(calls: noted.calls.push(call))
-    return with_stores(called, stores)
+    return with_field_stores(called, node, stores)
   end
 
   case slot_of(tables, scope, callee)
@@ -933,6 +938,21 @@ end
 
 def with_callbacks(found: Found, callbacks: List[Callback]) -> Found
   return found.with(callbacks: found.callbacks.concat(callbacks))
+end
+
+# Records the stores of a node (a variable with an initializer, an assignment). A store in a field that libuv calls on
+# the loop (`Known.LOOP_CALLBACK_FIELDS`) is also a callback, placed at the node, with the field in `call` and -1 as
+# its argument place: a later call (`uv_spawn`) reads the field, so no argument of the node holds it.
+def with_field_stores(found: Found, node: Json, stores: List[Store]) -> Found
+  place = Ast.start_of(node)
+  callbacks = stores.flat_map do |store|
+    case Known.LOOP_CALLBACK_FIELDS.get(store.slot)
+      some(field) -> [Callback(call: field, argument: -1, file: place.file, line: place.line, sources: [store.source])]
+      none -> []
+    end
+  end
+
+  return with_callbacks(with_stores(found, stores), callbacks)
 end
 
 # The value of an integer constant written with literals, `|` and `+` (`O_RDONLY | O_NONBLOCK` once the macros are
@@ -1020,7 +1040,7 @@ def with_assignment(tables: Tables, scope: Scope, node: Json, found: Found) -> F
   end
 
   case slot_of(tables, scope, parts[0])
-    some(slot) -> return with_stores(found, stored(tables, scope, slot, parts[1]))
+    some(slot) -> return with_field_stores(found, node, stored(tables, scope, slot, parts[1]))
     none -> return found
   end
 end
