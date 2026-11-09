@@ -25,6 +25,10 @@ TOOL_TABLE = "tool.cchecker"
 # What an unknown key of a file of -c without that table adds: the file may be a manifest that lacks it.
 WHOLE_NOTE = " (no [tool.cchecker] table; read as a cchecker file)"
 
+# The `[library]` flags that are false unless the settings set them true: the inference of short locks is
+# experimental.
+OFF_BY_DEFAULT = [Known.SECTIONS_FLAG]
+
 ## A `caller>callee` pair of `[assume] stop_calls`: the call of `callee` in `caller`, each a function name or `name@path`.
 export struct Edge
   caller: String
@@ -32,7 +36,7 @@ export struct Edge
 end
 
 ## The settings of a run. `origin` is the file they were read from, as the user wrote it, or "defaults". `off` holds
-## the `[library]` flags that are false; `short` and `hot` are the names of `[roots]`. `follow_cold` is
+## the `[library]` flags that are false (`short_lock_sections` unless set true); `short` and `hot` are the names of `[roots]`. `follow_cold` is
 ## `[effects] follow_cold`: the walk goes into the functions that never return or are cold. `trusted` and `stops` are
 ## `[assume] short` and `[assume] stop`: the functions that count as fine for CC_SHORT, and those no walk goes into;
 ## `short_locks` is `[assume] short_locks`, the classes of the locks that taking is not blocking for CC_SHORT,
@@ -145,7 +149,7 @@ end
 
 ## Returns the settings that hold when no file gives any: every family on, no roots.
 export def defaults() -> Config
-  return Config(origin: DEFAULTS, off: Set.new([]), short: [], hot: [])
+  return Config(origin: DEFAULTS, off: Set.new(OFF_BY_DEFAULT), short: [], hot: [])
 end
 
 ## Returns the flags of `[library]` that a run knows, in the order of docs/settings.md.
@@ -211,14 +215,16 @@ end
 
 def library_of(origin: String, path: String, value: Toml.Value, note: String) -> Result[Set[String]]
   entries = try table_of(origin, path, value)
-  off: Set[String] = Set.new([])
+  off: Set[String] = Set.new(OFF_BY_DEFAULT)
   known = flags()
   for flag in entries.keys
     if not known.include?(flag)
       return error(unknown(origin, "#{path}.#{flag}", note))
     end
 
-    if not try flag_of(origin, "#{path}.#{flag}", entries.get(flag).unwrap!)
+    if try flag_of(origin, "#{path}.#{flag}", entries.get(flag).unwrap!)
+      off = off.delete(flag)
+    else
       off = off.add(flag)
     end
   end

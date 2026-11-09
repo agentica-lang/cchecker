@@ -29,17 +29,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `CC_JUMP_RELEASES` and `[assume] jump_releases` on a `CC_ACQUIRES` or `CC_RELEASES` helper whose lock the catcher
   of a jump gives back: a jump with that lock held or released is no lock finding when the function takes and
   releases it only through such helpers; a return still is.
-- A lock whose critical sections reach no blocking call, in a full run of a compile database, is short for
-  `CC_SHORT`, as with `[assume] short_locks`; `inferred_short_locks` of `--json` lists them, the text report counts
-  them, and `[library] short_lock_sections = false` turns it off.
+- Experimental, off by default: with `[library] short_lock_sections = true`, a lock whose critical sections reach no
+  blocking call, in a full run of a compile database, is short for `CC_SHORT`, as with `[assume] short_locks`;
+  `inferred_short_locks` of `--json` lists them and the text report counts them. It may call a lock short wrongly in
+  cases it does not handle yet; turn it on only to try it.
 
 ### Changed
 
-- **Breaking:** a full run of a compile database no longer reports `CC-EFFECT-SHORT-BLOCKS` at the take of a lock
-  that it finds short; a root that blocks later reports that call instead, under another baseline key. Baseline
-  entries and suppressions of the old findings become stale, so `--strict-baseline` fails until `--update-baseline`
-  drops them, and a run of some files (which infers nothing) reports those takes as new against a baseline of a full
-  run. `[library] short_lock_sections = false` keeps the old findings.
 - `uv_run` with a constant `UV_RUN_NOWAIT` is no longer a blocking call for `CC_SHORT` (`libc_nonblocking_flags`);
   `UV_RUN_ONCE`, `UV_RUN_DEFAULT` and a mode in a variable still are.
 - **Breaking:** `CC_MAY_JUMP` or `[assume] may_jump` on a function that never returns (`_Noreturn`, `CC_NORETURN`) now

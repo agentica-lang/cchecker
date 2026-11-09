@@ -167,6 +167,11 @@ Feature: Time and memory on large generated inputs
       """
       [{"directory": ".", "file": "many.c", "arguments": ["cc", "-c", "many.c", "-I../../../include"]}]
       """
+    And the file "cchecker.toml" holds:
+      """
+      [library]
+      short_lock_sections = true
+      """
     And the C file "many.c" holds:
       """
       #include "pthread.h" /* found in the system folders */

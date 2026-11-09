@@ -108,8 +108,9 @@ end
 ## The findings of the lock rules, and how many functions had more paths than the walk follows (their findings are
 ## those of the paths it went through). `sections` are the calls made while a lock is held, in every function that
 ## takes or releases one, helpers included, and `partial` the classes whose sections are not all known: those of the
-## functions whose paths the walk did not all go through, and those of a lock that a function (not a helper) returns
-## or jumps out with, or releases without holding it, as its caller holds the lock across code that no walk sees. A
+## functions whose paths the walk did not all go through, and those of a lock that a function returns or jumps out
+## with, or releases without holding it (a helper: one its marks do not name), as its caller holds the lock across
+## code that no walk sees. A
 ## lock of a class that the inference cannot trust (`section_class`) is "" in both.
 export struct Checked
   findings: List[Finding]
@@ -148,7 +149,7 @@ export def check(units: List[Unit]) -> Checked
 
         # A lock left to the caller is held (or was) across code that no walk reads; a helper may do so with the
         # locks of its own marks only.
-        own = annotated_keys(functions.get(body.key))
+        own = annotated_keys(body, functions.get(body.key))
         left = unbalanced(walk.findings).select do |key| not own.include?(key) end
         partial = partial.union(
           Set.new(left.map do |key| section_class(locks.get(key).unwrap_or(Lock(key: key, shown: key))) end),
@@ -439,8 +440,13 @@ def walked(walker: Walker) -> Walk
   return Walk(findings: found, complete: true, sections: sections)
 end
 
-# The keys of the locks of a function's CC_ACQUIRES and CC_RELEASES, as its marks write them.
-def annotated_keys(function: Optional[Function]) -> Set[String]
+# The keys of the locks of a function's CC_ACQUIRES and CC_RELEASES in the names of the parameters of its body, or,
+# when the unit of the body did not see the marked prototype, as its marks write them (`Held.stop_keys` does the same).
+def annotated_keys(body: Body, function: Optional[Function]) -> Set[String]
+  if not body.acquires.empty? or not body.releases.empty?
+    return Set.new(body.acquires.concat(body.releases).select do |key| key != "" end)
+  end
+
   marks = function.map do |f| f.marks end.unwrap_or([])
   inside = marks.flat_map do |mark|
     ["acquires(", "releases("]
