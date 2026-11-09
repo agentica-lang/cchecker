@@ -82,3 +82,29 @@ end
 def test_a_header_entry_is_not_fixed_by_a_partial_run() -> Result[Void]
   return Test.eq(Baseline.split([], [entry("shared.h", 2)], files(["a.c"])).fixed, 0)
 end
+
+def test_what_is_rendered_reads_back_with_its_versions() -> Result[Void]
+  versions = {"clang": "clang 19", "gcc": "gcc 14"}
+  loaded = try Baseline.parse("base.json", Baseline.render([entry("a.c", 2)], versions))
+  try Test.eq(loaded.entries, [entry("a.c", 2)])
+  return Test.eq(loaded.tools, versions)
+end
+
+def test_a_baseline_without_versions_reads_with_none() -> Result[Void]
+  loaded = try Baseline.parse("base.json", "{\"version\": 1, \"findings\": []}")
+  return Test.eq(loaded.tools.size, 0)
+end
+
+def test_only_a_tool_in_both_with_another_version_is_a_change() -> Result[Void]
+  stored = {"clang": "clang 19", "gcc": "gcc 13", "clang-tidy": "tidy 19"}
+  current = {"gcc": "gcc 14", "clang-tidy": "tidy 19", "other": "x"}
+  return Test.eq(
+    Baseline.changes(stored, current),
+    [Baseline.VersionChange(tool: "gcc", baseline: "gcc 13", current: "gcc 14")],
+  )
+end
+
+def test_an_update_of_versions_keeps_the_tools_that_did_not_run() -> Result[Void]
+  merged = Baseline.merged_tools({"gcc": "gcc 13", "clang": "clang 19"}, {"gcc": "gcc 14"})
+  return Test.eq(merged, {"clang": "clang 19", "gcc": "gcc 14"})
+end

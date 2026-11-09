@@ -13,6 +13,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `CC_OWNS_OUT` on a parameter (`char **out`): `*out = p` hands `p` out to the caller, and `take(&p)` makes `p` own
   what the call left. `argv[i] = p` in an array that owns hands `p` on to the array.
 
+- `--update-baseline` writes the versions of the tools it ran (`gcc`, `clang`, `clang-tidy`) into `tools` of the
+  baseline, and a run with other versions warns on standard error and lists them in `version_changes` of `--json`.
+  The exit code does not change; a baseline of 0.1.0 still reads.
+
 ### Changed
 
 - `include/cchecker.h`: the macros are empty unless cchecker dumps the AST (`CCHECKER_AST`), so a normal clang build no
