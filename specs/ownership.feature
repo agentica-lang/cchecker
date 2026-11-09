@@ -48,6 +48,9 @@ Feature: Ownership on every path
       | old value never freed  | 6      | void f(CC_FREES char **p, char *v) { char *old = *p; *p = v; }                                            |
       | local named as a global | 23    | CC_OWNS char *g; void f(int n) { CC_OWNS char *b = malloc(n); char *g[1]; g[0] = b; } |
       | returned on one side of ?: | 15  | CC_OWNS char *f(int n) { CC_OWNS char *p = make(n); return n ? p : NULL; }                               |
+      | owner in a field that does not own | 70 | struct span { char *b; int n; }; void take_span(struct span s); void f(int n) { CC_OWNS char *b = make(n); struct span s = { b, n }; take_span(s); } |
+      | alias left after a handover | 6   | void f(void) { CC_OWNS char *p = make(1); char *q = p; p = NULL; }                                        |
+      | old value kept and lost | 6      | void f(int n) { CC_OWNS char *p = make(n); char *old = p; p = make(n); free(p); }                         |
 
   Scenario Outline: An owned pointer freed or handed on on every path passes (<case>)
     Given the C file "own.c" holds:
@@ -123,6 +126,13 @@ Feature: Ownership on every path
       | elvis                  | void f(char *q, int n) { char *p = q ?: make(n); free(p); }                                                                               |
       | field of a local struct | void f(int n) { struct local { CC_OWNS char *held; } x; CC_OWNS char *b = malloc(n); x.held = b; work(x.held); free(x.held); }          |
       | local struct escapes    | void f(int n) { struct local { CC_OWNS char *held; } x; CC_OWNS char *b = malloc(n); x.held = b; work((char *)&x); }                     |
+      | owner in a field that does not own | struct vec { void *base; int len; }; int send(struct vec *v, int c); void f(int n) { CC_OWNS char *buf = make(n); struct vec v = { .base = buf, .len = n }; send(&v, 1); free(buf); } |
+      | owner in an array       | int run(char *const argv[]); void f(int n) { CC_OWNS char *path = make(n); char *argv[] = { path, NULL }; run(argv); free(path); } |
+      | owner in a nested initializer | struct span { char *b; int n; }; struct wrap { struct span s; }; void f(int n) { CC_OWNS char *b = make(n); struct wrap w = {{ b, n }}; work(w.s.b); free(b); } |
+      | owning call in a compound literal | void consume(CC_FREES struct box *x); void f(int n) { consume(&(struct box){ .held = make(n) }); } |
+      | old value kept by a local | void f(int n) { CC_OWNS char *p = make(n); char *old = p; p = make(n); free(old); free(p); }                  |
+      | swapped                 | void f(int n) { CC_OWNS char *a = make(n); CC_OWNS char *b = make(n); char *t = a; a = b; b = t; free(a); free(b); } |
+      | old value of an owner set again | void f(int n) { CC_OWNS char *p = make(n); CC_OWNS char *q = make(n); char *old = p; p = q; free(old); free(p); } |
 
   Scenario Outline: A pointer freed or handed on twice on a path is a finding at the function (<case>)
     Given the C file "own.c" holds:
@@ -727,8 +737,8 @@ Feature: Ownership on every path
     A local struct that the function reads and writes only field by field (`p.left`) has a state for each CC_OWNS
     field, and an initializer gives each its item. A struct whose address is taken, that is copied or passed by value,
     or that has a cleanup function, and a union are not followed: a store into their CC_OWNS fields hands the pointer
-    on. A pointer put in an initializer or a compound literal is handed on, and `old = p; p = NULL;` leaves the
-    pointer to `old`.
+    on. A pointer that an initializer or a compound literal puts in a CC_OWNS field is handed on, and `old = p;
+    p = NULL;` leaves the pointer to `old`.
 
     Given the C file "fields.c" holds:
       """

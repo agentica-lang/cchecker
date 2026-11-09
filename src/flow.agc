@@ -865,17 +865,11 @@ def kept_calls(ctx: Context, all: List[Json], places: Places) -> Set[String]
     parts = Ast.children(n)
     values: List[Json] = []
     case Ast.kind(n)
-      "VarDecl" ->
-        values = parts.select do |child| not Ast.kind(child).end_with?("Attr") end
-        fields = places.fields.get(declared_key(places.keys, n), [])
-        if values.size == 1 and Ast.kind(see_through(values.first)) == "InitListExpr" and not fields.empty?
-          # An initializer of a followed struct keeps what it gives its CC_OWNS fields.
-          items = Ast.children(see_through(values.first))
-          values = fields.map do |place| places.items.get(place).unwrap_or(-1) end
-            .select do |i| i >= 0 and i < items.size end
-            .map do |i| items[i] end
-        end
-
+      "VarDecl" -> values = parts.select do |child| not Ast.kind(child).end_with?("Attr") end
+      "InitListExpr" ->
+        # An initializer or a compound literal keeps what it gives a CC_OWNS field.
+        owning = owning_items(ctx, n)
+        values = (0...parts.size).to_a.select do |i| owning.include?(i) end.map do |i| parts[i] end
       "ReturnStmt" -> values = parts
       "BinaryOperator" ->
         target = parts[0]
@@ -1052,7 +1046,25 @@ def with_field(found: Followed, key: String, place: String) -> Followed
   return found.with(of: found.of.put(key, places.push(place)))
 end
 
-# The name of the record of a variable, by its type (`struct pair`, `const struct pair`, or a typedef name).
+# The items of an initializer that give a CC_OWNS field of its struct its value, by index.
+def owning_items(ctx: Context, init: Json) -> Set[Int]
+  owning: Set[Int] = Set.new([])
+  case ctx.owning.records.get(record_name(init))
+    some(record) ->
+      for i in 0...record.ids.size
+        if ctx.owning.fields.include?(record.ids[i]) and not ctx.owning.unions.include?(record.ids[i])
+          owning = owning.add(i)
+        end
+      end
+
+    none -> return owning
+  end
+
+  return owning
+end
+
+# The name of the record of a variable or an initializer, by its type (`struct pair`, `const struct pair`, or a
+# typedef name).
 def record_name(decl: Json) -> String
   name = Ast.text(JSON.get(decl, "type").unwrap_or(JSON.from("")), "qualType")
   for word in ["const ", "volatile ", "struct "]
@@ -1768,10 +1780,14 @@ def expression(b: Builder, node: Json, preds: List[Int]) -> Built
       other = expression(split.b, parts.last, split.no)
       return Built(b: other.b, exits: split.yes.concat(other.exits))
     "InitListExpr" ->
-      # A pointer that owns, put in an initializer or a compound literal, is handed on to what it initializes.
+      # A pointer that owns, put in a CC_OWNS field by an initializer or a compound literal, is handed on to it; in any
+      # other item it is only read.
+      owning = owning_items(b.ctx, node)
       built = Built(b: b, exits: preds)
-      for item in Ast.children(node)
-        if owner_named(built.b, item) != ""
+      items = Ast.children(node)
+      for i in 0...items.size
+        item = items[i]
+        if owning.include?(i) and owner_named(built.b, item) != ""
           built = handed_on(built.b, some("an initializer"), item, built.exits)
         else
           built = expression(built.b, item, built.exits)

@@ -105,14 +105,14 @@ where they stop), through a function pointer, or out through a parameter without
 variables of the same name in one function (a local that shadows another, a
 parameter or a global, or the same name in two blocks) are two variables: each
 pointer has its own state, and a condition on one is not a condition on the
-other. A local that stands for a pointer still stands for it after that pointer
-gets a new value, except through a `CC_FREES` parameter that points to the
-pointer, or when the new value owns nothing: after `old = *p; *p = v;` or `old =
-p; p = NULL;`, `old` holds the old value. `return p` hands `p` on even when the
-function has no `CC_OWNS` mark, and `p = realloc(p, n)` is trusted to work. A
-pointer stored in a field without `CC_OWNS` is not followed, one put in an
-initializer or a compound literal is handed on there, and only one level of
-pointer is (`*p` of a `char **p`, not `**p`). A
+other. A local that stands for a pointer holds the old value when the pointer
+gets a new one (`old = p; p = make();`, `old = *p; *p = v;` through a `CC_FREES`
+parameter), except after `p = realloc(p, n)`, which is trusted to work. `return
+p` hands `p` on even when the function has no `CC_OWNS` mark. A pointer stored
+in a field without `CC_OWNS` is not followed, one that an initializer or a
+compound literal puts in a `CC_OWNS` field is handed on there (in any other
+field or item it is only read), and only one level of pointer is (`*p` of a
+`char **p`, not `**p`). A
 pointer freed through its address (`free_and_null(&p)`, a cleanup function) is
 freed or null: it may be read and freed again (`free(NULL)`), and where a
 condition says it is not null it is freed. The rules assume that a helper that
