@@ -30,8 +30,9 @@ WHOLE_NOTE = " (no [tool.cchecker] table; read as a cchecker file)"
 ## `[assume] short` and `[assume] stop`: the functions that count as fine for CC_SHORT, and those no walk goes into;
 ## `short_locks` is `[assume] short_locks`, the classes of the locks that taking is not blocking for CC_SHORT,
 ## `stop_fields` is `[assume] stop_fields`, the function-pointer fields (`request.call`) whose calls no walk follows,
-## `may_jump` is `[assume] may_jump`, the functions that may jump out of their caller (as CC_MAY_JUMP), and `jumps` is
-## `[assume] jumps`, those that always do and never return (as CC_JUMPS).
+## `may_jump` is `[assume] may_jump`, the functions that may jump out of their caller (as CC_MAY_JUMP), `jumps` is
+## `[assume] jumps`, those that always do and never return (as CC_JUMPS), and `catches` is `[assume] catches`, those
+## that catch the jumps of what they call (as CC_CATCHES).
 export struct Config
   origin: String
   off: Set[String]
@@ -44,6 +45,7 @@ export struct Config
   stop_fields: List[String] = []
   may_jump: List[String] = []
   jumps: List[String] = []
+  catches: List[String] = []
 end
 
 ## Returns the settings of a run in `folder`, the project folder: those of `explicit` (the file of -c) when given.
@@ -102,6 +104,7 @@ export def from_table(origin: String, prefix: String, table: Toml.Value, note: S
             "stop_fields" -> config = config.with(stop_fields: try names_of(origin, path, assume.get(name).unwrap!))
             "may_jump" -> config = config.with(may_jump: try names_of(origin, path, assume.get(name).unwrap!))
             "jumps" -> config = config.with(jumps: try names_of(origin, path, assume.get(name).unwrap!))
+            "catches" -> config = config.with(catches: try names_of(origin, path, assume.get(name).unwrap!))
             _ -> return error(unknown(origin, path, note))
           end
         end
@@ -125,6 +128,7 @@ export def flags() -> List[String]
       .push(Known.CALLBACKS_FLAG)
       .push(Known.LIBGC_ALLOC_FLAG)
       .push(Known.NONBLOCKING_FLAG)
+      .push(Known.JUMP_CALLERS_FLAG)
   )
 end
 

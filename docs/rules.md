@@ -9,18 +9,19 @@ collector. The codes are listed in the README and described below and in
 
 `include/cchecker.h` defines the macros that the rules read: `CC_SHORT`,
 `CC_BLOCKING`, `CC_HOT`, `CC_ACQUIRES(lock)`, `CC_RELEASES(lock)`,
-`CC_NORETURN`, `CC_MAY_JUMP`, `CC_JUMPS`, `CC_NO_SYSCALL_UNDER(lock)`,
-`CC_LOCK_LEVEL(n)`, `CC_PAIR(set, restore)`, `CC_OWNS`, `CC_FREES`,
-`CC_OWNS_OUT`, `CC_GC`, `CC_GC_ALLOC`, `CC_ASSUME_SHORT` (the function counts as
-fine for `CC_SHORT`), `CC_STOP` (no rule walks into the function; both are
-assumptions, see [Settings](settings.md)) and `CC_IGNORE("CODE", "reason")` (a
-suppression). The macros are empty, in every build and with every compiler,
-except when cchecker dumps the AST: it defines `CCHECKER_AST`, and with clang
-the macros become `__attribute__((deprecated("cchecker:...")))` (the JSON AST of
-clang 19 drops the text of `annotate` and keeps the message of `deprecated`).
-The dump runs with `-w`, so this gives no warning. A normal build of your
-project carries no annotation; a project that wants an attribute for another
-tool defines the macros itself.
+`CC_NORETURN`, `CC_MAY_JUMP`, `CC_JUMPS`, `CC_CATCHES`,
+`CC_NO_SYSCALL_UNDER(lock)`, `CC_LOCK_LEVEL(n)`, `CC_PAIR(set, restore)`,
+`CC_OWNS`, `CC_FREES`, `CC_OWNS_OUT`, `CC_GC`, `CC_GC_ALLOC`, `CC_ASSUME_SHORT`
+(the function counts as fine for `CC_SHORT`), `CC_STOP` (no rule walks into the
+function; both are assumptions, see [Settings](settings.md)) and
+`CC_IGNORE("CODE", "reason")` (a suppression). The macros are empty, in every
+build and with every compiler, except when cchecker dumps the AST: it defines
+`CCHECKER_AST`, and with clang the macros become
+`__attribute__((deprecated("cchecker:...")))` (the JSON AST of clang 19 drops
+the text of `annotate` and keeps the message of `deprecated`). The dump runs
+with `-w`, so this gives no warning. A normal build of your project carries no
+annotation; a project that wants an attribute for another tool defines the
+macros itself.
 
 ```c
 #include "cchecker.h"
@@ -150,6 +151,25 @@ check_size` as the last step, and the path ends there, so what comes after the
 call is not on that path. `CC_MAY_JUMP` on a function that never returns
 (`_Noreturn`, `CC_NORETURN`) is the same. The jump adds no state to the walk, so
 the limits below do not change.
+
+A function that calls a function that may jump out or jumps (marked, listed, or
+found so in turn), directly, may jump out too, unless it catches the jump: it
+calls `setjmp` or `sigsetjmp`, is marked `CC_CATCHES`, or is named in `[assume]
+catches`. A function that no rule walks into (`CC_STOP`, `[assume] stop`) does
+not either. So only the functions that raise need a mark, not every helper that
+reaches them. A call of `setjmp` anywhere in a function counts as catching every
+jump of its calls: an approximation, so a jump from a call before the `setjmp`,
+in the branch that handles the jump, or to another `jmp_buf` counts as caught
+too. The last step of `path` names the chain of calls down to the marked
+function, a shortest one, and at most three of it (`7:72 may jump in sized
+(check_size)`, `may jump in z (y, x, w, ...)`); a name that static functions of
+two files share has its file (`helper@src/a.c`). A function that never returns
+and reaches a jump is a way out where the path ends, as at a `CC_JUMPS` call,
+and says so: `may jump in bad_signature (fail), never returns` (it may also
+exit). The jump of a function that catches still counts at its own calls:
+catching stops only what its callers see. A finding at an inferred jump has
+`may_jump_callers` in `source` of `--json`, and `[library] may_jump_callers =
+false` turns the inference off (see [Settings](settings.md)).
 
 | Code | |
 |---|---|

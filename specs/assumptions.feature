@@ -379,6 +379,7 @@ Feature: What the project assumes of its functions
       stop = ["helper", "external"]
       may_jump = ["external"]
       jumps = ["external"]
+      catches = ["tick"]
       """
     When I run cchecker in its folder with "--tools rules"
     Then the exit code is 0
@@ -388,6 +389,7 @@ Feature: What the project assumes of its functions
       stop = ["helper", "tracer"]
       may_jump = ["raise_error"]
       jumps = ["raise_fatal"]
+      catches = ["run_guarded"]
       """
     When I run cchecker in its folder with "--tools rules"
     Then the exit code is 2
@@ -402,6 +404,10 @@ Feature: What the project assumes of its functions
     And the errors include:
       """
       raise_fatal (assume.jumps)
+      """
+    And the errors include:
+      """
+      run_guarded (assume.catches)
       """
     When I run cchecker in its folder with "--tools rules tick.c"
     Then the exit code is 0

@@ -26,6 +26,7 @@ libgc_blocking = true
 libuv_callbacks_short = true
 libgc_alloc = true
 libc_nonblocking_flags = true
+may_jump_callers = true
 
 [roots]
 short = ["io_poll", "on_timer"]
@@ -41,6 +42,7 @@ short_locks = ["queue.mu"]
 stop_fields = ["request.call"]
 may_jump = ["raise_type_error"]
 jumps = ["raise_error"]
+catches = ["run_protected"]
 ```
 
 `[library]` turns each family of library knowledge on or off. All are on by
@@ -62,6 +64,7 @@ call that a later libuv adds is not known until the lists are updated.
 | `libuv_callbacks_short` | a `CC_SHORT` root for each function passed as a callback that libuv runs on the loop thread: the `cb` of `uv_timer_start` (argument 1, from 0), `uv_poll_start` (2), `uv_async_init` (2), `uv_close` (1) and `uv_walk` (1), the `alloc_cb` and `read_cb` of `uv_read_start` (1 and 2), the callback of `uv_write` (4), `uv_write2` (5), `uv_shutdown` (2), `uv_tcp_connect` (3), `uv_pipe_connect` (3), `uv_pipe_connect2` (5), `uv_listen` (2), `uv_idle_start`, `uv_prepare_start`, `uv_check_start`, `uv_signal_start`, `uv_signal_start_oneshot` and `uv_tcp_close_reset` (1), the `alloc_cb` and `recv_cb` of `uv_udp_recv_start` (1 and 2), the callback of `uv_udp_send` (5), `uv_getaddrinfo` and `uv_getnameinfo` (2), `uv_random` (5), `uv_fs_event_start` and `uv_fs_poll_start` (1), the callback, the last argument, of the `uv_fs_*` requests: `uv_fs_close`, `uv_fs_closedir`, `uv_fs_fdatasync`, `uv_fs_fstat`, `uv_fs_fsync`, `uv_fs_lstat`, `uv_fs_mkdtemp`, `uv_fs_mkstemp`, `uv_fs_opendir`, `uv_fs_readdir`, `uv_fs_readlink`, `uv_fs_realpath`, `uv_fs_rmdir`, `uv_fs_stat`, `uv_fs_statfs` and `uv_fs_unlink` (3), `uv_fs_access`, `uv_fs_chmod`, `uv_fs_fchmod`, `uv_fs_ftruncate`, `uv_fs_link`, `uv_fs_mkdir`, `uv_fs_rename` and `uv_fs_scandir` (4), `uv_fs_chown`, `uv_fs_copyfile`, `uv_fs_fchown`, `uv_fs_futime`, `uv_fs_lchown`, `uv_fs_lutime`, `uv_fs_open`, `uv_fs_symlink` and `uv_fs_utime` (5), `uv_fs_read`, `uv_fs_sendfile` and `uv_fs_write` (6), the `after_work_cb` of `uv_queue_work` (3), never its `work_cb`, which runs on the pool, and a function stored in the `exit_cb` field of `uv_process_options_t` (by an assignment or an initializer; the root names `uv_process_options_t.exit_cb`) (see [Roots](#roots)) |
 | `libgc_alloc` | the allocators of the Boehm collector (`GC_malloc`, `GC_malloc_atomic`, `GC_realloc`, `GC_strdup`, their `GC_debug_` forms, ...) to the allocators of `CC_GC_ALLOC`, in the rule on values of the collector (`source` `libgc_alloc`) |
 | `libc_nonblocking_flags` | the flags that make a blocking call return at once: `open` and `openat` with `O_NONBLOCK`, `recv`, `send`, `recvfrom` and `sendto` with `MSG_DONTWAIT`, and `uv_run` with the mode `UV_RUN_NOWAIT` alone (not `UV_RUN_ONCE`, `UV_RUN_DEFAULT` or a mix of them; its value is the same on every target, so the target does not matter for it), when the flag argument is a constant (a flag or mode in a variable leaves the call blocking); such a call is not blocking for `CC_SHORT`. `open` with `O_NONBLOCK` is meant for FIFOs and devices: on a regular file it can still wait for the disk, and the rules do not tell the two apart. The values are those of the target clang builds for (Linux, but on MIPS, SPARC, Alpha and PA-RISC, and macOS); on another target only a flag that the C library defines as a constant of an enum (glibc's `MSG_DONTWAIT`) counts, and the run says on standard error that it does not know the values |
+| `may_jump_callers` | a function that calls a function that may jump out (`CC_MAY_JUMP`, `CC_JUMPS`, `[assume] may_jump` or `jumps`, or one found so in turn) may jump out too, unless it catches the jump ([Locks](rules.md#locks-on-every-path)); a finding at such a call has this flag in `source`. It is not library knowledge, but it is turned off the same way |
 
 A blocking flag changes only the blocking calls of `CC_SHORT`: the rules of
 `CC_HOT` and of `CC_NO_SYSCALL_UNDER` count every known blocking call as a
@@ -89,9 +92,9 @@ the end of the path of the file as it is, with no `..`; a leading `./` is
 ignored. In `[assume]` it may be the file of the definition or of any
 declaration of the function (`slow@slow.h` for a prototype in a header); in
 `[roots]` it is the file of the definition. It works in every list of `[roots]`
-and in `short`, `stop`, `may_jump` and `jumps` of `[assume]` (`stop_fields` and
-`short_locks` name fields and locks), and a `name@path` that matches no
-function is an error (exit 2) like a bare name that does.
+and in `short`, `stop`, `may_jump`, `jumps` and `catches` of `[assume]`
+(`stop_fields` and `short_locks` name fields and locks), and a `name@path` that
+matches no function is an error (exit 2) like a bare name that does.
 
 `[assume]` says what the project knows of its own functions and cchecker cannot
 see in the C, as `CC_ASSUME_SHORT` and `CC_STOP` do on a declaration. `short`
@@ -100,10 +103,11 @@ walk into them (a helper that runs a request inline only on the loop thread and
 queues it otherwise, a read of a descriptor that never blocks); the other rules
 still do. `stop` names the functions that no rule walks into, and whose calls
 count for none of them (a trace call behind a runtime flag): the effect rules,
-the system calls under a `CC_NO_SYSCALL_UNDER` lock, and the lock levels. Either
-holds for every root, inferred roots included, and for every path of
-`--all-paths`; the ownership rules and the rule on values of the collector,
-which read one function at a time, do not change.
+the system calls under a `CC_NO_SYSCALL_UNDER` lock, the lock levels, and the
+inference of jumps through the calls. Either holds for every root, inferred
+roots included, and for every path of `--all-paths`; the ownership rules and the
+rule on values of the collector, which read one function at a time, do not
+change.
 
 An assumption cuts the walk into the function, not the function itself: a root
 that is assumed short or stopped still has its own body checked, as a caller
@@ -125,15 +129,25 @@ function it reaches. A function that is both `stop` and `may_jump` is both: no
 walk goes into it, and a call of it is still a way out of its caller, as `stop`
 is about what the function calls and `may_jump` about the path of the caller. A
 name that no function of the compile database declares is an error (exit 2), as
-for `short` and `stop` (`raise_type_error (assume.may_jump)`).
+for `short` and `stop` (`raise_type_error (assume.may_jump)`). A function that
+calls one may jump out too, and its callers in turn, unless it catches the jump
+(`catches` below, `may_jump_callers` above).
 
 `jumps` names the functions that always jump out of their caller and never
 return (an interpreter's raise, which calls `longjmp`), as `CC_JUMPS` does on a
 declaration: a call of one is a way out of the caller, as for `may_jump`, and
 the path ends there, as at a call that never returns. Such a function is an
-error exit for the walk of the effect rules, as a `_Noreturn` one is. A name
-that no function of the compile database declares is an error (exit 2)
-(`raise_error (assume.jumps)`).
+error exit for the walk of the effect rules, as a `_Noreturn` one is. A function
+that calls one may jump out too, as for `may_jump`. A name that no function of
+the compile database declares is an error (exit 2) (`raise_error
+(assume.jumps)`).
+
+`catches` names the functions that catch the jumps of the functions they call,
+as `CC_CATCHES` does on a declaration: a function that calls one that may jump
+out may jump out too, and the inference stops at a function that catches
+([Locks](rules.md#locks-on-every-path)). A function that calls `setjmp` or
+`sigsetjmp` catches without a mark. A name that no function of the compile
+database declares is an error (exit 2) (`run_protected (assume.catches)`).
 
 A short lock is one held for a few instructions: a lock whose field or global is
 marked `CC_NO_SYSCALL_UNDER()`, or whose class `[assume] short_locks` names:

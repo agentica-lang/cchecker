@@ -29,10 +29,13 @@
  *   CC_NORETURN                 a call of the function never comes back (it ends the thread or the process); a
  *                               function that raises with `longjmp` is CC_JUMPS
  *   CC_MAY_JUMP                 a call of the function may jump out (`longjmp` on an error) or return: the jump is
- *                               a way out of the caller, where the ownership and lock rules check what it holds
+ *                               a way out of the caller, where the ownership and lock rules check what it holds; a
+ *                               function that calls one may jump out too, unless it catches the jump (CC_CATCHES)
  *   CC_JUMPS                    a call of the function always jumps out (`longjmp` to raise an error): a way out of
  *                               the caller, as for CC_MAY_JUMP, after which the path does not go on; CC_NORETURN
  *                               with CC_MAY_JUMP is the same
+ *   CC_CATCHES                  the function catches the jumps of the functions it calls (it calls `setjmp`): the
+ *                               inference of CC_MAY_JUMP through the calls stops at it, as at a call of `setjmp`
  *   CC_ASSUME_SHORT             the function counts as fine for CC_SHORT: the short rule does not walk into it
  *   CC_STOP                     no rule walks into the function: what it calls counts for none of them
  *   CC_IGNORE("CODE", "reason") a finding of the rules on the function is a false positive, for this reason
@@ -72,6 +75,7 @@
 #define CC_NORETURN CC_ANNOTATE_("noreturn")
 #define CC_MAY_JUMP CC_ANNOTATE_("may_jump")
 #define CC_JUMPS CC_ANNOTATE_("jumps")
+#define CC_CATCHES CC_ANNOTATE_("catches")
 #define CC_ASSUME_SHORT CC_ANNOTATE_("assume_short")
 #define CC_STOP CC_ANNOTATE_("stop")
 #define CC_LOCK_LEVEL(...) CC_ANNOTATE_ARGS_("lock_level", __VA_ARGS__)
@@ -93,6 +97,7 @@
 #define CC_NORETURN
 #define CC_MAY_JUMP
 #define CC_JUMPS
+#define CC_CATCHES
 #define CC_ASSUME_SHORT
 #define CC_STOP
 #define CC_LOCK_LEVEL(...)

@@ -18,6 +18,8 @@ export STOP = "stop"
 
 ## The mark of a function whose call may jump out of its caller (CC_MAY_JUMP, `[assume] may_jump`).
 export MAY_JUMP = "may_jump"
+## The mark of a function that catches the jumps of the functions it calls (CC_CATCHES, `[assume] catches`).
+export CATCHES = "catches"
 ## The mark of a function whose call always jumps out of its caller and never returns (CC_JUMPS, `[assume] jumps`).
 export JUMPS = "jumps"
 
@@ -77,12 +79,13 @@ struct Listing
   tails: Map[String, List[String]]
 end
 
-# The lists of `[assume] short`, `stop`, `may_jump` and `jumps`.
+# The lists of `[assume] short`, `stop`, `may_jump`, `jumps` and `catches`.
 struct Assumed
   short: Listing
   stop: Listing
   may_jump: Listing
   jumps: Listing
+  catches: Listing
 end
 
 ## What the rules found: the findings, and the callbacks of libuv calls they could not follow to a function.
@@ -166,7 +169,8 @@ export def assumed(units: List[Unit], config: Config) -> List[Unit]
     config.stops.empty? and
     config.stop_fields.empty? and
     config.may_jump.empty? and
-    config.jumps.empty?
+    config.jumps.empty? and
+    config.catches.empty?
   )
     return units
   end
@@ -177,6 +181,7 @@ export def assumed(units: List[Unit], config: Config) -> List[Unit]
     stop: listing_of(config.stops),
     may_jump: listing_of(config.may_jump),
     jumps: listing_of(config.jumps),
+    catches: listing_of(config.catches),
   )
 
   return units.map do |unit|
@@ -185,6 +190,69 @@ export def assumed(units: List[Unit], config: Config) -> List[Unit]
       calls: unit.calls.select do |call| not cut_call?(cut, call) end,
     )
   end
+end
+
+## Returns the units with `may_jump` inferred through the call graph: a function that calls a function that may jump
+## out or jumps (marked, listed or inferred), directly, may jump out too, unless it catches the jump (it calls `setjmp`
+## or `sigsetjmp`, or is CC_CATCHES or `[assume] catches`) or no rule walks into it (CC_STOP). A call of `setjmp`
+## anywhere in a function catches every jump of its calls: an approximation. Its `via` is the chain of calls down to
+## the marked function, a shortest one, where a name that two functions share has its file, relative to `cwd`. A
+## function that never returns and may jump out is a way out where the path ends, as CC_JUMPS is.
+export def with_jumps(units: List[Unit], cwd: String) -> List[Unit]
+  graph = graph_of(units)
+  callers: Map[String, List[String]] = {}
+  catchers: Set[String] = Set.new([])
+  for caller in graph.edges.keys
+    for target in graph.edges[caller]
+      case target
+        Target.Direct(to) ->
+          if Known.SETJMP.include?(name_of_key(graph.functions, to))
+            catchers = catchers.add(caller)
+          end
+
+          callers = callers.put(to, callers.get(to).unwrap_or([]).push(caller))
+        _ -> next
+      end
+    end
+  end
+
+  queue = graph.functions.values.select(&jumping?).map do |f| f.key end.sort
+  via: Map[String, List[String]] = {}
+  for key in queue
+    via = via.put(key, [])
+  end
+
+  # A name that two functions share (static functions of two files) is shown with its file, relative to `cwd`.
+  counts: Map[String, Int] = {}
+  for function in graph.functions.values
+    counts = counts.put(function.name, counts.get(function.name).unwrap_or(0) + 1)
+  end
+
+  seeds = queue.size
+  at = 0
+  while at < queue.size
+    key = queue[at]
+    at += 1
+    for caller in callers.get(key).unwrap_or([])
+      if not via.key?(caller) and not catchers.include?(caller) and not catches?(graph.functions.get(caller))
+        name = name_of_key(graph.functions, key)
+        shown = name
+        if counts.get(name).unwrap_or(0) > 1
+          file = graph.functions.get(key).map do |f| f.file end.unwrap_or("")
+          shown = "#{name}@#{Paths.inside(cwd, file).unwrap_or(file)}"
+        end
+
+        via = via.put(caller, [shown].concat(via[key]))
+        queue = queue.push(caller)
+      end
+    end
+  end
+
+  if queue.size == seeds
+    return units
+  end
+
+  return units.map do |unit| unit.with(functions: unit.functions.map do |f| with_via(f, via) end) end
 end
 
 ## Returns the fields of `[assume] stop_fields` that the units neither store a function in nor call through, each with
@@ -448,6 +516,27 @@ def missing_locks(units: List[Unit], graph: Graph, config: Config) -> List[Strin
   return missing.map do |c| "#{c} (assume.short_locks)" end
 end
 
+# Whether a function may jump out or jumps by a mark (or `[assume]`): where the inference starts.
+def jumping?(function: Function) -> Bool
+  return function.marks.include?(MAY_JUMP) or function.marks.include?(JUMPS)
+end
+
+# Whether the inference stops at a function: it catches the jump, or no rule walks into it.
+def catches?(function: Optional[Function]) -> Bool
+  marks = function.map do |f| f.marks end.unwrap_or([])
+  return marks.include?(CATCHES) or marks.include?(STOP)
+end
+
+# A function that may jump out through the functions it calls, with the mark and the chain.
+def with_via(function: Function, via: Map[String, List[String]]) -> Function
+  chain = via.get(function.key).unwrap_or([])
+  if chain.empty? or jumping?(function)
+    return function
+  end
+
+  return function.with(marks: function.marks.push(MAY_JUMP), via: chain)
+end
+
 # The name of a function by key, or the key itself for one the units do not declare.
 def name_of_key(functions: Map[String, Function], key: String) -> String
   return functions.get(key).map do |f| f.name end.unwrap_or(key)
@@ -474,13 +563,23 @@ def with_assumed(function: Function, lists: Assumed) -> Function
     noreturn = true
   end
 
+  if listed?(lists.catches, function)
+    marks = marks.push(CATCHES)
+  end
+
   return function.with(marks: marks.uniq, noreturn: noreturn)
 end
 
 # The entries of `[assume]` that no function of the units has, with their key. A `name@file` counts when the file of
 # any declaration of the function, or of its definition, ends with the path: the same functions that `assumed` marks.
 def missing_assumed(units: List[Unit], config: Config) -> List[String]
-  if config.trusted.empty? and config.stops.empty? and config.may_jump.empty? and config.jumps.empty?
+  if (
+    config.trusted.empty? and
+    config.stops.empty? and
+    config.may_jump.empty? and
+    config.jumps.empty? and
+    config.catches.empty?
+  )
     return []
   end
 
@@ -489,7 +588,8 @@ def missing_assumed(units: List[Unit], config: Config) -> List[String]
   stop = unmatched(config.stops, files).map do |name| "#{name} (assume.stop)" end
   may_jump = unmatched(config.may_jump, files).map do |name| "#{name} (assume.may_jump)" end
   jumps = unmatched(config.jumps, files).map do |name| "#{name} (assume.jumps)" end
-  return short.concat(stop).concat(may_jump).concat(jumps)
+  catches = unmatched(config.catches, files).map do |name| "#{name} (assume.catches)" end
+  return short.concat(stop).concat(may_jump).concat(jumps).concat(catches)
 end
 
 # The files of the functions, by name.
