@@ -23,8 +23,9 @@ CLANG_FLAGS = [
 
 # After the flags of the database: a `-Werror` there would make every warning of the build an error of the tool. The
 # analyzer warnings named with `-Werror=analyzer-...` stay errors, and cchecker reports them as findings. A
-# `-fdiagnostics-color=always` there would print colours, and a coloured line is not read.
-GCC_AFTER = ["-Wno-error", "-fdiagnostics-color=never"]
+# `-fdiagnostics-color=always` or `-fdiagnostics-urls=always` there would print escape sequences, and a line with one
+# is not read (see `Diagnostics.unparsed`).
+GCC_AFTER = ["-Wno-error", "-fdiagnostics-color=never", "-fdiagnostics-urls=never"]
 
 # What `timeout` gets to stop the whole process group after it sent the signal: gcc runs cc1 and as as its children,
 # and a
@@ -47,6 +48,9 @@ DUMP_SCRIPT = "exec \"$0\" \"$@\" > \"$CCHECKER_FIFO\""
 # How gcc and clang end the message of an `#include` they did not find.
 GCC_MISSING = ": No such file or directory"
 CLANG_MISSING = "' file not found"
+
+# How much of a diagnostic line that cchecker cannot read its tool error shows, in characters.
+STRAY_SHOWN = 200
 
 # The time a wrapped run has beyond the timeout for the kill and the exit, so `timeout` ends the run before
 # cchecker does.
@@ -522,7 +526,12 @@ def outcome(job: Job, text: String, code: Int) -> Outcome
   # A diagnostic that cchecker cannot read may be a finding: the run must not look clean.
   strays = Diagnostics.unparsed(text)
   if not strays.empty?
-    message = "printed diagnostic lines that cchecker cannot read (#{strays.size}), the first: #{strays.first}"
+    first = strays.first
+    if first.length > STRAY_SHOWN
+      first = first.slice(0, STRAY_SHOWN) + "..."
+    end
+
+    message = "printed diagnostic lines that cchecker cannot read (#{strays.size}), the first: #{first}"
     errors = errors.push(ToolError(tool: tool, file: job.entry.file, message: message))
   end
 

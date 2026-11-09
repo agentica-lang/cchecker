@@ -4,10 +4,11 @@ import Regex from "std/regex"
 
 HEADER = /^(.+?):(\d+):(\d+): (warning|error|fatal error|note): (.*)$/
 TAG = /^(.*) \[([-\w.=,+]+)\]$/
-# A diagnostic line as far as its severity, which `unparsed` looks for once the colours are out.
+# A diagnostic line as far as its severity, which `unparsed` looks for once the escape sequences are out.
 LOOSE = /^(.+?):(\d+):(\d+): (warning|error|fatal error|note):/
-# An escape sequence of a terminal, such as the colours `ESC[1m` and `ESC[0;1;35m`.
-ESCAPE = /\x1B\[[0-9;]*[A-Za-z]/
+# The escape sequences of a terminal: colours (`ESC[0;1;35m`) and the links of OSC 8 (`ESC]8;;URL BEL`, which gcc
+# prints around a tag with `-fdiagnostics-urls=always`), ended by BEL or by `ESC\`.
+ESCAPE = /\x1B\[[0-9;]*[A-Za-z]|\x1B\]8;[^\x07\x1B]*(?:\x07|\x1B\\)/
 
 ## One diagnostic line. `tags` are the bracketed names at the end of the message: `[CWE-401] [-Wanalyzer-malloc-leak]`
 ## for gcc, `[clang-analyzer-unix.Malloc]` for clang-tidy.
@@ -26,10 +27,16 @@ struct Tagged
   tags: List[String]
 end
 
-## Returns the diagnostics of a tool's output, in order. The notes, the source lines and the carets are skipped.
+## Returns the diagnostics of a tool's output, in order. The notes, the source lines and the carets are skipped, and
+## so are the lines with an escape sequence, which `unparsed` returns.
 export def parse(text: String) -> List[Diagnostic]
+  esc = escape_char()
   found: List[Diagnostic] = []
   for line in text.split("\n")
+    if line.include?(esc)
+      next
+    end
+
     case Regex.match(line, HEADER)
       ok(m) -> found = found.push(build(m))
       error(_) -> next
@@ -39,17 +46,20 @@ export def parse(text: String) -> List[Diagnostic]
   return found.select do |d| d.severity != "note" end
 end
 
-## Returns the lines of a tool's output that look like a diagnostic once the escape sequences are out, but that
-## `parse` does not read (a tool that prints colours), without their escape sequences. A finding in such a line would
-## be lost without a word, so the caller makes them a tool error.
+## Returns the lines of a tool's output that look like a diagnostic but that `parse` does not read: a line with an
+## escape sequence (a tool that prints colours or links), without its escape sequences, or a line that does not have
+## the whole form. A finding in such a line would be lost without a word, so the caller makes them a tool error.
 export def unparsed(text: String) -> List[String]
+  esc = escape_char()
   found: List[String] = []
   for line in text.split("\n")
-    if not Regex.match(line, HEADER).ok?
+    if line.include?(esc)
       plain = Regex.replace(line, ESCAPE, "").unwrap_or(line)
-      if Regex.match(plain, LOOSE).ok?
+      if Regex.match?(plain, LOOSE)
         found = found.push(plain)
       end
+    elsif Regex.match?(line, LOOSE) and not Regex.match?(line, HEADER)
+      found = found.push(line)
     end
   end
 
@@ -64,6 +74,11 @@ export def option(d: Diagnostic) -> Optional[String]
   end
 
   return some(names.first.split(",").first)
+end
+
+# The escape character, ESC, which starts every escape sequence of a terminal.
+def escape_char() -> String
+  return String.from_bytes(Bytes.from_list([27]).unwrap!).unwrap!
 end
 
 def build(m: Regex.Match) -> Diagnostic

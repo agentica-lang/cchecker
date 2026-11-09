@@ -296,7 +296,7 @@ Feature: Running the analyzers on C files
       fixtures/werror_tidy/div.c:2:17 CC-TIDY-BUGPRONE-INTEGER-DIVISION
       """
 
-  Scenario Outline: A project that turns colours on loses no finding
+  Scenario Outline: A project that turns colours or links on loses no finding
     When I run cchecker with "<args>"
     Then the exit code is 1
     And the output includes:
@@ -308,6 +308,7 @@ Feature: Running the analyzers on C files
       | args                                                        | finding                                                          |
       | --tools clang-tidy fixtures/color_tidy/div.c                | fixtures/color_tidy/div.c:2:17 CC-TIDY-BUGPRONE-INTEGER-DIVISION |
       | --tools gcc fixtures/leak.c -- -fdiagnostics-color=always   | fixtures/leak.c:9:12 CC-GCC-ANALYZER-MALLOC-LEAK                 |
+      | --tools gcc fixtures/leak.c -- -fdiagnostics-urls=always    | fixtures/leak.c:9:12 CC-GCC-ANALYZER-MALLOC-LEAK                 |
 
   Scenario: A project that turns colours on still gets the place of a compile error of the rules
     When I run cchecker with "--json --tools rules fixtures/broken.c -- -fcolor-diagnostics"

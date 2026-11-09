@@ -41,6 +41,14 @@ into tool errors: cchecker adds `-Wno-error` after the flags, and
 warnings being treated as errors`; a `cc1` killed halfway prints `gcc: fatal
 error: Killed signal terminated program cc1`, and that is a tool error.
 
+Colours and links are off whatever the project says: cchecker gives clang-tidy
+`--use-color=false` (over `UseColor: true` in a `.clang-tidy`), and adds
+`-fdiagnostics-color=never -fdiagnostics-urls=never` for gcc and
+`-fno-color-diagnostics` for the clang of the rules after the flags of the
+build. A line of a tool that looks like a diagnostic but that cchecker cannot
+read (one with escape sequences) is a tool error, so a lost finding never looks
+like a clean run.
+
 ## Files
 
 Only the C files of a database are run (a `.cc` or `.S` entry is ignored, and a
