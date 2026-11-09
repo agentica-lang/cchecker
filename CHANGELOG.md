@@ -4,28 +4,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-09
+
 ### Added
 
-- The docs as a site, <https://agentica-lang.github.io/cchecker/>: README.md and docs/, with search and a Markdown
-  copy of each page.
-- `[assume] owned_locks` names the pointer fields and globals that point to a mutex of their own (`lock.mutex` of
-  `struct lock { void *mutex; }`): the inference of short locks gives a lock reached through one the class of the
-  pointer, instead of an unknown class that stops the inference.
+- The docs as a site, <https://agentica-lang.github.io/cchecker/>, with search and a Markdown copy of each page.
+- `[assume] owned_locks` names the pointer fields and globals that point to a mutex of their own
+  (`lock.mutex`): the inference of short locks gives such a lock the class of the pointer instead of stopping.
 
 ### Changed
 
-- The ownership rules follow the `CC_OWNS` fields of a local struct (`p.left`, also from an initializer) while the function reads and writes the struct only field by field: a field that is not freed or handed on is a CC-OWN-LEAK where a store into it used to hand the pointer on.
-- cchecker needs Agentica 0.27.0 or later: the C side of its native scan module is made by native-gen.
-- The path rules for locks and ownership drop the known value of a condition after its last test, so a function with many independent flags (`if (a) lock(); if (a) unlock();`) is walked in few states instead of a power of two, and no longer falls back to the walk without conditions, which reported false findings.
-- A leak of a pointer declared in an inner block is reported where the path leaves the block (its end, a `break`, `continue`, `goto` or `return`), with that point as the last step of its path.
+- **Breaking:** cchecker needs Agentica 0.27.0 or later (native-gen makes the C side of its scan module).
+- **Breaking:** the ownership rules follow the `CC_OWNS` fields of a local struct that the function uses only field by
+  field (`p.left`, also from an initializer): a field that is not freed or handed on is a CC-OWN-LEAK, where a store
+  into it used to hand the pointer on. Run `--update-baseline` once after upgrading.
+- **Breaking:** after `old = p;`, a new value of `p` (`p = make()`, `p = NULL`, `take(&p)`) leaves the old pointer to
+  `old`: its leak is reported on `old`, no longer as an overwrite of `p`. Run `--update-baseline` once after upgrading.
+- A leak of a pointer declared in an inner block is reported where the path leaves the block (its end, a `break`,
+  `continue`, `goto` or `return`), not at the end of the function.
+- The path rules forget a condition after its last test: many independent flags (`if (a) lock(); if (a) unlock();`)
+  no longer multiply the states, nor fall back to the walk without conditions, which gave false findings.
 
 ### Fixed
 
-- `old = p; p = NULL;` (the TAKE_PTR idiom, any new value of `p`, or a `CC_OWNS_OUT` call that fills it) leaves the pointer to `old`, and a pointer that an initializer or a compound literal puts in a `CC_OWNS` field is handed on: neither is a false CC-OWN-LEAK or CC-OWN-DOUBLE-FREE any more.
-- The path rules know each variable by its declaration, not by its name: a local that shadows another (a parameter, a global, a local of an outer block) has its own state and conditions, so it no longer gives false CC-OWN or lock findings or hides real ones.
-- `return ({ ...; p; })` hands `p` on: it is no longer a false CC-OWN-LEAK.
-- A statement-expression macro used many times into one variable (`s = TAKE(); if (s) free(s);`) no longer leaves the function in `incomplete_functions`: the pointer of each use leaves the walk once nothing stands for it.
-- A statement expression as the argument of a call (`free(({ ...; p; }))`, a `CC_OWNS` parameter) frees or hands on `p`, and `return c ? ({ ...; p; }) : NULL` hands `p` on: neither is a false CC-OWN-LEAK.
+- The TAKE_PTR idiom (`old = p; p = NULL;`), and a pointer that an initializer or a compound literal puts in a
+  `CC_OWNS` field, are no longer a false CC-OWN-LEAK or CC-OWN-DOUBLE-FREE.
+- A local that shadows another (a parameter, a global, a local of an outer block) has its own state, so it no longer
+  gives false CC-OWN or lock findings or hides real ones.
+- A statement expression returned, passed to a call or in a `?:` (`return ({ ...; p; })`, `free(({ ...; p; }))`) hands
+  on or frees `p`: no longer a false CC-OWN-LEAK.
+- A statement-expression macro used many times into one variable (`s = TAKE(); if (s) free(s);`) no longer leaves the
+  function in `incomplete_functions`.
 
 ## [0.3.0] - 2026-11-09
 
@@ -185,7 +194,8 @@ The first release.
   take 17.9 s and 411 MB at `-j 2`, and a chain of 3000 else-if 4 s and 170 MB. `-j` defaults to the number of cores,
   and the jobs of the largest files start first.
 
-[Unreleased]: https://github.com/agentica-lang/cchecker/compare/0.3.0...HEAD
+[Unreleased]: https://github.com/agentica-lang/cchecker/compare/0.4.0...HEAD
+[0.4.0]: https://github.com/agentica-lang/cchecker/compare/0.3.0...0.4.0
 [0.3.0]: https://github.com/agentica-lang/cchecker/compare/0.2.0...0.3.0
 [0.2.0]: https://github.com/agentica-lang/cchecker/compare/0.1.0...0.2.0
 [0.1.0]: https://github.com/agentica-lang/cchecker/releases/tag/0.1.0
