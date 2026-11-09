@@ -510,3 +510,83 @@ Feature: What the project assumes of its functions
       """
       no function, lock or field of the compile database is named request.cal (assume.stop_fields)
       """
+
+  Scenario Outline: [assume] stop_calls cuts one call edge and keeps the same callee for its other callers (<list>)
+    Given the C file "calls.c" holds:
+      """
+      #include "unistd.h"
+      #include "cchecker.h"
+      static void trace(int fd) { (void)write(fd, "a", 1); }
+      CC_SHORT void first(int fd) { trace(fd); }
+      CC_SHORT void second(int fd) { trace(fd); }
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [assume]
+      <list>
+      """
+    When I run cchecker in its folder with "--tools rules --json calls.c -- -I../../../include"
+    Then the exit code is <exit>
+    And the output <first>:
+      """
+      "file":"calls.c","line":4,
+      """
+    And the output <second>:
+      """
+      "file":"calls.c","line":5,
+      """
+
+    Examples:
+      | list                                             | exit | first            | second           |
+      | stop_calls = ["first>trace"]                     | 1    | does not include | includes         |
+      | stop_calls = ["second>trace"]                    | 1    | includes         | does not include |
+      | stop_calls = ["first>trace", "second>trace"]     | 0    | does not include | does not include |
+      | stop_calls = ["first@calls.c>trace@calls.c"]     | 1    | does not include | includes         |
+      | stop = ["trace"]                                 | 0    | does not include | does not include |
+
+  Scenario: A pair of [assume] stop_calls that matches no call is an error, and the others still apply
+    Given the C file "a.c" holds:
+      """
+      static void put(void) {}
+      void run(void) { put(); }
+      """
+    And the C file "b.c" holds:
+      """
+      static void put(void) {}
+      void run_b(void) { put(); }
+      """
+    And the file "compile_commands.json" holds:
+      """
+      [{"directory": ".", "file": "a.c", "arguments": ["cc", "-c", "a.c"]},
+       {"directory": ".", "file": "b.c", "arguments": ["cc", "-c", "b.c"]}]
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [assume]
+      stop_calls = ["run@a.c>put@a.c", "run_b>put@b.c"]
+      """
+    When I run cchecker in its folder with "--tools rules"
+    Then the exit code is 0
+    Given the file "cchecker.toml" holds:
+      """
+      [assume]
+      stop_calls = ["run@a.c>put@a.c", "run@b.c>put@b.c", "put>run", "gone>put"]
+      """
+    When I run cchecker in its folder with "--tools rules"
+    Then the exit code is 2
+    And the errors include:
+      """
+      run@b.c>put@b.c (assume.stop_calls)
+      """
+    And the errors include:
+      """
+      put>run (assume.stop_calls)
+      """
+    And the errors include:
+      """
+      gone>put (assume.stop_calls)
+      """
+    And the errors do not include:
+      """
+      run@a.c>put@a.c
+      """

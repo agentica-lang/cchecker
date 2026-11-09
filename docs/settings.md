@@ -40,6 +40,7 @@ short = ["run_or_queue"]
 stop = ["trace_emit"]
 short_locks = ["queue.mu"]
 stop_fields = ["request.call"]
+stop_calls = ["on_exit>close_handles"]
 may_jump = ["raise_type_error"]
 jumps = ["raise_error"]
 catches = ["run_protected"]
@@ -92,8 +93,9 @@ the end of the path of the file as it is, with no `..`; a leading `./` is
 ignored. In `[assume]` it may be the file of the definition or of any
 declaration of the function (`slow@slow.h` for a prototype in a header); in
 `[roots]` it is the file of the definition. It works in every list of `[roots]`
-and in `short`, `stop`, `may_jump`, `jumps` and `catches` of `[assume]`
-(`stop_fields` and `short_locks` name fields and locks), and a `name@path` that
+and in `short`, `stop`, `may_jump`, `jumps` and `catches` of `[assume]`, and on
+each side of a `stop_calls` pair (`stop_fields` and `short_locks` name fields
+and locks), and a `name@path` that
 matches no function is an error (exit 2) like a bare name that does.
 
 `[assume]` says what the project knows of its own functions and cchecker cannot
@@ -174,6 +176,15 @@ Only a call through the field itself is cut: one through a local that got its
 value (`fn f = r->call; f(x)`) is still followed, and a store into the field
 still counts when cchecker infers the roots. A field that the compile database
 neither stores a function in nor calls through is an error (exit 2).
+
+`stop_calls` cuts one call: each entry is `caller>callee`, and no walk follows
+a direct call of `callee` in `caller`, for every root, while the
+other callers of `callee` still reach it (`stop` removes the function for all of
+them). Either side may be a `name@path` (`on_exit@proc.c>close_handles`). Use it
+for an edge that cannot happen at run time, such as the branch of a macro that
+the queue it tests never takes. It cuts the calls of the effect rules (`CC_SHORT`
+and `CC_HOT`), not what the lock and ownership rules follow. A pair that matches
+no call of the compile database is an error (exit 2), like an unknown name.
 
 A suppression and an assumption answer different questions. A suppression
 (`cchecker: ignore`, `CC_IGNORE`) says that one finding is wrong, at one place;

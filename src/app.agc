@@ -139,6 +139,7 @@ export def run(options: Options) -> Result[Int]
     config.stops.empty? and
     config.short_locks.empty? and
     config.stop_fields.empty? and
+    config.stop_calls.empty? and
     config.may_jump.empty? and
     config.jumps.empty? and
     config.catches.empty?
@@ -625,7 +626,7 @@ def collect(options: Options, config: Config.Config, jobs: List[Tools.Job], cwd:
   end
 
   # `[assume]` holds for every rule, as the marks it stands for.
-  cut_missing = Effects.missing_fields(units, config)
+  cut_missing = Effects.missing_fields(units, config).concat(Effects.missing_calls(units, config))
   units = Effects.assumed(units, config)
   if not config.off.include?(Known.JUMP_CALLERS_FLAG)
     units = Profile.measure("jumps") do Effects.with_jumps(units, cwd) end
