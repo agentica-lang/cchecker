@@ -107,8 +107,10 @@ end
 
 ## The findings of the lock rules, and how many functions had more paths than the walk follows (their findings are
 ## those of the paths it went through). `sections` are the calls made while a lock is held, in every function that
-## takes or releases one, helpers included, and `partial` the classes of the locks of the functions whose paths the
-## walk did not all go through: their sections are not all known.
+## takes or releases one, helpers included, and `partial` the classes whose sections are not all known: those of the
+## functions whose paths the walk did not all go through, and those of a lock that a function (not a helper) returns
+## or jumps out with, or releases without holding it, as its caller holds the lock across code that no walk sees. A
+## lock of a class that the inference cannot trust (`section_class`) is "" in both.
 export struct Checked
   findings: List[Finding]
   incomplete: List[IncompleteFunction]
@@ -139,11 +141,20 @@ export def check(units: List[Unit]) -> Checked
         helper = helper?(functions.get(body.key))
         walk = checked(body, functions, rules)
         sections = sections.concat(walk.sections.values)
+        locks = locks_of(body)
         if not walk.complete
-          partial = partial.union(Set.new(locks_of(body).values.map do |lock| lock.class end))
+          partial = partial.union(Set.new(locks.values.map(&section_class)))
         end
 
         if not helper
+          partial = partial.union(
+            Set.new(
+              unbalanced(walk.findings).map do |key|
+                section_class(locks.get(key).unwrap_or(Lock(key: key, shown: key)))
+              end,
+            ),
+          )
+
           findings = findings.concat(walk.findings.values)
           if not walk.complete
             incomplete = incomplete.push(IncompleteFunction(file: body.file, line: body.line, function: body.name))
@@ -428,24 +439,47 @@ def walked(walker: Walker) -> Walk
   return Walk(findings: found, complete: true, sections: sections)
 end
 
+# The keys of the locks of the findings of a walk that leave a lock to the caller: held at a return or a jump, or
+# released and not taken (findings are keyed `CODE KEY`).
+def unbalanced(findings: Map[String, Finding]) -> List[String]
+  return findings.keys.flat_map do |id|
+    [NOT_RELEASED, NOT_HELD]
+      .select do |code| id.start_with?("#{code} ") end
+      .map do |code| id.slice(code.length + 1, id.length - code.length - 1) end
+  end
+end
+
+# The class of a lock as the inference of short locks reads it: "" when the rules cannot tell it, or when its field or
+# global is a pointer to the mutex, as then another class may name the same mutex.
+def section_class(lock: Lock) -> String
+  if lock.through
+    return ""
+  end
+
+  return lock.class
+end
+
 # The sections of a call that the path makes while it holds locks: one for each class held, by class and place. The
 # set of a CC_PAIR is no lock. The take of the lock is not in its section; its release is, and does not block.
 def with_sections(sections: Map[String, Section], walker: Walker, item: Item, event: Event) -> Map[String, Section]
   case event
     Event.Call(site) ->
       kept = sections
+      takes = site.takes.select do |taken| taken.pair == "" end.map(&section_class)
       for key in item.state.held.keys
         lock = walker.locks.get(key).unwrap_or(Lock(key: key, shown: key))
-        id = "#{lock.class}|#{site.line}:#{site.column}|#{site.name}"
+        class = section_class(lock)
+        # Two calls of one macro have one place: the callee and the locks it takes tell them apart.
+        id = "#{class}|#{site.line}:#{site.column}|#{site.name}|#{site.key}|#{takes.join(",")}|#{site.tried}"
         if item.state.held[key] > 0 and lock.pair == "" and not kept.key?(id)
           section = Section(
-            class: lock.class,
+            class: class,
             caller: walker.body.key,
             callee: site.key,
             pointer: site.pointer,
             line: site.line,
             column: site.column,
-            takes: site.takes.select do |taken| taken.pair == "" end.map do |taken| taken.class end,
+            takes: takes,
             tried: site.tried,
           )
 

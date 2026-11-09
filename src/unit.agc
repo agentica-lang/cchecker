@@ -299,7 +299,12 @@ def context_of(tables: Tables, nodes: List[Json]) -> Flow.Context
     # only the declaration that wrote an annotation knows what its names are.
     locks = own_marks(node)
       .flat_map do |mark| annotated(mark, params) end
-      .map do |lock| lock.with(class: class_of_text(tables, globals, lock.text, params, types)) end
+      .map do |lock|
+        lock.with(
+          class: class_of_text(tables, globals, lock.text, params, types),
+          through: through_text?(tables, lock.text, params, types),
+        )
+      end
 
     stops = function.noreturn
     if not locks.empty? or stops
@@ -511,6 +516,43 @@ def pair_of(mark: String) -> List[Pair]
   end
 
   return [Pair(set: names[0], restore: names[1])]
+end
+
+# Whether the lock of an annotation is reached through a pointer that its class names: the text reads a pointer
+# (`*g`, `*c->lk`), or its last field is one (`c->lk` of `pthread_mutex_t *lk`), as the types of the parameters say.
+def through_text?(tables: Tables, text: String, params: List[String], types: List[String]) -> Bool
+  shown = Flow.shown_of(text)
+  if shown.start_with?("*")
+    return true
+  end
+
+  path = shown.replace("->", ".").split(".").map do |part| part.split("[").first end
+  at = -1
+  for i in 0...params.size
+    if params[i] == path.first
+      at = i
+    end
+  end
+
+  if at < 0 or path.size < 2
+    return false
+  end
+
+  type = types[at]
+  for j in 1...path.size
+    case tables.records.get(type_name(type))
+      some(record) ->
+        for k in 0...record.fields.size
+          if record.fields[k] == path[j]
+            type = record.types[k]
+          end
+        end
+
+      none -> return false
+    end
+  end
+
+  return type.strip.end_with?("*")
 end
 
 # The class of the lock of an annotation, through the types of the parameters: `s->pool->mu` of `struct server *s` is

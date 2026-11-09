@@ -49,6 +49,8 @@ struct Collected
   unknown_targets: List[String] = []
   unchecked: List[UncheckedFile] = []
   short_locks: List[String] = []
+  # Whether a function of the run takes a lock: a run that is not full then infers no short lock, and says so.
+  locks: Bool = false
 end
 
 # The jobs of a run, the files that were left out because they are outside the working directory, and the entries of
@@ -87,7 +89,9 @@ export def run(options: Options) -> Result[Int]
     end
   end
 
-  collected = try collect_in_scratch(options, config, plan.jobs, scratch, cwd)
+  # Short locks are inferred only from a run of every file of the database (`scope_of` says the same after the run).
+  planned = options.files.empty? and options.exclude.empty? and plan.skipped.empty? and plan.ignored.empty?
+  collected = try collect_in_scratch(options, config, plan.jobs, scratch, cwd, planned)
   if not config.off.include?(Known.NONBLOCKING_FLAG)
     for target in collected.unknown_targets
       if target == ""
@@ -152,6 +156,14 @@ export def run(options: Options) -> Result[Int]
     elsif not collected.missing_assumed.empty?
       missing = collected.missing_assumed.join(", ")
       return error("#{config.origin}: no function, lock or field of the compile database is named #{missing}")
+    end
+  end
+
+  if options.tools.include?(Tool.Rules) and collected.locks and not scope.full
+    if not config.off.include?(Known.SECTIONS_FLAG)
+      IO.warn(
+        "cchecker: no lock was found short by its critical sections: only a full run of a compile database sees them all",
+      )
     end
   end
 
@@ -231,8 +243,10 @@ def full_rules(options: Options, config: Config.Config, cwd: String) -> Result[V
     causes = causes.push("drop --no-infer")
   end
 
-  if not config.off.empty?
-    causes = causes.push("set the [library] flags of #{config.origin} to true (#{config.off.to_a.sort.join(", ")})")
+  # Without the inference of short locks a run finds more, never less, so the baseline loses nothing.
+  off = config.off.delete(Known.SECTIONS_FLAG)
+  if not off.empty?
+    causes = causes.push("set the [library] flags of #{config.origin} to true (#{off.to_a.sort.join(", ")})")
   end
 
   if options.config.some?
@@ -334,6 +348,11 @@ def finish(options: Options, report: Report.Report) -> Int
   unresolved = Report.unresolved_line(report)
   if not options.json and unresolved.some?
     IO.warn(unresolved.unwrap!)
+  end
+
+  inferred = Report.inferred_line(report)
+  if not options.json and inferred.some?
+    IO.warn(inferred.unwrap!)
   end
 
   if not report.errors.empty?
@@ -588,19 +607,22 @@ def collect_in_scratch(
   jobs: List[Tools.Job],
   folder: String,
   cwd: String,
+  planned: Bool,
 ) -> Result[Collected]
   if not options.tools.include?(Tool.Rules)
-    return ok(collect(options, config, jobs, cwd))
+    return ok(collect(options, config, jobs, cwd, planned))
   end
 
   try Dir.mkdir_private(folder)
   remove_stale(folder)
-  collected = collect(options, config, jobs, cwd)
+  collected = collect(options, config, jobs, cwd, planned)
   _ = Path.remove(folder)
   return ok(collected)
 end
 
-def collect(options: Options, config: Config.Config, jobs: List[Tools.Job], cwd: String) -> Collected
+# `planned` says that the jobs are every file of the compile database; with no error and no file left unchecked, the
+# run is a full one, from which the effect rules infer short locks.
+def collect(options: Options, config: Config.Config, jobs: List[Tools.Job], cwd: String, planned: Bool) -> Collected
   budget = Tools.budget(READ_BUDGET_MIB)
   budgeted = jobs.map do |job| job.with(budget: some(budget)) end
   results = Profile.measure("jobs") do run_largest_first(options, budgeted) end
@@ -637,7 +659,8 @@ def collect(options: Options, config: Config.Config, jobs: List[Tools.Job], cwd:
 
   # The lock walk goes first: the effect rules infer short locks from the sections it finds.
   locked = Profile.measure("locking") do Locking.check(units) end
-  sections = Effects.Sections(calls: locked.sections, partial: locked.partial)
+  full = planned and errors.empty? and unchecked.empty?
+  sections = Effects.Sections(calls: locked.sections, partial: locked.partial, full: full)
   checked = Profile.measure("effects") do
     Effects.check(units, config, options.infer, options.all_paths, cwd, sections)
   end
@@ -660,6 +683,7 @@ def collect(options: Options, config: Config.Config, jobs: List[Tools.Job], cwd:
     missing_assumed: checked.missing_assumed.concat(cut_missing),
     unknown_targets: checked.unknown_targets,
     short_locks: checked.short_locks,
+    locks: not locked.sections.empty?,
     unchecked: unchecked.group_by do |u| "#{u.file}\n#{u.missing}" end
       .values
       .map do |same| same.first end

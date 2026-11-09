@@ -40,12 +40,14 @@ VARIABLES = Set.new(["VarDecl", "ParmVarDecl"])
 ## A lock: `key` is what tells two locks apart (`q.mu` for `&q->mu`, `q->mu` and `(&q->mu)`), `shown` how the code
 ## wrote it, and `class` the field it is (`queue.mu`, by struct and field name) or the global, which the marks of
 ## CC_NO_SYSCALL_UNDER() and CC_LOCK_LEVEL name; "" when the rules cannot tell. `pair` is the restore of the lock of
-## a CC_PAIR, "" for a lock of the code.
+## a CC_PAIR, "" for a lock of the code. `through` says that the field or global of the class is a pointer to the
+## mutex, not the mutex: two classes may then be one mutex (`c->lk` pointing at `s->lock`).
 export struct Lock
   key: String
   shown: String
   class: String = ""
   pair: String = ""
+  through: Bool = false
 end
 
 ## A call of a function, by name and key (`name@file` for a static one), and what it does to the locks: those it takes,
@@ -169,6 +171,7 @@ export struct Annotated
   takes: Bool
   class: String = ""
   pair: String = ""
+  through: Bool = false
 end
 
 ## What a function of the translation unit says about locks, from all its declarations, and whether it never returns.
@@ -208,6 +211,7 @@ struct Arg
   class: String
   owner: String = ""
   address: Bool = false
+  through: Bool = false
 end
 
 # A block: its id, and the cleanup calls of its variables so far, in the order they were declared.
@@ -1716,7 +1720,9 @@ def lock_of(args: List[Arg], index: Int) -> List[Lock]
     return []
   end
 
-  return locks_of([args[index].text]).map do |lock| lock.with(class: args[index].class) end
+  return locks_of([args[index].text]).map do |lock|
+    lock.with(class: args[index].class, through: args[index].through)
+  end
 end
 
 # The key of a lock of CC_RELEASES in the names of the parameters of the definition, which may not be those of the
@@ -1732,12 +1738,39 @@ end
 # The lock of an annotation, in the texts of the arguments of the call.
 def annotated_lock(lock: Annotated, texts: List[String]) -> List[Lock]
   return locks_of([substituted(lock.text, lock.params, texts)]).map do |found|
-    found.with(class: lock.class, pair: lock.pair)
+    found.with(class: lock.class, pair: lock.pair, through: lock.through)
   end
 end
 
 def arg_of(b: Builder, node: Json) -> Arg
-  return Arg(text: text_of(b, node, true), class: class_of(b, node), owner: owner_of(b, node), address: address?(node))
+  return Arg(
+    text: text_of(b, node, true),
+    class: class_of(b, node),
+    owner: owner_of(b, node),
+    address: address?(node),
+    through: aliased_through?(b, node, 0),
+  )
+end
+
+# Whether the field or global that a lock expression ends in is a pointer (`c->lk` of `pthread_mutex_t *lk`), through
+# `&`, `*`, subscripts and the local variables set once, as `aliased_class` reads them.
+def aliased_through?(b: Builder, node: Json, depth: Int) -> Bool
+  bare = see_through(node)
+  while Ast.kind(bare) == "UnaryOperator" and UNARY_TEXT.include?(Ast.text(bare, "opcode"))
+    bare = see_through(Ast.children(bare).first)
+  end
+
+  case Ast.kind(bare)
+    "MemberExpr" -> return pointer_type?(bare)
+    "ArraySubscriptExpr" -> return aliased_through?(b, Ast.children(bare).first, depth)
+    "DeclRefExpr" ->
+      case b.aliases.get(Ast.referenced_name(bare))
+        some(value) if depth < ALIAS_DEPTH -> return aliased_through?(b, value, depth + 1)
+        _ -> return pointer_type?(bare)
+      end
+
+    _ -> return false
+  end
 end
 
 # The class of a lock expression: the field it ends in, or a global variable, through `&`, `*` and the local variables

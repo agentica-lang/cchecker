@@ -180,14 +180,22 @@ class reaches a blocking call: no call made while a path of the lock walk holds
 it blocks, directly or through the functions it reaches, as the short rule sees
 them (a take of a lock that is not short blocks; a call that returns at once
 does not). The body of a lock helper (`CC_ACQUIRES`) counts after its take. A
-class whose sections take another lock becomes short once that lock is. Only
-the files of the run count, and a call through a pointer reaches only what the
-run stores in it, as for the short rule. No class is inferred when a section of
-a lock that the rules cannot tell (one taken through a parameter,
-`pthread_mutex_lock(m)`) blocks, as it may be any class, nor a class held in a
-function with more paths than the lock walk follows. `inferred_short_locks` of
-`--json` lists the classes found so, and `[library] short_lock_sections = false`
-turns it off. An inferred short lock is short for `CC_SHORT` only: the rule of
+class whose sections take another lock becomes short once that lock is. Only a
+full run of a compile database infers one (no `FILE`, no `--exclude`, no error,
+no file left unchecked); another run says on standard error that it did not.
+The inference trusts no class whose sections it cannot all see: one that a
+function (not a helper) returns or jumps out with, or releases without holding
+it, as its caller holds it across code no walk reads, and one held in a
+function with more paths than the lock walk follows. A lock that the rules
+cannot name (taken through a parameter, `pthread_mutex_lock(m)`) or that a
+pointer field or global reaches (`c->lk` of `pthread_mutex_t *lk`, which may be
+another class's mutex) may be any class: when one of its sections blocks, or is
+not all seen, no class is inferred. A call through a pointer that the run
+stores no function in counts as blocking. `inferred_short_locks` of `--json`
+lists the classes found so, the text report says how many on standard error,
+and `[library] short_lock_sections = false` turns it off; turned off, a run
+finds more and never less, so `--update-baseline` and `--strict-baseline` work
+as with it on. An inferred short lock is short for `CC_SHORT` only: the rule of
 `CC_NO_SYSCALL_UNDER` does not apply to it.
 
 `stop_fields` names the function-pointer fields that no walk follows, by struct

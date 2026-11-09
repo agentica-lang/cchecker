@@ -138,6 +138,21 @@ export def unchecked_lines(report: Report) -> List[String]
 end
 
 ## Returns the line for standard error about the callbacks that the inference of roots could not follow, or none.
+## Returns the line for standard error that says how many locks the rules found short by their critical sections, or
+## none.
+export def inferred_line(report: Report) -> Optional[String]
+  count = report.inferred_short_locks.size
+  if count == 0
+    return none
+  end
+
+  first = report.inferred_short_locks.first
+  return some(
+    "cchecker: #{count} #{plural(count, "lock")} found short by #{plural_its(count)} critical sections (first: " +
+    "#{first}); --json lists them",
+  )
+end
+
 export def unresolved_line(report: Report) -> Optional[String]
   count = report.unresolved_callbacks.size
   if count == 0
@@ -216,6 +231,14 @@ def summary(report: Report) -> String
   end
 
   return "cchecker: #{count} new #{plural(count, "finding")} in #{files} #{plural(files, "file")}#{tail}"
+end
+
+def plural_its(count: Int) -> String
+  if count == 1
+    return "its"
+  end
+
+  return "their"
 end
 
 def plural(n: Int, word: String) -> String

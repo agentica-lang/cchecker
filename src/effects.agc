@@ -103,11 +103,13 @@ export struct Checked
   short_locks: List[String] = []
 end
 
-## The critical sections of the locks (`Locking.check`): the calls made while a lock is held, and the classes whose
-## sections are not all known (a function with more paths than the lock walk follows).
+## The critical sections of the locks (`Locking.check`): the calls made while a lock is held, the classes whose
+## sections are not all known, and whether the run read every file of the compile database (`full`): the inference
+## runs only then, as a file left out may hold a lock across a blocking call.
 export struct Sections
   calls: List[Section] = []
   partial: List[String] = []
+  full: Bool = false
 end
 
 # The CC_SHORT roots inferred from the callbacks of libuv, by function key, each with the call that made it, and the
@@ -142,7 +144,7 @@ export def check(
   )
 
   inferred_short: Set[String] = Set.new([])
-  if not config.off.include?(Known.SECTIONS_FLAG)
+  if sections.full and not config.off.include?(Known.SECTIONS_FLAG)
     inferred_short = inferred_locks(graph, walk, sections)
     walk = walk.with(short_locks: walk.short_locks.union(inferred_short))
   end
@@ -435,22 +437,24 @@ def short_locks_of(units: List[Unit], config: Config) -> Set[String]
 end
 
 # The classes of the locks that are short because no section of theirs reaches a blocking call, as the short rule
-# sees one (a take of a lock that is not short is one). A class is inferred only when the rules know it, and every
-# function that holds it was walked whole. A section of a lock whose class the rules cannot tell (one taken through a
-# parameter, `pthread_mutex_lock(m)`) may be of any class: when one blocks, no class is inferred. A class whose
-# sections take another one becomes short once that one is: the inference runs again with the classes it found until
-# it finds no more, and never assumes a class to find it.
+# sees one (a take of a lock that is not short is one). A class is inferred only when the rules know it and all its
+# sections are known (`Locking.Checked.partial`). A section of a lock whose class the rules cannot trust ("": one
+# taken through a parameter, `pthread_mutex_lock(m)`, or through a pointer field) may be of any class: when one
+# blocks, or when such a lock has sections that are not all known, no class is inferred. A class whose sections take
+# another one becomes short once that one is: the inference runs again with the classes it found until it finds no
+# more, and never assumes a class to find it. Each round searches each function that the sections call once; there
+# are as many rounds as the longest chain of classes taken one under another, plus one.
 def inferred_locks(graph: Graph, walk: Walk, sections: Sections) -> Set[String]
   by_class: Map[String, List[Section]] = {}
   for section in sections.calls
     by_class = by_class.put(section.class, by_class.get(section.class).unwrap_or([]).push(section))
   end
 
-  if quiet_classes(graph, walk.with(all: false), by_class, [""]).empty?
+  partial = Set.new(sections.partial)
+  if partial.include?("") or quiet_classes(graph, walk.with(all: false), by_class, [""]).empty?
     return Set.new([])
   end
 
-  partial = Set.new(sections.partial)
   candidates = by_class.keys.select do |class|
     class != "" and not partial.include?(class) and not short_lock?(walk.short_locks, class)
   end
@@ -505,7 +509,14 @@ def blocks?(graph: Graph, walk: Walk, section: Section, blocking: Set[String]) -
     return not section.tried and not section.takes.all? do |c| c != "" and short_lock?(walk.short_locks, c) end
   end
 
-  return targets_of(graph, section).any? do |key|
+  targets = targets_of(graph, section)
+  # A pointer that the run stores no function in may hold any function: the inference counts it as blocking, where
+  # the short rule reaches nothing through it.
+  if targets.empty?
+    return section.pointer
+  end
+
+  return targets.any? do |key|
     skipped = (
       cut?(graph, walk, key, Effect.Blocks, not walk.follow_cold) or
       short_takes?(graph, walk, section.caller, key) or
