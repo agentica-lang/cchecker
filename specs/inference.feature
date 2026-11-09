@@ -119,6 +119,11 @@ Feature: Roots inferred from libuv callbacks
       | assignment         | void start(void *l, void *p) { uv_process_options_t o; o.exit_cb = slow; uv_spawn(l, p, &o); }   | 1    | "path":["slow","sleep"],"source":"libuv_callbacks_short+libc_blocking","root":"callback of uv_process_options_t.exit_cb at spawn.c:10"} |
       | initializer        | void start(void *l, void *p) { uv_process_options_t o = {.exit_cb = slow}; uv_spawn(l, p, &o); } | 1    | "path":["slow","sleep"],"source":"libuv_callbacks_short+libc_blocking","root":"callback of uv_process_options_t.exit_cb at spawn.c:10"} |
       | global initializer | static uv_process_options_t o = {slow, "x"};                                                     | 1    | "path":["slow","sleep"],"source":"libuv_callbacks_short+libc_blocking","root":"callback of uv_process_options_t.exit_cb at spawn.c:10"} |
+      | pointer assignment | void start(void *l, void *p, uv_process_options_t *o) { o->exit_cb = slow; uv_spawn(l, p, o); } | 1 | "path":["slow","sleep"],"source":"libuv_callbacks_short+libc_blocking","root":"callback of uv_process_options_t.exit_cb at spawn.c:10"} |
+      | other fields first | void start(void *l, void *p) { uv_process_options_t o = {.file = "x", .exit_cb = slow}; uv_spawn(l, p, &o); } | 1 | "path":["slow","sleep"],"source":"libuv_callbacks_short+libc_blocking","root":"callback of uv_process_options_t.exit_cb at spawn.c:10"} |
+      | compound literal arg | void start(void *l, void *p) { uv_spawn(l, p, &(uv_process_options_t){.exit_cb = slow}); } | 1 | "path":["slow","sleep"],"source":"libuv_callbacks_short+libc_blocking","root":"callback of uv_process_options_t.exit_cb at spawn.c:10"} |
+      | compound literal assigned | void start(void *l, void *p) { uv_process_options_t o; o = (uv_process_options_t){.exit_cb = slow}; uv_spawn(l, p, &o); } | 1 | "path":["slow","sleep"],"source":"libuv_callbacks_short+libc_blocking","root":"callback of uv_process_options_t.exit_cb at spawn.c:10"} |
+      | null only | void start(void *l, void *p) { uv_process_options_t o; o.exit_cb = ((void *)0); uv_spawn(l, p, &o); } | 0 | "unresolved_callbacks":[] |
       | a quick function   | void start(void *l, void *p) { uv_process_options_t o = {.exit_cb = quick}; uv_spawn(l, p, &o); } | 0    | "unresolved_callbacks":[]                                                                                                     |
       | another struct     | typedef struct { void (*exit_cb)(void *p, long s, int g); } other_t; static other_t o = {slow};   | 0    | "unresolved_callbacks":[]                                                                                                     |
 
@@ -147,6 +152,28 @@ Feature: Roots inferred from libuv callbacks
       | uv_close       | h, sleep            |
       | uv_fs_stat     | h, h, slow, 0       |
       | uv_getaddrinfo | h, h, 0, slow, h, h |
+
+  Scenario: An exit_cb that cchecker cannot follow to a function is listed, with -1 as its place
+    Given the C file "spawn.c" holds:
+      """
+      typedef struct uv_process_options_s {
+        void (*exit_cb)(void *process, long status, int signal);
+        const char *file;
+      } uv_process_options_t;
+      int uv_spawn(void *loop, void *process, const uv_process_options_t *options);
+
+      void start(void *l, void *p, void (*cb)(void *, long, int)) {
+        uv_process_options_t o;
+        o.exit_cb = cb;
+        uv_spawn(l, p, &o);
+      }
+      """
+    When I run cchecker in its folder with "--tools rules --json spawn.c"
+    Then the exit code is 0
+    And the output includes:
+      """
+      "unresolved_callbacks":[{"call":"uv_process_options_t.exit_cb","argument":-1,"file":"spawn.c","line":9}]
+      """
 
   Scenario: A callback passed on through a parameter is followed, and the text report names the root
     Given the C file "loop.c" holds:

@@ -188,11 +188,11 @@ follow to the functions stored in it (see [Rules](rules.md#effects)), such as a
 parameter that callers pass a function to. `NULL` or 0 is no callback. A
 callback that leads to no function (the return value of a call, a parameter that
 no caller passes a function to) is listed in `unresolved_callbacks` of `--json`,
-each with `call`, `argument` (its place, from 0), `file` and `line` (absolute
-for a call outside the working directory, such as a body that includes a file
-from outside), and a run without `--json` says how many in one line on standard
-error, so a root is never lost without a word.
-
+each with `call`, `argument` (its place, from 0; -1 for a function stored in
+`exit_cb`, where `call` is `uv_process_options_t.exit_cb`), `file` and `line`
+(absolute for a call outside the working directory, such as a body that
+includes a file from outside), and a run without `--json` says how many in one
+line on standard error, so a root is never lost without a word.
 A finding of an inferred root has its place in `root` of `--json` (`callback of
 uv_read_start at src/net.c:41`), and the printed line ends with it:
 
