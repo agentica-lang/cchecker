@@ -41,7 +41,8 @@ test/             unit tests of the pure helpers (the parsers, the scan of the A
 - `make check`: `agentica check`, then `make lint` (`agentica lint --strict`: a style suggestion fails it).
   `make fmt-check`: `agentica fmt --check` (`agentica fmt` fixes it). `make test`: `agentica test --jobs 4` (the
   features and the unit tests) without the scenarios tagged `@slow` or `@pending`; `make test-slow` runs the `@slow`
-  ones, in a CI job of their own (on a shared machine, run at most one, with `--only`). Both first run `make deps` (`agentica install`:
+  ones, in a CI job of their own (on a shared machine, run at most one, with `--only`). Both first run `make deps`
+  (`agentica install`:
   prop (property tests) and native-gen (`make header`) into `deps/`, with the network only when the download cache
   lacks the locked commit) and `make native`, which builds the native module once. `make check` runs `make deps` too.
   `agentica test --only TEXT` runs the scenarios whose name contains `TEXT`.
