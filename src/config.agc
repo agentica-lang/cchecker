@@ -37,9 +37,10 @@ end
 ## `short_locks` is `[assume] short_locks`, the classes of the locks that taking is not blocking for CC_SHORT,
 ## `stop_fields` is `[assume] stop_fields`, the function-pointer fields (`request.call`) whose calls no walk follows,
 ## `may_jump` is `[assume] may_jump`, the functions that may jump out of their caller (as CC_MAY_JUMP), `jumps` is
-## `[assume] jumps`, those that always do and never return (as CC_JUMPS), and `catches` is `[assume] catches`, those
-## that catch the jumps of what they call (as CC_CATCHES). `stop_calls` is `[assume] stop_calls`, the `caller>callee`
-## pairs whose call no walk follows.
+## `[assume] jumps`, those that always do and never return (as CC_JUMPS), `catches` is `[assume] catches`, those
+## that catch the jumps of what they call (as CC_CATCHES), `jump_releases` is `[assume] jump_releases`, the lock
+## helpers whose lock the catcher of a jump gives back (as CC_JUMP_RELEASES), and `stop_calls` is
+## `[assume] stop_calls`, the `caller>callee` pairs whose call no walk follows.
 export struct Config
   origin: String
   off: Set[String]
@@ -54,6 +55,7 @@ export struct Config
   jumps: List[String] = []
   catches: List[String] = []
   stop_calls: List[String] = []
+  jump_releases: List[String] = []
 end
 
 ## Returns the settings of a run in `folder`, the project folder: those of `explicit` (the file of -c) when given.
@@ -114,6 +116,8 @@ export def from_table(origin: String, prefix: String, table: Toml.Value, note: S
             "jumps" -> config = config.with(jumps: try names_of(origin, path, assume.get(name).unwrap!))
             "catches" -> config = config.with(catches: try names_of(origin, path, assume.get(name).unwrap!))
             "stop_calls" -> config = config.with(stop_calls: try pairs_of(origin, path, assume.get(name).unwrap!))
+            "jump_releases" ->
+              config = config.with(jump_releases: try names_of(origin, path, assume.get(name).unwrap!))
             _ -> return error(unknown(origin, path, note))
           end
         end

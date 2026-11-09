@@ -20,6 +20,8 @@ export STOP = "stop"
 export MAY_JUMP = "may_jump"
 ## The mark of a function that catches the jumps of the functions it calls (CC_CATCHES, `[assume] catches`).
 export CATCHES = "catches"
+## The mark of a helper whose lock the catcher of a jump gives back (CC_JUMP_RELEASES, `[assume] jump_releases`).
+export JUMP_RELEASES = "jump_releases"
 ## The mark of a function whose call always jumps out of its caller and never returns (CC_JUMPS, `[assume] jumps`).
 export JUMPS = "jumps"
 
@@ -85,13 +87,14 @@ struct Cut
   callee: Listing
 end
 
-# The lists of `[assume] short`, `stop`, `may_jump`, `jumps` and `catches`.
+# The lists of `[assume] short`, `stop`, `may_jump`, `jumps`, `catches` and `jump_releases`.
 struct Assumed
   short: Listing
   stop: Listing
   may_jump: Listing
   jumps: Listing
   catches: Listing
+  jump_releases: Listing
 end
 
 ## What the rules found: the findings, and the callbacks of libuv calls they could not follow to a function.
@@ -177,7 +180,8 @@ export def assumed(units: List[Unit], config: Config.Config) -> List[Unit]
     config.stop_calls.empty? and
     config.may_jump.empty? and
     config.jumps.empty? and
-    config.catches.empty?
+    config.catches.empty? and
+    config.jump_releases.empty?
   )
     return units
   end
@@ -191,6 +195,7 @@ export def assumed(units: List[Unit], config: Config.Config) -> List[Unit]
     may_jump: listing_of(config.may_jump),
     jumps: listing_of(config.jumps),
     catches: listing_of(config.catches),
+    jump_releases: listing_of(config.jump_releases),
   )
 
   return units.map do |unit|
@@ -642,6 +647,10 @@ def with_assumed(function: Function, lists: Assumed) -> Function
     marks = marks.push(CATCHES)
   end
 
+  if listed?(lists.jump_releases, function)
+    marks = marks.push(JUMP_RELEASES)
+  end
+
   return function.with(marks: marks.uniq, noreturn: noreturn)
 end
 
@@ -653,7 +662,8 @@ def missing_assumed(units: List[Unit], config: Config.Config) -> List[String]
     config.stops.empty? and
     config.may_jump.empty? and
     config.jumps.empty? and
-    config.catches.empty?
+    config.catches.empty? and
+    config.jump_releases.empty?
   )
     return []
   end
@@ -664,7 +674,8 @@ def missing_assumed(units: List[Unit], config: Config.Config) -> List[String]
   may_jump = unmatched(config.may_jump, files).map do |name| "#{name} (assume.may_jump)" end
   jumps = unmatched(config.jumps, files).map do |name| "#{name} (assume.jumps)" end
   catches = unmatched(config.catches, files).map do |name| "#{name} (assume.catches)" end
-  return short.concat(stop).concat(may_jump).concat(jumps).concat(catches)
+  releases = unmatched(config.jump_releases, files).map do |name| "#{name} (assume.jump_releases)" end
+  return short.concat(stop).concat(may_jump).concat(jumps).concat(catches).concat(releases)
 end
 
 # The files of the functions, by name.

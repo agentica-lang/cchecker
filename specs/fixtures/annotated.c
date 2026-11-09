@@ -10,4 +10,5 @@ CC_MAY_JUMP int check_type(int value);
 CC_NORETURN void fail(void);
 CC_JUMPS void raise_error(int code);
 CC_CATCHES int run_guarded(void);
+CC_ACQUIRES(*m) CC_JUMP_RELEASES void take_recorded(int *m);
 CC_STOP void trace(int event);

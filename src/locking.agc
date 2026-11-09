@@ -11,7 +11,8 @@
 ## (locked) lock(); ... if (locked) unlock();`), so a path that would need a condition to be true and false is not
 ## followed. A write to a variable forgets the conditions that read it. A call that may jump out (CC_MAY_JUMP) is also
 ## a way out of the function, with the locks held before it, and so is one that always jumps (CC_JUMPS), where the path
-## ends.
+## ends. A lock that the function takes and releases only through helpers marked CC_JUMP_RELEASES (or `[assume]
+## jump_releases`) is one that the catcher of the jump gives back: a jump does not check it, a return does.
 
 import Effects from "effects"
 import {Finding, IncompleteFunction} from "findings"
@@ -92,6 +93,8 @@ struct Walker
   sets: Set[String]
   # Whether the function is the set of its own CC_PAIR, whose successful returns may leave another pair set.
   own_set: Bool
+  # The keys of the locks that the catcher of a jump gives back (`caught_of`), which a jump does not check.
+  caught: Set[String]
 end
 
 # What a walk found: the findings by code and lock key, and whether it went through every path.
@@ -278,6 +281,7 @@ def checked(body: Body, functions: Map[String, Function], rules: Held.Rules) -> 
     quiet: Set.new(marks.flat_map(&quiet_keys)),
     sets: sets_of(body),
     own_set: pair_set?(body.name, marks),
+    caught: caught_of(body, functions),
   )
 
   walk = walked(walker)
@@ -321,6 +325,35 @@ def locks_of(body: Body) -> Map[String, Lock]
   end
 
   return locks
+end
+
+# The keys of the locks that the catcher of a jump gives back: those that the body takes or releases only through calls
+# of functions marked CC_JUMP_RELEASES (or `[assume] jump_releases`). A lock that one call takes another way, such as
+# `pthread_mutex_lock`, is not one the catcher knows, so the jumps still check it. The set of a CC_PAIR is never
+# caught: the mark is about locks. A wait (`pthread_cond_wait`) gives the lock back and takes it again before it
+# returns, so it does not change who holds the lock at a jump. Keys are texts: a lock spelled two ways (`&p->mu` for a
+# local `p = q`) is two keys, and each must go through the marked helpers alone to be caught; a return that takes one
+# and releases the other is a finding on both, as without the mark.
+def caught_of(body: Body, functions: Map[String, Function]) -> Set[String]
+  caught: Set[String] = Set.new([])
+  other: Set[String] = Set.new([])
+  for node in body.nodes
+    case node.event
+      Event.Call(site) ->
+        marks = functions.get(site.key).map do |f| f.marks end.unwrap_or([])
+        for lock in site.takes.concat(site.drops)
+          if marks.include?(Effects.JUMP_RELEASES) and lock.pair == ""
+            caught = caught.add(lock.key)
+          else
+            other = other.add(lock.key)
+          end
+        end
+
+      _ -> next
+    end
+  end
+
+  return caught.difference(other)
 end
 
 # The keys of the pairs whose set the body calls.
@@ -377,7 +410,8 @@ end
 
 # A call that may jump out is a way out of the function too, with the locks the path holds before the call: one that
 # jumps did not finish, so it took and released nothing. The jump is an error exit (`failed: true` for `with_exit`).
-# A call that never comes back and jumps (CC_JUMPS) is checked here too, before `stepped` ends its path.
+# A call that never comes back and jumps (CC_JUMPS) is checked here too, before `stepped` ends its path. The locks
+# that the catcher gives back (`Walker.caught`) are no finding there, held or released.
 def with_jump(found: Map[String, Finding], walker: Walker, item: Item, event: Event) -> Map[String, Finding]
   case event
     Event.Call(site) ->
@@ -386,7 +420,8 @@ def with_jump(found: Map[String, Finding], walker: Walker, item: Item, event: Ev
       end
 
       step = Step(text: jump_text(site, stops?(site, walker.functions), walker.functions))
-      kept = with_exit(found, walker, item.state, item.path.push(step), true)
+      held = item.state.held.select do |key, _count| not walker.caught.include?(key) end
+      kept = with_exit(found, walker, item.state.with(held: held), item.path.push(step), true)
       source = jump_source(site, walker.functions)
       if source == ""
         return kept

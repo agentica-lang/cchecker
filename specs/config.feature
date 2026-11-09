@@ -168,6 +168,7 @@ Feature: The settings of a project
       | [assume]  | stop_calls = ["a->b"] | assume.stop_calls     |
       | [assume]  | stop_calls = ["a>b>c"] | assume.stop_calls    |
       | [assume]  | stop_calls = ["a > b"] | assume.stop_calls    |
+      | [assume]  | jump_releases = "a"   | assume.jump_releases  |
 
   Scenario Outline: Each family of library knowledge can be turned off
     Given the C file "family.c" holds:
