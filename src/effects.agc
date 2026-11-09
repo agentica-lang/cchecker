@@ -18,6 +18,8 @@ export STOP = "stop"
 
 ## The mark of a function whose call may jump out of its caller (CC_MAY_JUMP, `[assume] may_jump`).
 export MAY_JUMP = "may_jump"
+## The mark of a function whose call always jumps out of its caller and never returns (CC_JUMPS, `[assume] jumps`).
+export JUMPS = "jumps"
 
 # The start of the slot of a field (`field:request.call`).
 FIELD_SLOT = "field:"
@@ -75,11 +77,12 @@ struct Listing
   tails: Map[String, List[String]]
 end
 
-# The lists of `[assume] short`, `stop` and `may_jump`.
+# The lists of `[assume] short`, `stop`, `may_jump` and `jumps`.
 struct Assumed
   short: Listing
   stop: Listing
-  jump: Listing
+  may_jump: Listing
+  jumps: Listing
 end
 
 ## What the rules found: the findings, and the callbacks of libuv calls they could not follow to a function.
@@ -158,12 +161,24 @@ end
 ## the calls through the fields of `[assume] stop_fields`, which no walk follows. A call through a copy of such a field
 ## (a local that got it) is still followed.
 export def assumed(units: List[Unit], config: Config) -> List[Unit]
-  if config.trusted.empty? and config.stops.empty? and config.stop_fields.empty? and config.jumps.empty?
+  if (
+    config.trusted.empty? and
+    config.stops.empty? and
+    config.stop_fields.empty? and
+    config.may_jump.empty? and
+    config.jumps.empty?
+  )
     return units
   end
 
   cut = Set.new(config.stop_fields.map do |field| "#{FIELD_SLOT}#{field}" end)
-  lists = Assumed(short: listing_of(config.trusted), stop: listing_of(config.stops), jump: listing_of(config.jumps))
+  lists = Assumed(
+    short: listing_of(config.trusted),
+    stop: listing_of(config.stops),
+    may_jump: listing_of(config.may_jump),
+    jumps: listing_of(config.jumps),
+  )
+
   return units.map do |unit|
     unit.with(
       functions: unit.functions.map do |f| with_assumed(f, lists) end,
@@ -449,25 +464,32 @@ def with_assumed(function: Function, lists: Assumed) -> Function
     marks = marks.push(STOP)
   end
 
-  if listed?(lists.jump, function)
+  if listed?(lists.may_jump, function)
     marks = marks.push(MAY_JUMP)
   end
 
-  return function.with(marks: marks.uniq)
+  noreturn = function.noreturn
+  if listed?(lists.jumps, function)
+    marks = marks.push(JUMPS)
+    noreturn = true
+  end
+
+  return function.with(marks: marks.uniq, noreturn: noreturn)
 end
 
 # The entries of `[assume]` that no function of the units has, with their key. A `name@file` counts when the file of
 # any declaration of the function, or of its definition, ends with the path: the same functions that `assumed` marks.
 def missing_assumed(units: List[Unit], config: Config) -> List[String]
-  if config.trusted.empty? and config.stops.empty? and config.jumps.empty?
+  if config.trusted.empty? and config.stops.empty? and config.may_jump.empty? and config.jumps.empty?
     return []
   end
 
   files = files_by_name(units.flat_map do |unit| unit.functions end)
   short = unmatched(config.trusted, files).map do |name| "#{name} (assume.short)" end
   stop = unmatched(config.stops, files).map do |name| "#{name} (assume.stop)" end
-  jump = unmatched(config.jumps, files).map do |name| "#{name} (assume.may_jump)" end
-  return short.concat(stop).concat(jump)
+  may_jump = unmatched(config.may_jump, files).map do |name| "#{name} (assume.may_jump)" end
+  jumps = unmatched(config.jumps, files).map do |name| "#{name} (assume.jumps)" end
+  return short.concat(stop).concat(may_jump).concat(jumps)
 end
 
 # The files of the functions, by name.

@@ -80,6 +80,7 @@ Feature: Pairs of calls restored on every path
     Examples:
       | case          | mark        | body                                                         | exit | found            |
       | marked        | CC_MAY_JUMP | mask_signals(); int r = check(n); restore_signals(); return r; | 1    | includes         |
+      | jumps         | CC_JUMPS    | mask_signals(); int r = check(n); restore_signals(); return r; | 1    | includes         |
       | not marked    |             | mask_signals(); int r = check(n); restore_signals(); return r; | 0    | does not include |
       | checked first | CC_MAY_JUMP | int r = check(n); mask_signals(); restore_signals(); return r; | 0    | does not include |
 

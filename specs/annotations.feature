@@ -35,6 +35,10 @@ Feature: The annotation header
       """
     And the output includes:
       """
+      "cchecker:jumps"
+      """
+    And the output includes:
+      """
       "cchecker:noreturn"
       """
     And the output includes:

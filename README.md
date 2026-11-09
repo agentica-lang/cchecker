@@ -99,13 +99,13 @@ these:
 | `CC-EFFECT-SHORT-BLOCKS` | a `CC_SHORT` function reaches a blocking call |
 | `CC-EFFECT-HOT-ALLOCATES` | a `CC_HOT` function reaches a call that allocates or frees heap memory |
 | `CC-EFFECT-HOT-SYSCALL` | a `CC_HOT` function reaches a system call |
-| `CC-PATH-LOCK-NOT-RELEASED` | a path returns, or jumps out at a `CC_MAY_JUMP` call, with a lock that the function took |
+| `CC-PATH-LOCK-NOT-RELEASED` | a path returns, or jumps out at a `CC_MAY_JUMP` or `CC_JUMPS` call, with a lock that the function took |
 | `CC-PATH-LOCK-NOT-HELD` | a path releases a lock that the function did not take |
 | `CC-PATH-SYSCALL-UNDER-LOCK` | a call under a `CC_NO_SYSCALL_UNDER` lock is or reaches a system call |
 | `CC-PATH-LOCK-ORDER` | a lock with a level is taken under one of the same or a higher level |
 | `CC-PATH-PAIR-NOT-RESTORED` | a path returns after a call of `set` of a `CC_PAIR` and no call of `restore` |
 | `CC-PATH-PAIR-NOT-SET` | a path calls `restore` of a `CC_PAIR` with no call of `set` before it |
-| `CC-OWN-LEAK` | a path returns, jumps out at a `CC_MAY_JUMP` call, or gives a pointer a new value, while it still owns |
+| `CC-OWN-LEAK` | a path returns, jumps out at a `CC_MAY_JUMP` or `CC_JUMPS` call, or gives a pointer a new value, while it still owns |
 | `CC-OWN-DOUBLE-FREE` | a path frees a pointer that it already freed or handed on |
 | `CC-OWN-USE-AFTER-FREE` | a path uses a pointer after it freed it or handed it on |
 | `CC-OWN-GC-IN-MALLOC` | a value of the collector is stored in memory from `malloc` |

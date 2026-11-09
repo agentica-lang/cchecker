@@ -30,7 +30,8 @@ WHOLE_NOTE = " (no [tool.cchecker] table; read as a cchecker file)"
 ## `[assume] short` and `[assume] stop`: the functions that count as fine for CC_SHORT, and those no walk goes into;
 ## `short_locks` is `[assume] short_locks`, the classes of the locks that taking is not blocking for CC_SHORT,
 ## `stop_fields` is `[assume] stop_fields`, the function-pointer fields (`request.call`) whose calls no walk follows,
-## and `jumps` is `[assume] may_jump`, the functions that may jump out of their caller (as CC_MAY_JUMP).
+## `may_jump` is `[assume] may_jump`, the functions that may jump out of their caller (as CC_MAY_JUMP), and `jumps` is
+## `[assume] jumps`, those that always do and never return (as CC_JUMPS).
 export struct Config
   origin: String
   off: Set[String]
@@ -41,6 +42,7 @@ export struct Config
   stops: List[String] = []
   short_locks: List[String] = []
   stop_fields: List[String] = []
+  may_jump: List[String] = []
   jumps: List[String] = []
 end
 
@@ -98,7 +100,8 @@ export def from_table(origin: String, prefix: String, table: Toml.Value, note: S
             "stop" -> config = config.with(stops: try names_of(origin, path, assume.get(name).unwrap!))
             "short_locks" -> config = config.with(short_locks: try names_of(origin, path, assume.get(name).unwrap!))
             "stop_fields" -> config = config.with(stop_fields: try names_of(origin, path, assume.get(name).unwrap!))
-            "may_jump" -> config = config.with(jumps: try names_of(origin, path, assume.get(name).unwrap!))
+            "may_jump" -> config = config.with(may_jump: try names_of(origin, path, assume.get(name).unwrap!))
+            "jumps" -> config = config.with(jumps: try names_of(origin, path, assume.get(name).unwrap!))
             _ -> return error(unknown(origin, path, note))
           end
         end

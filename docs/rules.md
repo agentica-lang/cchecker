@@ -9,18 +9,18 @@ collector. The codes are listed in the README and described below and in
 
 `include/cchecker.h` defines the macros that the rules read: `CC_SHORT`,
 `CC_BLOCKING`, `CC_HOT`, `CC_ACQUIRES(lock)`, `CC_RELEASES(lock)`,
-`CC_NORETURN`, `CC_MAY_JUMP`, `CC_NO_SYSCALL_UNDER(lock)`, `CC_LOCK_LEVEL(n)`,
-`CC_PAIR(set, restore)`, `CC_OWNS`, `CC_FREES`, `CC_OWNS_OUT`, `CC_GC`,
-`CC_GC_ALLOC`, `CC_ASSUME_SHORT` (the function counts as fine for `CC_SHORT`),
-`CC_STOP` (no rule walks into the function; both are assumptions, see
-[Settings](settings.md)) and `CC_IGNORE("CODE", "reason")` (a suppression). The
-macros are empty, in every build and with every compiler, except when cchecker
-dumps the AST: it defines `CCHECKER_AST`, and with clang the macros become
-`__attribute__((deprecated("cchecker:...")))` (the JSON AST of clang 19 drops
-the text of `annotate` and keeps the message of `deprecated`). The dump runs
-with `-w`, so this gives no warning. A normal build of your project carries no
-annotation; a project that wants an attribute for another tool defines the
-macros itself.
+`CC_NORETURN`, `CC_MAY_JUMP`, `CC_JUMPS`, `CC_NO_SYSCALL_UNDER(lock)`,
+`CC_LOCK_LEVEL(n)`, `CC_PAIR(set, restore)`, `CC_OWNS`, `CC_FREES`,
+`CC_OWNS_OUT`, `CC_GC`, `CC_GC_ALLOC`, `CC_ASSUME_SHORT` (the function counts as
+fine for `CC_SHORT`), `CC_STOP` (no rule walks into the function; both are
+assumptions, see [Settings](settings.md)) and `CC_IGNORE("CODE", "reason")` (a
+suppression). The macros are empty, in every build and with every compiler,
+except when cchecker dumps the AST: it defines `CCHECKER_AST`, and with clang
+the macros become `__attribute__((deprecated("cchecker:...")))` (the JSON AST of
+clang 19 drops the text of `annotate` and keeps the message of `deprecated`).
+The dump runs with `-w`, so this gives no warning. A normal build of your
+project carries no annotation; a project that wants an attribute for another
+tool defines the macros itself.
 
 ```c
 #include "cchecker.h"
@@ -63,15 +63,15 @@ too, so run CI the same way: a run without it counts them fixed. A bad call is
 reached once, by its shortest path, and the walk does not go past it.
 
 The walk does not go into a function that never returns or is cold: one declared
-`_Noreturn`, `[[noreturn]]`, `CC_NORETURN` or `__attribute__((noreturn))` (in
-its type too, behind a typedef: `typedef void fatal_fn(const char *)
-__attribute__((noreturn)); fatal_fn die;`), or `__attribute__((cold))`, on any
-of its declarations, and a library call that never returns (`abort`, `exit`,
-`_exit`, `longjmp`, `pthread_exit`, ...), though `_exit` enters the kernel. Such
-a call is an error exit (`out_of_memory`, `die`), not the path the rules are
-about. `[effects] follow_cold = true` follows it. A
-`CC_BLOCKING` mark on such a function wins: it is a blocking call. The lock
-rules (`CC_NO_SYSCALL_UNDER`) follow every call whatever it says.
+`_Noreturn`, `[[noreturn]]`, `CC_NORETURN`, `CC_JUMPS` or
+`__attribute__((noreturn))` (in its type too, behind a typedef: `typedef void
+fatal_fn(const char *) __attribute__((noreturn)); fatal_fn die;`), or
+`__attribute__((cold))`, on any of its declarations, and a library call that
+never returns (`abort`, `exit`, `_exit`, `longjmp`, `pthread_exit`, ...), though
+`_exit` enters the kernel. Such a call is an error exit (`out_of_memory`,
+`die`), not the path the rules are about. `[effects] follow_cold = true` follows
+it. A `CC_BLOCKING` mark on such a function wins: it is a blocking call. The
+lock rules (`CC_NO_SYSCALL_UNDER`) follow every call whatever it says.
 
 | Code | |
 |---|---|
@@ -126,9 +126,9 @@ may go to any label), `return`, `&&`, `||`, `?:`, `x ?: y` and statement
 expressions. A path ends at a `return`, at the end of the body, or at a call
 that never comes back (`abort`, a `_Noreturn` or `noreturn` function, through a
 typedef or a function pointer too, or one marked `CC_NORETURN`, such as a
-function that jumps out with `longjmp`); a lock held there is not a finding. The
-cleanup function of a variable with `__attribute__((cleanup(f)))` runs on every
-way out of its block.
+function that ends the thread); a lock held there is not a finding. The cleanup
+function of a variable with `__attribute__((cleanup(f)))` runs on every way out
+of its block.
 
 A call of a function that may jump out (it returns, or calls `longjmp` on an
 error, as an interpreter raises one), marked `CC_MAY_JUMP` or named in `[assume]
@@ -143,13 +143,17 @@ cleanup function releases is held on the jump. There is no setting that says a
 jump releases a lock: a suppression of the code on the function (`CC_IGNORE` or
 `cchecker: ignore`) does, and it hides the findings of that code on its returns
 too, not only those of the jumps. Only a direct call can jump: a call through a
-function pointer never does. A function that never returns stays an end of the
-path, even with `CC_MAY_JUMP`. The jump adds no state to the walk, so the limits
-below do not change.
+function pointer never does. A call of a function that always jumps out and
+never returns (an interpreter's raise), marked `CC_JUMPS` or named in `[assume]
+jumps`, is that way out alone: the lock rules check it as a jump, with `jumps in
+check_size` as the last step, and the path ends there, so what comes after the
+call is not on that path. `CC_MAY_JUMP` on a function that never returns
+(`_Noreturn`, `CC_NORETURN`) is the same. The jump adds no state to the walk, so
+the limits below do not change.
 
 | Code | |
 |---|---|
-| `CC-PATH-LOCK-NOT-RELEASED` | a path returns, or jumps out at a `CC_MAY_JUMP` call, with a lock that the function took |
+| `CC-PATH-LOCK-NOT-RELEASED` | a path returns, or jumps out at a `CC_MAY_JUMP` or `CC_JUMPS` call, with a lock that the function took |
 | `CC-PATH-LOCK-NOT-HELD` | a path releases a lock that the function did not take |
 
 The finding is at the function, once for each code and lock, and `path` is a

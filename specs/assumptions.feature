@@ -1,11 +1,11 @@
 Feature: What the project assumes of its functions
-  A project can say once what cchecker cannot see in the C: that a function counts as fine for CC_SHORT (it runs
-  inline on the right thread only, or reads a descriptor that never blocks), or that no walk goes into a function at
-  all (a trace call behind a runtime flag), or that a lock is held for a few instructions only. CC_ASSUME_SHORT, CC_STOP
-  and CC_NO_SYSCALL_UNDER() say it in the C, `[assume] short`, `stop` and `short_locks` in the settings;
-  `[assume] stop_fields` names the function-pointer fields that no walk follows, and `[assume] may_jump` the functions
-  that may jump out of their caller (as CC_MAY_JUMP). A name of `[assume]` that nothing of the compile database has is
-  an error.
+  A project can say once what cchecker cannot see in the C: that a function counts as fine for CC_SHORT (it runs inline
+  on the right thread only, or reads a descriptor that never blocks), or that no walk goes into a function at all (a
+  trace call behind a runtime flag), or that a lock is held for a few instructions only. CC_ASSUME_SHORT, CC_STOP and
+  CC_NO_SYSCALL_UNDER() say it in the C, `[assume] short`, `stop` and `short_locks` in the settings; `[assume]
+  stop_fields` names the function-pointer fields that no walk follows, `[assume] may_jump` the functions that may jump
+  out of their caller (as CC_MAY_JUMP), and `[assume] jumps` those that always do (as CC_JUMPS). A name of `[assume]`
+  that nothing of the compile database has is an error.
 
   Scenario Outline: A function trusted for CC_SHORT is not walked into by the short rule only (<case>)
     Given the C file "short.c" holds:
@@ -268,8 +268,9 @@ Feature: What the project assumes of its functions
       | stop = ["trace@a.c"]      | does not include | includes         |
       | stop = ["trace@b.c"]      | includes         | does not include |
       | short = ["trace@b.c"]     | includes         | does not include |
+      | jumps = ["trace@a.c"]     | does not include | includes         |
 
-  Scenario: A name@file of [assume] that no function has is an error, as a bare name is (and likewise may_jump)
+  Scenario: A name@file of [assume] that no function has is an error, as a bare name is (and likewise may_jump, jumps)
     Given the C file "a.c" holds:
       """
       static void put(void) {}
@@ -290,6 +291,7 @@ Feature: What the project assumes of its functions
       [assume]
       stop = ["put@a.c", "put@b.c"]
       may_jump = ["put@a.c"]
+      jumps = ["put@b.c"]
       """
     When I run cchecker in its folder with "--tools rules"
     Then the exit code is 0
@@ -298,6 +300,7 @@ Feature: What the project assumes of its functions
       [assume]
       stop = ["put@a.c", "put@c.c", "run@b.c"]
       may_jump = ["put@a.c", "put@d.c"]
+      jumps = ["put@b.c", "put@e.c"]
       """
     When I run cchecker in its folder with "--tools rules"
     Then the exit code is 2
@@ -312,6 +315,10 @@ Feature: What the project assumes of its functions
     And the errors include:
       """
       put@d.c (assume.may_jump)
+      """
+    And the errors include:
+      """
+      put@e.c (assume.jumps)
       """
     And the errors do not include:
       """
@@ -371,6 +378,7 @@ Feature: What the project assumes of its functions
       short = ["helper"]
       stop = ["helper", "external"]
       may_jump = ["external"]
+      jumps = ["external"]
       """
     When I run cchecker in its folder with "--tools rules"
     Then the exit code is 0
@@ -379,6 +387,7 @@ Feature: What the project assumes of its functions
       [assume]
       stop = ["helper", "tracer"]
       may_jump = ["raise_error"]
+      jumps = ["raise_fatal"]
       """
     When I run cchecker in its folder with "--tools rules"
     Then the exit code is 2
@@ -389,6 +398,10 @@ Feature: What the project assumes of its functions
     And the errors include:
       """
       raise_error (assume.may_jump)
+      """
+    And the errors include:
+      """
+      raise_fatal (assume.jumps)
       """
     When I run cchecker in its folder with "--tools rules tick.c"
     Then the exit code is 0
