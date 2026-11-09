@@ -131,8 +131,8 @@ Feature: Running the analyzers on C files
     And the C file "compile_commands.json" holds:
       """
       [
-        {"directory": ".", "command": "cc -DLEVEL=1 -I. -o a.o -c x.c", "file": "x.c"},
-        {"directory": ".", "command": "cc -DLEVEL=1 -Dx_EXPORTS -I. -fPIC -o b.o -c x.c", "file": "x.c"}
+        {"directory": ".", "command": "cc -DLEVEL=1 -I. -MD -MT a.o -MF a.o.d -o a.o -c x.c", "file": "x.c"},
+        {"directory": ".", "command": "cc -DLEVEL=1 -Dx_EXPORTS -I. -fPIC -MD -MT b.o -MF b.o.d -o b.o -c x.c", "file": "x.c"}
       ]
       """
     When I run cchecker in its folder with "--json --tools gcc --gcc ../../fixtures/fake_gcc_count.sh -p ."
