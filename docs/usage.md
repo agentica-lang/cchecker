@@ -107,7 +107,8 @@ a shared library do not count: `-fPIC`, `-fpic`, `-fPIE`, `-fpie` and CMake's
 `-D<target>_EXPORTS`. So the entries of a file in a static and a shared library
 of CMake fold when they differ only in those. Any other define or include path
 can change the findings, so such entries are each checked: libuv's shared
-library adds `-DBUILDING_UV_SHARED=1`, and both of its entries run.
+library adds `-DBUILDING_UV_SHARED=1`, and both of its entries run, unless the project lists that define in
+`[database] fold_ignoring` ([Settings](settings.md)).
 
 The default checks are `-*`, `clang-analyzer-core.*`, `clang-analyzer-unix.*`
 and `clang-analyzer-security.*` (without `insecureAPI`), and the bugprone checks

@@ -190,7 +190,7 @@ Feature: Running the analyzers on C files
       """
       [
         {"directory": ".", "command": "cc -DLEVEL=1 -I. -o a.o -c x.c", "file": "x.c"},
-        {"directory": ".", "command": "cc -DLEVEL=1 -DBUILDING_X_SHARED=1 -I. -o b.o -c x.c", "file": "x.c"}
+        {"directory": ".", "command": "cc -DLEVEL=1 <define> -I. -o b.o -c x.c", "file": "x.c"}
       ]
       """
     And the file "cchecker.toml" holds:
@@ -211,11 +211,13 @@ Feature: Running the analyzers on C files
       """
 
     Examples:
-      | case                          | setting                               | folded | twice            |
-      | listed                        | fold_ignoring = ["BUILDING_X_SHARED"] | 1      | does not include |
-      | another define                | fold_ignoring = ["LEVEL"]             | 0      | includes         |
-      | a name that starts the define | fold_ignoring = ["BUILDING_X"]        | 0      | includes         |
-      | empty                         | fold_ignoring = []                    | 0      | includes         |
+      | case                          | define                | setting                               | folded | twice            |
+      | listed                        | -DBUILDING_X_SHARED=1 | fold_ignoring = ["BUILDING_X_SHARED"] | 1      | does not include |
+      | listed, no value              | -DBUILDING_X_SHARED   | fold_ignoring = ["BUILDING_X_SHARED"] | 1      | does not include |
+      | listed, two words             | -D BUILDING_X_SHARED  | fold_ignoring = ["BUILDING_X_SHARED"] | 1      | does not include |
+      | another define                | -DBUILDING_X_SHARED=1 | fold_ignoring = ["LEVEL"]             | 0      | includes         |
+      | a name that starts the define | -DBUILDING_X_SHARED=1 | fold_ignoring = ["BUILDING_X"]        | 0      | includes         |
+      | empty                         | -DBUILDING_X_SHARED=1 | fold_ignoring = []                    | 0      | includes         |
 
   Scenario: The number of runs at once is bounded by --jobs
     When I run cchecker with "--tools gcc --gcc fixtures/fake_gcc_serial.sh -j 1 fixtures/clean.c fixtures/leak.c"

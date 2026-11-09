@@ -7,6 +7,7 @@
 ## unknown key or a value of the wrong type is an error, so that a typo cannot turn a check off.
 
 import Known from "known"
+import Regex from "std/regex"
 import Toml from "std/toml"
 
 ## The settings file that a project folder may hold for cchecker alone.
@@ -247,12 +248,13 @@ def names_of(origin: String, path: String, value: Toml.Value) -> Result[List[Str
   end
 end
 
-# The names of macros: no `-D`, `=` or blank, which would not name one.
+# The names of macros: letters, digits and underscores, not starting with a digit, as C names them. `-DA`, `A=1` and
+# `A,B` name none.
 def defines_of(origin: String, path: String, value: Toml.Value) -> Result[List[String]]
   names = try names_of(origin, path, value)
   for name in names
-    if name == "" or name.start_with?("-") or name.include?("=") or name.include?(" ")
-      return error("#{origin}: #{path} must be a list of macro names (NAME, not -DNAME or NAME=1)")
+    if not Regex.match(name, /\A[A-Za-z_][A-Za-z0-9_]*\z/).ok?
+      return error("#{origin}: #{path} must be a list of macro names (NAME, not -DNAME, NAME=1 or A,B)")
     end
   end
 

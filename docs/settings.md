@@ -84,11 +84,18 @@ makes the walk go into a function that never returns or is cold (see
 once is checked once when the entries have the same flags (`-fPIC`, `-fPIE` and
 CMake's `-D<target>_EXPORTS` do not count). `fold_ignoring` names more defines
 that do not count, when a build adds them to a second library (libuv's
-`BUILDING_UV_SHARED`, Neovim's `UNIT_TESTING`): two entries of one file that
-differ only in those defines, with any value (`-DNAME`, `-DNAME=1`, `-D NAME`),
-are one, and `folded` of `--json` counts the entry left out. A define in the
-list hides a different `#ifdef` from the second entry, so list only those that
-do not change the C the rules read. A name is `NAME`, not `-DNAME` or `NAME=1`.
+`BUILDING_UV_SHARED`): two entries of one file that differ only in those
+defines, with any value (`-DNAME`, `-DNAME=1`, `-D NAME`), are one. The first
+entry in the database is the one checked, and `folded` of `--json` counts the
+others. A define in the list hides a different `#ifdef` from the entries left
+out, so list only those that do not change the C the rules read: a define that
+adds test-only code or changes linkage (`UNIT_TESTING` in some projects) is a
+trade-off, not a safe choice. The list is taken as written: `-UNAME -DNAME` and
+`-UNAME` fold with `["NAME"]`. A name is C's own (`NAME`, not `-DNAME`, `NAME=1`
+or `A,B`). Adding a name to the list, or removing one, changes which entries
+run, so a finding that only an entry left out had counts as fixed for a
+baseline (`--update-baseline` drops it, `--strict-baseline` names it as stale),
+and one that was out comes back as new.
 
 `[roots]` names the functions that are `CC_SHORT` (`short`) or `CC_HOT` (`hot`)
 without a mark in the C, by their name (a static function of that name in any

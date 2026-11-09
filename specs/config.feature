@@ -173,6 +173,8 @@ Feature: The settings of a project
       | [database] | fold_ignoring = ["-DA"] | database.fold_ignoring |
       | [database] | fold_ignoring = ["A=1"] | database.fold_ignoring |
       | [database] | fold_ignores = ["A"]    | database.fold_ignores  |
+      | [database] | fold_ignoring = ["A,B"] | database.fold_ignoring |
+      | [database] | fold_ignoring = ["1A"]  | database.fold_ignoring |
 
   Scenario Outline: Each family of library knowledge can be turned off
     Given the C file "family.c" holds:
