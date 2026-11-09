@@ -18,6 +18,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `uv_run` with a constant `UV_RUN_NOWAIT` is no longer a blocking call for `CC_SHORT` (`libc_nonblocking_flags`);
+  `UV_RUN_ONCE`, `UV_RUN_DEFAULT` and a mode in a variable still are.
 - **Breaking:** `CC_MAY_JUMP` or `[assume] may_jump` on a function that never returns (`_Noreturn`, `CC_NORETURN`) now
   means `CC_JUMPS`: its calls are checked as a way out, where before they only ended the path and found nothing. A
   project with that combination may get new findings that its baseline does not hold.

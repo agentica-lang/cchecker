@@ -351,13 +351,15 @@ export def graph_of(units: List[Unit]) -> Graph
           locks = locks.put(at, locks.get(at).unwrap_or([]).push(call.lock))
         Target.Direct(to) if Known.FLAG_ARGUMENTS.key?(name_of_key(functions, to)) ->
           at = "#{call.caller}>#{to}"
-          bit = Known.nonblocking_bit(unit.target, name_of_key(functions, to))
+          callee = name_of_key(functions, to)
+          bit = Known.nonblocking_bit(unit.target, callee)
           # Only a flag value can matter: 0 is no flag at all.
           if bit == 0 and call.flags > 0 and not call.named and not unknown.include?(unit.target)
             unknown = unknown.push(unit.target)
           end
 
-          set = call.named or (bit != 0 and call.flags >= 0 and Int.bit_and(call.flags, bit) != 0)
+          set = call.named or (bit != 0 and call.flags >= 0 and Known.flags_return_at_once?(callee, call.flags, bit))
+
           quiet = quiet.put(at, quiet.get(at).unwrap_or([]).push(set))
         Target.Slot(slot) if call.line > 0 ->
           at = "#{call.caller} #{call.line}:#{call.column}"
@@ -553,9 +555,8 @@ def with_assumed(function: Function, lists: Assumed) -> Function
   return function.with(marks: marks.uniq, noreturn: noreturn)
 end
 
-# The entries of `[assume]` that no function of the units has, with their key. A `name@file` counts when the file
-# of any
-# declaration of the function, or of its definition, ends with the path: the same functions that `assumed` marks.
+# The entries of `[assume]` that no function of the units has, with their key. A `name@file` counts when the file of
+# any declaration of the function, or of its definition, ends with the path: the same functions that `assumed` marks.
 def missing_assumed(units: List[Unit], config: Config) -> List[String]
   if (
     config.trusted.empty? and

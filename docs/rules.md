@@ -83,7 +83,8 @@ lock rules (`CC_NO_SYSCALL_UNDER`) follow every call whatever it says.
 The known calls are those of libc, pthread, libuv, OpenSSL and the Boehm
 collector that block (`read`, `sleep`, `pthread_mutex_lock`, `uv_run`, a
 `uv_fs_*` call such as `uv_fs_read` whose last argument, the callback, is `NULL`
-or 0, as it then runs at once), allocate (`malloc`, `free`, `strdup`,
+or 0, as it then runs at once; `uv_run` blocks unless its mode is a constant
+`UV_RUN_NOWAIT`, which is still a system call for `CC_HOT`), allocate (`malloc`, `free`, `strdup`,
 `GC_malloc`, `SSL_new`) or enter the kernel (`write`, `mmap`, `close`); an
 unlock or the signal of a condition counts as a system call, as it wakes a
 waiter with a futex call. A `uv_fs_*` call run at once whose libc call does not

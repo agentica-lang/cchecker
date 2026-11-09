@@ -232,8 +232,14 @@ export LIBGC_ALLOC = Set.new([
 export NONBLOCKING_FLAG = "libc_nonblocking_flags"
 
 ## The calls that a flag makes return at once, and the place of their flags among their arguments (from 0):
-## O_NONBLOCK for `open` and `openat`, MSG_DONTWAIT for the others.
-export FLAG_ARGUMENTS: Map[String, Int] = {"open": 1, "openat": 2, "recv": 3, "send": 3, "recvfrom": 3, "sendto": 3}
+## O_NONBLOCK for `open` and `openat`, MSG_DONTWAIT for `recv`, `send`, `recvfrom` and `sendto`, and the mode
+## UV_RUN_NOWAIT for `uv_run`.
+export FLAG_ARGUMENTS: Map[String, Int] = {
+  "open": 1, "openat": 2, "recv": 3, "send": 3, "recvfrom": 3, "sendto": 3, "uv_run": 1,
+}
+
+# The value of UV_RUN_NOWAIT, the same on every target: libuv's `uv_run_mode` is an enum (DEFAULT 0, ONCE 1, NOWAIT 2).
+UV_RUN_NOWAIT_VALUE = 2
 
 ## A family of library knowledge: the flag of `[library]` that turns it on or off, and the calls it says block.
 export struct Family
@@ -244,6 +250,10 @@ end
 ## Returns the name of the flag that makes a call of `FLAG_ARGUMENTS` return at once. A C library may define it as
 ## a constant of an enum (glibc does for MSG_DONTWAIT), which the AST names.
 export def nonblocking_name(call: String) -> String
+  if call == "uv_run"
+    return "UV_RUN_NOWAIT"
+  end
+
   if call == "open" or call == "openat"
     return "O_NONBLOCK"
   end
@@ -251,10 +261,20 @@ export def nonblocking_name(call: String) -> String
   return "MSG_DONTWAIT"
 end
 
+## Returns whether the argument of a call of `FLAG_ARGUMENTS` is one value to compare (the mode of `uv_run`), not
+## flags to test bit by bit.
+export def one_value?(call: String) -> Bool
+  return call == "uv_run"
+end
+
 ## Returns the bit of the flag that makes a call of `FLAG_ARGUMENTS` return at once on `target`, a triple of clang
 ## (`x86_64-pc-linux-gnu`), or 0 when the rules do not know its value there: Linux, but on MIPS, SPARC, Alpha and
 ## PA-RISC, whose values differ, and macOS.
 export def nonblocking_bit(target: String, call: String) -> Int
+  if one_value?(call)
+    return UV_RUN_NOWAIT_VALUE
+  end
+
   dontwait = call != "open" and call != "openat"
   if apple?(target)
     if dontwait
@@ -275,6 +295,16 @@ export def nonblocking_bit(target: String, call: String) -> Int
   end
 
   return 0
+end
+
+## Returns whether the constant `flags` of a call of `FLAG_ARGUMENTS` makes it return at once, given its `bit`. The
+## flags of the others are bits to test; the mode of `uv_run` is one value, so `UV_RUN_ONCE` (1) is not `NOWAIT` (2).
+export def flags_return_at_once?(call: String, flags: Int, bit: Int) -> Bool
+  if one_value?(call)
+    return flags == bit
+  end
+
+  return Int.bit_and(flags, bit) != 0
 end
 
 # Whether a triple of clang is one of Apple's (`arm64-apple-macos`, `x86_64-apple-darwin23`).
