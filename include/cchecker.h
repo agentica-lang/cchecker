@@ -1,7 +1,8 @@
 /* Annotations for cchecker, the rule checker for C (https://github.com/agentica-lang/cchecker).
  *
- * Each macro expands to an `annotate` attribute that clang keeps in its AST, where cchecker reads it. For every other
- * compiler the macros are empty, so a project can annotate its code and still build with gcc, MSVC or tcc.
+ * The macros expand to something only while cchecker dumps the AST with clang (it defines CCHECKER_AST); in every
+ * other build, with any compiler, they are empty. A normal build of a project carries no annotation, and it can still
+ * build with gcc, MSVC or tcc. A project that wants an attribute for another tool defines the macros itself.
  *
  *   CC_SHORT                    the function never blocks and does bounded work
  *   CC_BLOCKING                 the function may block
@@ -44,11 +45,9 @@
 /* cchecker defines CCHECKER_AST when it dumps the AST: clang 19 leaves the text of `annotate` out of its JSON AST, and
  * keeps the message of `deprecated`. The dump hides the warnings this gives. */
 #define CC_ANNOTATE_(text) __attribute__((deprecated("cchecker:" text)))
-#elif defined(__clang__)
-#define CC_ANNOTATE_(text) __attribute__((annotate("cchecker:" text)))
 #endif
 
-#if defined(__clang__)
+#if defined(__clang__) && defined(CCHECKER_AST)
 /* The arguments are kept as written, so `CC_PAIR(mask_signals, restore_signals)` is "pair(mask_signals, ...)". */
 #define CC_ANNOTATE_ARGS_(name, ...) CC_ANNOTATE_(name "(" #__VA_ARGS__ ")")
 #define CC_SHORT CC_ANNOTATE_("short")

@@ -1,9 +1,9 @@
 Feature: The annotation header
-  include/cchecker.h defines the macros that mark the rules of a project. clang keeps them in its AST, and every other
-  compiler sees nothing.
+  include/cchecker.h defines the macros that mark the rules of a project. They expand to something only while cchecker
+  dumps the AST (CCHECKER_AST, clang); in every other build, with any compiler, they are empty.
 
-  Scenario: clang keeps each annotation as an annotate attribute
-    When clang dumps the AST of "fixtures/annotated.c"
+  Scenario: clang keeps each annotation in the AST dump of the rules
+    When clang dumps the AST of "fixtures/annotated.c" as the rules do
     Then the exit code is 0
     And the output includes:
       """
@@ -28,6 +28,40 @@ Feature: The annotation header
     And the output includes:
       """
       "cchecker:no_syscall_under(table_lock)"
+      """
+
+  Scenario: A normal clang compile carries no annotation
+    When clang preprocesses "fixtures/annotated.c"
+    Then the exit code is 0
+    And the output includes:
+      """
+      int next_id(void);
+      """
+    And the output does not include:
+      """
+      annotate("
+      """
+    And the output does not include:
+      """
+      cchecker:
+      """
+    And the output does not include:
+      """
+      deprecated
+      """
+
+  Scenario: The rules still find a finding on a marked file
+    Given the C file "mark.c" holds:
+      """
+      #include "stdlib.h"
+      #include "cchecker.h"
+      int f(int n) { CC_OWNS char *b = malloc(n); if (n > 3) return 1; free(b); return 0; }
+      """
+    When I run cchecker with "--tools rules --json $DIR/mark.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "code":"CC-OWN-LEAK"
       """
 
   Scenario Outline: The macros are empty for gcc, in every C standard
