@@ -627,7 +627,10 @@ def collect(options: Options, config: Config.Config, jobs: List[Tools.Job], cwd:
   # `[assume]` holds for every rule, as the marks it stands for.
   cut_missing = Effects.missing_fields(units, config)
   units = Effects.assumed(units, config)
-  units = Profile.measure("jumps") do Effects.with_jumps(units) end
+  if not config.off.include?(Known.JUMP_CALLERS_FLAG)
+    units = Profile.measure("jumps") do Effects.with_jumps(units, cwd) end
+  end
+
   checked = Profile.measure("effects") do Effects.check(units, config, options.infer, options.all_paths, cwd) end
   locked = Profile.measure("locking") do Locking.check(units) end
   owned = Profile.measure("ownership") do Ownership.check(units) end

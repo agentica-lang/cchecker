@@ -152,16 +152,24 @@ call is not on that path. `CC_MAY_JUMP` on a function that never returns
 (`_Noreturn`, `CC_NORETURN`) is the same. The jump adds no state to the walk, so
 the limits below do not change.
 
-A function that calls a function that may jump out or jumps (marked, listed,
-or found so in turn), directly, may jump out too, unless it catches the jump: it
+A function that calls a function that may jump out or jumps (marked, listed, or
+found so in turn), directly, may jump out too, unless it catches the jump: it
 calls `setjmp` or `sigsetjmp`, is marked `CC_CATCHES`, or is named in `[assume]
 catches`. A function that no rule walks into (`CC_STOP`, `[assume] stop`) does
 not either. So only the functions that raise need a mark, not every helper that
-reaches them. The last step of `path` names the chain of calls down to the
-marked function, a shortest one: `7:72 may jump in sized (check_size)`. A
-function that never returns and reaches a jump jumps (`jumps in bad_signature
-(fail)`): its call ends the path. The jump of a function that catches still
-counts at its own calls: catching stops only what its callers see.
+reaches them. A call of `setjmp` anywhere in a function counts as catching every
+jump of its calls: an approximation, so a jump from a call before the `setjmp`,
+in the branch that handles the jump, or to another `jmp_buf` counts as caught
+too. The last step of `path` names the chain of calls down to the marked
+function, a shortest one, and at most three of it (`7:72 may jump in sized
+(check_size)`, `may jump in z (y, x, w, ...)`); a name that static functions of
+two files share has its file (`helper@src/a.c`). A function that never returns
+and reaches a jump is a way out where the path ends, as at a `CC_JUMPS` call,
+and says so: `may jump in bad_signature (fail), never returns` (it may also
+exit). The jump of a function that catches still counts at its own calls:
+catching stops only what its callers see. A finding at an inferred jump has
+`may_jump_callers` in `source` of `--json`, and `[library] may_jump_callers =
+false` turns the inference off (see [Settings](settings.md)).
 
 | Code | |
 |---|---|

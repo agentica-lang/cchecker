@@ -85,6 +85,7 @@ struct Breach
   name: String
   message: String
   path: List[Step]
+  source: String = ""
 end
 
 # The state after a node, and the rules broken there.
@@ -205,7 +206,7 @@ def with_breach(found: Map[String, Finding], body: Body, breach: Breach) -> Map[
   end
 
   texts = breach.path.map do |step| step.text end
-  return found.put(id, Locking.located(body, breach.code, breach.message, texts))
+  return found.put(id, Locking.located(body, breach.code, breach.message, texts).with(source: breach.source))
 end
 
 def stepped(walker: Walker, event: Event, item: Item) -> Outcome
@@ -323,7 +324,9 @@ def jumped(walker: Walker, outcome: Outcome, site: Site, stops: Bool) -> Outcome
   case outcome.moved
     Moved.Went(after) ->
       path = after.path.push(Step(text: Locking.jump_text(site, stops, walker.functions)))
-      return outcome.with(breaches: outcome.breaches.concat(leaks(walker.body, after.state, path)))
+      source = Locking.jump_source(site, walker.functions)
+      found = leaks(walker.body, after.state, path).map do |breach| breach.with(source: source) end
+      return outcome.with(breaches: outcome.breaches.concat(found))
     _ -> return outcome
   end
 end

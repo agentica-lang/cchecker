@@ -13,8 +13,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `CC-PATH-LOCK-NOT-RELEASED`, and the path ends there.
 - A function that calls a function that may jump out or jumps may jump out too, unless it calls `setjmp` or
   `sigsetjmp` or is marked `CC_CATCHES` (or `[assume] catches`): only the raisers need a mark. The last step of `path`
-  names the chain of calls (`may jump in path_of (as_string, wrong_tag)`). **Breaking:** a project with
-  `CC_MAY_JUMP` marks may get new findings that its baseline does not hold.
+  names the chain of calls (`may jump in path_of (as_string, wrong_tag)`), and such a finding has
+  `"source":"may_jump_callers"`; `[library] may_jump_callers = false` turns the inference off. **Breaking:** a project
+  with `CC_MAY_JUMP` marks may get new findings that its baseline does not hold.
 
 ### Changed
 

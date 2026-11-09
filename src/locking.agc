@@ -18,6 +18,7 @@ import {Finding, IncompleteFunction} from "findings"
 import Flow from "flow"
 import {Body, Event, Fact, Lock, Mark, Site} from "flow"
 import Held from "held"
+import Known from "known"
 import {Function, PAIR_MARK, Unit} from "unit"
 
 ## The code of a path that returns with a lock that the function took.
@@ -42,6 +43,9 @@ MAX_STATES = 200_000
 
 # The most steps of a path a finding shows: the first ones and the last ones.
 MAX_PATH = 24
+
+# The most functions of the chain of an inferred jump that its step names.
+MAX_VIA = 3
 
 # The state of a path: for each lock key, the takes less the releases, and the known value of each tracked condition.
 struct State
@@ -210,20 +214,41 @@ export def jumps?(site: Site, functions: Map[String, Function]) -> Bool
 end
 
 ## Returns the step that ends a path at a call that jumps out of the caller: `jumps in` for a call that never comes
-## back (`stops`), `may jump in` for one that may also return, with the chain of calls of an inferred jump
-## (`may jump in path_of (as_string, wrong_tag)`).
+## back (`stops`), `may jump in` for one that may also return. An inferred jump names its chain of calls, the first
+## MAX_VIA of them (`may jump in path_of (as_string, wrong_tag)`); for a function that never returns it says so, as
+## the inference shows only that it may jump (`may jump in bad_signature (fail), never returns`).
 export def jump_text(site: Site, stops: Bool, functions: Map[String, Function]) -> String
+  at = "#{site.line}:#{site.column}"
   via = functions.get(site.key).map do |f| f.via end.unwrap_or([])
-  chain = ""
-  if not via.empty?
-    chain = " (#{via.join(", ")})"
+  if via.empty? and stops
+    return "#{at} jumps in #{site.name}"
   end
 
+  if via.empty?
+    return "#{at} may jump in #{site.name}"
+  end
+
+  shown = via.take(MAX_VIA)
+  if via.size > MAX_VIA
+    shown = shown.push("...")
+  end
+
+  text = "#{at} may jump in #{site.name} (#{shown.join(", ")})"
   if stops
-    return "#{site.line}:#{site.column} jumps in #{site.name}#{chain}"
+    return "#{text}, never returns"
   end
 
-  return "#{site.line}:#{site.column} may jump in #{site.name}#{chain}"
+  return text
+end
+
+## Returns the `source` of a finding at a call that jumps: the flag of the inference when the jump is inferred.
+export def jump_source(site: Site, functions: Map[String, Function]) -> String
+  inferred = functions.get(site.key).map do |f| not f.via.empty? end.unwrap_or(false)
+  if inferred
+    return Known.JUMP_CALLERS_FLAG
+  end
+
+  return ""
 end
 
 ## Returns the word of the value of a condition on a step of a path.
@@ -361,7 +386,19 @@ def with_jump(found: Map[String, Finding], walker: Walker, item: Item, event: Ev
       end
 
       step = Step(text: jump_text(site, stops?(site, walker.functions), walker.functions))
-      return with_exit(found, walker, item.state, item.path.push(step), true)
+      kept = with_exit(found, walker, item.state, item.path.push(step), true)
+      source = jump_source(site, walker.functions)
+      if source == ""
+        return kept
+      end
+
+      for id in kept.keys
+        if not found.key?(id)
+          kept = kept.put(id, kept[id].with(source: source))
+        end
+      end
+
+      return kept
     _ -> return found
   end
 end

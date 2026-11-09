@@ -194,9 +194,11 @@ end
 
 ## Returns the units with `may_jump` inferred through the call graph: a function that calls a function that may jump
 ## out or jumps (marked, listed or inferred), directly, may jump out too, unless it catches the jump (it calls `setjmp`
-## or `sigsetjmp`, or is CC_CATCHES or `[assume] catches`) or no rule walks into it (CC_STOP). Its `via` is the chain
-## of calls down to the marked function, a shortest one. A function that never returns and may jump out jumps.
-export def with_jumps(units: List[Unit]) -> List[Unit]
+## or `sigsetjmp`, or is CC_CATCHES or `[assume] catches`) or no rule walks into it (CC_STOP). A call of `setjmp`
+## anywhere in a function catches every jump of its calls: an approximation. Its `via` is the chain of calls down to
+## the marked function, a shortest one, where a name that two functions share has its file, relative to `cwd`. A
+## function that never returns and may jump out is a way out where the path ends, as CC_JUMPS is.
+export def with_jumps(units: List[Unit], cwd: String) -> List[Unit]
   graph = graph_of(units)
   callers: Map[String, List[String]] = {}
   catchers: Set[String] = Set.new([])
@@ -220,6 +222,12 @@ export def with_jumps(units: List[Unit]) -> List[Unit]
     via = via.put(key, [])
   end
 
+  # A name that two functions share (static functions of two files) is shown with its file, relative to `cwd`.
+  counts: Map[String, Int] = {}
+  for function in graph.functions.values
+    counts = counts.put(function.name, counts.get(function.name).unwrap_or(0) + 1)
+  end
+
   seeds = queue.size
   at = 0
   while at < queue.size
@@ -227,7 +235,14 @@ export def with_jumps(units: List[Unit]) -> List[Unit]
     at += 1
     for caller in callers.get(key).unwrap_or([])
       if not via.key?(caller) and not catchers.include?(caller) and not catches?(graph.functions.get(caller))
-        via = via.put(caller, [name_of_key(graph.functions, key)].concat(via[key]))
+        name = name_of_key(graph.functions, key)
+        shown = name
+        if counts.get(name).unwrap_or(0) > 1
+          file = graph.functions.get(key).map do |f| f.file end.unwrap_or("")
+          shown = "#{name}@#{Paths.inside(cwd, file).unwrap_or(file)}"
+        end
+
+        via = via.put(caller, [shown].concat(via[key]))
         queue = queue.push(caller)
       end
     end
