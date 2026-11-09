@@ -108,6 +108,9 @@ Feature: Ownership on every path
       | freed through address  | void f(int n) { CC_OWNS char *b = malloc(n); zap(&b); if (!b) work(b); }                                                                  |
       | freed by a helper      | void f(int n) { CC_OWNS char *b = malloc(n); zap(&b); free(b); }                                                                         |
       | global declared twice  | extern CC_OWNS char *g; char *g; void f(int n) { CC_OWNS char *b = malloc(n); g = b; }                                                 |
+      | freed statement expr   | void f(int n) { free(({ CC_OWNS char *t = make(n); t; })); }                                                                            |
+      | taken statement expr   | void f(int n) { adopt(({ CC_OWNS char *t = make(n); t; })); }                                                                           |
+      | statement expr in ?:   | CC_OWNS char *f(int n) { return n ? ({ CC_OWNS char *p = make(n); p; }) : NULL; }                                                       |
       | atomic pointer freed   | static void release(CC_FREES _Atomic(char *) *p) { if (*p) free(*p); }                                                                   |
       | elvis                  | void f(char *q, int n) { char *p = q ?: make(n); free(p); }                                                                               |
       | field of a local struct | void f(int n) { struct local { CC_OWNS char *held; } x; CC_OWNS char *b = malloc(n); x.held = b; work(x.held); }                        |
