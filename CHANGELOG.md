@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - cchecker needs Agentica 0.27.0 or later: the C side of its native scan module is made by native-gen.
+- The path rules for locks and ownership drop the known value of a condition after its last test, so a function with many independent flags (`if (a) lock(); if (a) unlock();`) is walked in few states instead of a power of two, and no longer falls back to the walk without conditions, which reported false findings.
 
 ## [0.3.0] - 2026-11-09
 

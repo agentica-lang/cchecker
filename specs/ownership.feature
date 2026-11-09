@@ -380,6 +380,69 @@ Feature: Ownership on every path
       as they have more paths than the path rules follow: $DIR/many.c:4 many
       """
 
+  Scenario: Conditions that are not read again leave the state of the ownership walk too
+    The walk drops the flags that nothing reads again and keeps `done`, so the pointer is freed once on every path.
+
+    Given the C file "flags.c" holds:
+      """
+      #include <stdlib.h>
+      #include "cchecker.h"
+      void work(int n);
+      int many(int a0, int a1, int a2, int a3, int a4, int a5, int a6, int a7, int a8, int a9, int a10, int a11, int a12, int a13, int a14, int a15, int a16, int a17, int a18, int a19, int done) {
+        CC_OWNS char *p = malloc(8);
+        if (a0) work(1);
+        if (a0) work(2);
+        if (a1) work(1);
+        if (a1) work(2);
+        if (a2) work(1);
+        if (a2) work(2);
+        if (a3) work(1);
+        if (a3) work(2);
+        if (a4) work(1);
+        if (a4) work(2);
+        if (a5) work(1);
+        if (a5) work(2);
+        if (a6) work(1);
+        if (a6) work(2);
+        if (a7) work(1);
+        if (a7) work(2);
+        if (a8) work(1);
+        if (a8) work(2);
+        if (a9) work(1);
+        if (a9) work(2);
+        if (a10) work(1);
+        if (a10) work(2);
+        if (a11) work(1);
+        if (a11) work(2);
+        if (a12) work(1);
+        if (a12) work(2);
+        if (a13) work(1);
+        if (a13) work(2);
+        if (a14) work(1);
+        if (a14) work(2);
+        if (a15) work(1);
+        if (a15) work(2);
+        if (a16) work(1);
+        if (a16) work(2);
+        if (a17) work(1);
+        if (a17) work(2);
+        if (a18) work(1);
+        if (a18) work(2);
+        if (a19) work(1);
+        if (a19) work(2);
+
+        if (done) free(p);
+        if (!done) free(p);
+        return 0;
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/flags.c -- -I../include"
+    Then the exit code is 0
+    And the output includes:
+      """
+      "incomplete_functions":[]
+      """
+
   Scenario: The marks of a prototype hold in the definition and in the callers that include it
     Given the C file "own.h" holds:
       """

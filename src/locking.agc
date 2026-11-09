@@ -80,13 +80,16 @@ enum Moved
 end
 
 # What the walk of one function reads: the merged functions of the project, the rules on held locks, the conditions it
-# tracks and the variables they read, the locks of its calls by key, and the keys of its own CC_NO_SYSCALL_UNDER(lock).
+# tracks, the variables they read and where they are read again, the locks of its calls by key, and the keys of its
+# own CC_NO_SYSCALL_UNDER(lock).
 struct Walker
   body: Body
   functions: Map[String, Function]
   rules: Held.Rules
   tracked: Set[String]
   roots: Map[String, List[String]]
+  # The tracked conditions that each node can still read (`live_facts`); the state keeps no other.
+  live: Map[Int, Set[String]]
   locks: Map[String, Lock]
   quiet: Set[String]
   # The keys of the pairs whose set the function calls on some path.
@@ -236,6 +239,54 @@ export def forgotten(
   return facts.select do |text, _value| not roots.get(text, []).any? do |root| names.include?(root) end end
 end
 
+## Returns the known conditions that are still in `live`, the ones a later path can read.
+export def kept(facts: Map[String, Bool], live: Set[String]) -> Map[String, Bool]
+  if facts.empty?
+    return facts
+  end
+
+  return facts.select do |text, _value| live.include?(text) end
+end
+
+## Returns, for each node, the tracked conditions that a path from it can still test before a write to a variable of
+## theirs: the only known values that can still make a path impossible. The walks drop the others from their state, so
+## that two paths that differ in a condition that is not read again are one. A node not in the map has none.
+export def live_facts(body: Body, tracked: Set[String], roots: Map[String, List[String]]) -> Map[Int, Set[String]]
+  live: Map[Int, Set[String]] = {}
+  if tracked.empty?
+    return live
+  end
+
+  nodes = body.nodes
+  before: Map[Int, List[Int]] = {}
+  for at in 0...nodes.size
+    for after in nodes[at].next
+      before = before.put(after, before.get(after, []).push(at))
+    end
+  end
+
+  # Backwards from every node: a set only grows, so a node is read again only when its size changed.
+  queue = (0...nodes.size).to_a.reverse
+  i = 0
+  while i < queue.size
+    at = queue[i]
+    i += 1
+    reads: Set[String] = Set.new([])
+    for after in nodes[at].next
+      reads = reads.union(live.get(after, Set.new([])))
+    end
+
+    reads = read_before(nodes[at].event, reads, tracked, roots)
+
+    if reads.size != live.get(at, Set.new([])).size
+      live = live.put(at, reads)
+      queue = queue.concat(before.get(at, []))
+    end
+  end
+
+  return live
+end
+
 ## Returns whether a call never comes back: by its type or name, or by a CC_NORETURN on the function.
 export def stops?(site: Site, functions: Map[String, Function]) -> Bool
   noreturn = functions.get(site.key).map do |f| f.noreturn end.unwrap_or(false)
@@ -305,12 +356,15 @@ end
 # The findings of one function: with the conditions it tests twice, or without them when there are too many paths.
 def checked(body: Body, functions: Map[String, Function], rules: Held.Rules) -> Walk
   marks = functions.get(body.key).map do |f| f.marks end.unwrap_or([])
+  tracked = tracked_of(body)
+  roots = roots_of(body)
   walker = Walker(
     body: body,
     functions: functions,
     rules: rules,
-    tracked: tracked_of(body),
-    roots: roots_of(body),
+    tracked: tracked,
+    roots: roots,
+    live: live_facts(body, tracked, roots),
     locks: locks_of(body),
     quiet: Set.new(marks.flat_map(&quiet_keys)),
     sets: sets_of(body),
@@ -320,7 +374,7 @@ def checked(body: Body, functions: Map[String, Function], rules: Held.Rules) -> 
 
   walk = walked(walker)
   if not walk.complete
-    walk = walked(walker.with(tracked: Set.new([])))
+    walk = walked(walker.with(tracked: Set.new([]), live: {}))
   end
 
   return walk
@@ -432,10 +486,11 @@ def walked(walker: Walker) -> Walk
       Moved.Stopped -> next
       Moved.Went(moved) ->
         for after in node.next
-          seen = "#{after}|#{encoded(moved.state)}"
+          next_state = moved.state.with(facts: kept(moved.state.facts, walker.live.get(after, Set.new([]))))
+          seen = "#{after}|#{encoded(next_state)}"
           if not visited.include?(seen)
             visited = visited.add(seen)
-            queue = queue.push(moved.with(node: after))
+            queue = queue.push(moved.with(node: after, state: next_state))
           end
         end
     end
@@ -780,4 +835,25 @@ def encoded(state: State) -> String
   held = state.held.keys.sort.map do |key| "#{key}=#{state.held[key]}" end
   facts = state.facts.keys.sort.map do |text| "#{text}=#{state.facts[text]}" end
   return "#{held.join(";")}|#{facts.join(";")}|#{state.clamped.to_a.sort.join(";")}"
+end
+
+# The conditions read from a node, given those read from what follows it: a test of a tracked one adds it, and a write
+# to a variable of one takes it out.
+def read_before(
+  event: Event,
+  reads: Set[String],
+  tracked: Set[String],
+  roots: Map[String, List[String]],
+) -> Set[String]
+  case event
+    Event.Branch(fact) ->
+      if tracked.include?(fact.text)
+        return reads.add(fact.text)
+      end
+
+      return reads
+    Event.Writes(names) ->
+      return Set.new(reads.to_a.select do |text| not roots.get(text, []).any? do |root| names.include?(root) end end)
+    _ -> return reads
+  end
 end

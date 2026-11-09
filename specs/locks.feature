@@ -432,6 +432,111 @@ Feature: Locks on every path
       "line":3,
       """
 
+  Scenario: Conditions that are not read again leave the state, so 20 independent ones stay in few states
+    The conditions of a function that it tests twice are kept in the state of a path. One that no later test reads is
+    dropped, so the two histories of a flag (taken and released, or neither) are one state after its last test, not
+    twice the states of the flag before.
+
+    Given the C file "flags.c" holds:
+      """
+      #include <pthread.h>
+      struct queue { pthread_mutex_t mu; };
+      int pop(struct queue *q, int a0, int a1, int a2, int a3, int a4, int a5, int a6, int a7, int a8, int a9, int a10, int a11, int a12, int a13, int a14, int a15, int a16, int a17, int a18, int a19) {
+        if (a0) pthread_mutex_lock(&q->mu);
+        if (a0) pthread_mutex_unlock(&q->mu);
+        if (a1) pthread_mutex_lock(&q->mu);
+        if (a1) pthread_mutex_unlock(&q->mu);
+        if (a2) pthread_mutex_lock(&q->mu);
+        if (a2) pthread_mutex_unlock(&q->mu);
+        if (a3) pthread_mutex_lock(&q->mu);
+        if (a3) pthread_mutex_unlock(&q->mu);
+        if (a4) pthread_mutex_lock(&q->mu);
+        if (a4) pthread_mutex_unlock(&q->mu);
+        if (a5) pthread_mutex_lock(&q->mu);
+        if (a5) pthread_mutex_unlock(&q->mu);
+        if (a6) pthread_mutex_lock(&q->mu);
+        if (a6) pthread_mutex_unlock(&q->mu);
+        if (a7) pthread_mutex_lock(&q->mu);
+        if (a7) pthread_mutex_unlock(&q->mu);
+        if (a8) pthread_mutex_lock(&q->mu);
+        if (a8) pthread_mutex_unlock(&q->mu);
+        if (a9) pthread_mutex_lock(&q->mu);
+        if (a9) pthread_mutex_unlock(&q->mu);
+        if (a10) pthread_mutex_lock(&q->mu);
+        if (a10) pthread_mutex_unlock(&q->mu);
+        if (a11) pthread_mutex_lock(&q->mu);
+        if (a11) pthread_mutex_unlock(&q->mu);
+        if (a12) pthread_mutex_lock(&q->mu);
+        if (a12) pthread_mutex_unlock(&q->mu);
+        if (a13) pthread_mutex_lock(&q->mu);
+        if (a13) pthread_mutex_unlock(&q->mu);
+        if (a14) pthread_mutex_lock(&q->mu);
+        if (a14) pthread_mutex_unlock(&q->mu);
+        if (a15) pthread_mutex_lock(&q->mu);
+        if (a15) pthread_mutex_unlock(&q->mu);
+        if (a16) pthread_mutex_lock(&q->mu);
+        if (a16) pthread_mutex_unlock(&q->mu);
+        if (a17) pthread_mutex_lock(&q->mu);
+        if (a17) pthread_mutex_unlock(&q->mu);
+        if (a18) pthread_mutex_lock(&q->mu);
+        if (a18) pthread_mutex_unlock(&q->mu);
+        if (a19) pthread_mutex_lock(&q->mu);
+        if (a19) pthread_mutex_unlock(&q->mu);
+        return 0;
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/flags.c"
+    Then the exit code is 0
+    And the output includes:
+      """
+      "incomplete_functions":[]
+      """
+
+  Scenario: A condition that a later test reads keeps its value across the conditions that are dropped
+    Given the C file "later.c" holds:
+      """
+      #include <pthread.h>
+      struct queue { pthread_mutex_t mu; };
+      void work(int n);
+      int kept(struct queue *q, int a, int a0, int a1, int a2, int a3) {
+        if (a) pthread_mutex_lock(&q->mu);
+        if (a0) work(1);
+        if (a0) work(2);
+        if (a1) work(1);
+        if (a1) work(2);
+        if (a2) work(1);
+        if (a2) work(2);
+        if (a3) work(1);
+        if (a3) work(2);
+        if (a) pthread_mutex_unlock(&q->mu);
+        return 0;
+      }
+      int leaks(struct queue *q, int a, int a0, int a1, int a2, int a3) {
+        if (a) pthread_mutex_lock(&q->mu);
+        if (a0) work(1);
+        if (a0) work(2);
+        if (a1) work(1);
+        if (a1) work(2);
+        if (a2) work(1);
+        if (a2) work(2);
+        if (a3) work(1);
+        if (a3) work(2);
+        if (a0) return 1;
+        if (a) pthread_mutex_unlock(&q->mu);
+        return 0;
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/later.c"
+    Then the exit code is 1
+    And the output includes:
+      """
+      {"code":"CC-PATH-LOCK-NOT-RELEASED","tool":"rules","file":"$DIR/later.c","line":17,
+      """
+    And the output does not include:
+      """
+      "line":4,
+      """
+
   Scenario: An annotation of a prototype counts once for a caller after the definition, whatever the names of its parameters there
     Given the C file "pop.c" holds:
       """

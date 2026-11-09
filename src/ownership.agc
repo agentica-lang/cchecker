@@ -99,6 +99,8 @@ struct Walker
   functions: Map[String, Function]
   tracked: Set[String]
   roots: Map[String, List[String]]
+  # The tracked conditions that each node can still read (`Locking.live_facts`); the state keeps no other.
+  live: Map[Int, Set[String]]
 end
 
 struct Walk
@@ -143,11 +145,19 @@ end
 
 # The findings of one function: with the conditions it tests twice, or without them when there are too many paths.
 def checked(body: Body, functions: Map[String, Function]) -> Walk
-  walker = Walker(body: body, functions: functions, tracked: Locking.tracked_of(body), roots: Locking.roots_of(body))
+  tracked = Locking.tracked_of(body)
+  roots = Locking.roots_of(body)
+  walker = Walker(
+    body: body,
+    functions: functions,
+    tracked: tracked,
+    roots: roots,
+    live: Locking.live_facts(body, tracked, roots),
+  )
 
   walk = walked(walker)
   if not walk.complete
-    walk = walked(walker.with(tracked: Set.new([])))
+    walk = walked(walker.with(tracked: Set.new([]), live: {}))
   end
 
   return walk
@@ -186,10 +196,11 @@ def walked(walker: Walker) -> Walk
       Moved.Stopped -> next
       Moved.Went(moved) ->
         for after in node.next
-          seen = "#{after}|#{encoded(moved.state)}"
+          next_state = moved.state.with(facts: Locking.kept(moved.state.facts, walker.live.get(after, Set.new([]))))
+          seen = "#{after}|#{encoded(next_state)}"
           if not visited.include?(seen)
             visited = visited.add(seen)
-            queue = queue.push(moved.with(node: after))
+            queue = queue.push(moved.with(node: after, state: next_state))
           end
         end
     end
