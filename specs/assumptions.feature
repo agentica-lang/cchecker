@@ -381,6 +381,7 @@ Feature: What the project assumes of its functions
       jumps = ["external"]
       catches = ["tick"]
       jump_releases = ["helper"]
+      nonblocking = ["tick"]
       """
     When I run cchecker in its folder with "--tools rules"
     Then the exit code is 0
@@ -392,6 +393,7 @@ Feature: What the project assumes of its functions
       jumps = ["raise_fatal"]
       catches = ["run_guarded"]
       jump_releases = ["take_recorded"]
+      nonblocking = ["read_all"]
       """
     When I run cchecker in its folder with "--tools rules"
     Then the exit code is 2
@@ -414,6 +416,10 @@ Feature: What the project assumes of its functions
     And the errors include:
       """
       take_recorded (assume.jump_releases)
+      """
+    And the errors include:
+      """
+      read_all (assume.nonblocking)
       """
     When I run cchecker in its folder with "--tools rules tick.c"
     Then the exit code is 0

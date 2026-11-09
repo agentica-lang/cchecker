@@ -24,6 +24,8 @@ export CATCHES = "catches"
 export JUMP_RELEASES = "jump_releases"
 ## The mark of a function whose call always jumps out of its caller and never returns (CC_JUMPS, `[assume] jumps`).
 export JUMPS = "jumps"
+## The mark of a function whose descriptors are non-blocking (`[assume] nonblocking`).
+export NONBLOCKING = "nonblocking"
 
 # The start of the slot of a field (`field:request.call`).
 FIELD_SLOT = "field:"
@@ -95,7 +97,7 @@ struct Cut
   callee: Listing
 end
 
-# The lists of `[assume] short`, `stop`, `may_jump`, `jumps`, `catches` and `jump_releases`.
+# The lists of `[assume] short`, `stop`, `may_jump`, `jumps`, `catches`, `jump_releases` and `nonblocking`.
 struct Assumed
   short: Listing
   stop: Listing
@@ -103,6 +105,7 @@ struct Assumed
   jumps: Listing
   catches: Listing
   jump_releases: Listing
+  nonblocking: Listing
 end
 
 ## What the rules found: the findings, and the callbacks of libuv calls they could not follow to a function.
@@ -208,18 +211,7 @@ end
 ## the calls through the fields of `[assume] stop_fields`, which no walk follows, and the direct calls of the pairs of
 ## `[assume] stop_calls`. A call through a copy of such a field (a local that got it) is still followed.
 export def assumed(units: List[Unit], config: Config.Config) -> List[Unit]
-  if (
-    config.trusted.empty? and
-    config.stops.empty? and
-    config.stop_fields.empty? and
-    config.stop_calls.empty? and
-    config.may_jump.empty? and
-    config.jumps.empty? and
-    config.catches.empty? and
-    config.jump_releases.empty? and
-    config.acquires.empty? and
-    config.releases.empty?
-  )
+  if not Config.assumes_any?(config)
     return units
   end
 
@@ -233,6 +225,7 @@ export def assumed(units: List[Unit], config: Config.Config) -> List[Unit]
     jumps: listing_of(config.jumps),
     catches: listing_of(config.catches),
     jump_releases: listing_of(config.jump_releases),
+    nonblocking: listing_of(config.nonblocking),
   )
 
   return units.map do |unit|
@@ -700,9 +693,18 @@ def bare_class(class: String) -> String
   end
 end
 
-# Whether every call of `callee` in `key` has the flag that makes it return at once, so the short rule does not count
-# it.
+# Whether every call of `callee` in `key` has the flag that makes it return at once, or is a call on a descriptor in a
+# function of `[assume] nonblocking`, so the short rule does not count it.
 def returns_at_once?(graph: Graph, walk: Walk, key: String, callee: String) -> Bool
+  # A function of the project named `read` is not the call of libc: what it calls still counts.
+  if (
+    marked?(graph, key, NONBLOCKING) and
+    not defined?(graph, callee) and
+    Known.FD_CALLS.include?(name_of_key(graph.functions, callee))
+  )
+    return true
+  end
+
   calls = graph.quiet.get("#{key}>#{callee}").unwrap_or([])
   return walk.flags and not calls.empty? and calls.all? do |set| set end
 end
@@ -890,22 +892,17 @@ def with_assumed(function: Function, lists: Assumed) -> Function
     marks = marks.push(JUMP_RELEASES)
   end
 
+  if listed?(lists.nonblocking, function)
+    marks = marks.push(NONBLOCKING)
+  end
+
   return function.with(marks: marks.uniq, noreturn: noreturn)
 end
 
 # The entries of `[assume]` that no function of the units has, with their key. A `name@file` counts when the file of
 # any declaration of the function, or of its definition, ends with the path: the same functions that `assumed` marks.
 def missing_assumed(units: List[Unit], config: Config.Config) -> List[String]
-  if (
-    config.trusted.empty? and
-    config.stops.empty? and
-    config.may_jump.empty? and
-    config.jumps.empty? and
-    config.catches.empty? and
-    config.jump_releases.empty? and
-    config.acquires.empty? and
-    config.releases.empty?
-  )
+  if not Config.assumes_any?(config)
     return []
   end
 
@@ -927,6 +924,7 @@ def missing_assumed(units: List[Unit], config: Config.Config) -> List[String]
     .select do |text| not lock_declared?(text, declared) end
     .map do |text| "#{text} (assume.releases)" end
 
+  nonblocking = unmatched(config.nonblocking, files).map do |name| "#{name} (assume.nonblocking)" end
   return (
     short.concat(stop)
       .concat(may_jump)
@@ -935,6 +933,7 @@ def missing_assumed(units: List[Unit], config: Config.Config) -> List[String]
       .concat(releases)
       .concat(acquires)
       .concat(given_back)
+      .concat(nonblocking)
   )
 end
 

@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `waitpid`, `wait3`, `wait4` and `waitid` with `WNOHANG` are not blocking calls for `CC_SHORT`
+  (`libc_nonblocking_flags`).
+- The flag of `libc_nonblocking_flags` may be in a local variable that gets only constants and gets one before the
+  call on every path (`options = WNOHANG; waitpid(pid, &status, options)`).
+- `[assume] nonblocking = ["uv__read"]`: the calls on a descriptor (`read`, `write`, `recv`, `send`, `accept`, ...)
+  that these functions make are not blocking for `CC_SHORT`, for code whose descriptors are all non-blocking.
 - `[assume] acquires` and `releases` (`"my_lock(0)"`, `"name@path(N)"`) mark a lock wrapper of code that cannot be
   edited as `CC_ACQUIRES` and `CC_RELEASES` do, with the parameter that holds the lock. `short_locks` takes the same
   `name(N)` for a wrapper whose lock cannot be named: every lock taken through it is short.
