@@ -51,7 +51,8 @@ test/             unit tests of the pure helpers (the parsers, the scan of the A
   builds it.
 - `make site` builds the docs site into `site/public` (it needs `git submodule update --init`, Hugo and Dart Sass,
   pinned in `pages.yml`); `make site-serve` previews it. A new page of `docs/` gets its title, order and description
-  in a `[[cascade]]` of `site/hugo.toml`.
+  in a `[[cascade]]` of `site/hugo.toml` (`make site` fails without one). `docs/` is flat Markdown: no images and no
+  subfolders.
 
 ## Rules
 
