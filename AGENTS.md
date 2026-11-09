@@ -1,8 +1,8 @@
 # cchecker
 
 Checks C code for project rules on clang's JSON AST, and runs `gcc -fanalyzer` and `clang-tidy` in the same command
-with one output format. Written in Agentica; the plan and the phases are in issue 1 (`gh issue view 1 -R
-agentica-lang/cchecker`). No C code of ours except the annotation header and the C fixtures of the tests.
+with one output format. Written in Agentica; planned work is in the GitHub issues, one milestone per release. No C
+code of ours except the annotation header and the C fixtures of the tests.
 
 ## Map
 
