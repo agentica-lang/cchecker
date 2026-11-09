@@ -7,7 +7,10 @@
 ## CC_OWNS). `free` and a parameter marked CC_FREES free it; a parameter marked CC_OWNS, a return, and a store in a
 ## CC_OWNS field or global hand it on. A local that is not marked and gets a pointer that owns is an alias of it: it
 ## stands for that pointer. A condition that tells that a pointer is null (`if (!p)`) leaves it owning nothing on that
-## side, and a pointer lent to a call (`fill(&p)`) owns what the call left in it, which the rules do not know.
+## side, and a pointer lent to a call (`fill(&p)`) owns what the call left in it, which the rules do not know. A
+## CC_OWNS_OUT parameter hands an owned pointer out to the caller (`*out = p`), and the pointer whose address a call
+## passes there owns what the call left in it once the path reads it. A store into an item of a pointer that owns an
+## array (`argv[i] = p`) hands the pointer on to the array.
 ##
 ## The walk follows the graph of `Flow` in breadth, as the lock rules do, with the state of each pointer on the path
 ## and the conditions that the function tests twice.
@@ -30,12 +33,16 @@ export USE_AFTER_FREE = "CC-OWN-USE-AFTER-FREE"
 # The states of a pointer on a path; one that owns nothing is not in the state at all. A pointer is `unknown` after it
 # was lent to a call, which may have set it: it may be freed and handed on, and a path may end with it. A pointer is
 # `cleared` after a call freed it through its address (`free_and_null(&p)`): it is freed or null, so it may be read and
-# freed again, and a condition that says it is not null makes it freed.
+# freed again, and a condition that says it is not null makes it freed. A pointer is `filled` after a call handed an
+# owned pointer out to it through a CC_OWNS_OUT parameter (`take(&p)`). Unlike `unknown`, the rules know it may own:
+# it is freed and handed on as one that owns, and reading it (lending it, testing it) makes it `owned`. Until then no
+# exit leaks it, nor a new value: a call that failed may have left nothing there.
 OWNED = "owned"
 FREED = "freed"
 MOVED = "moved"
 UNKNOWN = "unknown"
 CLEARED = "cleared"
+FILLED = "filled"
 
 # The states the walk of one function may visit, with the conditions and then without them.
 MAX_STATES = 200_000
@@ -242,7 +249,8 @@ def marked(mark: Mark) -> Step
   return Step(text: "#{mark.line}:#{mark.column} #{mark.word}")
 end
 
-# A call frees the pointers it frees, takes those it takes, and may return an owned value that nothing keeps.
+# A call frees the pointers it frees, takes those it takes, fills those it hands an owned pointer out to (a value that
+# one still owned is lost), and may return an owned value that nothing keeps.
 def after_call(body: Body, item: Item, site: Site) -> Outcome
   at = "#{site.line}:#{site.column}"
   current = item
@@ -273,6 +281,23 @@ def after_call(body: Body, item: Item, site: Site) -> Outcome
       some(_) -> current = ended(current, root, MOVED, step)
       none -> next
     end
+  end
+
+  for name in site.fills
+    step = Step(text: "#{at} #{site.name} sets #{name}", name: name, origin: true)
+    if current.state.owns.get(name).map do |own| own == OWNED end.unwrap_or(false)
+      breaches = breaches.push(overwritten(body, current, name, step))
+    end
+
+    state = current.state
+    current = current.with(
+      state: state.with(
+        owns: state.owns.put(name, FILLED),
+        aliases: state.aliases.delete(name),
+        links: state.links.delete(name),
+      ),
+      path: current.path.push(step),
+    )
   end
 
   if site.lost
@@ -342,6 +367,8 @@ def after_use(body: Body, item: Item, use: Use) -> Outcome
     some(state) if state == FREED or state == MOVED ->
       step = Step(text: "#{use.line}:#{use.column} uses #{root}", name: root)
       return Outcome(moved: Moved.Went(item), breaches: [used_after(body, item, root, step)])
+    some(state) if state == FILLED ->
+      return went(item.with(state: item.state.with(owns: item.state.owns.put(root, OWNED))))
     _ -> return went(item)
   end
 end
@@ -391,9 +418,7 @@ def after_assign(body: Body, item: Item, assign: Assign) -> Outcome
   end
 
   if owned
-    message = "#{body.name} does not free or hand on #{assign.name} on every path"
-    path = from_last(item.path, assign.name, true).push(step)
-    breaches = breaches.push(Breach(code: LEAK, name: assign.name, message: message, path: path))
+    breaches = breaches.push(overwritten(body, item, assign.name, step))
   end
 
   state = state.with(aliases: state.aliases.delete(assign.name), links: state.links.delete(assign.name))
@@ -425,6 +450,12 @@ end
 def resized(state: State, assign: Assign) -> State
   owned = state.with(owns: state.owns.put(assign.name, OWNED))
   return owned.with(links: owned.links.put(assign.name, owner(state, assign.from)))
+end
+
+# A pointer that owns gets a new value at `step` (an assignment, or a call that fills it): what it owned leaks.
+def overwritten(body: Body, item: Item, name: String, step: Step) -> Breach
+  message = "#{body.name} does not free or hand on #{name} on every path"
+  return Breach(code: LEAK, name: name, message: message, path: from_last(item.path, name, true).push(step))
 end
 
 # Each pointer that still owns at the end of a path is a leak.

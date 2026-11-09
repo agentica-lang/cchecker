@@ -124,7 +124,7 @@ these:
 - [Rules](docs/rules.md): the annotations, the effect rules, the lock rules and
   the pairs of calls.
 - [Ownership and the collector](docs/ownership.md): `CC_OWNS`, `CC_FREES`,
-  `CC_GC` and `CC_GC_ALLOC`.
+  `CC_OWNS_OUT`, `CC_GC` and `CC_GC_ALLOC`.
 
 ## Development
 

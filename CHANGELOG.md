@@ -10,6 +10,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   1. Every run now names its stale entries after the summary and in `stale` of `--json`.
 - `CC_MAY_JUMP` and `[assume] may_jump`: a call of a function that may jump out (`longjmp` on an error) is also a way
   out of its caller, where a pointer that still owns is `CC-OWN-LEAK` and a lock held is `CC-PATH-LOCK-NOT-RELEASED`.
+- `CC_OWNS_OUT` on a parameter (`char **out`): `*out = p` hands `p` out to the caller, and `take(&p)` makes `p` own
+  what the call left. `argv[i] = p` in an array that owns hands `p` on to the array.
 
 ### Changed
 

@@ -52,8 +52,9 @@ end
 ## releases, and waits on (a condition wait gives its lock back while it waits). A call through a function pointer
 ## (`pointer`) has the text of the pointer as its name and no key. `tried` is a trylock, which never waits for its lock.
 ## For ownership: the pointers that own which it frees and which it takes (`hands`), whether it returns an owned
-## value that nothing keeps (`lost`), and those it frees through their address (`clears`, `free_and_null(&p)`), which
-## are freed or null after it.
+## value that nothing keeps (`lost`), those it frees through their address (`clears`, `free_and_null(&p)`), which
+## are freed or null after it, and those whose address it gets at a CC_OWNS_OUT parameter (`fills`), which own what
+## it left in them.
 export struct Site
   name: String
   key: String
@@ -69,6 +70,7 @@ export struct Site
   hands: List[String] = []
   lost: Bool = false
   clears: List[String] = []
+  fills: List[String] = []
 end
 
 ## The value a condition has on an edge. `text` is "" for a condition that may change between two reads (a call).
@@ -177,11 +179,13 @@ end
 
 ## What the functions of a translation unit say about ownership: the keys of those that return an owned pointer
 ## (CC_OWNS on the function), their parameters that take (CC_OWNS) or free (CC_FREES) what a call passes, by index,
-## and the fields (by id) and the globals (by the ids of their declarations) that own what is stored in them.
+## those that hand an owned pointer out to the caller (`outs`, CC_OWNS_OUT), and the fields (by id) and the globals
+## (by the ids of their declarations) that own what is stored in them.
 export struct Owning
   returns: Set[String]
   takes: Map[String, List[Int]]
   frees: Map[String, List[Int]]
+  outs: Map[String, List[Int]]
   fields: Set[String]
   globals: Set[String]
 end
@@ -239,17 +243,27 @@ struct Builder
   owners: Owners
 end
 
+# The places of a function that keep an owned pointer stored in them: its parameters and local variables (`locals`),
+# `*p` of a parameter that frees it only (`freed`, CC_FREES) or that hands an owned pointer out to the caller (`outs`,
+# CC_OWNS_OUT; `out[i]` too), and an item of a pointer whose items own what is stored in them (`arrays`: the pointers
+# that own or stand for one, and the locals that get the value of an allocation).
+struct Places
+  locals: Set[String]
+  freed: Set[String]
+  outs: Set[String]
+  arrays: Set[String]
+end
+
 # The pointers of a function that own or may stand for one that does, by name (`names`): its parameters that own
-# (`params`), those that free it only (`freed`, CC_FREES), its locals marked CC_OWNS (`marked`), and the locals that
-# get an owned value or a pointer of one of them. `locals` are the names of its parameters and local variables, `kept`
-# the ids of the calls of a function that returns an owned pointer whose value is kept (in a local, a CC_OWNS place, a
-# return or a parameter that takes it), and `calls` whether it calls such a function at all.
+# (`params`), its locals marked CC_OWNS (`marked`), and the locals that get an owned value, a pointer of one of them,
+# or what a call hands out through their address. `places` are where a store hands a pointer on, `kept` the ids of
+# the calls of a function that returns an owned pointer whose value is kept (in a local, a CC_OWNS place, a return or
+# a parameter that takes it), and `calls` whether it calls such a function at all.
 struct Owners
   params: List[String]
-  freed: Set[String]
+  places: Places
   names: Set[String]
   marked: Set[String]
-  locals: Set[String]
   kept: Set[String]
   calls: Bool
 end
@@ -306,10 +320,10 @@ export def locks?(ctx: Context, node: Json) -> Bool
   return Ast.children(node).any? do |child| locks?(ctx, child) end
 end
 
-## Returns whether the ownership rules read a function definition, whose key is `key`: it has a pointer that owns, or
-## calls a function that returns one.
+## Returns whether the ownership rules read a function definition, whose key is `key`: it has a pointer that owns or
+## a parameter that hands one out, or calls a function that returns one or hands one out.
 export def owns?(ctx: Context, key: String, node: Json) -> Bool
-  if ctx.owning.takes.key?(key) or ctx.owning.frees.key?(key)
+  if ctx.owning.takes.key?(key) or ctx.owning.frees.key?(key) or ctx.owning.outs.key?(key)
     return true
   end
 
@@ -597,8 +611,12 @@ def owners_of(ctx: Context, key: String, node: Json) -> Owners
       .map do |n| Ast.text(n, "name") end,
   )
 
+  outs = Set.new(
+    ctx.owning.outs.get(key, []).select do |i| i < names_of_params.size end.map do |i| names_of_params[i] end,
+  )
+
   written = writes_of(all, locals)
-  names = Set.new(params).union(marked)
+  names = Set.new(params).union(marked).union(filled_locals(ctx, all, locals))
   grew = true
   while grew
     grew = false
@@ -610,20 +628,61 @@ def owners_of(ctx: Context, key: String, node: Json) -> Owners
     end
   end
 
+  allocated = written.select do |w| allocation?(w.value) end.map do |w| w.name end
+  places = Places(locals: locals, freed: freed, outs: outs, arrays: names.union(outs).union(Set.new(allocated)))
   return Owners(
     params: params,
-    freed: freed,
+    places: places,
     names: names,
     marked: marked,
-    locals: locals,
-    kept: kept_calls(ctx, all, locals, freed),
+    kept: kept_calls(ctx, all, places),
     calls: all.any? do |n| owning_call?(ctx, n) end,
   )
 end
 
-# Whether a node is or holds a local marked CC_OWNS or a call of a function that returns an owned pointer.
+# Whether an expression is a call of an allocator (`malloc`, `calloc`, ...), through casts and parentheses.
+def allocation?(node: Json) -> Bool
+  bare = see_through(node)
+  return Ast.kind(bare) == "CallExpr" and Known.OWNED.include?(callee_name(bare))
+end
+
+# The locals whose address a call passes to a parameter that hands an owned pointer out (`fill(&p)`).
+def filled_locals(ctx: Context, all: List[Json], locals: Set[String]) -> Set[String]
+  found: Set[String] = Set.new([])
+  for n in all
+    if Ast.kind(n) == "CallExpr"
+      args = Ast.children(n).drop(1)
+      for i in out_params(ctx, callee_name(n))
+        if i < args.size and address?(args[i])
+          name = variable_name(Ast.children(see_through(args[i])).first)
+          if locals.include?(name)
+            found = found.add(name)
+          end
+        end
+      end
+    end
+  end
+
+  return found
+end
+
+# The indices of the parameters of a function, by name, that hand an owned pointer out to the caller.
+def out_params(ctx: Context, name: String) -> List[Int]
+  if name == ""
+    return []
+  end
+
+  return ctx.owning.outs.get(key_of_function(ctx, name), [])
+end
+
+# Whether a node is or holds a local marked CC_OWNS, a call of a function that returns an owned pointer, or a call of
+# one that hands an owned pointer out through a parameter.
 def owning_node?(ctx: Context, node: Json) -> Bool
   if (Ast.kind(node) == "VarDecl" and marked_owner?(node)) or owning_call?(ctx, node)
+    return true
+  end
+
+  if Ast.kind(node) == "CallExpr" and not out_params(ctx, callee_name(node)).empty?
     return true
   end
 
@@ -652,9 +711,9 @@ def gets_owner?(ctx: Context, names: Set[String], freed: Set[String], value: Jso
 end
 
 # The calls of a function that returns an owned pointer whose value is kept: in a local or a parameter, in a CC_OWNS
-# field or global, in a return, in `*p` of a CC_FREES parameter in `freed` (it goes back to the caller), or in an
-# argument that the called function takes or frees. Any other is lost.
-def kept_calls(ctx: Context, all: List[Json], locals: Set[String], freed: Set[String]) -> Set[String]
+# field or global, in a return, in a place of `places` (`*out`, `argv[i]`), or in an argument that the called
+# function takes or frees. Any other is lost.
+def kept_calls(ctx: Context, all: List[Json], places: Places) -> Set[String]
   kept: Set[String] = Set.new([])
   for n in all
     parts = Ast.children(n)
@@ -665,9 +724,10 @@ def kept_calls(ctx: Context, all: List[Json], locals: Set[String], freed: Set[St
       "BinaryOperator" ->
         target = parts[0]
         keeps = (
-          locals.include?(variable_name(target)) or
+          places.locals.include?(variable_name(target)) or
           place_owns?(ctx, target) or
-          pointee_param(target, freed) != ""
+          pointee_param(target, places.freed) != "" or
+          handed_place?(places, target)
         )
 
         if Ast.text(n, "opcode") == "=" and keeps
@@ -750,6 +810,17 @@ def place_owns?(ctx: Context, node: Json) -> Bool
     "DeclRefExpr" -> return ctx.owning.globals.include?(Ast.referenced_id(bare))
     _ -> return false
   end
+end
+
+# Whether a store into an expression of a function hands a pointer on to a place that `places` names: `*out` of a
+# parameter that hands an owned pointer out, or an item of a pointer whose items own (`argv[i]`).
+def handed_place?(places: Places, node: Json) -> Bool
+  if pointee_param(node, places.outs) != ""
+    return true
+  end
+
+  bare = see_through(node)
+  return Ast.kind(bare) == "ArraySubscriptExpr" and places.arrays.include?(variable_name(Ast.children(bare).first))
 end
 
 def identifier_char?(c: String) -> Bool
@@ -1267,12 +1338,10 @@ def assignment(b: Builder, node: Json, preds: List[Int]) -> Built
       return add(written.b, Event.Assigns(assign), written.exits)
     end
 
-    if given != "" and place_owns?(b.ctx, parts[0])
+    handing = place_owns?(b.ctx, parts[0]) or handed_place?(b.owners.places, parts[0])
+    if handing and values_of(parts[1]).any? do |value| owner_named(b, value) != "" end
       target = expression(b, parts[0], preds)
-      place = Ast.start_of(parts[1])
-      word = "stores #{given} in #{text_of(b, parts[0], false)}"
-      give = Give(name: given, word: word, line: place.line, column: place.column)
-      gave = add(target.b, Event.Gives(give), target.exits)
+      gave = stored(target.b, text_of(b, parts[0], false), parts[1], target.exits)
       return add(gave.b, Event.Writes([target_root(parts[0])]), gave.exits)
     end
 
@@ -1284,6 +1353,55 @@ def assignment(b: Builder, node: Json, preds: List[Int]) -> Built
 
   value = in_order(b, parts.drop(1).concat(parts.take(1)), preds)
   return add(value.b, Event.Writes([target_root(parts.first)]), value.exits)
+end
+
+# A value stored in a place that hands it on (`shown`): a pointer that owns is handed on there, on its side of a `?:`
+# (`x->held = n ? p : NULL`, `x->held = p ?: q`) or as the last expression of a statement expression, the same values
+# as `values_of`.
+def stored(b: Builder, shown: String, value: Json, preds: List[Int]) -> Built
+  bare = see_through(value)
+  if Ast.kind(bare) == "ConditionalOperator"
+    parts = Ast.children(bare)
+    split = condition(b, parts[0], preds)
+    chosen = stored(split.b, shown, parts[1], split.yes)
+    other = stored(chosen.b, shown, parts[2], split.no)
+    return Built(b: other.b, exits: chosen.exits.concat(other.exits))
+  end
+
+  if Ast.kind(bare) == "BinaryConditionalOperator"
+    # `x ?: y`: `x`, read once by the condition, where it is true, else `y`.
+    parts = Ast.children(bare)
+    split = condition(b, parts.first, preds)
+    chosen = Built(b: split.b, exits: split.yes)
+    if owner_named(b, parts.first) != ""
+      chosen = handed_on(split.b, shown, parts.first, split.yes)
+    end
+
+    other = stored(chosen.b, shown, parts.last, split.no)
+    return Built(b: other.b, exits: chosen.exits.concat(other.exits))
+  end
+
+  if Ast.kind(bare) == "StmtExpr"
+    statements = Ast.children(last_child(bare))
+    if not statements.empty?
+      built = in_order_statements(b, statements.take(statements.size - 1), preds)
+      return stored(built.b, shown, statements.last, built.exits)
+    end
+  end
+
+  if owner_named(b, value) == ""
+    return expression(b, value, preds)
+  end
+
+  return handed_on(b, shown, value, preds)
+end
+
+# A pointer that owns, `value`, handed on to the place `shown` by a store.
+def handed_on(b: Builder, shown: String, value: Json, preds: List[Int]) -> Built
+  given = owner_named(b, value)
+  place = Ast.start_of(value)
+  give = Give(name: given, word: "stores #{given} in #{shown}", line: place.line, column: place.column)
+  return add(b, Event.Gives(give), preds)
 end
 
 # A pointer that owns, or may stand for one, gets a value. A pointer that it moves from is not read.
@@ -1423,7 +1541,7 @@ end
 # The CC_FREES parameter that `*p` stands for when the parameter points to the pointer it frees (`T **p`, a cleanup
 # function); "" for any other.
 def pointee_owner(b: Builder, node: Json) -> String
-  return pointee_param(node, b.owners.freed)
+  return pointee_param(node, b.owners.places.freed)
 end
 
 # The parameter in `freed` that `*p` is, when `*p` is itself a pointer; "" for any other expression.
@@ -1484,13 +1602,18 @@ def call(b: Builder, node: Json, preds: List[Int], tried: Bool) -> Built
     return through
   end
 
-  # A pointer that the call frees or takes is not read by it.
+  # A pointer that the call frees or takes is not read by it, nor one whose address it gets to hand an owned pointer
+  # out through.
   name = Ast.referenced_name(callee)
   taking = taken(b.ctx, name, key_of_function(b.ctx, name))
+  filling = out_params(b.ctx, name)
   built = Built(b: b, exits: preds)
   for i in 0...args.size
     owner = owner_of(b, args[i])
-    if not (taking.include?(i) and owner != "")
+    # `&p` at a CC_OWNS_OUT parameter emits no `Lends`: the call fills `p`, and `after_call` checks that a value it
+    # still owned is not lost, which a `Lends` before it would hide.
+    set = taking.include?(i) or (filling.include?(i) and address?(args[i]))
+    if not (set and owner != "")
       built = expression(built.b, args[i], built.exits)
     elsif address?(args[i])
       # `free_and_null(&p)` may set `p`: a condition on it is forgotten.
@@ -1556,6 +1679,7 @@ def site_of(b: Builder, name: String, args: List[Arg], place: Ast.Place, noretur
     frees: owners_at(args, freed(b.ctx, name, key)),
     hands: owners_at(args, handed(b.ctx, name, key)),
     clears: owners_at(args.map(&by_address), freed(b.ctx, name, key)),
+    fills: owners_at(args.map(&by_address), out_params(b.ctx, name)),
   )
 
   case b.ctx.callees.get(key)

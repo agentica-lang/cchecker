@@ -11,6 +11,9 @@
  *                               frees it or hands it on on every path; a function returns an owned pointer; a
  *                               store into a CC_OWNS field (or global) hands it on
  *   CC_FREES                    on a parameter: the function frees what the caller passes there
+ *   CC_OWNS_OUT                 on a parameter that points to a pointer (`char **out`): the function may hand an
+ *                               owned pointer out to the caller through it (`*out = p`); the caller owns what the
+ *                               call left (`take(&p)`)
  *   CC_GC                       on a struct, a union or a typedef: the collector manages its values; a value of the
  *                               type, or a pointer to it, is never stored in memory from malloc or in a static
  *   CC_GC_ALLOC                 the function returns memory that the collector manages, under the same rule
@@ -55,6 +58,7 @@
 #define CC_HOT CC_ANNOTATE_("hot")
 #define CC_OWNS CC_ANNOTATE_("owns")
 #define CC_FREES CC_ANNOTATE_("frees")
+#define CC_OWNS_OUT CC_ANNOTATE_("owns_out")
 #define CC_GC CC_ANNOTATE_("gc")
 #define CC_GC_ALLOC CC_ANNOTATE_("gc_alloc")
 #define CC_PAIR(...) CC_ANNOTATE_ARGS_("pair", __VA_ARGS__)
@@ -74,6 +78,7 @@
 #define CC_HOT
 #define CC_OWNS
 #define CC_FREES
+#define CC_OWNS_OUT
 #define CC_GC
 #define CC_GC_ALLOC
 #define CC_PAIR(...)
