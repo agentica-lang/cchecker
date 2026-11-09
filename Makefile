@@ -3,7 +3,7 @@
 
 JOBS ?= 4
 
-.PHONY: check lint fmt-check test test-slow native deps header header-check
+.PHONY: check lint fmt-check test test-slow test-pending native deps header header-check
 
 # The Agentica files of the repository, named so that nothing else under the root is read.
 SOURCES = cchecker.agc src specs test
@@ -20,17 +20,38 @@ lint: deps
 fmt-check:
 	@agentica fmt --check $(SOURCES)
 
-# The features of specs/ and the unit tests of test/, up to JOBS files at once, without the scenarios tagged @slow. Run
-# it from the root of the repository: the steps of the features start cchecker from there. `--tags` leaves the unit
-# tests out, so they run on their own.
+# The features of specs/ and the unit tests of test/, up to JOBS files at once, without the scenarios tagged @slow or
+# @pending (the rows of specs/clean_c.feature that an open issue will make pass). Run it from the root of the
+# repository: the steps of the features start cchecker from there. `--tags` leaves the unit tests out, so they run on
+# their own.
 test: deps native
-	@agentica test --jobs $(JOBS) --tags "not @slow" specs
+	@agentica test --jobs $(JOBS) --tags "not @slow and not @pending" specs
 	@agentica test --jobs $(JOBS) test
 
 # The scenarios tagged @slow (large generated inputs with bounds on time and memory, and the property tests on many
 # cases), one file at a time so that the bounds hold: the slow job of CI.
 test-slow: deps native
-	@agentica test --tags "@slow" specs
+	@agentica test --tags "@slow and not @pending" specs
+
+# The rows tagged @pending (specs/clean_c.feature: idioms that an open issue will make pass) must all still fail: one
+# that passes has to move up, out of its @pending block. With no tag line that holds @pending (a line of tags only,
+# not prose or a comment) there is nothing to run, and the target passes. The counts come from the summary of `--json`;
+# a report without them, a file error or no row selected is a failure of the run, not a row that passes.
+PENDING_TAG = ^[[:space:]]*(@[^[:space:]]+[[:space:]]+)*@pending([[:space:]]+@[^[:space:]]+)*[[:space:]]*$$
+
+test-pending: deps native
+	@grep -qsE '$(PENDING_TAG)' specs/*.feature || { echo "pending ok: no @pending row"; exit 0; }; \
+	report=$$(agentica test --json --tags "@pending" specs 2>&1); \
+	count() { echo "$$report" | grep -o "\"$$1\":[0-9]*" | head -n 1 | cut -d: -f2; }; \
+	passed=$$(count passed); failed=$$(count failed); errors=$$(count file_errors); \
+	if [ -z "$$passed" ] || [ -z "$$failed" ] || [ "$$errors" != 0 ] || [ "$$passed$$failed" = 00 ]; then \
+	  echo "agentica failed, or no @pending row ran:" >&2; echo "$$report" | cut -c1-2000 >&2; exit 2; \
+	fi; \
+	if [ "$$passed" != 0 ]; then \
+	  agentica test --tags "@pending" specs | grep '^PASS'; \
+	  echo "a @pending row passes: move it up" >&2; exit 1; \
+	fi; \
+	echo "pending ok: $$failed rows still fail"
 
 # The packages of agentica.lock into deps/: prop (property tests) and native-gen (`make header`). cchecker itself needs none.
 deps:
