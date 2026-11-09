@@ -195,8 +195,8 @@ of its call sites there), while the other callers of `callee` still reach it
 (`on_exit@proc.c>close_handles`). Use it for an edge that cannot happen at run
 time, such as the branch of a macro that the queue it tests never takes. The
 call is out of the call graph, so the cut holds for every rule that walks it:
-the effect rules (`CC_SHORT` and `CC_HOT`), the path a lock rule follows to a
-system call under a held lock, and the inference of `may_jump_callers` (a
+the effect rules (`CC_SHORT` and `CC_HOT`), the lock rules (the path to a system
+call under a held lock, the lock levels and the order check), and the inference of `may_jump_callers` (a
 function that calls a function that may jump out, and the chains in `path`).
 The ownership rules read the body of each function, so the cut changes them
 only through that inference. A call that a lock or ownership rule reads in the

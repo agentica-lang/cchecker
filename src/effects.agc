@@ -170,8 +170,8 @@ export def check(units: List[Unit], config: Config.Config, infer: Bool, all_path
 end
 
 ## Returns the units with the marks that `[assume]` gives the functions it names, as if the C had them, and without
-## the calls through the fields of `[assume] stop_fields`, which no walk follows. A call through a copy of such a field
-## (a local that got it) is still followed.
+## the calls through the fields of `[assume] stop_fields`, which no walk follows, and the direct calls of the pairs of
+## `[assume] stop_calls`. A call through a copy of such a field (a local that got it) is still followed.
 export def assumed(units: List[Unit], config: Config.Config) -> List[Unit]
   if (
     config.trusted.empty? and

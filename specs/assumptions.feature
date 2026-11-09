@@ -652,7 +652,7 @@ Feature: What the project assumes of its functions
     Examples:
       | list                          | exit | found            |
       | stop_calls = ["mid>deep"]     | 0    | does not include |
-      | stop_calls = ["push>deep"]    | 1    | includes         |
+      | stop_calls = ["push>mid"]     | 1    | includes         |
       | stop = ["unused"]             | 1    | includes         |
 
   Scenario Outline: [assume] stop_calls also cuts the call from the inference of may_jump_callers (<list>)
