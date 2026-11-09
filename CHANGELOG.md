@@ -12,6 +12,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   call on every path (`options = WNOHANG; waitpid(pid, &status, options)`).
 - `[assume] nonblocking = ["uv__read"]`: the calls on a descriptor (`read`, `write`, `recv`, `send`, `accept`, ...)
   that these functions make are not blocking for `CC_SHORT`, for code whose descriptors are all non-blocking.
+- `[assume] acquires` and `releases` (`"my_lock(0)"`, `"name@path(N)"`) mark a lock wrapper of code that cannot be
+  edited as `CC_ACQUIRES` and `CC_RELEASES` do, with the parameter that holds the lock. `short_locks` takes the same
+  `name(N)` for a wrapper whose lock cannot be named: every lock taken through it is short.
 - `[database] fold_ignoring = ["NAME"]`: two entries of one file that differ only in those defines (any value) are
   checked once, the first of the database, like the `-D<target>_EXPORTS` of a shared library (libuv's
   `BUILDING_UV_SHARED`). A define that changes the C the rules read hides it from the entries left out.

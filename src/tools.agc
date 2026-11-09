@@ -58,7 +58,7 @@ WRAPPER_MS = 6_000
 
 ## One tool on one translation unit. `shown` is the path of the file in the report. `wrapped` runs the tool under
 ## `timeout`, which stops the children of the tool too. A job of the rules writes the AST to `dump` and keeps the
-## declarations of the files under `cwd`.
+## declarations of the files under `cwd`. `acquires` and `releases` are the lock wrappers of `[assume]`.
 export struct Job
   tool: Tool
   entry: Commands.Entry
@@ -69,6 +69,8 @@ export struct Job
   cwd: String = ""
   budget: Optional[Budget] = none
   target: String = ""
+  acquires: List[String] = []
+  releases: List[String] = []
 end
 
 ## How much of the kept AST the jobs of the rules parse and read at once, in MiB of its text: the parsed tree is
@@ -374,7 +376,7 @@ def with_unit(job: Job, done: Outcome, raws: List[String]) -> Result[Outcome]
     share = try take(b, (dump.decls.length / 1_048_576 + 1).clamp(1, b.mib), timeout_ms)
   end
 
-  read = parse_and_read(dump.decls)
+  read = parse_and_read(dump.decls, job.acquires, job.releases)
   if job.budget.some?
     give_back(job.budget.unwrap!, share)
   end
@@ -419,10 +421,10 @@ def with_unit(job: Job, done: Outcome, raws: List[String]) -> Result[Outcome]
 end
 
 # The unit of the kept declarations.
-def parse_and_read(decls: String) -> Result[Unit]
+def parse_and_read(decls: String, acquires: List[String], releases: List[String]) -> Result[Unit]
   parsed = Profile.measure("json") do JSON.parse(decls) end
   tree = try parsed
-  return Profile.measure("unit") do UnitReader.read(tree) end
+  return Profile.measure("unit") do UnitReader.read_with(tree, acquires, releases) end
 end
 
 # Takes `share` MiB of the budget, waiting for jobs that hold it; an error when they do not give it back in time.
