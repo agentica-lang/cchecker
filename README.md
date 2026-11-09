@@ -15,8 +15,7 @@ lock released is held, no system call runs under a lock marked
 and the set of a `CC_PAIR` is restored. It also checks ownership on every path:
 a pointer marked `CC_OWNS` is freed or handed on, not freed twice and not used
 after; and a value of the collector (`CC_GC`, `CC_GC_ALLOC`) is never stored in
-memory from `malloc` or in a static. The plan is in [issue
-1](https://github.com/agentica-lang/cchecker/issues/1).
+memory from `malloc` or in a static.
 
 ## Install
 
