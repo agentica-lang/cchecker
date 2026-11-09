@@ -38,6 +38,10 @@ and a call through a function pointer never jumps. Stored anywhere else or
 passed to another parameter, it is lent and still owns. A condition that tells
 that a pointer is null (`if (!p)`, `if ((p = malloc(n)) == NULL)`) leaves it
 owning nothing on that side.
+A pointer declared in an inner block is checked where a path leaves the block
+(its end, a `break`, `continue`, `goto` or `return`): one that still owns there
+leaks, with that point as the last step of `path`, unless a pointer outside the
+block stands for it (`t = s`, `r = realloc(s, n)`).
 
 A local without a mark that gets a pointer that owns (`char *c = p`) stands for
 it: freeing `c` frees `p`; a `malloc` into it later owns nothing, as in any
@@ -78,7 +82,7 @@ a store that hands a pointer on, each side of `?:` gives its own value (`x->held
 
 | Code | |
 |---|---|
-| `CC-OWN-LEAK` | a path returns, jumps out at a `CC_MAY_JUMP` or `CC_JUMPS` call, or gives a pointer a new value, while it still owns; or drops the value of a `CC_OWNS` function (kept nowhere: not in a local, a `CC_OWNS` place, a return or a parameter that takes it) |
+| `CC-OWN-LEAK` | a path returns, jumps out at a `CC_MAY_JUMP` or `CC_JUMPS` call, leaves the block of a local, or gives a pointer a new value, while it still owns; or drops the value of a `CC_OWNS` function (kept nowhere: not in a local, a `CC_OWNS` place, a return or a parameter that takes it) |
 | `CC-OWN-DOUBLE-FREE` | a path frees a pointer that it already freed or handed on |
 | `CC-OWN-USE-AFTER-FREE` | a path reads, returns or hands on a pointer after it freed it or handed it on |
 

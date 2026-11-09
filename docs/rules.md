@@ -216,18 +216,18 @@ write to a variable of the condition, or a call given its address
 (`f(&locked)`), forgets its value; a call given `&q->mu`, or the address of any
 other field (`atomic_store(&q->ready, 0)`, `f(&q->count)`), does not change `q`:
 the values of the conditions are kept by variable (a local that shadows another
-is a variable of its own), not by field, so a condition on `q->ready` keeps
-its value after `atomic_store(&q->ready, 0)`; copy the field
-to a local first and test the local (`int ready = q->ready; if (ready) ...`)
-when the call may change it. A condition leaves the state of a path after its
-last test before a write to one of its variables, so a function with many
-flags, each tested twice around a lock, stays in a number of states that grows
-with the flags when their tests do not overlap, not as a power of two. A function whose paths would take more than 200 000
-states to follow is walked again without these conditions; when that is not
-enough either, its findings are those of the paths followed, and the run lists
-it in `incomplete_functions` of `--json` (`file`, `line` and `function`) and on
-standard error (the exit code does not change). A function whose AST has more
-than 20 000 nodes (about four times the largest of the Agentica VM) gets no
+is a variable of its own), not by field, so a condition on `q->ready` keeps its
+value after `atomic_store(&q->ready, 0)`; copy the field to a local first and
+test the local (`int ready = q->ready; if (ready) ...`) when the call may change
+it. A condition leaves the state of a path after its last test before a write to
+one of its variables, so a function with many flags, each tested twice around a
+lock, stays in a number of states that grows with the flags when their tests do
+not overlap, not as a power of two. A function whose paths would take more than
+200 000 states to follow is walked again without these conditions; when that is
+not enough either, its findings are those of the paths followed, and the run
+lists it in `incomplete_functions` of `--json` (`file`, `line` and `function`)
+and on standard error (the exit code does not change). A function whose AST has
+more than 20 000 nodes (about four times the largest of the Agentica VM) gets no
 graph: that is an error of the `rules` tool on its file, so the exit code is 2,
 and the rest of the run is checked.
 

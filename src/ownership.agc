@@ -17,7 +17,7 @@
 
 import Effects from "effects"
 import {Finding, IncompleteFunction} from "findings"
-import {Assign, Body, Event, Fact, Give, Mark, Site, Use, plain} from "flow"
+import {Assign, Body, Closing, Event, Fact, Give, Mark, Site, Use, plain} from "flow"
 import Locking from "locking"
 import {Function, Unit} from "unit"
 
@@ -257,30 +257,55 @@ def stepped(walker: Walker, event: Event, item: Item) -> Outcome
       end
 
       return went(item.with(state: state))
-    Event.Closes(names) -> return went(item.with(state: closed(item.state, names)))
+    Event.Closes(closing) -> return closed(walker.body, item, closing)
     Event.Note(mark) -> return went(item.with(path: item.path.push(marked(mark))))
     Event.Exit(mark) -> return Outcome(moved: Moved.Ended(item.path.push(marked(mark))), breaches: [])
   end
 end
 
-# The state after a path leaves the block of the pointers `names`: nothing reads them again, so the state forgets
-# each one, and two paths that differ only in them are one. A pointer that still owns stays, so that the end of the
-# path reports its leak, and so does one that another pointer stands for (an alias, or the result of a realloc of it).
-def closed(state: State, names: List[String]) -> State
-  current = state
-  for name in names
-    owns = current.owns.get(name).map do |own| own == OWNED end.unwrap_or(false)
-    held = current.aliases.values.include?(name) or current.links.values.include?(name)
-    if not owns and not held
-      current = current.with(
-        owns: current.owns.delete(name),
-        aliases: current.aliases.delete(name),
-        links: current.links.delete(name),
-      )
+# A path leaves the blocks of the pointers of `closing`: nothing names them after. One that a pointer still in the
+# state stands for (an alias, or the result of a realloc of it, from outside the blocks or itself kept) stays; every
+# other one leaves the state, so two paths that differ only in them are one, and one that still owns leaks there.
+def closed(body: Body, item: Item, closing: Closing) -> Outcome
+  state = item.state
+  names = Set.new(closing.names)
+  held: Set[String] = Set.new([])
+  grew = true
+  while grew
+    grew = false
+    for pointers in [state.aliases, state.links]
+      for from in pointers.keys
+        to = pointers[from]
+        if names.include?(to) and not held.include?(to) and (not names.include?(from) or held.include?(from))
+          held = held.add(to)
+          grew = true
+        end
+      end
     end
   end
 
-  return current
+  step = marked(closing.mark)
+  breaches: List[Breach] = []
+  for name in closing.names
+    if held.include?(name)
+      next
+    end
+
+    if state.owns.get(name).map do |own| own == OWNED end.unwrap_or(false)
+      message = "#{body.name} does not free or hand on #{plain(name)} on every path"
+      breaches = breaches.push(
+        Breach(code: LEAK, name: name, message: message, path: from_last(item.path, name, true).push(step)),
+      )
+    end
+
+    state = state.with(
+      owns: state.owns.delete(name),
+      aliases: state.aliases.delete(name),
+      links: state.links.delete(name),
+    )
+  end
+
+  return Outcome(moved: Moved.Went(item.with(state: state)), breaches: breaches)
 end
 
 def went(item: Item) -> Outcome

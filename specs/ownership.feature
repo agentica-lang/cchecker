@@ -302,8 +302,8 @@ Feature: Ownership on every path
 
   Scenario: Two variables of one name in a function have a state each
     A local that shadows another, a parameter or a global is a pointer of its own, and so is the second of two blocks
-    that declare the same name, or the variable of a `for`. A path that leaves a block forgets its pointers that own
-    nothing.
+    that declare the same name, or the variable of a `for`. A pointer that still owns when a path leaves its block
+    leaks there.
 
     Given the C file "shadow.c" holds:
       """
@@ -416,11 +416,11 @@ Feature: Ownership on every path
     Then the exit code is 1
     And the output includes:
       """
-      "line":27,"column":6,"message":"inner_leaks does not free or hand on p on every path","path":["30:23 p = make","34:1 ends"]
+      "line":27,"column":6,"message":"inner_leaks does not free or hand on p on every path","path":["30:23 p = make","32:3 ends"]
       """
     And the output includes:
       """
-      "line":36,"column":6,"message":"sequential does not free or hand on p on every path","path":["38:23 p = make","42:23 p = make","43:5 frees p","45:1 ends"]
+      "line":36,"column":6,"message":"sequential does not free or hand on p on every path","path":["38:23 p = make","40:3 ends"]
       """
     And the output includes:
       """
@@ -428,7 +428,7 @@ Feature: Ownership on every path
       """
     And the output includes:
       """
-      "line":83,"column":6,"message":"moved_in_leaks does not free or hand on q on every path"
+      "line":83,"column":6,"message":"moved_in_leaks does not free or hand on q on every path","path":["86:23 q = p","88:3 ends"]
       """
     And the output does not include:
       """
@@ -453,6 +453,120 @@ Feature: Ownership on every path
     And the output does not include:
       """
       "line":74,
+      """
+
+  Scenario: A pointer of a block stays after the block while another pointer stands for it
+    An alias or the result of a realloc outside the block keeps the pointer it stands for: its use after a free, and
+    the leak where the result of a realloc is null, are found after the block ends.
+
+    Given the C file "held.c" holds:
+      """
+      #include <stdlib.h>
+      #include "cchecker.h"
+
+      CC_OWNS char *make(void);
+      void use(char *p);
+
+      void outer_alias(void) {
+        char *t;
+        {
+          CC_OWNS char *s = make();
+          t = s;
+          free(s);
+        }
+        use(t);
+      }
+
+      void outer_alias_ok(void) {
+        char *t;
+        {
+          CC_OWNS char *s = make();
+          t = s;
+        }
+        free(t);
+      }
+
+      void outer_link(void) {
+        char *r;
+        {
+          CC_OWNS char *p = make();
+          r = realloc(p, 10);
+        }
+        if (!r)
+          return;
+        free(r);
+      }
+
+      void outer_link_ok(void) {
+        char *r;
+        {
+          CC_OWNS char *p = make();
+          r = realloc(p, 10);
+        }
+        free(r);
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/held.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "line":7,"column":6,"message":"outer_alias uses s after it freed it or handed it on","path":["12:5 frees s","14:7 uses s"]
+      """
+    And the output includes:
+      """
+      "line":26,"column":6,"message":"outer_link does not free or hand on p on every path","path":["29:23 p = make","30:9 hands p to realloc","30:9 r = realloc","32:8 false","33:5 returns"]
+      """
+    And the output does not include:
+      """
+      "line":17,
+      """
+    And the output does not include:
+      """
+      "line":37,
+      """
+
+  Scenario: An indirect goto leaves no block: it may go to a label inside one
+    Given the C file "indirect.c" holds:
+      """
+      #include <stdlib.h>
+      #include "cchecker.h"
+
+      CC_OWNS char *make(void);
+
+      void indirect(void) {
+        static void *labels[] = {&&again, &&done};
+        int n = 0;
+        {
+          CC_OWNS char *p = make();
+        again:
+          free(p);
+          n++;
+          goto *labels[n];
+        }
+      done:
+        return;
+      }
+
+      void indirect_ok(void) {
+        static void *labels[] = {&&done};
+        {
+          CC_OWNS char *p = make();
+          free(p);
+          goto *labels[0];
+        }
+      done:
+        return;
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/indirect.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "line":6,"column":6,"message":"indirect frees p, which it already freed or handed on","path":["12:5 frees p","12:5 frees p"]
+      """
+    And the output does not include:
+      """
+      "line":20,
       """
 
   Scenario: A condition on a local is not a condition on another variable of its name

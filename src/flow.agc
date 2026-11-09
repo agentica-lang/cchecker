@@ -84,8 +84,8 @@ end
 
 ## The value a condition has on an edge. `text` is the condition with the key of each variable (`variable_key`), ""
 ## for a condition that may change between two reads (a call). `roots` are the variables it reads, by key, so a write
-## to one forgets it. `nulls` are the pointers that own which are null
-## on this edge (`if (!p)`, `if ((p = malloc(n)) == NULL)`), and `set` those that are not.
+## to one forgets it. `nulls` are the pointers that own which are null on this edge (`if (!p)`,
+## `if ((p = malloc(n)) == NULL)`), and `set` those that are not.
 export struct Fact
   text: String
   value: Bool
@@ -137,7 +137,7 @@ export struct Mark
 end
 
 ## What happens at a node. `Writes` names the variables a node writes, by key (see `variable_key`), and `Closes` the
-## pointers that own, or may stand for one, of a block that a path leaves: nothing reads them after.
+## pointers of the blocks that a path leaves (`Closing`).
 export enum Event
   Join
   Call(Site)
@@ -149,7 +149,14 @@ export enum Event
   Assigns(Assign)
   Gives(Give)
   Lends(List[String])
-  Closes(List[String])
+  Closes(Closing)
+end
+
+## The pointers that own, or may stand for one, of the blocks that a path leaves (`names`, by key), and where it leaves
+## them (`mark`): the end of a block, or the statement that jumps out. Nothing names them after.
+export struct Closing
+  names: List[String]
+  mark: Mark
 end
 
 export struct Node
@@ -988,11 +995,11 @@ def statement(b: Builder, node: Json, preds: List[Int]) -> Built
     "SwitchStmt" -> return switch_statement(b, node, preds)
     "CaseStmt" -> return case_label(b, node, preds, "case")
     "DefaultStmt" -> return case_label(b, node, preds, "default")
-    "BreakStmt" -> return break_statement(b, preds)
-    "ContinueStmt" -> return continue_statement(b, preds)
+    "BreakStmt" -> return break_statement(b, node, preds)
+    "ContinueStmt" -> return continue_statement(b, node, preds)
     "ReturnStmt" -> return return_statement(b, node, preds)
-    "GotoStmt" -> return goto_statement(b, Ast.text(node, "targetLabelDeclId"), preds)
-    "IndirectGotoStmt" -> return goto_statement(b, "", preds)
+    "GotoStmt" -> return goto_statement(b, node, Ast.text(node, "targetLabelDeclId"), preds)
+    "IndirectGotoStmt" -> return goto_statement(b, node, "", preds)
     "LabelStmt" ->
       label = add(b, Event.Join, preds)
       labelled = label.b.with(labels: label.b.labels.put(Ast.text(node, "declId"), label.exits.first))
@@ -1012,24 +1019,15 @@ def block(b: Builder, node: Json, preds: List[Int]) -> Built
     built = statement(built.b, child, built.exits)
   end
 
-  return closed(built.b, built.exits)
+  return closed(built.b, node, built.exits)
 end
 
-# The way out of the innermost scope at its end: its cleanup calls, the close of its pointers, and the scope gone.
-def closed(b: Builder, preds: List[Int]) -> Built
-  left = closing(b, b.scopes.last, preds)
+# The way out of the innermost scope (`node`) at its end: its cleanup calls, the close of its pointers, and the scope
+# gone.
+def closed(b: Builder, node: Json, preds: List[Int]) -> Built
+  place = Ast.end_of(node)
+  left = leaving(b, b.scopes.size - 1, preds, some(Mark(word: "ends", line: place.line, column: place.column)))
   return Built(b: left.b.with(scopes: left.b.scopes.take(left.b.scopes.size - 1)), exits: left.exits)
-end
-
-# The cleanup calls of a scope, the last declared first, then the close of its pointers (`Event.Closes`), which lets
-# the walks drop what they knew of them.
-def closing(b: Builder, scope: Scope, preds: List[Int]) -> Built
-  cleaned = calls(b, scope.cleanups.reverse, preds)
-  if scope.declared.empty?
-    return cleaned
-  end
-
-  return add(cleaned.b, Event.Closes(scope.declared), cleaned.exits)
 end
 
 # An `if` and the `else if` chain after it, in a loop: a recursion would keep every builder of the chain alive.
@@ -1092,7 +1090,7 @@ def for_loop(b: Builder, node: Json, preds: List[Int]) -> Built
   end
 
   ran = looped(split.b, parts[4], split, head.exits.first, parts[3])
-  return closed(ran.b, ran.exits)
+  return closed(ran.b, node, ran.exits)
 end
 
 # The body of a `while` or a `for` from the true side of its condition, then the increment (an empty node for a
@@ -1152,13 +1150,13 @@ def case_label(b: Builder, node: Json, preds: List[Int], word: String) -> Built
   return statement(updated, last_child(node), entry.exits)
 end
 
-def break_statement(b: Builder, preds: List[Int]) -> Built
+def break_statement(b: Builder, node: Json, preds: List[Int]) -> Built
   at = innermost(b.jumps, false)
   if at < 0
     return Built(b: b, exits: [])
   end
 
-  left = leaving(b, b.jumps[at].depth, preds)
+  left = leaving(b, b.jumps[at].depth, preds, some(mark_at(node, "break")))
   jump = left.b.jumps[at]
   return Built(
     b: left.b.with(jumps: left.b.jumps.set(at, jump.with(breaks: jump.breaks.concat(left.exits)))),
@@ -1166,13 +1164,13 @@ def break_statement(b: Builder, preds: List[Int]) -> Built
   )
 end
 
-def continue_statement(b: Builder, preds: List[Int]) -> Built
+def continue_statement(b: Builder, node: Json, preds: List[Int]) -> Built
   at = innermost_loop(b.jumps)
   if at < 0
     return Built(b: b, exits: [])
   end
 
-  left = leaving(b, b.jumps[at].depth, preds)
+  left = leaving(b, b.jumps[at].depth, preds, some(mark_at(node, "continue")))
   jump = left.b.jumps[at]
   updated = left.b.jumps.set(at, jump.with(continues: jump.continues.concat(left.exits)))
   return Built(b: left.b.with(jumps: updated), exits: [])
@@ -1219,24 +1217,28 @@ def return_statement(b: Builder, node: Json, preds: List[Int]) -> Built
     end
   end
 
-  left = leaving(value.b, 0, value.exits)
-  place = Ast.start_of(node)
   failed = Ast.children(node).any?(&error_value?)
-  mark = Mark(word: "returns", line: place.line, column: place.column, failed: failed)
+  mark = mark_at(node, "returns").with(failed: failed)
+  left = leaving(value.b, 0, value.exits, some(mark))
   ended = add(left.b, Event.Exit(mark), left.exits)
   return Built(b: ended.b, exits: [])
 end
 
 # A `goto` leaves the blocks that are not around its label. The label is linked at the end, when every label is known;
-# an indirect `goto` ("") may go to any label.
-def goto_statement(b: Builder, label: String, preds: List[Int]) -> Built
+# an indirect `goto` ("") may go to any label, so it closes no block: the pointers of each may still be read there.
+def goto_statement(b: Builder, node: Json, label: String, preds: List[Int]) -> Built
   around = Set.new(b.label_blocks.get(label).unwrap_or([]))
   depth = 0
   while depth < b.scopes.size and around.include?(b.scopes[depth].id)
     depth += 1
   end
 
-  left = leaving(b, depth, preds)
+  mark: Optional[Mark] = none
+  if label != ""
+    mark = some(mark_at(node, "goto"))
+  end
+
+  left = leaving(b, depth, preds, mark)
   jumped = add(left.b, Event.Join, left.exits)
   return Built(b: jumped.b.with(gotos: jumped.b.gotos.push(Goto(from: jumped.exits.first, label: label))), exits: [])
 end
@@ -1259,16 +1261,34 @@ def with_gotos(b: Builder) -> Builder
   return linked
 end
 
-# The cleanup calls and the close of the blocks from `depth` in, the innermost first, on the way out of them.
-def leaving(b: Builder, depth: Int, preds: List[Int]) -> Built
-  built = Built(b: b, exits: preds)
+# The way out of the blocks from `depth` in: their cleanup calls, the innermost first, then one close of their pointers
+# at `at` (none closes nothing), which lets the walks drop what they knew of them. The block of the function never
+# closes: the exit of the path reads its pointers.
+def leaving(b: Builder, depth: Int, preds: List[Int], at: Optional[Mark]) -> Built
+  sites: List[Site] = []
+  names: List[String] = []
   i = b.scopes.size - 1
   while i >= depth
-    built = closing(built.b, b.scopes[i], built.exits)
+    sites = sites.concat(b.scopes[i].cleanups.reverse)
+    if i > 0
+      names = names.concat(b.scopes[i].declared)
+    end
+
     i -= 1
   end
 
-  return built
+  called = calls(b, sites, preds)
+  case at
+    some(mark) if not names.empty? ->
+      return add(called.b, Event.Closes(Closing(names: names, mark: mark)), called.exits)
+    _ -> return called
+  end
+end
+
+# A mark at the start of a statement.
+def mark_at(node: Json, word: String) -> Mark
+  place = Ast.start_of(node)
+  return Mark(word: word, line: place.line, column: place.column)
 end
 
 def calls(b: Builder, sites: List[Site], preds: List[Int]) -> Built
@@ -1387,7 +1407,8 @@ def expression(b: Builder, node: Json, preds: List[Int]) -> Built
       split = condition(b, parts[0], preds)
       other = expression(split.b, parts.last, split.no)
       return Built(b: other.b, exits: split.yes.concat(other.exits))
-    "StmtExpr" -> return in_order_statements(b, Ast.children(node), preds)
+    # The block of `({ ...; v; })` is no scope: its value outlives it, so its pointers close with the block around it.
+    "StmtExpr" -> return in_order_statements(b, Ast.children(last_child(node)), preds)
     "UnaryExprOrTypeTraitExpr" -> return Built(b: b, exits: preds)
     _ -> return in_order(b, Ast.children(node), preds)
   end

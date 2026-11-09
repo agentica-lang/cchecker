@@ -162,8 +162,8 @@ Feature: Time and memory on large generated inputs
       "incomplete_functions":[{"file":"$DIR/many.c","line":4,"function":"many"}]
       """
 
-  Scenario: Blocks that declare a pointer of the same name do not multiply the states of the ownership walk
-    Given the C file "blocks.c" holds, with ITEMS as 24 times " if (pick()) { char *s = make(); emit(s); free(s); }":
+  Scenario Outline: Blocks that declare a pointer of the same name do not multiply the states of the ownership walk (<case>)
+    Given the C file "blocks.c" holds, with ITEMS as 24 times " if (pick()) { <block> }":
       """
       #include <stdlib.h>
       #include "cchecker.h"
@@ -179,6 +179,12 @@ Feature: Time and memory on large generated inputs
       """
       "incomplete_functions":[]
       """
+
+    Examples:
+      | case                 | block                                                         |
+      | plain                | char *s = make(); emit(s); free(s);                           |
+      | alias                | char *s = make(); char *t = s; if (!t) emit(0); else free(t); |
+      | statement expression | char *q = ({ CC_OWNS char *t = make(); t; }); free(q);        |
 
   Scenario: A lock held in a function with more paths than the walk follows is not inferred short
     Given the file "compile_commands.json" holds:
