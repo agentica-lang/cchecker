@@ -155,8 +155,9 @@ Feature: The versions of the tools in the baseline
 
   Scenario Outline: A tool that prints no version loses its stored version after an update of every file
     When I run cchecker in its folder with "--tools gcc --gcc ../../fixtures/fake_tool_v1.sh -b base.json --update-baseline"
-    And I run cchecker in its folder with "--tools gcc --gcc ../../fixtures/<tool>.sh -b base.json --update-baseline"
+    And I run cchecker in its folder with "--json --tools gcc --gcc ../../fixtures/<tool>.sh -b base.json --update-baseline"
     Then the exit code is 0
+    And the errors are not empty
     And the file "$DIR/base.json" does not include:
       """
       "gcc":"

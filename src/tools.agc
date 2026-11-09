@@ -128,7 +128,7 @@ export def target_of(clang: String, entry: Commands.Entry) -> String
   case Process.spawn_captured(clang, args, entry.directory, 5_000)
     ok(process) ->
       line = Process.read_line(process, 5_000).unwrap_or("")
-      code = Process.wait(process, 1_000).unwrap_or(1)
+      code = Process.wait(process, 5_000).unwrap_or(1)
       Process.close(process)
       if code != 0
         return ""

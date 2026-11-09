@@ -156,7 +156,8 @@ export def changes(stored: Map[String, String], current: Map[String, String]) ->
   return names.sort.map do |tool| VersionChange(tool: tool, baseline: stored[tool], current: current[tool]) end
 end
 
-## Returns the text of the baseline file, one line for each entry. `tools` are written as they come: see `merged_tools`.
+## Returns the text of the baseline file, one line for each entry. `tools` are written as they come: see
+## `updated_tools`.
 export def render(entries: List[Entry], tools: Map[String, String]) -> String
   body = entries.map do |entry| "    #{JSON.encode(entry)}" end.join(",\n")
   return "{\n  \"version\": #{VERSION},\n  \"tools\": #{JSON.encode(tools)},\n  \"findings\": [\n#{body}\n  ]\n}\n"

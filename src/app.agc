@@ -291,7 +291,9 @@ def update(
   versions = Tools.versions_of(options, ran)
   for tool in ran
     if not versions.key?(tool)
-      IO.warn("cchecker: no version from #{tool}: its --version printed nothing or failed, so the baseline has none")
+      IO.warn(
+        "cchecker: warning: no version from #{tool}: its --version printed nothing or failed, so none is recorded",
+      )
     end
   end
 
