@@ -244,7 +244,8 @@ def full_rules(options: Options, config: Config.Config, cwd: String) -> Result[V
     causes = causes.push("drop --no-infer")
   end
 
-  # Without the inference of short locks a run finds more, never less, so the baseline loses nothing.
+  # The inference of short locks moves a finding of a root from the take of a lock to a later blocking call, so
+  # either way a root that blocks keeps a finding: with it off, an update replaces one key with the other.
   off = config.off.delete(Known.SECTIONS_FLAG)
   if not off.empty?
     causes = causes.push("set the [library] flags of #{config.origin} to true (#{off.to_a.sort.join(", ")})")

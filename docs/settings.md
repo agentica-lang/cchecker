@@ -195,9 +195,15 @@ another class's mutex) may be any class: when one of its sections blocks, or is
 not all seen, no class is inferred. A call through a pointer that the run
 stores no function in counts as blocking. `inferred_short_locks` of `--json`
 lists the classes found so, the text report says how many on standard error,
-and `[library] short_lock_sections = false` turns it off; turned off, a run
-finds more and never less, so `--update-baseline` and `--strict-baseline` work
-as with it on. An inferred short lock is short for `CC_SHORT` only: the rule of
+and `[library] short_lock_sections = false` turns it off. A lock that a helper
+marked `CC_JUMP_RELEASES` takes gives no finding at a jump, so the code of the
+catcher that runs before it gives the lock back is in no section. Turned off,
+the inference does not stop `--update-baseline` or `--strict-baseline`. It
+changes findings both ways: a root that only took short locks before its
+blocking call reports that call, not the take, which is another baseline key,
+and a run that does not infer (a run of some files, or the inference off) reports
+the takes of the inferred locks as new against a baseline of a run that did. An
+inferred short lock is short for `CC_SHORT` only: the rule of
 `CC_NO_SYSCALL_UNDER` does not apply to it.
 
 `stop_fields` names the function-pointer fields that no walk follows, by struct

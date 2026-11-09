@@ -137,7 +137,6 @@ export def unchecked_lines(report: Report) -> List[String]
   return report.unchecked_files.map do |u| "cchecker: warning: #{u.file} not checked: #{u.missing} not found" end
 end
 
-## Returns the line for standard error about the callbacks that the inference of roots could not follow, or none.
 ## Returns the line for standard error that says how many locks the rules found short by their critical sections, or
 ## none.
 export def inferred_line(report: Report) -> Optional[String]
@@ -153,6 +152,7 @@ export def inferred_line(report: Report) -> Optional[String]
   )
 end
 
+## Returns the line for standard error about the callbacks that the inference of roots could not follow, or none.
 export def unresolved_line(report: Report) -> Optional[String]
   count = report.unresolved_callbacks.size
   if count == 0

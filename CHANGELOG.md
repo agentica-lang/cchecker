@@ -32,9 +32,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- A full run of a compile database no longer reports `CC-EFFECT-SHORT-BLOCKS` at the take of a lock that it finds
-  short: the baseline entries and suppressions of those findings become stale, and a run with `--strict-baseline`
-  fails until `--update-baseline` drops them (or `[library] short_lock_sections = false` keeps the old findings).
+- **Breaking:** a full run of a compile database no longer reports `CC-EFFECT-SHORT-BLOCKS` at the take of a lock
+  that it finds short; a root that blocks later reports that call instead, under another baseline key. Baseline
+  entries and suppressions of the old findings become stale, so `--strict-baseline` fails until `--update-baseline`
+  drops them, and a run of some files (which infers nothing) reports those takes as new against a baseline of a full
+  run. `[library] short_lock_sections = false` keeps the old findings.
 - `uv_run` with a constant `UV_RUN_NOWAIT` is no longer a blocking call for `CC_SHORT` (`libc_nonblocking_flags`);
   `UV_RUN_ONCE`, `UV_RUN_DEFAULT` and a mode in a variable still are.
 - **Breaking:** `CC_MAY_JUMP` or `[assume] may_jump` on a function that never returns (`_Noreturn`, `CC_NORETURN`) now

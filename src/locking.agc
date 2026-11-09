@@ -146,15 +146,15 @@ export def check(units: List[Unit]) -> Checked
           partial = partial.union(Set.new(locks.values.map(&section_class)))
         end
 
-        if not helper
-          partial = partial.union(
-            Set.new(
-              unbalanced(walk.findings).map do |key|
-                section_class(locks.get(key).unwrap_or(Lock(key: key, shown: key)))
-              end,
-            ),
-          )
+        # A lock left to the caller is held (or was) across code that no walk reads; a helper may do so with the
+        # locks of its own marks only.
+        own = annotated_keys(functions.get(body.key))
+        left = unbalanced(walk.findings).select do |key| not own.include?(key) end
+        partial = partial.union(
+          Set.new(left.map do |key| section_class(locks.get(key).unwrap_or(Lock(key: key, shown: key))) end),
+        )
 
+        if not helper
           findings = findings.concat(walk.findings.values)
           if not walk.complete
             incomplete = incomplete.push(IncompleteFunction(file: body.file, line: body.line, function: body.name))
@@ -437,6 +437,18 @@ def walked(walker: Walker) -> Walk
   end
 
   return Walk(findings: found, complete: true, sections: sections)
+end
+
+# The keys of the locks of a function's CC_ACQUIRES and CC_RELEASES, as its marks write them.
+def annotated_keys(function: Optional[Function]) -> Set[String]
+  marks = function.map do |f| f.marks end.unwrap_or([])
+  inside = marks.flat_map do |mark|
+    ["acquires(", "releases("]
+      .select do |prefix| mark.start_with?(prefix) and mark.end_with?(")") end
+      .map do |prefix| mark.slice(prefix.length, mark.length - prefix.length - 1) end
+  end
+
+  return Set.new(inside.flat_map do |text| text.split(",") end.map do |lock| Flow.key_of(lock.strip) end)
 end
 
 # The keys of the locks of the findings of a walk that leave a lock to the caller: held at a return or a jump, or

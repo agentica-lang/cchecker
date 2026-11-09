@@ -284,10 +284,15 @@ def context_of(tables: Tables, nodes: List[Json]) -> Flow.Context
   variables = nodes.select do |node| Ast.kind(node) == "VarDecl" end
   globals: Map[String, String] = {}
   global_ids: Map[String, String] = {}
+  pointers: Set[String] = Set.new([])
   for node in variables
     class = variable_key(tables, Ast.text(node, "name"))
     globals = globals.put(Ast.text(node, "name"), class)
     global_ids = global_ids.put(Ast.text(node, "id"), class)
+    type = JSON.get(node, "type").unwrap_or(JSON.from(""))
+    if [Ast.text(type, "qualType"), Ast.text(type, "desugaredQualType")].any? do |t| t.include?("*") end
+      pointers = pointers.add(Ast.text(node, "name"))
+    end
   end
 
   declarations = nodes.select do |node| Ast.kind(node) == "FunctionDecl" end
@@ -302,7 +307,7 @@ def context_of(tables: Tables, nodes: List[Json]) -> Flow.Context
       .map do |lock|
         lock.with(
           class: class_of_text(tables, globals, lock.text, params, types),
-          through: through_text?(tables, lock.text, params, types),
+          through: through_text?(tables, pointers, lock.text, params, types),
         )
       end
 
@@ -519,8 +524,16 @@ def pair_of(mark: String) -> List[Pair]
 end
 
 # Whether the lock of an annotation is reached through a pointer that its class names: the text reads a pointer
-# (`*g`, `*c->lk`), or its last field is one (`c->lk` of `pthread_mutex_t *lk`), as the types of the parameters say.
-def through_text?(tables: Tables, text: String, params: List[String], types: List[String]) -> Bool
+# (`*g`), or the global or the last field it ends in is one, or an array of them (`shared` of `pthread_mutex_t
+# *shared`, `c->lk` of `pthread_mutex_t *lk`), as written or behind a typedef. `pointers` are the globals whose type
+# is a pointer.
+def through_text?(
+  tables: Tables,
+  pointers: Set[String],
+  text: String,
+  params: List[String],
+  types: List[String],
+) -> Bool
   shown = Flow.shown_of(text)
   if shown.start_with?("*")
     return true
@@ -534,17 +547,19 @@ def through_text?(tables: Tables, text: String, params: List[String], types: Lis
     end
   end
 
-  if at < 0 or path.size < 2
-    return false
+  if at < 0
+    return path.size == 1 and pointers.include?(path.first)
   end
 
   type = types[at]
+  written = [type]
   for j in 1...path.size
     case tables.records.get(type_name(type))
       some(record) ->
         for k in 0...record.fields.size
           if record.fields[k] == path[j]
             type = record.types[k]
+            written = [record.types[k], record.desugared[k]]
           end
         end
 
@@ -552,7 +567,7 @@ def through_text?(tables: Tables, text: String, params: List[String], types: Lis
     end
   end
 
-  return type.strip.end_with?("*")
+  return path.size > 1 and written.any? do |t| t.include?("*") end
 end
 
 # The class of the lock of an annotation, through the types of the parameters: `s->pool->mu` of `struct server *s` is
