@@ -171,6 +171,87 @@ Feature: Ownership on every path
       | stored through *p  | 6      | void f(CC_FREES char **p) { CC_OWNS char *n = malloc(8); free(*p); *p = n; work(n); } |
       | through a pointer  | 6      | void f(CC_FREES char *p) { free(p); *p = 0; }                              |
 
+  Scenario Outline: A pointer handed on through an out-parameter or into an item of an owned array is followed (<case>)
+    Given the C file "out.c" holds:
+      """
+      #include "stdlib.h"
+      #include "cchecker.h"
+      struct box { CC_OWNS char *held; };
+      CC_MAY_JUMP int take_or_jump(CC_OWNS char **out); void renew(CC_FREES CC_OWNS char **p);
+      int work(char *p); CC_OWNS char *make(int n); int take(CC_OWNS char **out);
+
+      <code>
+      """
+    When I run cchecker with "--tools rules --json $DIR/out.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      {"code":"<finding>","tool":"rules","file":"$DIR/out.c","line":7,"column":<column>,
+      """
+
+    Examples:
+      | case                         | finding            | column | code                                                                                                                                  |
+      | filled and dropped           | CC-OWN-LEAK        | 5      | int f(void) { char *b; if (take(&b) < 0) return -1; work(b); return 0; }                                                           |
+      | read, then an error return   | CC-OWN-LEAK        | 5      | int f(void) { CC_OWNS char *b; if (take(&b) < 0) return -1; if (work(b)) return -1; free(b); return 0; }                          |
+      | filled over an owned value   | CC-OWN-LEAK        | 6      | void f(int n) { CC_OWNS char *b = malloc(n); take(&b); free(b); }                                                                  |
+      | freed and filled again       | CC-OWN-LEAK        | 6      | void f(void) { CC_OWNS char *b = malloc(8); renew(&b); }                                                                           |
+      | handed out, then freed       | CC-OWN-DOUBLE-FREE | 5      | int f(CC_OWNS char **out) { CC_OWNS char *p = malloc(8); if (!p) return -1; *out = p; free(p); return 0; }                        |
+      | stored in an item, then freed | CC-OWN-DOUBLE-FREE | 16    | CC_OWNS char **f(int n) { CC_OWNS char **v = calloc(2, sizeof *v); if (!v) return NULL; CC_OWNS char *p = malloc(n); v[0] = p; free(p); return v; } |
+      | item of a parameter          | CC-OWN-LEAK        | 6      | void f(char **v, int n) { v[0] = make(n); }                                                                                        |
+      | item of a local array        | CC-OWN-LEAK        | 6      | void f(int n) { char *v[2]; v[0] = make(n); work(v[0]); }                                                                          |
+
+  Scenario Outline: A pointer handed on through an out-parameter or into an item of an owned array passes (<case>)
+    Given the C file "out.c" holds:
+      """
+      #include "stdlib.h"
+      #include "cchecker.h"
+      struct box { CC_OWNS char *held; };
+      CC_MAY_JUMP int take_or_jump(CC_OWNS char **out); void renew(CC_FREES CC_OWNS char **p);
+      int work(char *p); CC_OWNS char *make(int n); int take(CC_OWNS char **out);
+
+      <code>
+      """
+    When I run cchecker with "--tools rules --json $DIR/out.c -- -I../include"
+    Then the exit code is 0
+
+    Examples:
+      | case                     | code                                                                                                                                                      |
+      | filled and freed         | int f(void) { char *b; if (take(&b) < 0) return -1; work(b); free(b); return 0; }                                                                      |
+      | filled and stored        | int f(struct box *x) { char *b = NULL; if (take(&b) < 0) return -1; x->held = b; return 0; }                                                           |
+      | filled and null          | int f(void) { CC_OWNS char *b; take(&b); if (!b) return -1; work(b); free(b); return 0; }                                                              |
+      | filled by a jumping call | void f(void) { CC_OWNS char *b = NULL; take_or_jump(&b); free(b); }                                                                                    |
+      | freed and filled again   | void f(void) { CC_OWNS char *b = malloc(8); renew(&b); free(b); }                                                                                      |
+      | handed out               | int f(CC_OWNS char **out) { CC_OWNS char *p = malloc(8); if (!p) return -1; *out = p; return 0; }                                                      |
+      | owning call handed out   | void f(CC_OWNS char **out, int n) { *out = make(n); }                                                                                                  |
+      | items of an owned array  | CC_OWNS char **f(CC_OWNS char *path, int n) { CC_OWNS char **v = calloc(n + 2, sizeof *v); if (!v) abort(); v[0] = path; for (int i = 1; i <= n; i++) v[i] = make(i); return v; } |
+      | items of an allocated array | char **f(int n) { char **v = malloc(2 * sizeof *v); if (!v) return NULL; CC_OWNS char *p = malloc(n); v[0] = p; v[1] = make(n); return v; }         |
+
+  Scenario: The path of a leak of a filled pointer starts at the call that set it
+    Given the C file "out.c" holds:
+      """
+      #include <stdlib.h>
+      #include "cchecker.h"
+
+      int work(char *p);
+      int take(CC_OWNS char **out);
+
+      int f(void) {
+        char *b;
+        if (take(&b) < 0)
+          return -1;
+        if (work(b))
+          return -1;
+        free(b);
+        return 0;
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/out.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "line":7,"column":5,"message":"f does not free or hand on b on every path","path":["9:7 take sets b","9:7 false","11:7 true","12:5 returns"]
+      """
+
   Scenario: The path of a finding goes from where the pointer got its value to the return that leaks it
     Given the C file "own.c" holds:
       """

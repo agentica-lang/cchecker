@@ -314,12 +314,14 @@ def context_of(tables: Tables, nodes: List[Json]) -> Flow.Context
 end
 
 # What the declarations of the unit say about ownership: CC_OWNS on a function (it returns an owned pointer), on a
-# parameter (it takes what the caller passes), on a field or a global (a store into it hands a pointer on), and
-# CC_FREES on a parameter. The marks of the parameters of all the declarations of a function hold, by index.
+# parameter (it takes what the caller passes, or, on one that points to a pointer, hands an owned pointer out to the
+# caller through it), on a field or a global (a store into it hands a pointer on), and CC_FREES on a parameter. The
+# marks of the parameters of all the declarations of a function hold, by index.
 def owning_of(tables: Tables, nodes: List[Json]) -> Flow.Owning
   returns: Set[String] = Set.new([])
   takes: Map[String, List[Int]] = {}
   frees: Map[String, List[Int]] = {}
+  outs: Map[String, List[Int]] = {}
   declarations = nodes.select do |n| Ast.kind(n) == "FunctionDecl" end
   for node in declarations
     key = function_key(tables, Ast.text(node, "name"))
@@ -330,7 +332,10 @@ def owning_of(tables: Tables, nodes: List[Json]) -> Flow.Owning
     parameters = Ast.children(node).select do |child| Ast.kind(child) == "ParmVarDecl" end
     for i in 0...parameters.size
       marks = own_marks(parameters[i])
-      if marks.include?(OWNS) and not takes.get(key, []).include?(i)
+      out = Flow.points_to_pointer?(parameters[i])
+      if marks.include?(OWNS) and out and not outs.get(key, []).include?(i)
+        outs = outs.put(key, outs.get(key, []).push(i))
+      elsif marks.include?(OWNS) and not out and not takes.get(key, []).include?(i)
         takes = takes.put(key, takes.get(key, []).push(i))
       end
 
@@ -358,7 +363,14 @@ def owning_of(tables: Tables, nodes: List[Json]) -> Flow.Owning
   variables = nodes.select do |n| Ast.kind(n) == "VarDecl" end
   marked = Set.new(variables.select do |n| own_marks(n).include?(OWNS) end.map do |n| Ast.text(n, "name") end)
   globals = variables.select do |n| marked.include?(Ast.text(n, "name")) end.map do |n| Ast.text(n, "id") end
-  return Flow.Owning(returns: returns, takes: takes, frees: frees, fields: fields, globals: Set.new(globals))
+  return Flow.Owning(
+    returns: returns,
+    takes: takes,
+    frees: frees,
+    outs: outs,
+    fields: fields,
+    globals: Set.new(globals),
+  )
 end
 
 # What the collector rule needs from the unit: the types marked CC_GC (a struct or a union by its name, a typedef by

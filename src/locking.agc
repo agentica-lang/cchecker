@@ -220,6 +220,14 @@ export def truth(fact: Fact) -> String
   return "false"
 end
 
+## Returns whether an event is a return of an error value.
+export def failed?(event: Event) -> Bool
+  case event
+    Event.Exit(mark) -> return mark.failed
+    _ -> return false
+  end
+end
+
 def helper?(function: Optional[Function]) -> Bool
   marks = function.map do |f| f.marks end.unwrap_or([])
   return marks.any? do |mark| mark.start_with?("acquires(") or mark.start_with?("releases(") end
@@ -346,14 +354,6 @@ def with_jump(found: Map[String, Finding], walker: Walker, item: Item, event: Ev
 
       return with_exit(found, walker, item.state, item.path.push(Step(text: jump_text(site))), true)
     _ -> return found
-  end
-end
-
-# Whether an event is a return of an error value.
-def failed?(event: Event) -> Bool
-  case event
-    Event.Exit(mark) -> return mark.failed
-    _ -> return false
   end
 end
 
