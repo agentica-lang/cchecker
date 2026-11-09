@@ -76,7 +76,6 @@ OPTIONS = [
 ]
 
 VALUE_LONG = Set.new(OPTIONS.select do |o| o.kind != Kind.Flag end.map do |o| o.name end)
-VALUE_SHORT = Set.new(OPTIONS.select do |o| o.kind != Kind.Flag and o.short != "" end.map do |o| o.short end)
 
 # The words before `--`, told apart: the FILEs and the words for option_parser.
 struct Words
@@ -225,30 +224,52 @@ def names(text: String) -> List[String]
 end
 
 # option_parser has no variable-length positional argument, so the files are told apart here: a word that does not
-# start with "-" and is not the value of the option before it.
+# start with "-" and is not the value of the option before it. option_parser takes a value that starts with "-" for an
+# option, so an option and its value in two words become one, `--NAME=VALUE`, as getopt reads `--checks -*,...`.
 def tell_apart(words: List[String]) -> Words
   files: List[String] = []
   options: List[String] = []
-  value_next = false
+  pending = ""
   for word in words
-    if value_next
-      options = options.push(word)
-      value_next = false
+    if pending != ""
+      options = options.push("--#{pending}=#{word}")
+      pending = ""
     elsif word.start_with?("-")
-      options = options.push(word)
-      value_next = takes_value?(word)
+      pending = value_name(word)
+      if pending == ""
+        options = options.push(word)
+      end
     else
       files = files.push(word)
     end
   end
 
+  # An option that takes a value but is the last word: option_parser says that it needs one.
+  if pending != ""
+    options = options.push("--#{pending}")
+  end
+
   return Words(files: files, options: options)
 end
 
-def takes_value?(word: String) -> Bool
+# The long name of an option that takes its value from the next word (`--checks`, `-p`), or "".
+def value_name(word: String) -> String
   if word.start_with?("--")
-    return not word.include?("=") and VALUE_LONG.include?(word.slice(2, word.length - 2))
+    name = word.slice(2, word.length - 2)
+    if not word.include?("=") and VALUE_LONG.include?(name)
+      return name
+    end
+
+    return ""
   end
 
-  return word.length == 2 and VALUE_SHORT.include?(word.slice(1, 1))
+  if word.length == 2
+    short = word.slice(1, 1)
+    named = OPTIONS.select do |o| o.kind != Kind.Flag and o.short == short end
+    if not named.empty?
+      return named.first.name
+    end
+  end
+
+  return ""
 end

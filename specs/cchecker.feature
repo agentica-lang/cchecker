@@ -51,6 +51,14 @@ Feature: Running the analyzers on C files
       CC-TIDY-BUGPRONE-BRANCH-CLONE
       """
 
+  Scenario: A value that starts with - can be the next word, as for --checks -*,...
+    When I run cchecker with "--tools clang-tidy --checks -*,bugprone-branch-clone fixtures/branch_clone.c"
+    Then the exit code is 1
+    And the output includes:
+      """
+      CC-TIDY-BUGPRONE-BRANCH-CLONE
+      """
+
   Scenario: The flags after -- reach the tools
     When I run cchecker with "fixtures/flags.c"
     Then the exit code is 0
