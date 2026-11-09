@@ -40,8 +40,8 @@ test/             unit tests of the pure helpers (the parsers, the scan of the A
   under `.tools/` (gitignored), never `/tmp`. Changing the pin changes both values from the release's SHA256SUMS.
 - `make check`: `agentica check`, then `make lint` (`agentica lint --strict`: a style suggestion fails it).
   `make fmt-check`: `agentica fmt --check` (`agentica fmt` fixes it). `make test`: `agentica test --jobs 4` (the
-  features and the unit tests) without the scenarios tagged `@slow`; `make test-slow` runs those, in a CI job of
-  their own (on a shared machine, run at most one, with `--only`). Both first run `make deps` (`agentica install`:
+  features and the unit tests) without the scenarios tagged `@slow` or `@pending`; `make test-slow` runs the `@slow`
+  ones, in a CI job of their own (on a shared machine, run at most one, with `--only`). Both first run `make deps` (`agentica install`:
   prop (property tests) and native-gen (`make header`) into `deps/`, with the network only when the download cache
   lacks the locked commit) and `make native`, which builds the native module once. `make check` runs `make deps` too.
   `agentica test --only TEXT` runs the scenarios whose name contains `TEXT`.
@@ -87,4 +87,17 @@ test/             unit tests of the pure helpers (the parsers, the scan of the A
   docs/ for its topic, with it.
 - A PR is about 2k lines at most and holds its own tests and docs; do not leave validation or conventions to the next
   PR.
+- `specs/clean_c.feature` is the corpus of common C idioms that must give no finding, one small function per row. A
+  false finding becomes a row there. A row that does not pass yet stays, in an `Examples` block tagged `@pending
+  @issue-N`; the PR that closes the issue moves it up.
 - Commits carry no attribution lines.
+
+## Before you open a PR
+
+- Read the diff against main, and say which findings change (a rule change: on a real code base too, `make bench`).
+- Every fix has a row that failed before it.
+- A new or changed rule gets rows in `specs/clean_c.feature` for the idioms near it.
+- A path rule (locks, ownership) does not grow the walk state: check a loop and a repeated macro
+  (`specs/limits.feature`).
+- The docs and the CHANGELOG are updated.
+- The PR body matches the head: the names, the counts of rows, what was measured and on which commit.

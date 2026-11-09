@@ -20,17 +20,18 @@ lint: deps
 fmt-check:
 	@agentica fmt --check $(SOURCES)
 
-# The features of specs/ and the unit tests of test/, up to JOBS files at once, without the scenarios tagged @slow. Run
-# it from the root of the repository: the steps of the features start cchecker from there. `--tags` leaves the unit
-# tests out, so they run on their own.
+# The features of specs/ and the unit tests of test/, up to JOBS files at once, without the scenarios tagged @slow or
+# @pending (the rows of specs/clean_c.feature that an open issue will make pass). Run it from the root of the
+# repository: the steps of the features start cchecker from there. `--tags` leaves the unit tests out, so they run on
+# their own.
 test: deps native
-	@agentica test --jobs $(JOBS) --tags "not @slow" specs
+	@agentica test --jobs $(JOBS) --tags "not @slow and not @pending" specs
 	@agentica test --jobs $(JOBS) test
 
 # The scenarios tagged @slow (large generated inputs with bounds on time and memory, and the property tests on many
 # cases), one file at a time so that the bounds hold: the slow job of CI.
 test-slow: deps native
-	@agentica test --tags "@slow" specs
+	@agentica test --tags "@slow and not @pending" specs
 
 # The packages of agentica.lock into deps/: prop (property tests) and native-gen (`make header`). cchecker itself needs none.
 deps:
