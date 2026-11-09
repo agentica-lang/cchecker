@@ -16,6 +16,8 @@ import {Suppressed} from "suppressions"
 ## off, so the entries of the rules did not fail it and an update needs every check of the rules on. `version_changes`
 ## are the tools that ran with another version than the one that made the baseline. `folded` counts the entries of
 ## the compile database that were not run because they repeat a file with the same flags (see `Commands.fold`).
+## `inferred_short_locks` are the classes of the locks that the rules found short by their critical sections, or none
+## when that inference is off (then `--json` leaves the key out).
 export struct Report
   findings: List[Finding]
   baselined: Int
@@ -33,6 +35,7 @@ export struct Report
   rules_off: Bool = false
   version_changes: List[VersionChange] = []
   folded: Int = 0
+  inferred_short_locks: Optional[List[String]] = none
 end
 
 # The JSON form of a report, which says in `clean` whether the run is clean.
@@ -82,7 +85,7 @@ end
 
 ## Returns the report as one JSON object for tools and agents.
 export def json(report: Report) -> String
-  return JSON.encode(
+  encoded = JSON.encode(
     Encoded(
       clean: report.findings.empty? and report.errors.empty? and not failed_stale?(report),
       findings: report.findings,
@@ -101,6 +104,12 @@ export def json(report: Report) -> String
       folded: report.folded,
     ),
   )
+
+  # The key of an experimental inference is in the object only when it ran: the object ends with its `}`.
+  case report.inferred_short_locks
+    some(classes) -> return "#{encoded.slice(0, encoded.size - 1)},\"inferred_short_locks\":#{JSON.encode(classes)}}"
+    none -> return encoded
+  end
 end
 
 ## Returns the lines for standard error: one for each tool error.
@@ -131,6 +140,22 @@ end
 ## Returns the lines for standard error: one for each file that was not checked.
 export def unchecked_lines(report: Report) -> List[String]
   return report.unchecked_files.map do |u| "cchecker: warning: #{u.file} not checked: #{u.missing} not found" end
+end
+
+## Returns the line for standard error that says how many locks the rules found short by their critical sections, or
+## none.
+export def inferred_line(report: Report) -> Optional[String]
+  classes = report.inferred_short_locks.unwrap_or([])
+  count = classes.size
+  if count == 0
+    return none
+  end
+
+  first = classes.first
+  return some(
+    "cchecker: #{count} #{plural(count, "lock")} found short by #{plural_its(count)} critical sections (first: " +
+    "#{first}); --json lists them",
+  )
 end
 
 ## Returns the line for standard error about the callbacks that the inference of roots could not follow, or none.
@@ -212,6 +237,14 @@ def summary(report: Report) -> String
   end
 
   return "cchecker: #{count} new #{plural(count, "finding")} in #{files} #{plural(files, "file")}#{tail}"
+end
+
+def plural_its(count: Int) -> String
+  if count == 1
+    return "its"
+  end
+
+  return "their"
 end
 
 def plural(n: Int, word: String) -> String

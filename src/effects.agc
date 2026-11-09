@@ -5,7 +5,7 @@ import Config from "config"
 import {Finding, UnresolvedCallback} from "findings"
 import Known from "known"
 import Paths from "paths"
-import {Call, Callback, Function, Source, Store, Target, Unit} from "unit"
+import {Call, Callback, Function, Section, Source, Store, Target, Unit} from "unit"
 
 ## The tool name of the findings of the rules.
 export TOOL = "rules"
@@ -64,6 +64,11 @@ struct Walk
   all: Bool
   short_locks: Set[String]
   flags: Bool = false
+  # The classes inferred short, matched as they are: `short_locks` is matched as `[assume]` names them.
+  inferred: Set[String]
+  # Whether a call through a pointer that the run stores no function in is a bad call (for the inference of short
+  # locks, where it may be any function); the rules reach nothing through it.
+  empty_slots: Bool = false
 end
 
 # One entry of `[roots]` or `[assume]`: a bare name (every function of that name, a static one in any file), or
@@ -106,6 +111,16 @@ export struct Checked
   missing_roots: List[String] = []
   missing_assumed: List[String] = []
   unknown_targets: List[String] = []
+  short_locks: List[String] = []
+end
+
+## The critical sections of the locks (`Locking.check`): the calls made while a lock is held, the classes whose
+## sections are not all known, and whether the run read every file of the compile database (`full`): the inference
+## runs only then, as a file left out may hold a lock across a blocking call.
+export struct Sections
+  calls: List[Section] = []
+  partial: List[String] = []
+  full: Bool = false
 end
 
 # The CC_SHORT roots inferred from the callbacks of libuv, by function key, each with the call that made it, and the
@@ -119,8 +134,16 @@ end
 ## `[roots]` of the settings, or, when `infer`, passed as a callback to a libuv call that runs it on the loop. The
 ## `[library]` flags that are off take their families out of the blocking calls. A root gives one finding for each
 ## rule it breaks, at the nearest bad call, or one for each bad call it reaches when `all_paths`. `cwd` shortens the
-## paths of the inferred roots and of the unresolved callbacks; one outside it stays absolute.
-export def check(units: List[Unit], config: Config.Config, infer: Bool, all_paths: Bool, cwd: String) -> Checked
+## paths of the inferred roots and of the unresolved callbacks; one outside it stays absolute. A lock whose sections
+## reach no blocking call is short too (`inferred_locks`), unless `[library] short_lock_sections` is off.
+export def check(
+  units: List[Unit],
+  config: Config.Config,
+  infer: Bool,
+  all_paths: Bool,
+  cwd: String,
+  sections: Sections,
+) -> Checked
   graph = graph_of(units)
   families = Known.BLOCKING_FAMILIES.select do |family| not config.off.include?(family.flag) end
   walk = Walk(
@@ -128,8 +151,15 @@ export def check(units: List[Unit], config: Config.Config, infer: Bool, all_path
     follow_cold: config.follow_cold,
     all: all_paths,
     short_locks: short_locks_of(units, config),
+    inferred: Set.new([]),
     flags: not config.off.include?(Known.NONBLOCKING_FLAG),
   )
+
+  inferred_short: Set[String] = Set.new([])
+  if sections.full and not config.off.include?(Known.SECTIONS_FLAG)
+    inferred_short = inferred_locks(graph, walk, sections)
+    walk = walk.with(inferred: inferred_short)
+  end
 
   short_roots = listing_of(config.short)
   hot_roots = listing_of(config.hot)
@@ -166,6 +196,7 @@ export def check(units: List[Unit], config: Config.Config, infer: Bool, all_path
     missing_roots: missing_roots(graph, config),
     missing_assumed: missing_assumed(units, config).concat(missing_locks(units, graph, config)),
     unknown_targets: graph.unknown_targets,
+    short_locks: inferred_short.to_a.sort,
   )
 end
 
@@ -338,7 +369,7 @@ export def system_path(graph: Graph, key: String) -> Optional[List[String]]
 
   # The lock rules follow every call, cold ones included: `[effects] follow_cold` is about the roots of the
   # effect rules.
-  walk = Walk(families: families, follow_cold: true, all: false, short_locks: Set.new([]))
+  walk = Walk(families: families, follow_cold: true, all: false, short_locks: Set.new([]), inferred: Set.new([]))
   paths = search(graph, walk, key, Effect.System)
   if paths.empty?
     return none
@@ -437,10 +468,111 @@ def short_locks_of(units: List[Unit], config: Config.Config) -> Set[String]
   return Set.new(marked.concat(config.short_locks))
 end
 
+# The classes of the locks that are short because no section of theirs reaches a blocking call, as the short rule
+# sees one (a take of a lock that is not short is one). A class is inferred only when the rules know it and all its
+# sections are known (`Locking.Checked.partial`). A section of a lock whose class the rules cannot trust ("": one
+# taken through a parameter, `pthread_mutex_lock(m)`, or through a pointer field) may be of any class: when one
+# blocks, or when such a lock has sections that are not all known, no class is inferred. A class whose sections take
+# another one becomes short once that one is: the inference runs again with the classes it found until it finds no
+# more, and never assumes a class to find it. Each round searches each function that the sections call once; there
+# are as many rounds as the longest chain of classes taken one under another, plus one.
+def inferred_locks(graph: Graph, walk: Walk, sections: Sections) -> Set[String]
+  by_class: Map[String, List[Section]] = {}
+  for section in sections.calls
+    by_class = by_class.put(section.class, by_class.get(section.class).unwrap_or([]).push(section))
+  end
+
+  partial = Set.new(sections.partial)
+  if partial.include?("") or quiet_classes(graph, walk.with(all: false, empty_slots: true), by_class, [""]).empty?
+    return Set.new([])
+  end
+
+  candidates = by_class.keys.select do |class|
+    class != "" and not partial.include?(class) and not short_lock?(walk.short_locks, class)
+  end
+
+  found: Set[String] = Set.new([])
+  added = quiet_classes(graph, walk.with(all: false, empty_slots: true), by_class, candidates)
+  while not added.empty?
+    found = found.union(Set.new(added))
+    left = candidates.select do |class| not found.include?(class) end
+    added = quiet_classes(graph, walk.with(inferred: found, all: false, empty_slots: true), by_class, left)
+  end
+
+  return found
+end
+
+# The classes among `classes` none of whose sections reaches a blocking call with the short locks of `walk`. Each
+# function the sections call is searched once.
+def quiet_classes(
+  graph: Graph,
+  walk: Walk,
+  by_class: Map[String, List[Section]],
+  classes: List[String],
+) -> List[String]
+  sections = classes.flat_map do |class| by_class.get(class).unwrap_or([]) end
+  keys = sections.flat_map do |section| targets_of(graph, section) end.uniq
+  blocking = Set.new(
+    keys.select do |key|
+      has?(graph, walk.families, key, Effect.Blocks) or not search(graph, walk, key, Effect.Blocks).empty?
+    end,
+  )
+
+  return classes.select do |class|
+    by_class.get(class).unwrap_or([]).all? do |section| not blocks?(graph, walk, section, blocking) end
+  end
+end
+
+# The functions a call of a section goes to: its callee, or the functions stored in the pointer it calls.
+def targets_of(graph: Graph, section: Section) -> List[String]
+  if section.pointer
+    return pointer_targets(graph, section.caller, section.line, section.column)
+  end
+
+  return [section.callee]
+end
+
+# Whether a call of a section is, or reaches, a blocking call (one of `blocking`), as a call of a short function would
+# be: the functions stored in a pointer it calls count each. A take of a lock of the library is judged by the classes
+# it takes itself, not by every take of the same function in the caller, so a section may take a short lock and
+# another may not.
+def blocks?(graph: Graph, walk: Walk, section: Section, blocking: Set[String]) -> Bool
+  if not section.pointer and not section.takes.empty? and not defined?(graph, section.callee)
+    if marked?(graph, section.callee, "blocking")
+      return true
+    end
+
+    return not section.tried and not section.takes.all? do |c| short_class?(walk, c) end
+  end
+
+  targets = targets_of(graph, section)
+  # A pointer that the run stores no function in may hold any function: the inference counts it as blocking, where
+  # the short rule reaches nothing through it.
+  if targets.empty?
+    return section.pointer
+  end
+
+  return targets.any? do |key|
+    skipped = (
+      cut?(graph, walk, key, Effect.Blocks, not walk.follow_cold) or
+      short_takes?(graph, walk, section.caller, key) or
+      returns_at_once?(graph, walk, section.caller, key)
+    )
+
+    not skipped and blocking.include?(key)
+  end
+end
+
 # Whether every call of the lock function `callee` in `key` takes a short lock, so the short rule does not count it.
 def short_takes?(graph: Graph, walk: Walk, key: String, callee: String) -> Bool
   classes = graph.locks.get("#{key}>#{callee}").unwrap_or([])
-  return not classes.empty? and classes.all? do |c| c != "" and short_lock?(walk.short_locks, c) end
+  return not classes.empty? and classes.all? do |c| short_class?(walk, c) end
+end
+
+# Whether a class is short: one the rules know, marked or named in `[assume] short_locks` (`short_lock?`), or
+# inferred, as it is.
+def short_class?(walk: Walk, class: String) -> Bool
+  return class != "" and (short_lock?(walk.short_locks, class) or walk.inferred.include?(class))
 end
 
 # Whether a class is among the short locks: as it is, or by the name of a static global (`big_lock` for
@@ -854,6 +986,13 @@ def search(graph: Graph, walk: Walk, start: String, effect: Effect) -> List[List
   while i < queue.size
     key = queue[i]
     i += 1
+    if walk.empty_slots and empty_slot?(graph, key)
+      found = found.push(path_to(callers, start, key))
+      if not walk.all
+        return found
+      end
+    end
+
     for callee in callees(graph, key)
       if callers.key?(callee) or cut?(graph, walk, callee, effect, not walk.follow_cold)
         next
@@ -879,6 +1018,16 @@ def search(graph: Graph, walk: Walk, start: String, effect: Effect) -> List[List
   end
 
   return found
+end
+
+# Whether a function calls through a pointer that the run stores no function in.
+def empty_slot?(graph: Graph, key: String) -> Bool
+  return graph.edges.get(key).unwrap_or([]).any? do |target|
+    case target
+      Target.Slot(slot) -> graph.slots.get(slot).unwrap_or([]).empty?
+      Target.Direct(_) -> false
+    end
+  end
 end
 
 # Whether the walk of a rule does not go into a function: it is stopped, trusted for the short rule, or (with `cold`)

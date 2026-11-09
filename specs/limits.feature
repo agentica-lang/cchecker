@@ -161,3 +161,74 @@ Feature: Time and memory on large generated inputs
       """
       "incomplete_functions":[{"file":"$DIR/many.c","line":4,"function":"many"}]
       """
+
+  Scenario: A lock held in a function with more paths than the walk follows is not inferred short
+    Given the file "compile_commands.json" holds:
+      """
+      [{"directory": ".", "file": "many.c", "arguments": ["cc", "-c", "many.c", "-I../../../include"]}]
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [library]
+      short_lock_sections = true
+      """
+    And the C file "many.c" holds:
+      """
+      #include "pthread.h" /* found in the system folders */
+      #include "cchecker.h"
+      pthread_mutex_t m0, m1, m2, m3, m4, m5, m6, m7, m8, m9, m10, m11, m12, m13, m14, m15, m16, m17, m18, m19;
+      int pick(int i);
+      void many(void) {
+        if (pick(0)) pthread_mutex_lock(&m0);
+        if (pick(1)) pthread_mutex_lock(&m1);
+        if (pick(2)) pthread_mutex_lock(&m2);
+        if (pick(3)) pthread_mutex_lock(&m3);
+        if (pick(4)) pthread_mutex_lock(&m4);
+        if (pick(5)) pthread_mutex_lock(&m5);
+        if (pick(6)) pthread_mutex_lock(&m6);
+        if (pick(7)) pthread_mutex_lock(&m7);
+        if (pick(8)) pthread_mutex_lock(&m8);
+        if (pick(9)) pthread_mutex_lock(&m9);
+        if (pick(10)) pthread_mutex_lock(&m10);
+        if (pick(11)) pthread_mutex_lock(&m11);
+        if (pick(12)) pthread_mutex_lock(&m12);
+        if (pick(13)) pthread_mutex_lock(&m13);
+        if (pick(14)) pthread_mutex_lock(&m14);
+        if (pick(15)) pthread_mutex_lock(&m15);
+        if (pick(16)) pthread_mutex_lock(&m16);
+        if (pick(17)) pthread_mutex_lock(&m17);
+        if (pick(18)) pthread_mutex_lock(&m18);
+        if (pick(19)) pthread_mutex_lock(&m19);
+        if (pick(19)) pthread_mutex_unlock(&m19);
+        if (pick(18)) pthread_mutex_unlock(&m18);
+        if (pick(17)) pthread_mutex_unlock(&m17);
+        if (pick(16)) pthread_mutex_unlock(&m16);
+        if (pick(15)) pthread_mutex_unlock(&m15);
+        if (pick(14)) pthread_mutex_unlock(&m14);
+        if (pick(13)) pthread_mutex_unlock(&m13);
+        if (pick(12)) pthread_mutex_unlock(&m12);
+        if (pick(11)) pthread_mutex_unlock(&m11);
+        if (pick(10)) pthread_mutex_unlock(&m10);
+        if (pick(9)) pthread_mutex_unlock(&m9);
+        if (pick(8)) pthread_mutex_unlock(&m8);
+        if (pick(7)) pthread_mutex_unlock(&m7);
+        if (pick(6)) pthread_mutex_unlock(&m6);
+        if (pick(5)) pthread_mutex_unlock(&m5);
+        if (pick(4)) pthread_mutex_unlock(&m4);
+        if (pick(3)) pthread_mutex_unlock(&m3);
+        if (pick(2)) pthread_mutex_unlock(&m2);
+        if (pick(1)) pthread_mutex_unlock(&m1);
+        if (pick(0)) pthread_mutex_unlock(&m0);
+      }
+      CC_SHORT void tick(void) { pthread_mutex_lock(&m0); pthread_mutex_unlock(&m0); }
+      """
+    When I run cchecker in its folder with "--tools rules --json" in at most 1500 MiB and 20 seconds
+    Then the exit code is 1
+    And the output includes:
+      """
+      "CC-EFFECT-SHORT-BLOCKS"
+      """
+    And the output includes:
+      """
+      "inferred_short_locks":[]
+      """

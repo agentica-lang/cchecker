@@ -93,6 +93,21 @@ export struct Call
   named: Bool = false
 end
 
+## A call that a function makes while it holds a lock of `class` ("" when the rules cannot tell): a critical section
+## of that class (`Locking.check` finds them). `callee` is the key of the function it calls; a call through a pointer
+## (`pointer`) has none, and its place (`line`, `column`) finds the functions stored in it. `takes` are the classes of
+## the locks the call itself takes ("" for one the rules cannot tell), and `tried` says it is a trylock.
+export struct Section
+  class: String
+  caller: String
+  callee: String
+  pointer: Bool = false
+  line: Int = 0
+  column: Int = 0
+  takes: List[String] = []
+  tried: Bool = false
+end
+
 ## What a slot gets: a function, by key, or every function of another slot (a copy of a pointer).
 export enum Source
   Function(String)
@@ -269,10 +284,15 @@ def context_of(tables: Tables, nodes: List[Json]) -> Flow.Context
   variables = nodes.select do |node| Ast.kind(node) == "VarDecl" end
   globals: Map[String, String] = {}
   global_ids: Map[String, String] = {}
+  pointers: Set[String] = Set.new([])
   for node in variables
     class = variable_key(tables, Ast.text(node, "name"))
     globals = globals.put(Ast.text(node, "name"), class)
     global_ids = global_ids.put(Ast.text(node, "id"), class)
+    type = JSON.get(node, "type").unwrap_or(JSON.from(""))
+    if [Ast.text(type, "qualType"), Ast.text(type, "desugaredQualType")].any? do |t| t.include?("*") end
+      pointers = pointers.add(Ast.text(node, "name"))
+    end
   end
 
   declarations = nodes.select do |node| Ast.kind(node) == "FunctionDecl" end
@@ -284,7 +304,12 @@ def context_of(tables: Tables, nodes: List[Json]) -> Flow.Context
     # only the declaration that wrote an annotation knows what its names are.
     locks = own_marks(node)
       .flat_map do |mark| annotated(mark, params) end
-      .map do |lock| lock.with(class: class_of_text(tables, globals, lock.text, params, types)) end
+      .map do |lock|
+        lock.with(
+          class: class_of_text(tables, globals, lock.text, params, types),
+          through: through_text?(tables, pointers, lock.text, params, types),
+        )
+      end
 
     stops = function.noreturn
     if not locks.empty? or stops
@@ -496,6 +521,53 @@ def pair_of(mark: String) -> List[Pair]
   end
 
   return [Pair(set: names[0], restore: names[1])]
+end
+
+# Whether the lock of an annotation is reached through a pointer that its class names: the text reads a pointer
+# (`*g`), or the global or the last field it ends in is one, or an array of them (`shared` of `pthread_mutex_t
+# *shared`, `c->lk` of `pthread_mutex_t *lk`), as written or behind a typedef. `pointers` are the globals whose type
+# is a pointer.
+def through_text?(
+  tables: Tables,
+  pointers: Set[String],
+  text: String,
+  params: List[String],
+  types: List[String],
+) -> Bool
+  shown = Flow.shown_of(text)
+  if shown.start_with?("*")
+    return true
+  end
+
+  path = shown.replace("->", ".").split(".").map do |part| part.split("[").first end
+  at = -1
+  for i in 0...params.size
+    if params[i] == path.first
+      at = i
+    end
+  end
+
+  if at < 0
+    return path.size == 1 and pointers.include?(path.first)
+  end
+
+  type = types[at]
+  written = [type]
+  for j in 1...path.size
+    case tables.records.get(type_name(type))
+      some(record) ->
+        for k in 0...record.fields.size
+          if record.fields[k] == path[j]
+            type = record.types[k]
+            written = [record.types[k], record.desugared[k]]
+          end
+        end
+
+      none -> return false
+    end
+  end
+
+  return path.size > 1 and written.any? do |t| t.include?("*") end
 end
 
 # The class of the lock of an annotation, through the types of the parameters: `s->pool->mu` of `struct server *s` is
