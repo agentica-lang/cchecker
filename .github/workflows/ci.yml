@@ -53,6 +53,10 @@ jobs:
       - name: Test
         run: make test
 
+      # A row tagged @pending that passes has to move up (specs/clean_c.feature).
+      - name: Pending rows
+        run: make test-pending
+
   # The scenarios tagged @slow: large generated inputs, each under a bound on memory and time (specs/limits.feature).
   # They run on every PR, apart from the default tests, so that `make test` stays quick.
   slow:

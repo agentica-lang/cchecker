@@ -41,10 +41,10 @@ test/             unit tests of the pure helpers (the parsers, the scan of the A
 - `make check`: `agentica check`, then `make lint` (`agentica lint --strict`: a style suggestion fails it).
   `make fmt-check`: `agentica fmt --check` (`agentica fmt` fixes it). `make test`: `agentica test --jobs 4` (the
   features and the unit tests) without the scenarios tagged `@slow` or `@pending`; `make test-slow` runs the `@slow`
-  ones, in a CI job of their own (on a shared machine, run at most one, with `--only`). Both first run `make deps`
-  (`agentica install`:
-  prop (property tests) and native-gen (`make header`) into `deps/`, with the network only when the download cache
-  lacks the locked commit) and `make native`, which builds the native module once. `make check` runs `make deps` too.
+  ones, in a CI job of their own (on a shared machine, run at most one, with `--only`); `make test-pending` fails
+  when a row tagged `@pending` passes. All first run `make deps` (`agentica install`: prop (property tests) and
+  native-gen (`make header`) into `deps/`, with the network only when the download cache lacks the locked commit) and
+  `make native`, which builds the native module once. `make check` runs `make deps` too.
   `agentica test --only TEXT` runs the scenarios whose name contains `TEXT`.
 - The tests need `gcc`, `clang`, `clang-tidy`, `sh` and `timeout` (coreutils) on PATH. CI installs them and fails if
   one is missing; a local run without one fails the scenarios too.
@@ -88,17 +88,19 @@ test/             unit tests of the pure helpers (the parsers, the scan of the A
   docs/ for its topic, with it.
 - A PR is about 2k lines at most and holds its own tests and docs; do not leave validation or conventions to the next
   PR.
-- `specs/clean_c.feature` is the corpus of common C idioms that must give no finding, one small function per row. A
-  false finding becomes a row there. A row that does not pass yet stays, in an `Examples` block tagged `@pending
-  @issue-N`; the PR that closes the issue moves it up.
+- `specs/clean_c.feature` is the corpus of common C idioms that must give no finding, one small function per row, with
+  the small change that gives a finding in its second outline. A false finding becomes a row there. A row that does
+  not pass yet stays, in an `Examples` block tagged `@pending` and `@issue-N`; the PR that closes the issue moves it up
+  (`make test-pending` fails until it does).
 - Commits carry no attribution lines.
 
 ## Before you open a PR
 
-- Read the diff against main, and say which findings change (a rule change: on a real code base too, `make bench`).
-- Every fix has a row that failed before it.
-- A new or changed rule gets rows in `specs/clean_c.feature` for the idioms near it.
+- Read the diff against main.
+- Say which findings change; for a rule change, on a real code base too (`make bench`).
+- Every fix has a row that failed before it, and a new or changed rule has rows in `specs/clean_c.feature`.
 - A path rule (locks, ownership) does not grow the walk state: check a loop and a repeated macro
   (`specs/limits.feature`).
 - The docs and the CHANGELOG are updated.
-- The PR body matches the head: the names, the counts of rows, what was measured and on which commit.
+- Run `make check`, `make fmt-check` and the specs you touched, not the whole `make test`: CI runs it.
+- The PR body matches the head.
