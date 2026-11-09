@@ -9,16 +9,16 @@ collector. The codes are listed in the README and described below and in
 
 `include/cchecker.h` defines the macros that the rules read: `CC_SHORT`,
 `CC_BLOCKING`, `CC_HOT`, `CC_ACQUIRES(lock)`, `CC_RELEASES(lock)`,
-`CC_NORETURN`, `CC_NO_SYSCALL_UNDER(lock)`, `CC_LOCK_LEVEL(n)`, `CC_PAIR(set,
-restore)`, `CC_OWNS`, `CC_FREES`, `CC_GC`, `CC_GC_ALLOC`, `CC_ASSUME_SHORT` (the
-function counts as fine for `CC_SHORT`), `CC_STOP` (no rule walks into the
-function; both are assumptions, see [Settings](settings.md)) and
-`CC_IGNORE("CODE", "reason")` (a suppression). The macros are empty, in every
-build and with every compiler, except when cchecker dumps the AST: it defines
-`CCHECKER_AST`, and with clang the macros become
-`__attribute__((deprecated("cchecker:...")))` (the JSON AST of clang 19 drops the
-text of `annotate` and keeps the message of `deprecated`). The dump runs with
-`-w`, so this gives no warning. A normal build of your project carries no
+`CC_NORETURN`, `CC_MAY_JUMP`, `CC_NO_SYSCALL_UNDER(lock)`, `CC_LOCK_LEVEL(n)`,
+`CC_PAIR(set, restore)`, `CC_OWNS`, `CC_FREES`, `CC_GC`, `CC_GC_ALLOC`,
+`CC_ASSUME_SHORT` (the function counts as fine for `CC_SHORT`), `CC_STOP` (no
+rule walks into the function; both are assumptions, see [Settings](settings.md))
+and `CC_IGNORE("CODE", "reason")` (a suppression). The macros are empty, in
+every build and with every compiler, except when cchecker dumps the AST: it
+defines `CCHECKER_AST`, and with clang the macros become
+`__attribute__((deprecated("cchecker:...")))` (the JSON AST of clang 19 drops
+the text of `annotate` and keeps the message of `deprecated`). The dump runs
+with `-w`, so this gives no warning. A normal build of your project carries no
 annotation; a project that wants an attribute for another tool defines the
 macros itself.
 
@@ -129,9 +129,26 @@ function that jumps out with `longjmp`); a lock held there is not a finding. The
 cleanup function of a variable with `__attribute__((cleanup(f)))` runs on every
 way out of its block.
 
+A call of a function that may jump out (it returns, or calls `longjmp` on an
+error, as an interpreter raises one), marked `CC_MAY_JUMP` or named in `[assume]
+may_jump` (see [Settings](settings.md)), is a way out too: the path goes on
+after the call, and it also leaves the function there. A lock held before the
+call is `CC-PATH-LOCK-NOT-RELEASED` on that way out (a `CC_PAIR` set and not
+restored is `CC-PATH-PAIR-NOT-RESTORED`), with the call as the last step of
+`path` (`7:72 may jump in check_size`): the code that catches the jump does not
+know the lock. Release it before the call, or check what may fail first. A jump
+does not run the `cleanup(f)` functions of the variables, so a lock that only a
+cleanup function releases is held on the jump. There is no setting that says a
+jump releases a lock: a suppression of the code on the function (`CC_IGNORE` or
+`cchecker: ignore`) does, and it hides the findings of that code on its returns
+too, not only those of the jumps. Only a direct call can jump: a call through a
+function pointer never does. A function that never returns stays an end of the
+path, even with `CC_MAY_JUMP`. The jump adds no state to the walk, so the limits
+below do not change.
+
 | Code | |
 |---|---|
-| `CC-PATH-LOCK-NOT-RELEASED` | a path returns with a lock that the function took |
+| `CC-PATH-LOCK-NOT-RELEASED` | a path returns, or jumps out at a `CC_MAY_JUMP` call, with a lock that the function took |
 | `CC-PATH-LOCK-NOT-HELD` | a path releases a lock that the function did not take |
 
 The finding is at the function, once for each code and lock, and `path` is a

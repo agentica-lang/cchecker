@@ -40,6 +40,7 @@ def main() -> Void
     BDD.step("the exit code is {int}", &exit_code_is),
     BDD.step("the output includes:", &output_includes),
     BDD.step("the output does not include:", &output_excludes),
+    BDD.step("the output includes once:", &output_includes_once),
     BDD.step("the errors include:", &errors_include),
     BDD.step("the errors do not include:", &errors_exclude),
     BDD.step("the errors include once:", &errors_include_once),
@@ -244,10 +245,19 @@ def errors_exclude(ctx: BDD.Context, args: List[String]) -> BDD.Context
 end
 
 def errors_include_once(ctx: BDD.Context, args: List[String]) -> BDD.Context
+  return included_once(ctx, "stderr", "errors")
+end
+
+def output_includes_once(ctx: BDD.Context, args: List[String]) -> BDD.Context
+  return included_once(ctx, "stdout", "output")
+end
+
+# Whether the stream of the run holds the doc string exactly once; `word` names the stream in the message.
+def included_once(ctx: BDD.Context, stream: String, word: String) -> BDD.Context
   expected = BDD.doc_string(ctx).strip.replace("$DIR", folder_of(ctx))
-  shown = text(ctx, "stderr")
+  shown = text(ctx, stream)
   times = shown.split(expected).size - 1
-  return BDD.assert(ctx, times == 1, "the errors include #{expected} #{times} times: #{shown}")
+  return BDD.assert(ctx, times == 1, "the #{word} include #{expected} #{times} times: #{shown}")
 end
 
 def remove_file(ctx: BDD.Context, args: List[String]) -> BDD.Context

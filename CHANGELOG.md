@@ -4,6 +4,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `CC_MAY_JUMP` and `[assume] may_jump`: a call of a function that may jump out (`longjmp` on an error) is also a way
+  out of its caller, where a pointer that still owns is `CC-OWN-LEAK` and a lock held is `CC-PATH-LOCK-NOT-RELEASED`.
+
 ### Changed
 
 - `include/cchecker.h`: the macros are empty unless cchecker dumps the AST (`CCHECKER_AST`), so a normal clang build no

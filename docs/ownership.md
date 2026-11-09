@@ -20,12 +20,19 @@ graph and the walk of the [locks](rules.md#locks-on-every-path) and their limits
 (a function with too many paths is listed once in `incomplete_functions`). A
 parameter marked `CC_OWNS` or `CC_FREES` owns from the entry, a local marked
 `CC_OWNS` owns the value it gets (other than `NULL`), and a local that gets the
-value of a `CC_OWNS` function owns it without a mark. On every path
-that returns, each one is freed or handed on: returned, stored in a `CC_OWNS`
-field (or an item of one, `q->items[i] = p`, or a `CC_OWNS` global), or passed
-to a `CC_OWNS` parameter. Stored anywhere else or passed to another parameter,
-it is lent and still owns. A condition that tells that a pointer is null (`if
-(!p)`, `if ((p = malloc(n)) == NULL)`) leaves it owning nothing on that side.
+value of a `CC_OWNS` function owns it without a mark. On every path that
+returns, each one is freed or handed on: returned, stored in a `CC_OWNS` field
+(or an item of one, `q->items[i] = p`, or a `CC_OWNS` global), or passed to a
+`CC_OWNS` parameter. A call of a function that may jump out (`CC_MAY_JUMP` or
+`[assume] may_jump`, see [Locks](rules.md#locks-on-every-path)) is a way out
+too: each one that still owns after the call is a leak, with the call as the
+last step of `path`. What the call itself frees or takes (a `CC_FREES` or
+`CC_OWNS` parameter) is the callee's from the call on, jump or not. A jump does
+not run the `cleanup(f)` functions of the variables, and a call through a
+function pointer never jumps. Stored anywhere else or passed to another
+parameter, it is lent and still owns. A condition that tells that a pointer is
+null (`if (!p)`, `if ((p = malloc(n)) == NULL)`) leaves it owning nothing on
+that side.
 
 A local without a mark that gets a pointer that owns (`char *c = p`) stands for
 it: freeing `c` frees `p`; a `malloc` into it later owns nothing, as in any
@@ -46,7 +53,7 @@ caller that includes it.
 
 | Code | |
 |---|---|
-| `CC-OWN-LEAK` | a path returns, or gives a pointer a new value, while it still owns; or drops the value of a `CC_OWNS` function (kept nowhere: not in a local, a `CC_OWNS` place, a return or a parameter that takes it) |
+| `CC-OWN-LEAK` | a path returns, jumps out at a `CC_MAY_JUMP` call, or gives a pointer a new value, while it still owns; or drops the value of a `CC_OWNS` function (kept nowhere: not in a local, a `CC_OWNS` place, a return or a parameter that takes it) |
 | `CC-OWN-DOUBLE-FREE` | a path frees a pointer that it already freed or handed on |
 | `CC-OWN-USE-AFTER-FREE` | a path reads, returns or hands on a pointer after it freed it or handed it on |
 
@@ -56,6 +63,7 @@ the rule:
 
 ```text
 src/load.c:6:5 CC-OWN-LEAK load does not free or hand on buf on every path: 9:21 buf = malloc -> 10:8 true -> 12:7 true -> 13:5 returns
+src/conf.c:9:5 CC-OWN-LEAK start does not free or hand on c on every path: 10:28 c = malloc -> 11:8 true -> 14:13 may jump in as_mode
 ```
 
 A `malloc` into a local without a mark is not checked: `gcc -fanalyzer` reports

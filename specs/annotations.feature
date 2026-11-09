@@ -29,6 +29,18 @@ Feature: The annotation header
       """
       "cchecker:no_syscall_under(table_lock)"
       """
+    And the output includes:
+      """
+      "cchecker:may_jump"
+      """
+    And the output includes:
+      """
+      "cchecker:noreturn"
+      """
+    And the output includes:
+      """
+      "cchecker:stop"
+      """
 
   Scenario: A normal clang compile carries no annotation
     When clang preprocesses "fixtures/annotated.c"

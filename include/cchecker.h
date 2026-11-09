@@ -24,6 +24,8 @@
  *   CC_ACQUIRES(lock)           the function returns with `lock` held, for its caller to release
  *   CC_RELEASES(lock)           the function releases `lock`, which its caller took
  *   CC_NORETURN                 a call of the function never comes back (it jumps out or ends the thread)
+ *   CC_MAY_JUMP                 a call of the function may jump out (`longjmp` on an error) or return: the jump is
+ *                               a way out of the caller, where the ownership and lock rules check what it holds
  *   CC_ASSUME_SHORT             the function counts as fine for CC_SHORT: the short rule does not walk into it
  *   CC_STOP                     no rule walks into the function: what it calls counts for none of them
  *   CC_IGNORE("CODE", "reason") a finding of the rules on the function is a false positive, for this reason
@@ -60,6 +62,7 @@
 #define CC_ACQUIRES(...) CC_ANNOTATE_ARGS_("acquires", __VA_ARGS__)
 #define CC_RELEASES(...) CC_ANNOTATE_ARGS_("releases", __VA_ARGS__)
 #define CC_NORETURN CC_ANNOTATE_("noreturn")
+#define CC_MAY_JUMP CC_ANNOTATE_("may_jump")
 #define CC_ASSUME_SHORT CC_ANNOTATE_("assume_short")
 #define CC_STOP CC_ANNOTATE_("stop")
 #define CC_LOCK_LEVEL(...) CC_ANNOTATE_ARGS_("lock_level", __VA_ARGS__)
@@ -78,6 +81,7 @@
 #define CC_ACQUIRES(...)
 #define CC_RELEASES(...)
 #define CC_NORETURN
+#define CC_MAY_JUMP
 #define CC_ASSUME_SHORT
 #define CC_STOP
 #define CC_LOCK_LEVEL(...)

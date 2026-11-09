@@ -16,6 +16,9 @@ export ASSUME_SHORT = "assume_short"
 ## The mark of a function that no walk goes into (CC_STOP, `[assume] stop`).
 export STOP = "stop"
 
+## The mark of a function whose call may jump out of its caller (CC_MAY_JUMP, `[assume] may_jump`).
+export MAY_JUMP = "may_jump"
+
 # The start of the slot of a field (`field:request.call`).
 FIELD_SLOT = "field:"
 
@@ -131,7 +134,7 @@ end
 ## the calls through the fields of `[assume] stop_fields`, which no walk follows. A call through a copy of such a field
 ## (a local that got it) is still followed.
 export def assumed(units: List[Unit], config: Config) -> List[Unit]
-  if config.trusted.empty? and config.stops.empty? and config.stop_fields.empty?
+  if config.trusted.empty? and config.stops.empty? and config.stop_fields.empty? and config.jumps.empty?
     return units
   end
 
@@ -379,19 +382,24 @@ def with_assumed(function: Function, config: Config) -> Function
     marks = marks.push(STOP)
   end
 
+  if config.jumps.include?(function.name)
+    marks = marks.push(MAY_JUMP)
+  end
+
   return function.with(marks: marks.uniq)
 end
 
 # The names of `[assume]` that no function of the graph has, defined or declared, each with its key.
 def missing_assumed(graph: Graph, config: Config) -> List[String]
-  if config.trusted.empty? and config.stops.empty?
+  if config.trusted.empty? and config.stops.empty? and config.jumps.empty?
     return []
   end
 
   known = Set.new(graph.functions.values.map do |f| f.name end)
   short = config.trusted.uniq.select do |name| not known.include?(name) end.map do |name| "#{name} (assume.short)" end
   stop = config.stops.uniq.select do |name| not known.include?(name) end.map do |name| "#{name} (assume.stop)" end
-  return short.concat(stop)
+  jump = config.jumps.uniq.select do |name| not known.include?(name) end.map do |name| "#{name} (assume.may_jump)" end
+  return short.concat(stop).concat(jump)
 end
 
 def marked?(graph: Graph, key: String, mark: String) -> Bool
