@@ -11,6 +11,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `uv_run` with a constant `UV_RUN_NOWAIT` is no longer a blocking call for `CC_SHORT` (`libc_nonblocking_flags`);
+  `UV_RUN_ONCE`, `UV_RUN_DEFAULT` and a mode in a variable still are.
 - A file listed more than once with the same flags is checked once; flags that differ only by `-fPIC`, `-fPIE` and
   CMake's `-D<target>_EXPORTS` count as the same (a static and a shared library of CMake), any other define does not
   (libuv's `BUILDING_UV_SHARED` keeps both entries). `folded` of `--json` counts the repeated entries left out.

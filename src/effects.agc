@@ -289,7 +289,11 @@ export def graph_of(units: List[Unit]) -> Graph
             unknown = unknown.push(unit.target)
           end
 
-          set = call.named or (bit != 0 and call.flags >= 0 and Int.bit_and(call.flags, bit) != 0)
+          set = (
+            call.named or
+            (bit != 0 and call.flags >= 0 and Known.flags_return_at_once?(name_of_key(functions, to), call.flags, bit))
+          )
+
           quiet = quiet.put(at, quiet.get(at).unwrap_or([]).push(set))
         Target.Slot(slot) if call.line > 0 ->
           at = "#{call.caller} #{call.line}:#{call.column}"
@@ -454,9 +458,8 @@ def with_assumed(function: Function, lists: Assumed) -> Function
   return function.with(marks: marks.uniq)
 end
 
-# The entries of `[assume]` that no function of the units has, with their key. A `name@file` counts when the file
-# of any
-# declaration of the function, or of its definition, ends with the path: the same functions that `assumed` marks.
+# The entries of `[assume]` that no function of the units has, with their key. A `name@file` counts when the file of
+# any declaration of the function, or of its definition, ends with the path: the same functions that `assumed` marks.
 def missing_assumed(units: List[Unit], config: Config) -> List[String]
   if config.trusted.empty? and config.stops.empty? and config.jumps.empty?
     return []
