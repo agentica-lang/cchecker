@@ -662,7 +662,7 @@ def collect(options: Options, config: Config.Config, jobs: List[Tools.Job], cwd:
   end
 
   # The lock walk goes first: the effect rules infer short locks from the sections it finds.
-  locked = Profile.measure("locking") do Locking.check(units) end
+  locked = Profile.measure("locking") do Locking.check(units, config.owned_locks) end
   full = planned and errors.empty? and unchecked.empty?
   sections = Effects.Sections(calls: locked.sections, partial: locked.partial, full: full)
   checked = Profile.measure("effects") do

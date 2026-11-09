@@ -3,6 +3,7 @@
 
 import Config from "config"
 import {Finding, UnresolvedCallback} from "findings"
+import {Body, Event} from "flow"
 import Known from "known"
 import Paths from "paths"
 import {Call, Callback, Function, Section, Source, Store, Target, Unit} from "unit"
@@ -464,6 +465,17 @@ export def graph_of(units: List[Unit]) -> Graph
   )
 end
 
+## Returns whether a lock class is among the classes of a list of `[assume]` (`short_locks`, `owned_locks`): as it is,
+## or by the name of a static global (`big_lock` for `big_lock@src/a.c`, as `[assume]` names a static function), or by
+## its name and the end of its file (`big_lock@a.c`).
+export def named_class?(names: Set[String], class: String) -> Bool
+  return (
+    names.include?(class) or
+    names.include?(bare_class(class)) or
+    names.to_a.any? do |entry| in_file?(entry, class) end
+  )
+end
+
 # The classes of the short locks: those marked CC_NO_SYSCALL_UNDER() and those of `[assume] short_locks`. An entry
 # `name(N)` is a wrapper (see `wrappers_of`), not a class.
 def short_locks_of(units: List[Unit], config: Config.Config) -> Set[String]
@@ -507,7 +519,7 @@ def inferred_locks(graph: Graph, walk: Walk, sections: Sections) -> Set[String]
   end
 
   candidates = by_class.keys.select do |class|
-    class != "" and not partial.include?(class) and not short_lock?(walk.short_locks, class)
+    class != "" and not partial.include?(class) and not named_class?(walk.short_locks, class)
   end
 
   found: Set[String] = Set.new([])
@@ -598,10 +610,10 @@ def short_takes?(graph: Graph, walk: Walk, key: String, callee: String) -> Bool
   return not classes.empty? and classes.all? do |c| short_class?(walk, c) end
 end
 
-# Whether a class is short: one the rules know, marked or named in `[assume] short_locks` (`short_lock?`), or
+# Whether a class is short: one the rules know, marked or named in `[assume] short_locks` (`named_class?`), or
 # inferred, as it is.
 def short_class?(walk: Walk, class: String) -> Bool
-  return class != "" and (short_lock?(walk.short_locks, class) or walk.inferred.include?(class))
+  return class != "" and (named_class?(walk.short_locks, class) or walk.inferred.include?(class))
 end
 
 # Whether a call of the known take `callee` in `key` is of a wrapper of `short_locks`, or made in one.
@@ -621,16 +633,6 @@ def listed_wrapper?(graph: Graph, walk: Walk, key: String) -> Bool
   return walk.short_wrappers.any? do |wrapper|
     wrapper.name == name and (wrapper.tail == "" or files.any? do |file| ends_with_path?(file, wrapper.tail) end)
   end
-end
-
-# Whether a class is among the short locks: as it is, or by the name of a static global (`big_lock` for
-# `big_lock@src/a.c`, as `[assume]` names a static function), or by its name and the end of its file (`big_lock@a.c`).
-def short_lock?(short: Set[String], class: String) -> Bool
-  return (
-    short.include?(class) or
-    short.include?(bare_class(class)) or
-    short.to_a.any? do |entry| in_file?(entry, class) end
-  )
 end
 
 # Whether `entry` (`name@file`) names the static global `class` by the end of its file's path.
@@ -766,9 +768,10 @@ def named?(listing: Listing, functions: Map[String, List[Function]], key: String
   return functions.get(key).unwrap_or([]).any? do |function| listed?(listing, function) end
 end
 
-# The classes of `[assume] short_locks` that no lock of the units has: none taken and none marked, with their key.
+# The classes of `[assume] short_locks` that no lock of the units has (none taken and none marked), and those of
+# `owned_locks` that no lock through a pointer has, with their key.
 def missing_locks(units: List[Unit], graph: Graph, config: Config.Config) -> List[String]
-  if config.short_locks.empty?
+  if config.short_locks.empty? and config.owned_locks.empty?
     return []
   end
 
@@ -786,7 +789,39 @@ def missing_locks(units: List[Unit], graph: Graph, config: Config.Config) -> Lis
     )
   end
 
-  return missing.map do |c| "#{c} (assume.short_locks)" end
+  return missing.map do |c| "#{c} (assume.short_locks)" end.concat(missing_owned(units, config))
+end
+
+# The classes of `[assume] owned_locks` that no lock through a pointer has, with their key: the name of a mutex that
+# is not behind a pointer would do nothing.
+def missing_owned(units: List[Unit], config: Config.Config) -> List[String]
+  if config.owned_locks.empty?
+    return []
+  end
+
+  classes = units.flat_map do |unit| unit.bodies end.flat_map(&pointer_classes)
+  known = Set.new(classes.concat(classes.map(&bare_class)))
+  missing = config.owned_locks.uniq.select do |c|
+    not known.include?(c) and not classes.any? do |class| in_file?(c, class) end
+  end
+
+  return missing.map do |c| "#{c} (assume.owned_locks)" end
+end
+
+# The classes of the locks through a pointer field or global that the calls of a body take, release or wait on, a lock
+# helper among them (`CC_ACQUIRES(l->mutex)` of `void *mutex`).
+def pointer_classes(body: Body) -> List[String]
+  classes: List[String] = []
+  for node in body.nodes
+    case node.event
+      Event.Call(site) ->
+        locks = site.takes.concat(site.drops).concat(site.waits).select do |lock| lock.through end
+        classes = classes.concat(locks.map do |lock| lock.class end)
+      _ -> next
+    end
+  end
+
+  return classes
 end
 
 # Whether a wrapper of `acquires` or `releases` names a function with a named parameter at its place, in a declaration

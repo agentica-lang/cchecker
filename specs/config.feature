@@ -170,6 +170,10 @@ Feature: The settings of a project
       | [assume]   | stop_calls = ["a > b"]                    | assume.stop_calls      |
       | [assume]   | jump_releases = "a"                       | assume.jump_releases   |
       | [assume]   | nonblocking = "a"                         | assume.nonblocking     |
+      | [assume]   | owned_locks = "a"                         | assume.owned_locks     |
+      | [assume]   | owned_locks = [1]                         | assume.owned_locks     |
+      | [assume]   | owned_locks = [""]                        | assume.owned_locks     |
+      | [assume]   | owned_locks = ["lock(0)"]                 | assume.owned_locks     |
       | [database] | fold_ignoring = "A"                       | database.fold_ignoring |
       | [database] | fold_ignoring = ["-DA"]                   | database.fold_ignoring |
       | [database] | fold_ignoring = ["A=1"]                   | database.fold_ignoring |
