@@ -53,8 +53,8 @@ end
 ## (`pointer`) has the text of the pointer as its name and no key. `tried` is a trylock, which never waits for its lock.
 ## For ownership: the pointers that own which it frees and which it takes (`hands`), whether it returns an owned
 ## value that nothing keeps (`lost`), those it frees through their address (`clears`, `free_and_null(&p)`), which
-## are freed or null after it, and those whose address it gets at a CC_OWNS parameter that points to a pointer
-## (`fills`), which own what it left in them.
+## are freed or null after it, and those whose address it gets at a CC_OWNS_OUT parameter (`fills`), which own what
+## it left in them.
 export struct Site
   name: String
   key: String
@@ -179,8 +179,8 @@ end
 
 ## What the functions of a translation unit say about ownership: the keys of those that return an owned pointer
 ## (CC_OWNS on the function), their parameters that take (CC_OWNS) or free (CC_FREES) what a call passes, by index,
-## those that hand an owned pointer out to the caller (`outs`, CC_OWNS on a parameter that points to a pointer), and
-## the fields (by id) and the globals (by the ids of their declarations) that own what is stored in them.
+## those that hand an owned pointer out to the caller (`outs`, CC_OWNS_OUT), and the fields (by id) and the globals
+## (by the ids of their declarations) that own what is stored in them.
 export struct Owning
   returns: Set[String]
   takes: Map[String, List[Int]]
@@ -243,33 +243,29 @@ struct Builder
   owners: Owners
 end
 
-# The pointers of a function that own or may stand for one that does, by name (`names`): its parameters that own
-# (`params`), those that free it only (`freed`, CC_FREES), its locals marked CC_OWNS (`marked`), and the locals that
-# get an owned value, a pointer of one of them, or what a call hands out through their address. `outs` are its
-# parameters that hand an owned pointer out to the caller (`*out = p`), and `arrays` the pointers whose items own
-# what is stored in them: those in `names` and the locals that get the value of an allocation. `locals` are the names
-# of its parameters and local variables, `kept` the ids of the calls of a function that returns an owned pointer whose
-# value is kept (in a local, a CC_OWNS place, a return or a parameter that takes it), and `calls` whether it calls
-# such a function at all.
-struct Owners
-  params: List[String]
-  freed: Set[String]
-  outs: Set[String]
-  arrays: Set[String]
-  names: Set[String]
-  marked: Set[String]
-  locals: Set[String]
-  kept: Set[String]
-  calls: Bool
-end
-
-# The places of a function that keep an owned pointer stored in them: its `locals`, `*p` of a parameter in `freed`
-# (CC_FREES) or `outs` (it goes back to the caller), and an item of a pointer in `arrays`.
+# The places of a function that keep an owned pointer stored in them: its parameters and local variables (`locals`),
+# `*p` of a parameter that frees it only (`freed`, CC_FREES) or that hands an owned pointer out to the caller (`outs`,
+# CC_OWNS_OUT; `out[i]` too), and an item of a pointer whose items own what is stored in them (`arrays`: the pointers
+# that own or stand for one, and the locals that get the value of an allocation).
 struct Places
   locals: Set[String]
   freed: Set[String]
   outs: Set[String]
   arrays: Set[String]
+end
+
+# The pointers of a function that own or may stand for one that does, by name (`names`): its parameters that own
+# (`params`), its locals marked CC_OWNS (`marked`), and the locals that get an owned value, a pointer of one of them,
+# or what a call hands out through their address. `places` are where a store hands a pointer on, `kept` the ids of
+# the calls of a function that returns an owned pointer whose value is kept (in a local, a CC_OWNS place, a return or
+# a parameter that takes it), and `calls` whether it calls such a function at all.
+struct Owners
+  params: List[String]
+  places: Places
+  names: Set[String]
+  marked: Set[String]
+  kept: Set[String]
+  calls: Bool
 end
 
 ## A local variable or a parameter that gets a value: at its declaration or in an assignment.
@@ -579,16 +575,6 @@ export def owned_params(ctx: Context, key: String, node: Json) -> List[String]
   return indices.select do |i| i < names.size end.map do |i| names[i] end
 end
 
-## Returns whether a declaration (a parameter) has a type that points to a pointer (`char **`, `char *const *`), as
-## written or behind a typedef.
-export def points_to_pointer?(node: Json) -> Bool
-  type = JSON.get(node, "type").unwrap_or(JSON.from(""))
-  return [Ast.text(type, "qualType"), Ast.text(type, "desugaredQualType")].any? do |text|
-    pointed = unqualified(text)
-    pointed.end_with?("*") and unqualified(pointed.slice(0, pointed.length - 1)).end_with?("*")
-  end
-end
-
 ## Returns the names of the parameters of a function, in order.
 export def params_named(node: Json) -> List[String]
   return Ast.children(node)
@@ -643,15 +629,12 @@ def owners_of(ctx: Context, key: String, node: Json) -> Owners
   end
 
   allocated = written.select do |w| allocation?(w.value) end.map do |w| w.name end
-  places = Places(locals: locals, freed: freed, outs: outs, arrays: names.union(Set.new(allocated)))
+  places = Places(locals: locals, freed: freed, outs: outs, arrays: names.union(outs).union(Set.new(allocated)))
   return Owners(
     params: params,
-    freed: freed,
-    outs: outs,
-    arrays: places.arrays,
+    places: places,
     names: names,
     marked: marked,
-    locals: locals,
     kept: kept_calls(ctx, all, places),
     calls: all.any? do |n| owning_call?(ctx, n) end,
   )
@@ -1355,12 +1338,10 @@ def assignment(b: Builder, node: Json, preds: List[Int]) -> Built
       return add(written.b, Event.Assigns(assign), written.exits)
     end
 
-    if given != "" and (place_owns?(b.ctx, parts[0]) or handed_place?(places_of(b), parts[0]))
+    handing = place_owns?(b.ctx, parts[0]) or handed_place?(b.owners.places, parts[0])
+    if handing and values_of(parts[1]).any? do |value| owner_named(b, value) != "" end
       target = expression(b, parts[0], preds)
-      place = Ast.start_of(parts[1])
-      word = "stores #{given} in #{text_of(b, parts[0], false)}"
-      give = Give(name: given, word: word, line: place.line, column: place.column)
-      gave = add(target.b, Event.Gives(give), target.exits)
+      gave = stored(target.b, text_of(b, parts[0], false), parts[1], target.exits)
       return add(gave.b, Event.Writes([target_root(parts[0])]), gave.exits)
     end
 
@@ -1374,9 +1355,26 @@ def assignment(b: Builder, node: Json, preds: List[Int]) -> Built
   return add(value.b, Event.Writes([target_root(parts.first)]), value.exits)
 end
 
-# The places of the function of `b` that keep an owned pointer stored in them.
-def places_of(b: Builder) -> Places
-  return Places(locals: b.owners.locals, freed: b.owners.freed, outs: b.owners.outs, arrays: b.owners.arrays)
+# A value stored in a place that hands it on (`shown`): a pointer that owns is handed on there, on its side of a `?:`
+# (`x->held = n ? p : NULL`).
+def stored(b: Builder, shown: String, value: Json, preds: List[Int]) -> Built
+  bare = see_through(value)
+  if Ast.kind(bare) == "ConditionalOperator"
+    parts = Ast.children(bare)
+    split = condition(b, parts[0], preds)
+    chosen = stored(split.b, shown, parts[1], split.yes)
+    other = stored(chosen.b, shown, parts[2], split.no)
+    return Built(b: other.b, exits: chosen.exits.concat(other.exits))
+  end
+
+  given = owner_named(b, value)
+  if given == ""
+    return expression(b, value, preds)
+  end
+
+  place = Ast.start_of(value)
+  give = Give(name: given, word: "stores #{given} in #{shown}", line: place.line, column: place.column)
+  return add(b, Event.Gives(give), preds)
 end
 
 # A pointer that owns, or may stand for one, gets a value. A pointer that it moves from is not read.
@@ -1516,7 +1514,7 @@ end
 # The CC_FREES parameter that `*p` stands for when the parameter points to the pointer it frees (`T **p`, a cleanup
 # function); "" for any other.
 def pointee_owner(b: Builder, node: Json) -> String
-  return pointee_param(node, b.owners.freed)
+  return pointee_param(node, b.owners.places.freed)
 end
 
 # The parameter in `freed` that `*p` is, when `*p` is itself a pointer; "" for any other expression.

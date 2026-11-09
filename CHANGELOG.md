@@ -10,16 +10,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   1. Every run now names its stale entries after the summary and in `stale` of `--json`.
 - `CC_MAY_JUMP` and `[assume] may_jump`: a call of a function that may jump out (`longjmp` on an error) is also a way
   out of its caller, where a pointer that still owns is `CC-OWN-LEAK` and a lock held is `CC-PATH-LOCK-NOT-RELEASED`.
-- Ownership through an out-parameter and into an owned array: `*out = p` in a `CC_OWNS char **out` hands `p` out to
-  the caller, `take(&p)` makes `p` own what the call left, and `argv[i] = p` in an array that owns hands `p` on to it.
+- `CC_OWNS_OUT` on a parameter (`char **out`): `*out = p` hands `p` out to the caller, and `take(&p)` makes `p` own
+  what the call left. `argv[i] = p` in an array that owns hands `p` on to the array.
 
 ### Changed
 
 - `include/cchecker.h`: the macros are empty unless cchecker dumps the AST (`CCHECKER_AST`), so a normal clang build no
   longer carries an `annotate` attribute on every marked field and local. **Breaking:** a project that read the
   `annotate` attribute defines the macros itself.
-- **Breaking:** `CC_OWNS` on a parameter that points to a pointer (`char **`) hands a pointer out to the caller; a
-  function that frees or keeps an array that the caller passes marks it `CC_FREES` instead.
 
 ## [0.1.0] - 2026-11-08
 

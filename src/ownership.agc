@@ -8,8 +8,8 @@
 ## CC_OWNS field or global hand it on. A local that is not marked and gets a pointer that owns is an alias of it: it
 ## stands for that pointer. A condition that tells that a pointer is null (`if (!p)`) leaves it owning nothing on that
 ## side, and a pointer lent to a call (`fill(&p)`) owns what the call left in it, which the rules do not know. A
-## CC_OWNS parameter that points to a pointer hands an owned pointer out to the caller (`*out = p`), and the pointer
-## whose address a call passes there owns what the call left in it. A store into an item of a pointer that owns an
+## CC_OWNS_OUT parameter hands an owned pointer out to the caller (`*out = p`), and the pointer whose address a call
+## passes there owns what the call left in it once the path reads it. A store into an item of a pointer that owns an
 ## array (`argv[i] = p`) hands the pointer on to the array.
 ##
 ## The walk follows the graph of `Flow` in breadth, as the lock rules do, with the state of each pointer on the path
@@ -34,8 +34,9 @@ export USE_AFTER_FREE = "CC-OWN-USE-AFTER-FREE"
 # was lent to a call, which may have set it: it may be freed and handed on, and a path may end with it. A pointer is
 # `cleared` after a call freed it through its address (`free_and_null(&p)`): it is freed or null, so it may be read and
 # freed again, and a condition that says it is not null makes it freed. A pointer is `filled` after a call handed an
-# owned pointer out to it (`take(&p)`): it owns, but a call that failed may have left nothing there, so a return of
-# an error value or a jump does not leak it until the path reads it or finds it not null, which makes it `owned`.
+# owned pointer out to it through a CC_OWNS_OUT parameter (`take(&p)`). Unlike `unknown`, the rules know it may own:
+# it is freed and handed on as one that owns, and reading it (lending it, testing it) makes it `owned`. Until then no
+# exit leaks it, nor a new value: a call that failed may have left nothing there.
 OWNED = "owned"
 FREED = "freed"
 MOVED = "moved"
@@ -177,7 +178,7 @@ def walked(walker: Walker) -> Walk
 
     case outcome.moved
       Moved.Ended(path) ->
-        for breach in leaks(body, item.state, path, Locking.failed?(node.event))
+        for breach in leaks(body, item.state, path)
           found = with_breach(found, body, breach)
         end
 
@@ -248,8 +249,8 @@ def marked(mark: Mark) -> Step
   return Step(text: "#{mark.line}:#{mark.column} #{mark.word}")
 end
 
-# A call frees the pointers it frees, takes those it takes, fills those it hands an owned pointer out to (a value they
-# still owned is lost), and may return an owned value that nothing keeps.
+# A call frees the pointers it frees, takes those it takes, fills those it hands an owned pointer out to (a value that
+# one still owned is lost), and may return an owned value that nothing keeps.
 def after_call(body: Body, item: Item, site: Site) -> Outcome
   at = "#{site.line}:#{site.column}"
   current = item
@@ -284,7 +285,7 @@ def after_call(body: Body, item: Item, site: Site) -> Outcome
 
   for name in site.fills
     step = Step(text: "#{at} #{site.name} sets #{name}", name: name, origin: true)
-    if current.state.owns.get(name).map do |own| own == OWNED or own == FILLED end.unwrap_or(false)
+    if current.state.owns.get(name).map do |own| own == OWNED end.unwrap_or(false)
       breaches = breaches.push(overwritten(body, current, name, step))
     end
 
@@ -309,13 +310,12 @@ def after_call(body: Body, item: Item, site: Site) -> Outcome
 end
 
 # A call that may jump out is a way out of the function too: each pointer that still owns after the call took its
-# arguments leaks on the jump. What the call frees or takes is its own from the call on, jump or not. The jump is an
-# error exit: a pointer that a call filled and the path did not read yet does not leak on it.
+# arguments leaks on the jump. What the call frees or takes is its own from the call on, jump or not.
 def jumped(body: Body, outcome: Outcome, site: Site) -> Outcome
   case outcome.moved
     Moved.Went(after) ->
       path = after.path.push(Step(text: Locking.jump_text(site)))
-      return outcome.with(breaches: outcome.breaches.concat(leaks(body, after.state, path, true)))
+      return outcome.with(breaches: outcome.breaches.concat(leaks(body, after.state, path)))
     _ -> return outcome
   end
 end
@@ -338,10 +338,8 @@ def after_branch(walker: Walker, item: Item, fact: Fact) -> Outcome
 
   for name in fact.set
     root = owner(state, name)
-    case state.owns.get(root)
-      some(own) if own == CLEARED -> state = state.with(owns: state.owns.put(root, FREED))
-      some(own) if own == FILLED -> state = state.with(owns: state.owns.put(root, OWNED))
-      _ -> next
+    if state.owns.get(root).map do |own| own == CLEARED end.unwrap_or(false)
+      state = state.with(owns: state.owns.put(root, FREED))
     end
   end
 
@@ -398,7 +396,7 @@ def after_assign(body: Body, item: Item, assign: Assign) -> Outcome
   step = Step(text: "#{at} #{assign.name} = #{assign.shown}", name: assign.name, origin: true)
   breaches: List[Breach] = []
   state = item.state
-  owned = state.owns.get(assign.name).map do |own| own == OWNED or own == FILLED end.unwrap_or(false)
+  owned = state.owns.get(assign.name).map do |own| own == OWNED end.unwrap_or(false)
   # `old = *p; *p = v;` in a CC_FREES parameter: the locals that stood for the pointer keep its old value, in the state
   # it had; the first one holds it and the others stand for it.
   keepers = state.aliases.keys.sort.select do |alias| state.aliases[alias] == assign.name end
@@ -460,12 +458,11 @@ def overwritten(body: Body, item: Item, name: String, step: Step) -> Breach
   return Breach(code: LEAK, name: name, message: message, path: from_last(item.path, name, true).push(step))
 end
 
-# Each pointer that still owns at the end of a path is a leak; one that a call filled, when the path does not end with
-# an error (`failed`: a return of an error value, or a jump).
-def leaks(body: Body, state: State, path: List[Step], failed: Bool) -> List[Breach]
+# Each pointer that still owns at the end of a path is a leak.
+def leaks(body: Body, state: State, path: List[Step]) -> List[Breach]
   found: List[Breach] = []
   for name in state.owns.keys.sort
-    if state.owns[name] == OWNED or (state.owns[name] == FILLED and not failed)
+    if state.owns[name] == OWNED
       message = "#{body.name} does not free or hand on #{name} on every path"
       found = found.push(Breach(code: LEAK, name: name, message: message, path: from_last(path, name, true)))
     end

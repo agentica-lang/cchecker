@@ -8,7 +8,7 @@ freed once, with `free` or with a function of the project marked `CC_FREES`:
 ```c
 CC_OWNS char *read_name(int fd);            /* returns a pointer that the caller owns */
 void adopt(CC_OWNS char *name);             /* takes what the caller passes */
-int take_name(CC_OWNS char **out);          /* hands an owned pointer out to the caller */
+int take_name(CC_OWNS_OUT char **out);      /* hands an owned pointer out to the caller */
 void conn_free(CC_FREES struct conn *c);    /* frees what the caller passes */
 struct conn { CC_OWNS char *buf; };         /* a store into the field hands the pointer on */
 
@@ -19,23 +19,21 @@ int load(int n) {
 The rules follow every path of a function that has a pointer that owns, with the
 graph and the walk of the [locks](rules.md#locks-on-every-path) and their limits
 (a function with too many paths is listed once in `incomplete_functions`). A
-parameter marked `CC_OWNS` (but one that points to a pointer, see below) or
-`CC_FREES` owns from the entry, a local marked `CC_OWNS` owns the value it gets
-(other than `NULL`), and a local that gets the value of a `CC_OWNS` function
-owns it without a mark. On every path that returns, each one is freed or handed
-on: returned, stored in a `CC_OWNS` field (or an item of one, `q->items[i] = p`,
-or a `CC_OWNS` global), stored through a `CC_OWNS` parameter that points to a
-pointer (`*out = p`) or in an item of an array that owns (`argv[i] = p`), or
-passed to a `CC_OWNS` parameter. A call of a function that may jump out
-(`CC_MAY_JUMP` or `[assume] may_jump`, see
-[Locks](rules.md#locks-on-every-path)) is a way out too: each one that still
-owns after the call is a leak, with the call as the last step of `path`. What
-the call itself frees or takes (a `CC_FREES` or `CC_OWNS` parameter) is the
-callee's from the call on, jump or not. A jump does not run the `cleanup(f)`
-functions of the variables, and a call through a function pointer never jumps.
-Stored anywhere else or passed to another parameter, it is lent and still owns.
-A condition that tells that a pointer is null (`if (!p)`, `if ((p = malloc(n))
-== NULL)`) leaves it owning nothing on that side.
+parameter marked `CC_OWNS` or `CC_FREES` owns from the entry, a local marked
+`CC_OWNS` owns the value it gets (other than `NULL`), and a local that gets the
+value of a `CC_OWNS` function owns it without a mark. On every path that
+returns, each one is freed or handed on: returned, stored in a `CC_OWNS` field
+(or an item of one, `q->items[i] = p`, or a `CC_OWNS` global), or passed to a
+`CC_OWNS` parameter. A call of a function that may jump out (`CC_MAY_JUMP` or
+`[assume] may_jump`, see [Locks](rules.md#locks-on-every-path)) is a way out
+too: each one that still owns after the call is a leak, with the call as the
+last step of `path`. What the call itself frees or takes (a `CC_FREES` or
+`CC_OWNS` parameter) is the callee's from the call on, jump or not. A jump does
+not run the `cleanup(f)` functions of the variables, and a call through a
+function pointer never jumps. Stored anywhere else or passed to another
+parameter, it is lent and still owns. A condition that tells that a pointer is
+null (`if (!p)`, `if ((p = malloc(n)) == NULL)`) leaves it owning nothing on
+that side.
 
 A local without a mark that gets a pointer that owns (`char *c = p`) stands for
 it: freeing `c` frees `p`; a `malloc` into it later owns nothing, as in any
@@ -49,29 +47,31 @@ make(n); ...; q; })`). In a `CC_FREES` parameter that points to the pointer
 v` gives the caller a value that the function does not own: a pointer that owns
 is handed on there, and a local that stood for the old value (`old = *p`) owns
 it. `t = realloc(p, n)` moves `p` to `t`, and `p` owns again where `t` is null;
-`p = realloc(p, n)` keeps `p` owning. The marks of the parameters of a prototype
-hold in the definition and in every caller that includes it.
+`p = realloc(p, n)` keeps `p` owning. A pointer lent to be set (`fill(&p)`)
+without `CC_OWNS_OUT` (below) owns
+what the call left in it, which the rules do not know: no finding says it leaks.
+The marks of the parameters of a prototype hold in the definition and in every
+caller that includes it.
 
-`CC_OWNS` on a parameter that points to a pointer (`int take(CC_OWNS char
-**out)`) says that the function may hand an owned pointer out to the caller
-through it; the parameter itself owns nothing. `*out = p` hands `p` on, and
-`*out = make(n)` keeps the value. In the caller, a pointer whose address the
-call gets there (`take(&p)`, a local with or without a mark) owns what the call
-left in it: a value that it still owned leaks, and `path` starts at the call
-(`9:7 take sets p`). A call that failed may have left nothing there, so until
-the path reads the pointer or finds it not null, a return of an error value
-(`return -1`, `return NULL`, `return false`) or a jump does not leak it; any
-other return does, `return;` too: the caller of a function that sets it only on
-an error frees it (`free(NULL)` is fine) or tests it. With `CC_FREES` too
-(`renew(CC_FREES CC_OWNS char **p)`), the call frees the old value and hands out
-a new one. Without the mark, a pointer lent to be set (`fill(&p)`) owns what the
-call left in it, which the rules do not know: no finding says it leaks.
+`CC_OWNS_OUT` on a parameter that points to a pointer (`int take(CC_OWNS_OUT
+char **out)`) says that the function may hand an owned pointer out to the caller
+through it; the parameter itself owns nothing. `*out = p` (or `out[0] = p`)
+hands `p` on, and `*out = make(n)` keeps the value. In the caller, a local whose
+address the call gets there (`take(&p)`, marked or not) is filled: a value that
+it still owned leaks, and `path` starts at the call (`9:7 take sets p`). A call
+that failed may have left nothing there, so a filled pointer owns from the first
+time the path reads it (passes it, tests it, stores it): from then on a return
+or a jump that does not free or hand it on leaks it. Before that, no exit and no
+new value (another `take(&p)`, in a retry loop) leaks it. With `CC_FREES` too
+(`renew(CC_FREES CC_OWNS_OUT char **p)`), the call frees the old value and fills
+a new one.
 
 A store of a pointer that owns, or of the value of a `CC_OWNS` function, into an
-item of an array that owns (`argv[i] = p`, where `argv` owns, is marked
-`CC_OWNS`, or got `malloc`, `calloc` or `realloc`) hands it on to the array. The
-array is then freed or handed on as any pointer; its items are not followed one
-by one, so freeing the array without its items is not reported.
+item of an array that owns hands it on to the array, as a store into a `CC_OWNS`
+field does: `argv[i] = p`, where `argv` owns or stands for a pointer that does,
+is marked `CC_OWNS`, or is a local that got `malloc`, `calloc` or `realloc`. In
+a store that hands a pointer on, each side of `?:` gives its own value (`x->held
+= n ? p : NULL`).
 
 | Code | |
 |---|---|
@@ -90,21 +90,29 @@ src/conf.c:9:5 CC-OWN-LEAK start does not free or hand on c on every path: 10:28
 
 A `malloc` into a local without a mark is not checked: `gcc -fanalyzer` reports
 those leaks, and the mark makes the contract part of the code. The rules do not
-follow a pointer into a struct or an array (a store into a `CC_OWNS` field or
-into an item of an array that owns is where they stop), through a function
-pointer, or out through a parameter without `CC_OWNS` (`int open_buf(char
-**out)`: the caller lends `&p` to be set). Two locals of the same name in one
-function are one pointer. A local that stands for a pointer still stands for it
-after that pointer gets a new value, except through a `CC_FREES` parameter that
-points to the pointer: after `old = *p; *p = v;`, `old` holds the old value.
-`return p` hands `p` on even when the function has no `CC_OWNS` mark, and `p =
-realloc(p, n)` is trusted to work. A pointer put in a struct or a compound
-literal is not followed, and only one level of pointer is (`*p` of a `char **p`,
-not `**p`). A pointer freed through its address (`free_and_null(&p)`, a cleanup
-function) is freed or null: it may be read and freed again (`free(NULL)`), and
-where a condition says it is not null it is freed. The rules assume that a
-helper that frees through `&p` sets the pointer to null; one that only frees
-leaves a later double free or use unreported.
+follow a pointer into a struct or an array (a store into a `CC_OWNS` field is
+where they stop), through a function pointer, or out through a parameter
+without `CC_OWNS_OUT` (`int open_buf(char **out)`: the caller lends `&p` to be
+set). Two locals of the same
+name in one function are one pointer. A local that stands for a pointer still
+stands for it after that pointer gets a new value, except through a `CC_FREES`
+parameter that points to the pointer: after `old = *p; *p = v;`, `old` holds the
+old value. `return p` hands `p` on even when the function has no `CC_OWNS` mark,
+and `p = realloc(p, n)` is trusted to work. A pointer put in a struct or a
+compound literal is not followed, and only one level of pointer is (`*p` of a
+`char **p`, not `**p`). A pointer freed through its address
+(`free_and_null(&p)`, a cleanup function) is freed or null: it may be read and
+freed again (`free(NULL)`), and where a condition says it is not null it is
+freed. The rules assume that a helper that frees through `&p` sets the pointer
+to null; one that only frees leaves a later double free or use unreported.
+
+A filled pointer that the path never reads is not reported (`take(&b); return
+0;`): telling it from what a call that failed left would need a mark that says
+on which result the pointer is set. The items of an array are not followed one
+by one after the store: an array freed without its items is not reported, nor
+are the items of an array in a local without a mark (`char **v = calloc(n,
+sizeof *v)`) that is never freed, as for any `malloc` into such a local. A store
+through `*argv` is not one into an item (`argv[0]` is).
 
 ## Values of the collector
 

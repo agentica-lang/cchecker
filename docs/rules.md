@@ -10,7 +10,8 @@ collector. The codes are listed in the README and described below and in
 `include/cchecker.h` defines the macros that the rules read: `CC_SHORT`,
 `CC_BLOCKING`, `CC_HOT`, `CC_ACQUIRES(lock)`, `CC_RELEASES(lock)`,
 `CC_NORETURN`, `CC_MAY_JUMP`, `CC_NO_SYSCALL_UNDER(lock)`, `CC_LOCK_LEVEL(n)`,
-`CC_PAIR(set, restore)`, `CC_OWNS`, `CC_FREES`, `CC_GC`, `CC_GC_ALLOC`,
+`CC_PAIR(set, restore)`, `CC_OWNS`, `CC_FREES`, `CC_OWNS_OUT`, `CC_GC`,
+`CC_GC_ALLOC`,
 `CC_ASSUME_SHORT` (the function counts as fine for `CC_SHORT`), `CC_STOP` (no
 rule walks into the function; both are assumptions, see [Settings](settings.md))
 and `CC_IGNORE("CODE", "reason")` (a suppression). The macros are empty, in
