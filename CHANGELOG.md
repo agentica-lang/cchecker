@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - The docs as a site, <https://agentica-lang.github.io/cchecker/>: README.md and docs/, with search and a Markdown
   copy of each page.
+- `[assume] owned_locks` names the pointer fields and globals that point to a mutex of their own (`lock.mutex` of `struct lock { void *mutex; }`): the inference of short locks gives a lock reached through one the class of the pointer, instead of an unknown class that stops the inference.
 
 ### Changed
 

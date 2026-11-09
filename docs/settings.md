@@ -42,6 +42,7 @@ fold_ignoring = ["BUILDING_UV_SHARED"]
 short = ["run_or_queue"]
 stop = ["trace_emit"]
 short_locks = ["queue.mu"]
+owned_locks = ["conn.lk"]
 stop_fields = ["request.call"]
 stop_calls = ["on_exit>close_handles"]
 may_jump = ["raise_type_error"]
@@ -120,10 +121,11 @@ In `[assume]` it may be the file of the definition or of any declaration of the
 function (`slow@slow.h` for a prototype in a header); in `[roots]` it is the
 file of the definition. It works in every list of `[roots]` and in `short`,
 `stop`, `may_jump`, `jumps`, `catches`, `jump_releases` and `nonblocking` of
-`[assume]`, and on each side of a `stop_calls` pair (`stop_fields` and
-`short_locks` name fields and locks), and a `name@path` that matches no function
-is an error (exit 2) like a bare name that does. `acquires`, `releases` and the
-wrappers of `short_locks` add the place of the parameter: `name@path(0)`.
+`[assume]`, and on each side of a `stop_calls` pair (`stop_fields`,
+`short_locks` and `owned_locks` name fields and locks), and a `name@path` that
+matches no function is an error (exit 2) like a bare name that does. `acquires`,
+`releases` and the wrappers of `short_locks` add the place of the parameter:
+`name@path(0)`.
 
 `[assume]` says what the project knows of its own functions and cchecker cannot
 see in the C, as `CC_ASSUME_SHORT` and `CC_STOP` do on a declaration. `short`
@@ -270,7 +272,15 @@ lock walk follows. A lock that the rules cannot name (taken through a parameter,
 `pthread_mutex_lock(m)`) or that a pointer field, global or array of pointers
 reaches (`c->lk` of `pthread_mutex_t *lk`, which may be another class's mutex)
 may be any class: when one of its sections blocks, or is not all seen, no class
-is inferred. A take of a lock that names no object (`&current()->mu`,
+is inferred. `[assume] owned_locks` names the pointer fields and globals that
+point to a mutex of their own, which no other field or global points to
+(`lock.mutex` of `struct lock { void *mutex; }`, set to a mutex that the lock
+allocates): a lock reached through one has the class of the pointer, so its
+sections make only that class long or short. cchecker trusts the list and does
+not check the stores into the pointer. Its names are classes, as in
+`short_locks`; one that no lock of the compile database has (none taken, none
+marked, none taken by a lock helper) is an error (exit 2). A take of a lock that
+names no object (`&current()->mu`,
 `&locks[hash(k)]`) is not seen at all, so no class is inferred either. A call
 through a pointer that the run stores no function in counts as blocking, in a
 section or in a function it reaches. A call through a field of `[assume]

@@ -98,6 +98,8 @@ struct Walker
   own_set: Bool
   # The keys of the locks that the catcher of a jump gives back (`caught_of`), which a jump does not check.
   caught: Set[String]
+  # The pointer fields and globals of `[assume] owned_locks`, whose locks keep their class (`section_class`).
+  owned: Set[String]
 end
 
 # What a walk found: the findings by code and lock key, the calls made while a lock is held (by class and place),
@@ -123,8 +125,9 @@ export struct Checked
 end
 
 ## Returns the findings of the lock rules on the functions of the units. A function defined in several units (a static
-## inline function of a header) is checked once.
-export def check(units: List[Unit]) -> Checked
+## inline function of a header) is checked once. `owned` names the pointer fields and globals that point to a mutex of
+## their own (`[assume] owned_locks`): a lock through one keeps its class in the sections.
+export def check(units: List[Unit], owned: List[String] = []) -> Checked
   graph = Effects.graph_of(units)
   rules = Held.rules_of(units, graph)
   functions: Map[String, Function] = {}
@@ -132,6 +135,7 @@ export def check(units: List[Unit]) -> Checked
     functions = functions.put(function.key, function)
   end
 
+  owning = Set.new(owned)
   done: Set[String] = Set.new([])
   findings: List[Finding] = []
   incomplete: List[IncompleteFunction] = []
@@ -147,11 +151,11 @@ export def check(units: List[Unit]) -> Checked
         # The body of a helper is how its lock works, so its findings are not kept; what it calls after it takes the
         # lock is still a section of that lock.
         helper = helper?(functions.get(body.key))
-        walk = checked(body, functions, rules)
+        walk = checked(body, functions, rules, owning)
         sections = sections.concat(walk.sections.values)
         locks = locks_of(body)
         if not walk.complete
-          partial = partial.union(Set.new(locks.values.map(&section_class)))
+          partial = partial.union(Set.new(locks.values.map do |lock| section_class(lock, owning) end))
         end
 
         # A lock left to the caller is held (or was) across code that no walk reads; a helper may do so with the
@@ -159,7 +163,7 @@ export def check(units: List[Unit]) -> Checked
         own = annotated_keys(body, functions.get(body.key))
         left = unbalanced(walk.findings).select do |key| not own.include?(key) end
         partial = partial.union(
-          Set.new(left.map do |key| section_class(locks.get(key).unwrap_or(Lock(key: key, shown: key))) end),
+          Set.new(left.map do |key| section_class(locks.get(key).unwrap_or(Lock(key: key, shown: key)), owning) end),
         )
 
         if not helper
@@ -358,7 +362,7 @@ def helper?(function: Optional[Function]) -> Bool
 end
 
 # The findings of one function: with the conditions it tests twice, or without them when there are too many paths.
-def checked(body: Body, functions: Map[String, Function], rules: Held.Rules) -> Walk
+def checked(body: Body, functions: Map[String, Function], rules: Held.Rules, owned: Set[String]) -> Walk
   marks = functions.get(body.key).map do |f| f.marks end.unwrap_or([])
   tracked = tracked_of(body)
   roots = roots_of(body)
@@ -374,6 +378,7 @@ def checked(body: Body, functions: Map[String, Function], rules: Held.Rules) -> 
     sets: sets_of(body),
     own_set: pair_set?(body.name, marks),
     caught: caught_of(body, functions),
+    owned: owned,
   )
 
   walk = walked(walker)
@@ -548,9 +553,9 @@ def unbalanced(findings: Map[String, Finding]) -> List[String]
 end
 
 # The class of a lock as the inference of short locks reads it: "" when the rules cannot tell it, or when its field or
-# global is a pointer to the mutex, as then another class may name the same mutex.
-def section_class(lock: Lock) -> String
-  if lock.through
+# global is a pointer to the mutex, as then another class may name the same mutex, unless `owned` names it.
+def section_class(lock: Lock, owned: Set[String]) -> String
+  if lock.through and not Effects.named_class?(owned, lock.class)
     return ""
   end
 
@@ -563,10 +568,10 @@ def with_sections(sections: Map[String, Section], walker: Walker, item: Item, ev
   case event
     Event.Call(site) ->
       kept = sections
-      takes = site.takes.select do |taken| taken.pair == "" end.map(&section_class)
+      takes = site.takes.select do |taken| taken.pair == "" end.map do |taken| section_class(taken, walker.owned) end
       for key in item.state.held.keys
         lock = walker.locks.get(key).unwrap_or(Lock(key: key, shown: key))
-        class = section_class(lock)
+        class = section_class(lock, walker.owned)
         # Two calls of one macro have one place: the callee and the locks it takes tell them apart.
         id = "#{class}|#{site.line}:#{site.column}|#{site.name}|#{site.key}|#{takes.join(",")}|#{site.tried}"
         if item.state.held[key] > 0 and lock.pair == "" and not kept.key?(id)

@@ -73,6 +73,79 @@ Feature: Short locks inferred from their critical sections
       | a helper that leaves another lock       | CC_ACQUIRES(p->mu) void lock_both(struct other *p, struct loop *l) { pthread_mutex_lock(&p->mu); pthread_mutex_lock(&l->mutex); } void wait_both(struct loop *l) { lock_both(&o, l); slow(l); pthread_mutex_unlock(&o.mu); }                                                                                                | l->n++;                                                                  | short_lock_sections = true  | 1    | includes         | includes         | []                        |
       | an ignored lock left held               | CC_IGNORE("CC-PATH-LOCK-NOT-RELEASED", "the caller unlocks") void lock_it(struct loop *l) { pthread_mutex_lock(&l->mutex); } CC_IGNORE("CC-PATH-LOCK-NOT-HELD", "the caller locks") void unlock_it(struct loop *l) { pthread_mutex_unlock(&l->mutex); } void wait_it(struct loop *l) { lock_it(l); slow(l); unlock_it(l); } | l->n++;                                                                  | short_lock_sections = true  | 1    | includes         | includes         | []                        |
 
+  Scenario Outline: A lock through a pointer of [assume] owned_locks has the class of the pointer (<case>)
+    A pointer field or global of `owned_locks` is the lock's own storage, which no other class names: a lock reached
+    through it has its class, so its blocking sections make that class long and leave the other classes alone.
+
+    Given the C file "sections.c" holds:
+      """
+      #include "pthread.h" /* found in the system folders */
+      #include "unistd.h" /* found in the system folders */
+      #include "cchecker.h"
+
+      struct loop { pthread_mutex_t mutex; int n; };
+      struct other { pthread_mutex_t mu; } o;
+      struct conn { pthread_mutex_t *lk; int n; };
+      void touch(void) { pthread_mutex_lock(&o.mu); o.mu = o.mu; pthread_mutex_unlock(&o.mu); }
+      <more>
+      void push(struct loop *l) { pthread_mutex_lock(&l->mutex); l->n++; pthread_mutex_unlock(&l->mutex); }
+      CC_SHORT void tick(struct loop *l) { pthread_mutex_lock(&l->mutex); l->n = 0; pthread_mutex_unlock(&l->mutex); }
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [library]
+      short_lock_sections = true
+
+      [assume]
+      owned_locks = <owned>
+      """
+    When I run cchecker in its folder with "--tools rules --json"
+    Then the exit code is <exit>
+    And the output <found>:
+      """
+      "CC-EFFECT-SHORT-BLOCKS"
+      """
+    And the output includes:
+      """
+      "inferred_short_locks":<inferred>
+      """
+
+    Examples:
+      | case                            | more                                                                                                                                                                                                  | owned                   | exit | found            | inferred                            |
+      | a field that owns its mutex     | void wait_conn(struct conn *c) { pthread_mutex_lock(c->lk); (void)sleep(1); pthread_mutex_unlock(c->lk); }                                                                                            | ["conn.lk"]             | 0    | does not include | ["loop.mutex","other.mu"]           |
+      | another field named             | void wait_conn(struct conn *c) { pthread_mutex_lock(c->lk); (void)sleep(1); pthread_mutex_unlock(c->lk); }                                                                                            | ["other.mu"]            | 1    | includes         | []                                  |
+      | a short field that owns         | void tap_conn(struct conn *c) { pthread_mutex_lock(c->lk); c->n++; pthread_mutex_unlock(c->lk); }                                                                                                     | ["conn.lk"]             | 0    | does not include | ["conn.lk","loop.mutex","other.mu"] |
+      | a global that owns its mutex    | pthread_mutex_t *shared; void wait_shared(void) { pthread_mutex_lock(shared); (void)sleep(1); pthread_mutex_unlock(shared); }                                                                         | ["shared"]              | 0    | does not include | ["loop.mutex","other.mu"]           |
+      | a helper of a field that owns   | struct lk { void *mutex; }; CC_ACQUIRES(l->mutex) void lk_take(struct lk *l); CC_RELEASES(l->mutex) void lk_drop(struct lk *l); struct lk *big; void wait_big(void) { lk_take(big); (void)sleep(1); lk_drop(big); } | ["lk.mutex"]            | 0    | does not include | ["loop.mutex","other.mu"]           |
+      | a helper of a field not named   | struct lk { void *mutex; }; CC_ACQUIRES(l->mutex) void lk_take(struct lk *l); CC_RELEASES(l->mutex) void lk_drop(struct lk *l); struct lk *big; void wait_big(void) { lk_take(big); (void)sleep(1); lk_drop(big); } | ["other.mu"]            | 1    | includes         | []                                  |
+
+  Scenario: A lock of [assume] owned_locks that no lock of the compile database has is an error
+    Given the C file "sections.c" holds:
+      """
+      #include "pthread.h" /* found in the system folders */
+
+      struct conn { pthread_mutex_t *lk; int n; };
+      void bump(struct conn *c) { pthread_mutex_lock(c->lk); c->n++; pthread_mutex_unlock(c->lk); }
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [assume]
+      owned_locks = ["conn.lk"]
+      """
+    When I run cchecker in its folder with "--tools rules"
+    Then the exit code is 0
+    Given the file "cchecker.toml" holds:
+      """
+      [assume]
+      owned_locks = ["conn.lk", "conn.lck"]
+      """
+    When I run cchecker in its folder with "--tools rules"
+    Then the exit code is 2
+    And the errors include:
+      """
+      no function, lock or field of the compile database is named conn.lck (assume.owned_locks)
+      """
+
   Scenario: A static lock named like a short global of another file is not short
     Given the file "compile_commands.json" holds:
       """
