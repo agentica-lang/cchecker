@@ -257,11 +257,17 @@ export def nonblocking_name(call: String) -> String
   return "MSG_DONTWAIT"
 end
 
+## Returns whether the argument of a call of `FLAG_ARGUMENTS` is one value to compare (the mode of `uv_run`), not
+## flags to test bit by bit.
+export def one_value?(call: String) -> Bool
+  return call == "uv_run"
+end
+
 ## Returns the bit of the flag that makes a call of `FLAG_ARGUMENTS` return at once on `target`, a triple of clang
 ## (`x86_64-pc-linux-gnu`), or 0 when the rules do not know its value there: Linux, but on MIPS, SPARC, Alpha and
 ## PA-RISC, whose values differ, and macOS.
 export def nonblocking_bit(target: String, call: String) -> Int
-  if call == "uv_run"
+  if one_value?(call)
     return UV_RUN_NOWAIT_VALUE
   end
 
@@ -290,7 +296,7 @@ end
 ## Returns whether the constant `flags` of a call of `FLAG_ARGUMENTS` makes it return at once, given its `bit`. The
 ## flags of the others are bits to test; the mode of `uv_run` is one value, so `UV_RUN_ONCE` (1) is not `NOWAIT` (2).
 export def flags_return_at_once?(call: String, flags: Int, bit: Int) -> Bool
-  if call == "uv_run"
+  if one_value?(call)
     return flags == bit
   end
 

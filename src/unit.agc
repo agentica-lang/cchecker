@@ -883,7 +883,10 @@ def with_call(tables: Tables, scope: Scope, node: Json, found: Found) -> Found
     at = Known.FLAG_ARGUMENTS.get(Ast.referenced_name(callee)).unwrap_or(-1)
     if at >= 0 and at + 1 < parts.size
       flag = Known.nonblocking_name(Ast.referenced_name(callee))
-      call = call.with(flags: constant(parts[at + 1]), named: names_flag?(parts[at + 1], flag))
+      # A mode is one value, not bits to add: only the constant itself names it (`UV_RUN_ONCE | UV_RUN_NOWAIT`
+      # does not).
+      named = names_flag?(parts[at + 1], flag, Known.one_value?(Ast.referenced_name(callee)))
+      call = call.with(flags: constant(parts[at + 1]), named: named)
     end
 
     called = noted.with(calls: noted.calls.push(call))
@@ -958,15 +961,17 @@ def constant(node: Json) -> Int
   end
 end
 
-# Whether flags joined with `|` or `+` name the constant of an enum `flag` (`MSG_DONTWAIT | MSG_NOSIGNAL`).
-def names_flag?(node: Json, flag: String) -> Bool
+# Whether flags joined with `|` or `+` name the constant of an enum `flag` (`MSG_DONTWAIT | MSG_NOSIGNAL`), or,
+# when the
+# argument is one `exact` value, whether it is that constant alone.
+def names_flag?(node: Json, flag: String, exact: Bool) -> Bool
   value = Flow.see_through(node)
   parts = Ast.children(value)
   case Ast.kind(value)
     "DeclRefExpr" -> return Ast.referenced_kind(value) == "EnumConstantDecl" and Ast.referenced_name(value) == flag
     "BinaryOperator" ->
       opcode = Ast.text(value, "opcode")
-      return (opcode == "|" or opcode == "+") and parts.any? do |part| names_flag?(part, flag) end
+      return not exact and (opcode == "|" or opcode == "+") and parts.any? do |part| names_flag?(part, flag, exact) end
     _ -> return false
   end
 end
