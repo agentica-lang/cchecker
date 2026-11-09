@@ -8,8 +8,8 @@ cchecker reads its settings from the first of these that it finds:
 2. `cchecker.toml` in the working directory, the project folder.
 3. The `[tool.cchecker]` table of `agentica.toml` in the project folder. An
    `agentica.toml` without it is skipped.
-4. The defaults: every `[library]` flag on, no `[roots]`, `follow_cold = false`,
-   no `[assume]`.
+4. The defaults: every `[library]` flag on except `short_lock_sections`, no
+   `[roots]`, `follow_cold = false`, no `[assume]`.
 
 The first one wins, and the others are not read. `--json` says which in `config`
 (`"cchecker.toml"`, the path given to `-c`, or `"defaults"`), and a run without
@@ -53,14 +53,15 @@ releases = ["uv_mutex_unlock(0)"]
 ```
 
 `[library]` turns each family of library knowledge on or off. All are on by
-default. A finding of the rules says in `source` of `--json` the flags that made
-it, so a project knows which one to turn off: the family of the blocking call it
-reaches (`libc_blocking`), and for an inferred root the inference before it
-(`libuv_callbacks_short+libc_blocking`). `source` is not part of the baseline
-key. The full lists are the sets `LIBC_BLOCKING`, `PTHREAD_BLOCKING`,
-`LIBUV_BLOCKING` and `LIBUV_SYSTEM` in [src/known.agc](../src/known.agc).
-The libuv lists (`libuv_blocking`, `libuv_callbacks_short`) match libuv 1.50; a
-call that a later libuv adds is not known until the lists are updated.
+default, except `short_lock_sections`. A finding of the rules says in `source`
+of `--json` the flags that made it, so a project knows which one to turn off:
+the family of the blocking call it reaches (`libc_blocking`), and for an
+inferred root the inference before it (`libuv_callbacks_short+libc_blocking`).
+`source` is not part of the baseline key. The full lists are the sets
+`LIBC_BLOCKING`, `PTHREAD_BLOCKING`, `LIBUV_BLOCKING` and `LIBUV_SYSTEM` in
+[src/known.agc](../src/known.agc). The libuv lists (`libuv_blocking`,
+`libuv_callbacks_short`) match libuv 1.50; a call that a later libuv adds is not
+known until the lists are updated.
 
 | Flag | What it adds |
 |---|---|
@@ -72,6 +73,7 @@ call that a later libuv adds is not known until the lists are updated.
 | `libgc_alloc` | the allocators of the Boehm collector (`GC_malloc`, `GC_malloc_atomic`, `GC_realloc`, `GC_strdup`, their `GC_debug_` forms, ...) to the allocators of `CC_GC_ALLOC`, in the rule on values of the collector (`source` `libgc_alloc`) |
 | `libc_nonblocking_flags` | the flags that make a blocking call return at once: `open` and `openat` with `O_NONBLOCK`, `recv`, `send`, `recvfrom` and `sendto` with `MSG_DONTWAIT`, and `uv_run` with the mode `UV_RUN_NOWAIT` alone (not `UV_RUN_ONCE`, `UV_RUN_DEFAULT` or a mix of them; its value is the same on every target, so the target does not matter for it), when the flag argument is a constant (a flag or mode in a variable leaves the call blocking); such a call is not blocking for `CC_SHORT`. `open` with `O_NONBLOCK` is meant for FIFOs and devices: on a regular file it can still wait for the disk, and the rules do not tell the two apart. The values are those of the target clang builds for (Linux, but on MIPS, SPARC, Alpha and PA-RISC, and macOS); on another target only a flag that the C library defines as a constant of an enum (glibc's `MSG_DONTWAIT`) counts, and the run says on standard error that it does not know the values |
 | `may_jump_callers` | a function that calls a function that may jump out (`CC_MAY_JUMP`, `CC_JUMPS`, `[assume] may_jump` or `jumps`, or one found so in turn) may jump out too, unless it catches the jump ([Locks](rules.md#locks-on-every-path)); a finding at such a call has this flag in `source`. It is not library knowledge, but it is turned off the same way |
+| `short_lock_sections` | off by default, experimental: a lock is short when none of its critical sections reaches a blocking call (see the short locks below); `inferred_short_locks` of `--json` lists the classes found so. It is not library knowledge, and it is the one flag that is false unless the settings set it true |
 
 A blocking flag changes only the blocking calls of `CC_SHORT`: the rules of
 `CC_HOT` and of `CC_NO_SYSCALL_UNDER` count every known blocking call as a
@@ -192,9 +194,15 @@ that holds the lock: `uv_mutex_lock(0)` takes the lock it is given and returns
 with it held, `uv_mutex_unlock(0)` releases it. The body of the wrapper is then
 no `CC-PATH-LOCK-NOT-RELEASED` or `CC-PATH-LOCK-NOT-HELD`, and a call of it is a
 lock for its callers, as the mark's (the lock is the argument at that place).
-The parameter must be named in a declaration of the function (the definition or
-a prototype with names). A wrapper that no function of the compile database
-declares is an error (exit 2) (`uv_mutex_lock(0) (assume.acquires)`).
+The function has one such lock whatever its declarations call the parameter (or
+call nothing), and it keeps the one a `CC_ACQUIRES` already gives it. `N` has to
+be a named parameter of a declaration (not one past the end or in the `...`),
+and a function is in only one of the two lists. The path tells the static
+functions of one name apart (`grab@a.c(0)`, by the file of the definition); a
+function with external linkage is one in the whole project, and its path must
+only match a declaration of it (`slow@slow.h`, the definition or a prototype). A
+wrapper that no declaration matches, or whose `N` no declaration reaches, is an
+error (exit 2) (`uv_mutex_lock(0) (assume.acquires)`).
 
 A short lock is one held for a few instructions: a lock whose field or global is
 marked `CC_NO_SYSCALL_UNDER()`, or whose class `[assume] short_locks` names:
@@ -214,9 +222,50 @@ A lock that reaches a wrapper as a parameter has no class to name. An entry
 `name(N)` of `short_locks` (`uv_mutex_lock(0)`, `my_lock(0)`) says that every
 lock taken through that wrapper is short: a call of a known take such as
 `uv_mutex_lock`, and the takes inside a function of the project of that name, are
-not blocking for `CC_SHORT`, whatever the lock. `N` only has to be a number; the
-rules do not check that the parameter is the lock. A wrapper that no function
-of the compile database declares is an error (exit 2).
+not blocking for `CC_SHORT`, whatever the lock. Listing a take of a library
+therefore makes every call of it in the project short, including the locks
+that are not. `N` only has to be a number; the rules do not check that the
+parameter is the lock. `name@path` matches any declaration of the function. A
+wrapper that no function of the compile database declares is an error (exit 2),
+except a known take such as `uv_mutex_lock`, which a project may use from an
+installed library.
+
+Experimental, and off by default: with `[library] short_lock_sections = true`, a
+lock is short without a mark or a setting when no critical section of its class
+reaches a blocking call. It may call a lock short wrongly in cases it does not
+handle yet; turn it on only to try it. No call made while a path of the lock
+walk holds the lock may block, directly or through the functions it reaches, as
+the short rule sees them (a take of a lock that is not short blocks; a call that
+returns at once does not). The body of a lock helper (`CC_ACQUIRES`) counts
+after its take. A class whose sections take another lock becomes short once that
+lock is. Only a full run of a compile database infers one (no `FILE`, no
+`--exclude`, no error, no file left unchecked); another run says on standard
+error that it did not. The inference trusts no class whose sections it cannot
+all see: one that a function returns or jumps out with, or releases without
+holding it (for a helper, a lock its marks do not name), as its caller holds it
+across code no walk reads, and one held in a function with more paths than the
+lock walk follows. A lock that the rules cannot name (taken through a parameter,
+`pthread_mutex_lock(m)`) or that a pointer field, global or array of pointers
+reaches (`c->lk` of `pthread_mutex_t *lk`, which may be another class's mutex)
+may be any class: when one of its sections blocks, or is not all seen, no class
+is inferred. A take of a lock that names no object (`&current()->mu`,
+`&locks[hash(k)]`) is not seen at all, so no class is inferred either. A call
+through a pointer that the run stores no function in counts as blocking, in a
+section or in a function it reaches. A call through a field of `[assume]
+stop_fields` made in a section counts as blocking too; in a function that the
+section reaches it reaches nothing, as for the short rule. An inferred class is
+matched as it is: inferring the global `lock` does not make a static `lock` of
+another file short. `inferred_short_locks` of `--json` lists the classes found
+so (the key is there only with the inference on), and the text report says how
+many on standard error. A lock that a helper marked `CC_JUMP_RELEASES` takes
+gives no finding at a jump, so the code of the catcher that runs before it gives
+the lock back is in no section. The inference does not stop `--update-baseline`
+or `--strict-baseline` when it is off. It changes findings both ways: a root
+that only took short locks before its blocking call reports that call, not the
+take, which is another baseline key, and a run that does not infer (a run of
+some files, or the inference off) reports the takes of the inferred locks as new
+against a baseline of a run that did. An inferred short lock is short for
+`CC_SHORT` only: the rule of `CC_NO_SYSCALL_UNDER` does not apply to it.
 
 `stop_fields` names the function-pointer fields that no walk follows, by struct
 and field (`request.call` for the field `call` of `struct request`, also when

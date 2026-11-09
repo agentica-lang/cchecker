@@ -40,12 +40,14 @@ VARIABLES = Set.new(["VarDecl", "ParmVarDecl"])
 ## A lock: `key` is what tells two locks apart (`q.mu` for `&q->mu`, `q->mu` and `(&q->mu)`), `shown` how the code
 ## wrote it, and `class` the field it is (`queue.mu`, by struct and field name) or the global, which the marks of
 ## CC_NO_SYSCALL_UNDER() and CC_LOCK_LEVEL name; "" when the rules cannot tell. `pair` is the restore of the lock of
-## a CC_PAIR, "" for a lock of the code.
+## a CC_PAIR, "" for a lock of the code. `through` says that the field or global of the class is a pointer to the
+## mutex, not the mutex: two classes may then be one mutex (`c->lk` pointing at `s->lock`).
 export struct Lock
   key: String
   shown: String
   class: String = ""
   pair: String = ""
+  through: Bool = false
 end
 
 ## A call of a function, by name and key (`name@file` for a static one), and what it does to the locks: those it takes,
@@ -71,6 +73,8 @@ export struct Site
   lost: Bool = false
   clears: List[String] = []
   fills: List[String] = []
+  # Whether the call takes a lock that no text names (`&current()->mu`, `&locks[hash(k)]`): no walk sees it.
+  unnamed: Bool = false
 end
 
 ## The value a condition has on an edge. `text` is "" for a condition that may change between two reads (a call).
@@ -148,7 +152,8 @@ end
 ## The graph of one function, at the place of its definition. `owned` are its parameters that own what the caller
 ## passes, and `owns` says whether the ownership rules read the function: it has a pointer that owns, or calls a
 ## function that returns one. `releases` are the keys of the locks of its CC_RELEASES in the names of its parameters,
-## in the order of its marks ("" for the restore of a pair).
+## in the order of its marks ("" for the restore of a pair), and `acquires` those of its CC_ACQUIRES ("" for the set
+## of a pair).
 export struct Body
   key: String
   name: String
@@ -159,6 +164,7 @@ export struct Body
   owned: List[String] = []
   owns: Bool = false
   releases: List[String] = []
+  acquires: List[String] = []
 end
 
 ## A lock of a CC_ACQUIRES (`takes`) or a CC_RELEASES, as written, with the names of the parameters of the
@@ -169,6 +175,7 @@ export struct Annotated
   takes: Bool
   class: String = ""
   pair: String = ""
+  through: Bool = false
 end
 
 ## What a function of the translation unit says about locks, from all its declarations, and whether it never returns.
@@ -208,6 +215,7 @@ struct Arg
   class: String
   owner: String = ""
   address: Bool = false
+  through: Bool = false
 end
 
 # A block: its id, and the cleanup calls of its variables so far, in the order they were declared.
@@ -358,6 +366,7 @@ export def body_of(ctx: Context, key: String, node: Json) -> Body
   linked = with_gotos(built.b)
   names = params_named(node)
   dropped = ctx.callees.get(key).map do |callee| callee.locks.select do |lock| not lock.takes end end.unwrap_or([])
+  taken = ctx.callees.get(key).map do |callee| callee.locks.select do |lock| lock.takes end end.unwrap_or([])
   return Body(
     key: key,
     name: Ast.text(node, "name"),
@@ -368,6 +377,7 @@ export def body_of(ctx: Context, key: String, node: Json) -> Body
     owned: owners.params,
     owns: owners.calls or not owners.names.empty?,
     releases: dropped.map do |lock| released_key(lock, names) end,
+    acquires: taken.map do |lock| released_key(lock, names) end,
   )
 end
 
@@ -1655,8 +1665,10 @@ def site_of(b: Builder, name: String, args: List[Arg], place: Ast.Place, noretur
   drops: List[Lock] = []
   waits: List[Lock] = []
   stops = Known.NORETURN.include?(name) or noreturn
+  unnamed = false
   if Known.TAKES.include?(name)
     takes = lock_of(args, 0)
+    unnamed = not args.empty? and takes.empty?
   end
 
   if Known.DROPS.include?(name)
@@ -1680,6 +1692,7 @@ def site_of(b: Builder, name: String, args: List[Arg], place: Ast.Place, noretur
     hands: owners_at(args, handed(b.ctx, name, key)),
     clears: owners_at(args.map(&by_address), freed(b.ctx, name, key)),
     fills: owners_at(args.map(&by_address), out_params(b.ctx, name)),
+    unnamed: unnamed,
   )
 
   case b.ctx.callees.get(key)
@@ -1688,6 +1701,7 @@ def site_of(b: Builder, name: String, args: List[Arg], place: Ast.Place, noretur
       taken = callee.locks.select do |lock| lock.takes end
       dropped = callee.locks.select do |lock| not lock.takes end
       return site.with(
+        unnamed: unnamed or taken.any? do |lock| annotated_lock(lock, texts).empty? end,
         takes: takes.concat(taken.flat_map do |lock| annotated_lock(lock, texts) end),
         drops: drops.concat(dropped.flat_map do |lock| annotated_lock(lock, texts) end),
         stops: stops or callee.stops,
@@ -1716,7 +1730,9 @@ def lock_of(args: List[Arg], index: Int) -> List[Lock]
     return []
   end
 
-  return locks_of([args[index].text]).map do |lock| lock.with(class: args[index].class) end
+  return locks_of([args[index].text]).map do |lock|
+    lock.with(class: args[index].class, through: args[index].through)
+  end
 end
 
 # The key of a lock of CC_RELEASES in the names of the parameters of the definition, which may not be those of the
@@ -1732,12 +1748,40 @@ end
 # The lock of an annotation, in the texts of the arguments of the call.
 def annotated_lock(lock: Annotated, texts: List[String]) -> List[Lock]
   return locks_of([substituted(lock.text, lock.params, texts)]).map do |found|
-    found.with(class: lock.class, pair: lock.pair)
+    found.with(class: lock.class, pair: lock.pair, through: lock.through)
   end
 end
 
 def arg_of(b: Builder, node: Json) -> Arg
-  return Arg(text: text_of(b, node, true), class: class_of(b, node), owner: owner_of(b, node), address: address?(node))
+  return Arg(
+    text: text_of(b, node, true),
+    class: class_of(b, node),
+    owner: owner_of(b, node),
+    address: address?(node),
+    through: aliased_through?(b, node, 0),
+  )
+end
+
+# Whether the field or global that a lock expression ends in is a pointer (`c->lk` of `pthread_mutex_t *lk`), through
+# `&`, `*`, subscripts and the local variables set once, as `aliased_class` reads them.
+def aliased_through?(b: Builder, node: Json, depth: Int) -> Bool
+  bare = see_through(node)
+  while Ast.kind(bare) == "UnaryOperator" and UNARY_TEXT.include?(Ast.text(bare, "opcode"))
+    bare = see_through(Ast.children(bare).first)
+  end
+
+  case Ast.kind(bare)
+    "MemberExpr" -> return pointer_type?(bare)
+    # An item of an array of pointers (`p->mus[i]` of `pthread_mutex_t *mus[2]`) is a pointer itself.
+    "ArraySubscriptExpr" -> return pointer_type?(bare) or aliased_through?(b, Ast.children(bare).first, depth)
+    "DeclRefExpr" ->
+      case b.aliases.get(Ast.referenced_name(bare))
+        some(value) if depth < ALIAS_DEPTH -> return aliased_through?(b, value, depth + 1)
+        _ -> return pointer_type?(bare)
+      end
+
+    _ -> return false
+  end
 end
 
 # The class of a lock expression: the field it ends in, or a global variable, through `&`, `*` and the local variables

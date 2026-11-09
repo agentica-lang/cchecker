@@ -31,6 +31,7 @@ def main() -> Void
     BDD.step("I run cchecker with {string} and TMPDIR {string}", &run_with_tmpdir),
     BDD.step("I run cchecker with {string} in at most {int} MiB and {int} seconds", &run_bounded),
     BDD.step("I run cchecker in its folder with {string}", &run_in_folder),
+    BDD.step("I run cchecker in its folder with {string} in at most {int} MiB and {int} seconds", &run_in_bounded),
     BDD.step("I run cchecker in its folder {string} with {string}", &run_in_subfolder),
     BDD.step("the folder {string} is empty", &folder_empty),
     BDD.step("clang dumps the AST of {string} with CCHECKER_AST", &dump_ast),
@@ -134,6 +135,19 @@ def run_bounded(ctx: BDD.Context, args: List[String]) -> BDD.Context
   started = Time.monotonic_ms()
   ran = run_program(ctx, "sh", ["-c", script, "sh", PROGRAM].concat(words))
   elapsed = Time.monotonic_ms() - started
+  return BDD.assert(ran, elapsed <= args[2].to_i! * 1000, "the run took #{elapsed} ms")
+end
+
+# `run_bounded` in the folder of the scenario, for a run of its compile database.
+def run_in_bounded(ctx: BDD.Context, args: List[String]) -> BDD.Context
+  started = ensure_folder(ctx)
+  program = Path.resolve(Path.join([SPECS, PROGRAM]).unwrap!).unwrap!
+  words = args[0].split(" ").select do |word| word != "" end
+  script = "ulimit -v #{args[1].to_i! * 1024} && exec agentica \"$@\""
+  at = Time.monotonic_ms()
+  folder = "#{SPECS}/#{folder_of(started)}"
+  ran = run_program(started, "sh", ["-c", script, "sh", program].concat(words), {}, folder)
+  elapsed = Time.monotonic_ms() - at
   return BDD.assert(ran, elapsed <= args[2].to_i! * 1000, "the run took #{elapsed} ms")
 end
 
