@@ -245,6 +245,10 @@ export def kept(facts: Map[String, Bool], live: Set[String]) -> Map[String, Bool
     return facts
   end
 
+  if facts.keys.all? do |text| live.include?(text) end
+    return facts
+  end
+
   return facts.select do |text, _value| live.include?(text) end
 end
 
@@ -467,6 +471,7 @@ def walked(walker: Walker) -> Walk
   body = walker.body
   queue = [Item(node: 0, state: State(held: {}, facts: {}, clamped: Set.new([])), path: [])]
   visited: Set[String] = Set.new([])
+  unread: Set[String] = Set.new([])
   found: Map[String, Finding] = {}
   sections: Map[String, Section] = {}
   i = 0
@@ -486,7 +491,7 @@ def walked(walker: Walker) -> Walk
       Moved.Stopped -> next
       Moved.Went(moved) ->
         for after in node.next
-          next_state = moved.state.with(facts: kept(moved.state.facts, walker.live.get(after, Set.new([]))))
+          next_state = moved.state.with(facts: kept(moved.state.facts, walker.live.get(after, unread)))
           seen = "#{after}|#{encoded(next_state)}"
           if not visited.include?(seen)
             visited = visited.add(seen)

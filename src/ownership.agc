@@ -172,6 +172,7 @@ def walked(walker: Walker) -> Walk
 
   queue = [Item(node: 0, state: State(owns: owns, aliases: {}, links: {}, facts: {}), path: [])]
   visited: Set[String] = Set.new([])
+  unread: Set[String] = Set.new([])
   found: Map[String, Finding] = {}
   i = 0
   while i < queue.size
@@ -196,7 +197,7 @@ def walked(walker: Walker) -> Walk
       Moved.Stopped -> next
       Moved.Went(moved) ->
         for after in node.next
-          next_state = moved.state.with(facts: Locking.kept(moved.state.facts, walker.live.get(after, Set.new([]))))
+          next_state = moved.state.with(facts: Locking.kept(moved.state.facts, walker.live.get(after, unread)))
           seen = "#{after}|#{encoded(next_state)}"
           if not visited.include?(seen)
             visited = visited.add(seen)

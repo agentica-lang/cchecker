@@ -537,6 +537,47 @@ Feature: Locks on every path
       "line":4,
       """
 
+  Scenario: A condition that a later test reads stays in the state across a loop back edge, a goto and a switch
+    Given the C file "edges.c" holds:
+      """
+      #include <pthread.h>
+      struct queue { pthread_mutex_t mu; };
+      void work(int n);
+      int loop(struct queue *q, int a, int b, int n) {
+        if (a) pthread_mutex_lock(&q->mu);
+        while (n > 0) {
+          if (b) work(1);
+          if (b) work(2);
+          if (a) pthread_mutex_unlock(&q->mu);
+          if (a) pthread_mutex_lock(&q->mu);
+          n--;
+        }
+        if (a) pthread_mutex_unlock(&q->mu);
+        return 0;
+      }
+      int jump(struct queue *q, int a, int b) {
+        if (a) pthread_mutex_lock(&q->mu);
+        if (b) goto out;
+        work(1);
+      out:
+        if (b) work(2);
+        if (a) pthread_mutex_unlock(&q->mu);
+        return 0;
+      }
+      int pick(struct queue *q, int a, int b) {
+        if (a) pthread_mutex_lock(&q->mu);
+        switch (b) {
+          case 0: work(1); break;
+          case 1: work(2);
+          default: work(3);
+        }
+        if (a) pthread_mutex_unlock(&q->mu);
+        return 0;
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/edges.c"
+    Then the exit code is 0
+
   Scenario: An annotation of a prototype counts once for a caller after the definition, whatever the names of its parameters there
     Given the C file "pop.c" holds:
       """

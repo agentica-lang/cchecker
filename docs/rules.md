@@ -219,9 +219,9 @@ the values of the conditions are kept by variable, not by field, so a condition
 on `q->ready` keeps its value after `atomic_store(&q->ready, 0)`; copy the field
 to a local first and test the local (`int ready = q->ready; if (ready) ...`)
 when the call may change it. A condition leaves the state of a path after its
-last test that the path can reach, so a function with many independent flags,
-each tested twice around a lock, stays in a number of states that grows with
-the flags, not as a power of two. A function whose paths would take more than 200 000
+last test before a write to one of its variables, so a function with many
+flags, each tested twice around a lock, stays in a number of states that grows
+with the flags when their tests do not overlap, not as a power of two. A function whose paths would take more than 200 000
 states to follow is walked again without these conditions; when that is not
 enough either, its findings are those of the paths followed, and the run lists
 it in `incomplete_functions` of `--json` (`file`, `line` and `function`) and on
