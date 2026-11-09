@@ -516,3 +516,169 @@ Feature: What the project assumes of its functions
       """
       no function, lock or field of the compile database is named request.cal (assume.stop_fields)
       """
+
+  Scenario Outline: [assume] stop_calls cuts one call edge and keeps the same callee for its other callers (<list>)
+    Given the C file "calls.c" holds:
+      """
+      #include "unistd.h"
+      #include "cchecker.h"
+      static void trace(int fd) { (void)write(fd, "a", 1); }
+      CC_SHORT void first(int fd) { trace(fd); }
+      CC_SHORT void second(int fd) { trace(fd); }
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [assume]
+      <list>
+      """
+    When I run cchecker in its folder with "--tools rules --json calls.c -- -I../../../include"
+    Then the exit code is <exit>
+    And the output <first>:
+      """
+      "file":"calls.c","line":4,
+      """
+    And the output <second>:
+      """
+      "file":"calls.c","line":5,
+      """
+
+    Examples:
+      | list                                             | exit | first            | second           |
+      | stop_calls = ["first>trace"]                     | 1    | does not include | includes         |
+      | stop_calls = ["second>trace"]                    | 1    | includes         | does not include |
+      | stop_calls = ["first>trace", "second>trace"]     | 0    | does not include | does not include |
+      | stop_calls = ["first@calls.c>trace@calls.c"]     | 1    | does not include | includes         |
+      | stop = ["trace"]                                 | 0    | does not include | does not include |
+
+  Scenario: A pair of [assume] stop_calls that matches no call is an error, and the others still apply
+    Given the C file "a.c" holds:
+      """
+      static void put(void) {}
+      void run(void) { put(); }
+      """
+    And the C file "b.c" holds:
+      """
+      static void put(void) {}
+      void run_b(void) { put(); }
+      """
+    And the file "compile_commands.json" holds:
+      """
+      [{"directory": ".", "file": "a.c", "arguments": ["cc", "-c", "a.c"]},
+       {"directory": ".", "file": "b.c", "arguments": ["cc", "-c", "b.c"]}]
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [assume]
+      stop_calls = ["run@a.c>put@a.c", "run_b>put@b.c"]
+      """
+    When I run cchecker in its folder with "--tools rules"
+    Then the exit code is 0
+    Given the file "cchecker.toml" holds:
+      """
+      [assume]
+      stop_calls = ["run@a.c>put@a.c", "run@b.c>put@b.c", "put>run", "gone>put"]
+      """
+    When I run cchecker in its folder with "--tools rules"
+    Then the exit code is 2
+    And the errors include:
+      """
+      run@b.c>put@b.c (assume.stop_calls)
+      """
+    And the errors include:
+      """
+      put>run (assume.stop_calls)
+      """
+    And the errors include:
+      """
+      gone>put (assume.stop_calls)
+      """
+    And the errors do not include:
+      """
+      run@a.c>put@a.c
+      """
+
+  Scenario Outline: [assume] stop_calls cuts all the calls of the callee in the caller, and not a path through another function (<case>)
+    Given the C file "calls.c" holds:
+      """
+      #include "unistd.h"
+      #include "cchecker.h"
+      static void trace(int fd) { (void)write(fd, "a", 1); }
+      static void mid(int fd) { trace(fd); }
+      <code>
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [assume]
+      <list>
+      """
+    When I run cchecker in its folder with "--tools rules --json calls.c -- -I../../../include"
+    Then the exit code is <exit>
+    And the output <found>:
+      """
+      "file":"calls.c","line":5,
+      """
+
+    Examples:
+      | case                  | code                                                      | list                       | exit | found            |
+      | two call sites        | CC_SHORT void first(int fd) { trace(fd); trace(fd); }     | stop_calls = ["first>trace"] | 0  | does not include |
+      | another path          | CC_SHORT void first(int fd) { trace(fd); mid(fd); }       | stop_calls = ["first>trace"] | 1  | includes         |
+      | the edge below        | CC_SHORT void first(int fd) { mid(fd); }                  | stop_calls = ["mid>trace"]   | 0  | does not include |
+      | the edge above        | CC_SHORT void first(int fd) { mid(fd); }                  | stop_calls = ["first>mid"]   | 0  | does not include |
+      | no pair               | CC_SHORT void first(int fd) { trace(fd); trace(fd); }     |                              | 1  | includes         |
+
+  Scenario Outline: [assume] stop_calls also cuts the call for the lock rules (<list>)
+    Given the C file "held.c" holds:
+      """
+      #include "pthread.h"
+      #include "unistd.h"
+      #include "cchecker.h"
+      struct queue { CC_NO_SYSCALL_UNDER() pthread_mutex_t mu; int fd; };
+      static void deep(int fd) { (void)write(fd, "x", 1); }
+      static void mid(int fd) { deep(fd); }
+      void push(struct queue *q) { pthread_mutex_lock(&q->mu); mid(q->fd); pthread_mutex_unlock(&q->mu); }
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [assume]
+      <list>
+      """
+    When I run cchecker in its folder with "--tools rules --json held.c -- -I../../../include"
+    Then the exit code is <exit>
+    And the output <found>:
+      """
+      "CC-PATH-SYSCALL-UNDER-LOCK"
+      """
+
+    Examples:
+      | list                          | exit | found            |
+      | stop_calls = ["mid>deep"]     | 0    | does not include |
+      | stop_calls = ["push>mid"]     | 1    | includes         |
+      | stop = ["unused"]             | 1    | includes         |
+
+  Scenario Outline: [assume] stop_calls also cuts the call from the inference of may_jump_callers (<list>)
+    Given the C file "jump.c" holds:
+      """
+      #include "stdlib.h"
+      #include "cchecker.h"
+      CC_JUMPS void fail(void);
+      int w(int n) { if (0 > n) fail(); return n; }
+      int x(int n) { return w(n) + 1; }
+      int start(int n) { CC_OWNS char *p = malloc(8); if (!p) return -1; p[0] = (char)x(n); free(p); return 0; }
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [assume]
+      <list>
+      """
+    When I run cchecker in its folder with "--tools rules --json jump.c -- -I../../../include"
+    Then the exit code is <exit>
+    And the output <found>:
+      """
+      "source":"may_jump_callers"
+      """
+
+    Examples:
+      | list                      | exit | found            |
+      | stop_calls = ["x>w"]      | 0    | does not include |
+      | stop_calls = ["x>fail"]   | 1    | includes         |
+      | stop = ["unused"]         | 1    | includes         |

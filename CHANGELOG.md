@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `[assume] stop_calls = ["caller>callee"]` cuts the calls of `callee` in `caller` out of the call graph, for every rule
+  that walks it (effects, the lock rules' system path, the inference of `may_jump_callers`); the callee stays reachable
+  from its other callers, where `stop` removes it for all. Each side takes `name@path`, and a pair that matches no
+  call is exit 2.
 - `uv_walk`: its callback, and a function stored in the `exit_cb` of `uv_process_options_t`, are `CC_SHORT` roots like the
   other callbacks of libuv that run on the loop (`libuv_callbacks_short`).
 - `[roots]` and `[assume]` (`short`, `stop`, `may_jump`, `jumps`, `catches`, `jump_releases`) take `name@path`, the
@@ -31,7 +35,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A full run of a compile database no longer reports `CC-EFFECT-SHORT-BLOCKS` at the take of a lock that it finds
   short: the baseline entries and suppressions of those findings become stale, and a run with `--strict-baseline`
   fails until `--update-baseline` drops them (or `[library] short_lock_sections = false` keeps the old findings).
-
 - `uv_run` with a constant `UV_RUN_NOWAIT` is no longer a blocking call for `CC_SHORT` (`libc_nonblocking_flags`);
   `UV_RUN_ONCE`, `UV_RUN_DEFAULT` and a mode in a variable still are.
 - **Breaking:** `CC_MAY_JUMP` or `[assume] may_jump` on a function that never returns (`_Noreturn`, `CC_NORETURN`) now
