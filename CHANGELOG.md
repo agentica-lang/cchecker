@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - The docs as a site, <https://agentica-lang.github.io/cchecker/>: README.md and docs/, with search and a Markdown
   copy of each page.
+- The ownership rules follow the `CC_OWNS` fields of a local struct (`p.left`) while the function reads and writes the struct only field by field: a field that is not freed or handed on is a CC-OWN-LEAK.
 
 ### Changed
 

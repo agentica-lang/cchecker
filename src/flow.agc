@@ -42,6 +42,9 @@ VARIABLES = Set.new(["VarDecl", "ParmVarDecl"])
 # such character, so a key is its name when nothing else of the function has that name.
 KEY_MARK = "#"
 
+# The digits of the number in a key.
+DIGITS = Set.new(["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"])
+
 ## A lock: `key` is what tells two locks apart (`q.mu` for `&q->mu`, `q->mu` and `(&q->mu)`), `shown` how the code
 ## wrote it, and `class` the field it is (`queue.mu`, by struct and field name) or the global, which the marks of
 ## CC_NO_SYSCALL_UNDER() and CC_LOCK_LEVEL name; "" when the rules cannot tell. `pair` is the restore of the lock of
@@ -202,7 +205,8 @@ end
 ## What the functions of a translation unit say about ownership: the keys of those that return an owned pointer
 ## (CC_OWNS on the function), their parameters that take (CC_OWNS) or free (CC_FREES) what a call passes, by index,
 ## those that hand an owned pointer out to the caller (`outs`, CC_OWNS_OUT), and the fields (by id) and the globals
-## (by the ids of their declarations) that own what is stored in them.
+## (by the ids of their declarations) that own what is stored in them. `unions` are those of the fields that belong
+## to a union.
 export struct Owning
   returns: Set[String]
   takes: Map[String, List[Int]]
@@ -210,6 +214,7 @@ export struct Owning
   outs: Map[String, List[Int]]
   fields: Set[String]
   globals: Set[String]
+  unions: Set[String]
 end
 
 ## What the graphs of one translation unit need: the functions that say something about locks, by key, the keys of
@@ -277,13 +282,15 @@ end
 # CC_OWNS_OUT; `out[i]` too), and an item of a pointer whose items own what is stored in them (`arrays`: the pointers
 # that own or stand for one, and the locals that get the value of an allocation). The sets hold the keys of the
 # variables (`variable_key`), and `keys` gives the key of each variable the function declares, by the id of its
-# declaration.
+# declaration, and of each `p.f` of a CC_OWNS field of a local struct it follows, by the id of the expression
+# (`owned_fields`). `fields` are the keys of those fields of each such struct, by the key of the struct.
 struct Places
   locals: Set[String]
   freed: Set[String]
   outs: Set[String]
   arrays: Set[String]
   keys: Map[String, String]
+  fields: Map[String, List[String]] = {}
 end
 
 # The pointers of a function that own or may stand for one that does, by name (`names`): its parameters that own
@@ -512,10 +519,15 @@ end
 ## Returns the key of the local variable or parameter that an expression is, through casts and parentheses: the key
 ## that `keys` gives its declaration; "" for any other expression, and for a variable the function does not declare (a
 ## global). Two variables of one function never share a key, so a local that shadows another has a state of its own.
+## A CC_OWNS field of a local struct that the rules follow (`p.left`) has the key that `keys` gives the expression.
 export def variable_key(keys: Map[String, String], node: Json) -> String
   bare = see_through(node)
   if Ast.kind(bare) == "DeclRefExpr" and VARIABLES.include?(Ast.referenced_kind(bare))
     return keys.get(Ast.referenced_id(bare), "")
+  end
+
+  if Ast.kind(bare) == "MemberExpr"
+    return keys.get(Ast.text(bare, "id"), "")
   end
 
   return ""
@@ -526,9 +538,20 @@ export def declared_key(keys: Map[String, String], decl: Json) -> String
   return keys.get(Ast.text(decl, "id"), Ast.text(decl, "name"))
 end
 
-## Returns the name that a key stands for: what the code calls the variable.
+## Returns the name that a key stands for: what the code calls the variable (`p` for `p#2`, `p.left` for `p#2.left`).
 export def plain(key: String) -> String
-  return key.split(KEY_MARK).first
+  parts = key.split(KEY_MARK)
+  if parts.size < 2
+    return key
+  end
+
+  rest = parts[1]
+  digits = 0
+  while digits < rest.length and DIGITS.include?(rest.slice(digits, 1))
+    digits += 1
+  end
+
+  return parts[0] + rest.slice(digits, rest.length - digits)
 end
 
 ## Returns every node under the given ones, each before the nodes inside it.
@@ -655,7 +678,18 @@ def owners_of(ctx: Context, key: String, node: Json) -> Owners
       .map do |i| names_of_params[i] end,
   )
 
-  keys = keys_of(node, all)
+  declared = keys_of(node, all)
+  fields = owned_fields(ctx, all, declared)
+  keys = declared
+  places_of: Map[String, List[String]] = {}
+  for id in fields.keys
+    keys = keys.put(id, fields[id])
+    owner = fields[id].split(".").first
+    if not places_of.get(owner, []).include?(fields[id])
+      places_of = places_of.put(owner, places_of.get(owner, []).push(fields[id]))
+    end
+  end
+
   decls = all.select do |n| Ast.kind(n) == "VarDecl" end
   locals = Set.new(
     names_of_params.concat(
@@ -666,7 +700,7 @@ def owners_of(ctx: Context, key: String, node: Json) -> Owners
   marked = Set.new(
     decls.select do |n| marked_owner?(n) and Ast.text(n, "storageClass") != "static" end
       .map do |n| declared_key(keys, n) end,
-  )
+  ).union(Set.new(fields.values))
 
   outs = Set.new(
     ctx.owning.outs.get(key, []).select do |i| i < names_of_params.size end.map do |i| names_of_params[i] end,
@@ -692,6 +726,7 @@ def owners_of(ctx: Context, key: String, node: Json) -> Owners
     outs: outs,
     arrays: names.union(outs).union(Set.new(allocated)),
     keys: keys,
+    fields: places_of,
   )
 
   return Owners(
@@ -743,6 +778,10 @@ end
 # one that hands an owned pointer out through a parameter.
 def owning_node?(ctx: Context, node: Json) -> Bool
   if (Ast.kind(node) == "VarDecl" and marked_owner?(node)) or owning_call?(ctx, node)
+    return true
+  end
+
+  if struct_of(node) != "" and ctx.owning.fields.include?(Ast.text(node, "referencedMemberDecl"))
     return true
   end
 
@@ -868,6 +907,69 @@ def keys_of(node: Json, all: List[Json]) -> Map[String, String]
   end
 
   return keys
+end
+
+# The CC_OWNS fields of the local structs that a function reads and writes only field by field (`p.left`), by the id
+# of each such expression: the key of the struct (`keys`), a dot and the name of the field. A struct that the function
+# copies, passes, returns or names in any other way, whose address or the address of a field it takes, a static one
+# and a union are not followed: a store into their CC_OWNS fields hands the pointer on.
+def owned_fields(ctx: Context, all: List[Json], keys: Map[String, String]) -> Map[String, String]
+  found: Map[String, String] = {}
+  if ctx.owning.fields.empty?
+    return found
+  end
+
+  structs: Set[String] = Set.new([])
+  refs: Map[String, Int] = {}
+  members: Map[String, Int] = {}
+  escaped: Set[String] = Set.new([])
+  for n in all
+    kind = Ast.kind(n)
+    if kind == "VarDecl"
+      if Ast.text(n, "storageClass") == ""
+        structs = structs.add(Ast.text(n, "id"))
+      end
+    elsif kind == "DeclRefExpr"
+      refs = refs.put(Ast.referenced_id(n), refs.get(Ast.referenced_id(n), 0) + 1)
+    elsif kind == "MemberExpr"
+      base = struct_of(n)
+      members = members.put(base, members.get(base, 0) + 1)
+    elsif kind == "UnaryOperator" and Ast.text(n, "opcode") == "&"
+      escaped = escaped.add(struct_of(see_through(Ast.children(n).first)))
+    end
+  end
+
+  for n in all
+    base = struct_of(n)
+    followed = (
+      base != "" and
+      structs.include?(base) and
+      not escaped.include?(base) and
+      refs.get(base, 0) == members.get(base, 0) and
+      ctx.owning.fields.include?(Ast.text(n, "referencedMemberDecl")) and
+      not ctx.owning.unions.include?(Ast.text(n, "referencedMemberDecl"))
+    )
+
+    if followed
+      found = found.put(Ast.text(n, "id"), "#{keys.get(base, "")}.#{Ast.text(n, "name")}")
+    end
+  end
+
+  return found
+end
+
+# The id of the local variable whose field an expression is (`p.left`, not `p->left`); "" for any other.
+def struct_of(node: Json) -> String
+  if Ast.kind(node) != "MemberExpr" or Ast.flag?(node, "isArrow")
+    return ""
+  end
+
+  base = see_through(Ast.children(node).first)
+  if Ast.kind(base) != "DeclRefExpr" or Ast.referenced_kind(base) != "VarDecl"
+    return ""
+  end
+
+  return Ast.referenced_id(base)
 end
 
 # The key of what a reference names: the key of a variable of the function, else the name (a global, a function, an
@@ -1406,9 +1508,15 @@ def declaration(b: Builder, node: Json, preds: List[Int]) -> Built
     written = add(built.b, Event.Writes([key]), built.exits)
   end
 
-  if written.b.owners.names.include?(key) and not written.b.scopes.empty?
+  # The pointers of the block: the variable, or the followed CC_OWNS fields of a struct.
+  closing = written.b.owners.places.fields.get(key, [])
+  if written.b.owners.names.include?(key)
+    closing = [key]
+  end
+
+  if not closing.empty? and not written.b.scopes.empty?
     scope = written.b.scopes.last
-    scopes = written.b.scopes.set(written.b.scopes.size - 1, scope.with(declared: scope.declared.push(key)))
+    scopes = written.b.scopes.set(written.b.scopes.size - 1, scope.with(declared: scope.declared.concat(closing)))
     written = Built(b: written.b.with(scopes: scopes), exits: written.exits)
   end
 
@@ -1442,6 +1550,12 @@ def expression(b: Builder, node: Json, preds: List[Int]) -> Built
     "" -> return Built(b: b, exits: preds)
     "CallExpr" -> return call(b, node, preds, false)
     "DeclRefExpr" -> return used(b, node, preds)
+    "MemberExpr" ->
+      if owner_named(b, node) != ""
+        return used(b, node, preds)
+      end
+
+      return in_order(b, Ast.children(node), preds)
     "BinaryOperator" ->
       opcode = Ast.text(node, "opcode")
       if opcode == "&&" or opcode == "||"
@@ -2294,6 +2408,11 @@ end
 def roots_of(keys: Map[String, String], node: Json) -> List[String]
   if Ast.kind(node) == "DeclRefExpr"
     return [referenced_key(keys, node)]
+  end
+
+  # A followed CC_OWNS field of a local struct is a variable of its own, besides the struct.
+  if Ast.kind(node) == "MemberExpr" and keys.key?(Ast.text(node, "id"))
+    return [keys[Ast.text(node, "id")]].concat(Ast.children(node).flat_map do |child| roots_of(keys, child) end).uniq
   end
 
   return Ast.children(node).flat_map do |child| roots_of(keys, child) end.uniq

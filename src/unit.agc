@@ -405,11 +405,15 @@ def owning_of(tables: Tables, nodes: List[Json]) -> Flow.Owning
   bodies = declarations.flat_map do |n| Ast.children(n).select do |child| Ast.kind(child) == "CompoundStmt" end end
   inner = Flow.descendants(bodies).select do |n| Ast.kind(n) == "DeclStmt" end.flat_map(&Ast.children)
   fields: Set[String] = Set.new([])
+  unions: Set[String] = Set.new([])
   for nested in record_decls(nodes, "").concat(record_decls(inner, ""))
     record_fields = Ast.children(nested.node).select do |child| Ast.kind(child) == "FieldDecl" end
     for field in record_fields
       if own_marks(field).include?(OWNS)
         fields = fields.add(Ast.text(field, "id"))
+        if Ast.text(nested.node, "tagUsed") == "union"
+          unions = unions.add(Ast.text(field, "id"))
+        end
       end
     end
   end
@@ -426,6 +430,7 @@ def owning_of(tables: Tables, nodes: List[Json]) -> Flow.Owning
     outs: outs,
     fields: fields,
     globals: Set.new(globals),
+    unions: unions,
   )
 end
 

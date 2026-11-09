@@ -34,6 +34,7 @@ Feature: Ownership on every path
       | owning call dropped    | 6      | void f(int n) { make(n); }                                                                                 |
       | owning call lent       | 5      | int f(int n) { return work(make(n)); }                                                                     |
       | owning call in a field | 6      | void f(struct box *x, int n) { x->loose = make(n); }                                                       |
+      | field of a local struct | 6     | void f(int n) { struct local { CC_OWNS char *held; } x; CC_OWNS char *b = malloc(n); x.held = b; work(x.held); }                          |
       | overwritten            | 6      | void f(int n) { CC_OWNS char *b = malloc(n); b = malloc(n); free(b); }                                     |
       | set in a loop          | 6      | void f(int n) { CC_OWNS char *b = NULL; for (int i = 0; i < n; i++) b = malloc(n); free(b); }              |
       | field that does not own | 6     | void f(struct box *x, int n) { CC_OWNS char *b = malloc(n); x->loose = b; }                                |
@@ -110,7 +111,8 @@ Feature: Ownership on every path
       | global declared twice  | extern CC_OWNS char *g; char *g; void f(int n) { CC_OWNS char *b = malloc(n); g = b; }                                                 |
       | atomic pointer freed   | static void release(CC_FREES _Atomic(char *) *p) { if (*p) free(*p); }                                                                   |
       | elvis                  | void f(char *q, int n) { char *p = q ?: make(n); free(p); }                                                                               |
-      | field of a local struct | void f(int n) { struct local { CC_OWNS char *held; } x; CC_OWNS char *b = malloc(n); x.held = b; work(x.held); }                        |
+      | field of a local struct | void f(int n) { struct local { CC_OWNS char *held; } x; CC_OWNS char *b = malloc(n); x.held = b; work(x.held); free(x.held); }          |
+      | local struct escapes    | void f(int n) { struct local { CC_OWNS char *held; } x; CC_OWNS char *b = malloc(n); x.held = b; work((char *)&x); }                     |
 
   Scenario Outline: A pointer freed or handed on twice on a path is a finding at the function (<case>)
     Given the C file "own.c" holds:
@@ -695,6 +697,149 @@ Feature: Ownership on every path
     And the output does not include:
       """
       "line":22,
+      """
+
+  Scenario: The CC_OWNS fields of a local struct are pointers of their own while the struct does not escape
+    A local struct that the function reads and writes only field by field (`p.left`) has a state for each CC_OWNS
+    field. A struct whose address is taken, or that is copied or passed by value, and a union are not followed: a store
+    into their CC_OWNS fields hands the pointer on.
+
+    Given the C file "fields.c" holds:
+      """
+      #include <stdlib.h>
+      #include <string.h>
+      #include "cchecker.h"
+
+      struct pair {
+        CC_OWNS char *left;
+        CC_OWNS char *right;
+      };
+
+      CC_OWNS char *make_buffer(void);
+      void keep(struct pair *p);
+      void take(struct pair p);
+      void use(char *p);
+
+      void both(void) {
+        struct pair p = {0};
+        p.left = make_buffer();
+        p.right = make_buffer();
+        free(p.left);
+        free(p.right);
+      }
+
+      void omitted(void) {
+        struct pair p = {0};
+        p.left = make_buffer();
+        p.right = make_buffer();
+        free(p.left);
+      }
+
+      void overwritten(void) {
+        struct pair p = {0};
+        p.left = make_buffer();
+        p.left = make_buffer();
+        free(p.left);
+      }
+
+      void shadowed(void) {
+        struct pair p = {0};
+        p.left = make_buffer();
+        {
+          struct pair p = {0};
+          p.left = make_buffer();
+          free(p.left);
+        }
+        free(p.left);
+      }
+
+      void escapes(void) {
+        struct pair p = {0};
+        p.left = make_buffer();
+        keep(&p);
+      }
+
+      void copied(void) {
+        struct pair p = {0};
+        p.left = make_buffer();
+        take(p);
+      }
+
+      void used_after(void) {
+        struct pair p = {0};
+        p.left = make_buffer();
+        free(p.left);
+        use(p.left);
+      }
+
+      void inner_block(int n) {
+        for (int i = 0; i < n; i++) {
+          struct pair p = {0};
+          p.left = malloc(8);
+          if (!p.left)
+            continue;
+          free(p.left);
+        }
+      }
+
+      void null_checked(void) {
+        struct pair p = {0};
+        p.left = malloc(8);
+        if (!p.left)
+          return;
+        use(p.left);
+        free(p.left);
+      }
+
+      union either { CC_OWNS char *text; CC_OWNS char *bytes; };
+
+      void in_union(void) {
+        union either e;
+        e.text = make_buffer();
+        free(e.bytes);
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/fields.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "line":23,"column":6,"message":"omitted does not free or hand on p.right on every path","path":["26:13 p.right = make_buffer","27:3 frees p.left","28:1 ends"]
+      """
+    And the output includes:
+      """
+      "line":30,"column":6,"message":"overwritten does not free or hand on p.left on every path","path":["32:12 p.left = make_buffer","33:12 p.left = make_buffer"]
+      """
+    And the output includes:
+      """
+      "line":60,"column":6,"message":"used_after uses p.left after it freed it or handed it on","path":["63:3 frees p.left","64:7 uses p.left"]
+      """
+    And the output does not include:
+      """
+      "line":15,
+      """
+    And the output does not include:
+      """
+      "line":37,
+      """
+    And the output does not include:
+      """
+      "line":48,
+      """
+    And the output does not include:
+      """
+      "line":54,
+      """
+    And the output does not include:
+      """
+      "line":67,
+      """
+    And the output does not include:
+      """
+      "line":77,
+      """
+    And the output does not include:
+      """
+      "line":88,
       """
 
   Scenario: A function with more paths than the rules follow is checked on those it went through and counted

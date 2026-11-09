@@ -117,6 +117,14 @@ condition says it is not null it is freed. The rules assume that a helper that
 frees through `&p` sets the pointer to null; one that only frees leaves a later
 double free or use unreported.
 
+The one struct the rules follow is a local one that the function reads and
+writes only field by field: its `CC_OWNS` fields are pointers of their own.
+After `struct pair p = {0}; p.left = make();`, `p.left` owns and is freed or
+handed on on every path, as a `CC_OWNS` local, and the findings name it
+`p.left`. A struct whose address is taken (`&p`, `&p.left`), or that is copied,
+passed, returned or named in any other way, is not followed, nor a static one or
+a union: a store into their `CC_OWNS` fields hands the pointer on.
+
 A filled pointer that the path never reads is not reported (`take(&b); return
 0;`): telling it from what a call that failed left would need a mark that says
 on which result the pointer is set. The items of an array are not followed one
