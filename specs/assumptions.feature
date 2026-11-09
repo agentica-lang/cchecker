@@ -232,6 +232,86 @@ Feature: What the project assumes of its functions
     When I run cchecker in its folder with "--tools rules --json a.c b.c -- -I../../../include"
     Then the exit code is 0
 
+  Scenario Outline: name@file in [assume] marks the function of that file only (<list>)
+    Given the C file "a.c" holds:
+      """
+      #include "unistd.h"
+      #include "cchecker.h"
+      static void trace(int fd) { (void)write(fd, "a", 1); }
+      CC_SHORT void a(int fd) { trace(fd); }
+      """
+    And the C file "b.c" holds:
+      """
+      #include "unistd.h"
+      #include "cchecker.h"
+      static void trace(int fd) { (void)write(fd, "b", 1); }
+      CC_SHORT void b(int fd) { trace(fd); }
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [assume]
+      <list>
+      """
+    When I run cchecker in its folder with "--tools rules --json a.c b.c -- -I../../../include"
+    Then the exit code is 1
+    And the output <a>:
+      """
+      "file":"a.c","line":4,
+      """
+    And the output <b>:
+      """
+      "file":"b.c","line":4,
+      """
+
+    Examples:
+      | list                      | a                | b                |
+      | stop = ["trace@a.c"]      | does not include | includes         |
+      | stop = ["trace@b.c"]      | includes         | does not include |
+      | short = ["trace@b.c"]     | includes         | does not include |
+
+  Scenario: A name@file of [assume] that no function has is an error, as a bare name is
+    Given the C file "a.c" holds:
+      """
+      static void put(void) {}
+      void run(void) { put(); }
+      """
+    And the C file "b.c" holds:
+      """
+      static void put(void) {}
+      void run_b(void) { put(); }
+      """
+    And the file "compile_commands.json" holds:
+      """
+      [{"directory": ".", "file": "a.c", "arguments": ["cc", "-c", "a.c"]},
+       {"directory": ".", "file": "b.c", "arguments": ["cc", "-c", "b.c"]}]
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [assume]
+      stop = ["put@a.c", "put@b.c"]
+      """
+    When I run cchecker in its folder with "--tools rules"
+    Then the exit code is 0
+    Given the file "cchecker.toml" holds:
+      """
+      [assume]
+      stop = ["put@a.c", "put@c.c", "run@b.c"]
+      """
+    When I run cchecker in its folder with "--tools rules"
+    Then the exit code is 2
+    And the errors include:
+      """
+      put@c.c (assume.stop)
+      """
+    And the errors include:
+      """
+      run@b.c (assume.stop)
+      """
+    And the errors do not include:
+      """
+      put@a.c
+      """
+
   Scenario: A name of [assume] that no function of the compile database has is an error
     Given the C file "tick.c" holds:
       """
