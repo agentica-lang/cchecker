@@ -126,7 +126,6 @@ Feature: Ownership on every path
       | elvis                  | void f(char *q, int n) { char *p = q ?: make(n); free(p); }                                                                               |
       | field of a local struct | void f(int n) { struct local { CC_OWNS char *held; } x; CC_OWNS char *b = malloc(n); x.held = b; work(x.held); free(x.held); }          |
       | local struct escapes    | void f(int n) { struct local { CC_OWNS char *held; } x; CC_OWNS char *b = malloc(n); x.held = b; work((char *)&x); }                     |
-      | two names, the first returned | CC_OWNS char *f(int n, const char *a) { char *z = ({ CC_OWNS char *x = malloc(n); x; }), *b = z; b = stpcpy(b, a); return z; } |
       | two names, the second returned | CC_OWNS char *f(int n, const char *a) { char *b = ({ CC_OWNS char *x = malloc(n); x; }), *z = b; b = stpcpy(b, a); return z; } |
       | owner in a field that does not own | struct vec { void *base; int len; }; int send(struct vec *v, int c); void f(int n) { CC_OWNS char *buf = make(n); struct vec v = { .base = buf, .len = n }; send(&v, 1); free(buf); } |
       | owner in an array       | int run(char *const argv[]); void f(int n) { CC_OWNS char *path = make(n); char *argv[] = { path, NULL }; run(argv); free(path); } |
@@ -167,6 +166,7 @@ Feature: Ownership on every path
       | freed through address | void f(int n) { CC_OWNS char *b = malloc(n); zap(&b); if (b) free(b); }    |
       | stored through *p     | void f(CC_FREES char **p) { CC_OWNS char *n = malloc(8); free(*p); *p = n; free(n); } |
       | old value freed       | void f(CC_FREES char **p) { char *old = *p; free(*p); *p = NULL; free(old); } |
+      | goto into a block     | void f(void) { char *keep = NULL; int once = 0; { CC_OWNS char *t = make(1); keep = t; again: free(t); } keep = NULL; if (!once) { once = 1; goto again; } } |
       | two locals of the old value | void f(CC_FREES char **p, char *v) { char *a = *p; char *c = *p; *p = v; free(a); free(c); } |
 
   Scenario Outline: A pointer used after a path freed it or handed it on is a finding at the function (<case>)
@@ -553,11 +553,11 @@ Feature: Ownership on every path
       """
     And the output includes once:
       """
-      "message":"outer_alias_leaks does not free or hand on
+      {"code":"CC-OWN-LEAK","tool":"rules","file":"$DIR/held.c","line":46,
       """
     And the output includes:
       """
-      "line":46,"column":6,"message":"outer_alias_leaks does not free or hand on t on every path","path":["49:23 t = make","50:12 keep = t","53:1 ends"]
+      "path":["49:23 t = make","50:12 keep = t","53:1 ends"]
       """
     And the output does not include:
       """

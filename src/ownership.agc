@@ -198,7 +198,12 @@ def walked(walker: Walker) -> Walk
 
       Moved.Stopped -> next
       Moved.Went(went_on) ->
-        moved = went_on.with(state: released(went_on.state))
+        # A `goto` into a block reaches its pointers again past their declarations: none of them is dropped.
+        moved = went_on
+        if not body.enters
+          moved = went_on.with(state: released(went_on.state))
+        end
+
         for after in node.next
           next_state = moved.state.with(facts: Locking.kept(moved.state.facts, walker.live.get(after, unread)))
           seen = "#{after}|#{encoded(next_state)}"
@@ -291,7 +296,10 @@ def closed(body: Body, item: Item, closing: Closing) -> Outcome
   breaches: List[Breach] = []
   for name in closing.names
     if held.include?(name)
-      state = state.with(kept: state.kept.add(name))
+      if not state.kept.include?(name)
+        state = state.with(kept: state.kept.add(name))
+      end
+
       next
     end
 
@@ -381,11 +389,18 @@ def after_call(body: Body, item: Item, site: Site) -> Outcome
 
   for name in site.fills
     step = Step(text: "#{at} #{site.name} sets #{plain(name)}", name: name, origin: true)
-    if current.state.owns.get(name).map do |own| own == OWNED end.unwrap_or(false)
+    state = current.state
+    if kept_by_alias?(state, name)
+      state = handed_over(state, name)
+    elsif state.owns.get(name).map do |own| own == OWNED end.unwrap_or(false)
       breaches = breaches.push(overwritten(body, current, name, step))
     end
 
-    state = current.state
+    # A kept pointer that a call fills is declared again (the next round of a loop): it is live again.
+    if state.kept.include?(name)
+      state = state.with(kept: state.kept.delete(name))
+    end
+
     current = current.with(
       state: state.with(
         owns: state.owns.put(name, FILLED),
@@ -495,24 +510,9 @@ def after_assign(body: Body, item: Item, assign: Assign) -> Outcome
   breaches: List[Breach] = []
   state = item.state
   owned = state.owns.get(assign.name).map do |own| own == OWNED end.unwrap_or(false)
-  # `old = *p; *p = v;` in a CC_FREES parameter, or `old = p; p = q;`: the locals that stood for the pointer keep its
-  # old value, in the state it had; the first one holds it and the others stand for it. A realloc moves the old value
-  # itself (`resized`).
-  keepers = state.aliases.keys.sort.select do |alias| state.aliases[alias] == assign.name end
-  if assign.value != "resized" and not keepers.empty?
-    holder = keepers.first
-    aliases = state.aliases.delete(holder)
-    for other in keepers.drop(1)
-      aliases = aliases.put(other, holder)
-    end
-
-    owns = state.owns
-    case state.owns.get(assign.name)
-      some(own) -> owns = owns.put(holder, own)
-      none -> owns = owns
-    end
-
-    state = state.with(aliases: aliases, owns: owns)
+  # A realloc moves the old value itself (`resized`).
+  if assign.value != "resized" and kept_by_alias?(state, assign.name)
+    state = handed_over(state, assign.name)
     owned = false
   end
 
@@ -520,12 +520,11 @@ def after_assign(body: Body, item: Item, assign: Assign) -> Outcome
     breaches = breaches.push(overwritten(body, item, assign.name, step))
   end
 
+  state = state.with(aliases: state.aliases.delete(assign.name), links: state.links.delete(assign.name))
   # A new value of a kept pointer is a new declaration of its name (the next round of a loop): it is live again.
-  state = state.with(
-    aliases: state.aliases.delete(assign.name),
-    links: state.links.delete(assign.name),
-    kept: state.kept.delete(assign.name),
-  )
+  if state.kept.include?(assign.name)
+    state = state.with(kept: state.kept.delete(assign.name))
+  end
 
   state = state.with(owns: state.owns.delete(assign.name))
   case assign.value
@@ -552,6 +551,27 @@ def after_assign(body: Body, item: Item, assign: Assign) -> Outcome
 end
 
 # The result of a realloc owns; the pointer it moved owns again where the result is null.
+# Whether a local stands for the pointer `name`.
+def kept_by_alias?(state: State, name: String) -> Bool
+  return state.aliases.values.include?(name)
+end
+
+# `old = *p; *p = v;` in a CC_FREES parameter, `old = p; p = q;` or `old = p; take(&p);`: the locals that stood for the
+# pointer keep its old value, in the state it had; the first one holds it and the others stand for it.
+def handed_over(state: State, name: String) -> State
+  keepers = state.aliases.keys.sort.select do |alias| state.aliases[alias] == name end
+  holder = keepers.first
+  aliases = state.aliases.delete(holder)
+  for other in keepers.drop(1)
+    aliases = aliases.put(other, holder)
+  end
+
+  case state.owns.get(name)
+    some(own) -> return state.with(aliases: aliases, owns: state.owns.put(holder, own))
+    none -> return state.with(aliases: aliases)
+  end
+end
+
 def resized(state: State, assign: Assign) -> State
   owned = state.with(owns: state.owns.put(assign.name, OWNED))
   return owned.with(links: owned.links.put(assign.name, owner(state, assign.from)))
