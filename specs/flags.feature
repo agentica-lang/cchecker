@@ -1,8 +1,9 @@
 Feature: Calls that do not block by their flags
   A call of `open` or `openat` with O_NONBLOCK, or of `recv`, `send`, `recvfrom` or `sendto` with MSG_DONTWAIT, does
-  not block, so it is not a blocking call for CC_SHORT. The rules read the flag argument when it is a constant, with
-  the values of the target that clang builds for (Linux or macOS); a flag in a variable, or a target whose values the
-  rules do not know, leaves the call blocking. `[library] libc_nonblocking_flags = false` turns this off.
+  not block, and neither does `uv_run` with UV_RUN_NOWAIT, so they are not blocking calls for CC_SHORT. The rules read
+  the flag argument when it is a constant, with the values of the target that clang builds for (Linux or macOS); a
+  flag in a variable, or a target whose values the rules do not know, leaves the call blocking. `[library]
+  libc_nonblocking_flags = false` turns this off.
 
   Scenario Outline: A call with a flag that makes it return at once is not blocking (<case>)
     Given the C file "flags.c" holds:
@@ -62,6 +63,52 @@ Feature: Calls that do not block by their flags
       | -target arm64-apple-macos    | 4     | 0    |
       | -m32                         | 2048  | 0    |
 
+  Scenario Outline: uv_run returns at once only with the mode UV_RUN_NOWAIT (<case>)
+    Given the C file "run.c" holds:
+      """
+      #include "cchecker.h"
+
+      typedef struct uv_loop_s uv_loop_t;
+      typedef enum { UV_RUN_DEFAULT = 0, UV_RUN_ONCE, UV_RUN_NOWAIT } uv_run_mode;
+      int uv_run(uv_loop_t *loop, uv_run_mode mode);
+      CC_SHORT int tick(uv_loop_t *loop, uv_run_mode mode) { <code> }
+      """
+    When I run cchecker in its folder with "--tools rules --json run.c -- -I../../../include"
+    Then the exit code is <exit>
+    And the output <short>:
+      """
+      "CC-EFFECT-SHORT-BLOCKS"
+      """
+
+    Examples:
+      | case                 | code                                  | exit | short            |
+      | UV_RUN_NOWAIT        | return uv_run(loop, UV_RUN_NOWAIT);   | 0    | does not include |
+      | the value 2          | return uv_run(loop, (uv_run_mode)2);  | 0    | does not include |
+      | UV_RUN_ONCE          | return uv_run(loop, UV_RUN_ONCE);     | 1    | includes         |
+      | UV_RUN_DEFAULT       | return uv_run(loop, UV_RUN_DEFAULT);  | 1    | includes         |
+      | a mode in a variable | return uv_run(loop, mode);            | 1    | includes         |
+      | one call of two      | (void)uv_run(loop, UV_RUN_NOWAIT); return uv_run(loop, UV_RUN_ONCE); | 1 | includes |
+      | two modes joined     | return uv_run(loop, UV_RUN_ONCE \| UV_RUN_NOWAIT); | 1 | includes |
+      | the value 3          | return uv_run(loop, (uv_run_mode)3);  | 1    | includes         |
+
+  Scenario: The mode of uv_run is the same on every target, so a target whose flags are not known says nothing of it
+    Given the C file "run.c" holds:
+      """
+      #include "cchecker.h"
+
+      typedef struct uv_loop_s uv_loop_t;
+      typedef enum { UV_RUN_DEFAULT = 0, UV_RUN_ONCE, UV_RUN_NOWAIT } uv_run_mode;
+      int uv_run(uv_loop_t *loop, uv_run_mode mode);
+      CC_SHORT int tick(uv_loop_t *loop) { return uv_run(loop, UV_RUN_NOWAIT); }
+      CC_SHORT int tock(uv_loop_t *loop) { return uv_run(loop, (uv_run_mode)2); }
+      """
+    When I run cchecker in its folder with "--tools rules run.c -- -I../../../include --target=x86_64-unknown-freebsd"
+    Then the exit code is 0
+    And the errors do not include:
+      """
+      are not known
+      """
+
   Scenario: A target whose values the rules do not know leaves the call blocking, and the run says so
     Given the C file "target.c" holds:
       """
@@ -92,6 +139,23 @@ Feature: Calls that do not block by their flags
       #include "cchecker.h"
 
       CC_HOT int hot(const char *path) { return open(path, O_RDONLY | O_NONBLOCK); }
+      """
+    When I run cchecker with "--tools rules --json $DIR/hot.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "CC-EFFECT-HOT-SYSCALL"
+      """
+
+  Scenario: CC_HOT still counts uv_run with UV_RUN_NOWAIT: it is a system call
+    Given the C file "hot.c" holds:
+      """
+      #include "cchecker.h"
+
+      typedef struct uv_loop_s uv_loop_t;
+      typedef enum { UV_RUN_DEFAULT = 0, UV_RUN_ONCE, UV_RUN_NOWAIT } uv_run_mode;
+      int uv_run(uv_loop_t *loop, uv_run_mode mode);
+      CC_HOT int hot(uv_loop_t *loop) { return uv_run(loop, UV_RUN_NOWAIT); }
       """
     When I run cchecker with "--tools rules --json $DIR/hot.c -- -I../include"
     Then the exit code is 1
