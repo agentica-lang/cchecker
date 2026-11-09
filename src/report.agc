@@ -1,5 +1,6 @@
 ## What a run prints.
 
+import {Entry} from "baseline"
 import {Finding, IncompleteFunction, ToolError, UncheckedFile, UnresolvedCallback} from "findings"
 import {Suppressed} from "suppressions"
 
@@ -10,7 +11,8 @@ import {Suppressed} from "suppressions"
 ## are the functions with more paths than the path rules follow. `suppressed` are the findings that a suppression
 ## took out. `config` is the settings file that was read, or "defaults". `unresolved_callbacks` are the callbacks of
 ## libuv calls that the inference of roots could not follow to a function. `unchecked_files` are the files that were
-## not checked because a header they include is not found.
+## not checked because a header they include is not found. `stale` are the entries of the baseline behind `fixed`,
+## and `strict` says that they fail the run (`--strict-baseline` on a run that covers the whole baseline).
 export struct Report
   findings: List[Finding]
   baselined: Int
@@ -23,6 +25,8 @@ export struct Report
   config: String = "defaults"
   unresolved_callbacks: List[UnresolvedCallback] = []
   unchecked_files: List[UncheckedFile] = []
+  stale: List[Entry] = []
+  strict: Bool = false
 end
 
 # The JSON form of a report, which says in `clean` whether the run is clean.
@@ -31,6 +35,7 @@ struct Encoded
   findings: List[Finding]
   baselined: Int
   fixed: Int
+  stale: List[Entry]
   errors: List[ToolError]
   skipped: Int
   skipped_declarations: Int
@@ -41,20 +46,35 @@ struct Encoded
   unchecked_files: List[UncheckedFile]
 end
 
-## Returns the report for people: one line for each finding, then a summary line.
+## Returns the report for people: one line for each finding, a summary line, then one line for each stale entry of
+## the baseline and, when they fail the run, how to drop them.
 export def text(report: Report) -> String
   lines = report.findings.map do |f| "#{f.file}:#{f.line}:#{f.column} #{f.code} #{f.message}#{path_text(f)}" end
-  return lines.push(summary(report)).join("\n")
+  lines = lines.push(summary(report)).concat(report.stale.map(&stale_line))
+  if failed_stale?(report)
+    lines = lines.push(
+      "cchecker: --strict-baseline: the baseline has stale entries (#{report.stale.size}); run --update-baseline " +
+      "to drop them",
+    )
+  end
+
+  return lines.join("\n")
+end
+
+## Returns whether the stale entries of the baseline fail the run.
+export def failed_stale?(report: Report) -> Bool
+  return report.strict and not report.stale.empty?
 end
 
 ## Returns the report as one JSON object for tools and agents.
 export def json(report: Report) -> String
   return JSON.encode(
     Encoded(
-      clean: report.findings.empty? and report.errors.empty?,
+      clean: report.findings.empty? and report.errors.empty? and not failed_stale?(report),
       findings: report.findings,
       baselined: report.baselined,
       fixed: report.fixed,
+      stale: report.stale,
       errors: report.errors,
       skipped: report.skipped,
       skipped_declarations: report.skipped_declarations,
@@ -91,6 +111,16 @@ export def unresolved_line(report: Report) -> Optional[String]
     "cchecker: #{count} #{plural(count, "callback")} of a libuv call could not be followed to a function, so " +
     "#{plural_it(count)} no root (first: #{first.call} at #{first.file}:#{first.line}); --json lists them",
   )
+end
+
+# A stale entry of the baseline: its file, code and message, and how many of it were not found when more than one.
+def stale_line(entry: Entry) -> String
+  times = ""
+  if entry.count > 1
+    times = " (#{entry.count} of them)"
+  end
+
+  return "cchecker: fixed since the baseline: #{entry.file} #{entry.code} #{entry.message}#{times}"
 end
 
 # The call path of a finding of the rules, and the place of an inferred root, which the message leaves out.

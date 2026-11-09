@@ -55,6 +55,11 @@ OPTIONS = [
   Opt(name: "timeout", kind: Kind.Int, default: "300", min: some(1), help: "seconds for one tool on one file"),
   Opt(name: "baseline", short: "b", metavar: "FILE", help: "findings to accept; only others are reported"),
   Opt(name: "update-baseline", kind: Kind.Flag, help: "write the baseline from the findings and exit 0"),
+  Opt(
+    name: "strict-baseline",
+    kind: Kind.Flag,
+    help: "exit 1 when a whole run finds an entry of the baseline fixed (stale)",
+  ),
   Opt(name: "exclude", metavar: "LIST", help: "comma separated files or folders to skip"),
   Opt(name: "gcc", default: "gcc", metavar: "PROGRAM", help: "the gcc to run"),
   Opt(name: "clang-tidy", default: "clang-tidy", metavar: "PROGRAM", help: "the clang-tidy to run"),
@@ -99,6 +104,7 @@ export struct Options
   config: Optional[String] = none
   infer: Bool = true
   all_paths: Bool = false
+  strict_baseline: Bool = false
 end
 
 ## Returns the options of the command line, or the error to print: a usage error, or the help text.
@@ -130,6 +136,7 @@ export def parse(args: List[String]) -> Result[Options]
     config: OP.optional_string(parsed, "config"),
     infer: not OP.flag(parsed, "no-infer"),
     all_paths: OP.flag(parsed, "all-paths"),
+    strict_baseline: OP.flag(parsed, "strict-baseline"),
   )
 
   problem = mistake(options)
@@ -168,6 +175,14 @@ def mistake(options: Options) -> String
 
   if options.update_baseline and not options.baseline.some?
     return "--update-baseline needs --baseline FILE"
+  end
+
+  if options.strict_baseline and not options.baseline.some?
+    return "--strict-baseline needs --baseline FILE"
+  end
+
+  if options.strict_baseline and options.update_baseline
+    return "give one of --strict-baseline, --update-baseline: an update drops the stale entries"
   end
 
   if options.update_baseline and options.custom_checks

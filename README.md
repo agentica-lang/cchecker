@@ -82,10 +82,11 @@ turn the library knowledge on or off, name roots and state assumptions (see
 ## Options
 
 The ones used most: `-p` (the compile database), `-t` (the tools to run: `gcc`,
-`clang-tidy`, `rules`), `-b` and `--update-baseline`, `--exclude`, `-j`,
-`--timeout`, `--json` and `-c` (the settings file). `--all-paths` and
-`--no-infer` tune the rules. Every option, the default clang-tidy checks and the
-timeout rules are in [Output, options and exit codes](docs/usage.md).
+`clang-tidy`, `rules`), `-b`, `--update-baseline` and `--strict-baseline`,
+`--exclude`, `-j`, `--timeout`, `--json` and `-c` (the settings file).
+`--all-paths` and `--no-infer` tune the rules. Every option, the default
+clang-tidy checks and the timeout rules are in [Output, options and exit
+codes](docs/usage.md).
 
 ## Codes
 

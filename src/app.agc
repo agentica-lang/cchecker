@@ -162,6 +162,7 @@ export def run(options: Options) -> Result[Int]
       end
 
       split = Baseline.split(findings, accepted, scope)
+      strict = strict?(options, config, cwd, scope)
       return ok(
         finish(
           options,
@@ -169,6 +170,8 @@ export def run(options: Options) -> Result[Int]
             findings: split.new_findings,
             baselined: split.accepted,
             fixed: split.fixed,
+            stale: split.stale,
+            strict: strict,
             errors: collected.errors,
             skipped: plan.skipped.size,
             skipped_declarations: collected.skipped_declarations,
@@ -303,11 +306,24 @@ def finish(options: Options, report: Report.Report) -> Int
     return 2
   end
 
-  if not report.findings.empty?
+  if not report.findings.empty? or Report.failed_stale?(report)
     return 1
   end
 
   return 0
+end
+
+# Whether `--strict-baseline` holds the run to the stale entries of its baseline: only a run that covers the whole
+# baseline can tell that an entry is stale. That is a full run of the database (`Baseline.Scope.full`) with every
+# tool, the default checks and every check of the rules on, as --update-baseline needs; a partial run never fails on
+# them.
+def strict?(options: Options, config: Config.Config, cwd: String, scope: Baseline.Scope) -> Bool
+  if not options.strict_baseline or not scope.full or options.custom_checks
+    return false
+  end
+
+  every = [Tool.Gcc, Tool.ClangTidy, Tool.Rules].all? do |tool| options.tools.include?(tool) end
+  return every and full_rules(options, config, cwd).ok?
 end
 
 def gather(options: Options) -> Result[List[Commands.Entry]]

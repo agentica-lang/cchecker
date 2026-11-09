@@ -78,7 +78,7 @@ Feature: Running the analyzers on C files
     Then the exit code is 0
     And the output includes:
       """
-      "clean":true,"findings":[],"baselined":0,"fixed":0,"errors":[],"skipped":0
+      "clean":true,"findings":[],"baselined":0,"fixed":0,"stale":[],"errors":[],"skipped":0
       """
 
   Scenario: A compile database names the files and their flags

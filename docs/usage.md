@@ -2,30 +2,34 @@
 
 ## Output
 
-A finding is one line, `file:line:column CODE message`, and the last line is a
-summary. `--json` prints one object for tools and agents: `clean`, `findings`
-(each has `code`, `tool`, `file`, `line`, `column`, `message`, `path`, the call
-path of a finding of the rules, `source`, the `[library]` flag that made it or
-`""`, and `root`, where an inferred root comes from or `""`), `baselined`,
-`fixed`, `errors` (a tool that did not run or could not compile a file: `tool`,
-`file` and `message`), `skipped`, `suppressed` (see
-[Suppressions](suppressions.md#suppressions)), `config`, the settings file that
-was read or `"defaults"` (see [Settings](settings.md)), `unresolved_callbacks`
-(see [Roots](settings.md#roots)), and `unchecked_files`: the files that were not
-checked because a header they include is not found (`file` and `missing`, the
-header as the `#include` wrote it). Such a file is skipped with a warning on
-standard error and does not change the exit code. The rules also add
-`incomplete_functions` and `skipped_declarations` (see [Rules](rules.md)).
+A finding is one line, `file:line:column CODE message`, then a summary line and
+a line for each stale entry of the baseline (see
+[Baseline](suppressions.md#baseline)). `--json` prints one object for tools and
+agents: `clean`, `findings` (each has `code`, `tool`, `file`, `line`, `column`,
+`message`, `path`, the call path of a finding of the rules, `source`, the
+`[library]` flag that made it or `""`, and `root`, where an inferred root comes
+from or `""`), `baselined`, `fixed`, `stale` (the entries of the baseline behind
+`fixed`: `code`, `file`, `message` and `count`), `errors` (a tool that did not
+run or could not compile a file: `tool`, `file` and `message`), `skipped`,
+`suppressed` (see [Suppressions](suppressions.md#suppressions)), `config`, the
+settings file that was read or `"defaults"` (see [Settings](settings.md)),
+`unresolved_callbacks` (see [Roots](settings.md#roots)), and `unchecked_files`:
+the files that were not checked because a header they include is not found
+(`file` and `missing`, the header as the `#include` wrote it). Such a file is
+skipped with a warning on standard error and does not change the exit code. The
+rules also add `incomplete_functions` and `skipped_declarations` (see
+[Rules](rules.md)).
 
 ## Exit codes
 
-`0` no new findings, `1` new findings, `2` a usage error or a tool error. A tool
-error is a tool that is missing, ends in a timeout or exits with a non-zero
-code, except for the `1` of a compiler that found errors in the file (a file
-that does not compile is an error, never a finding: gcc 14 refuses an implicit
-function declaration, for example). gcc reports its analyzer only
-(`CC-GCC-ANALYZER-...`); the other warnings of the build flags (`-Wall`) are not
-findings, as they are not for clang-tidy.
+`0` no new findings, `1` new findings (or stale entries of the baseline with
+`--strict-baseline`), `2` a usage error or a tool error. A tool error is a tool
+that is missing, ends in a timeout or exits with a non-zero code, except for the
+`1` of a compiler that found errors in the file (a file that does not compile is
+an error, never a finding: gcc 14 refuses an implicit function declaration, for
+example). gcc reports its analyzer only (`CC-GCC-ANALYZER-...`); the other
+warnings of the build flags (`-Wall`) are not findings, as they are not for
+clang-tidy.
 
 `-Werror` in the flags of a database does not turn the other warnings of gcc
 into tool errors: cchecker adds `-Wno-error` after the flags, and
@@ -62,7 +66,7 @@ README and described in [Rules](rules.md) and [Ownership](ownership.md).
 | `--checks LIST` | the clang-tidy checks, after those of a `.clang-tidy` file; default below |
 | `-j, --jobs N` | tool runs at once (default: the number of cores) |
 | `--timeout SECONDS` | for one tool on one file (default 300); a timeout is a tool error |
-| `-b, --baseline FILE`, `--update-baseline` | see [Baseline](suppressions.md#baseline) |
+| `-b, --baseline FILE`, `--update-baseline`, `--strict-baseline` | see [Baseline](suppressions.md#baseline) |
 | `--exclude LIST` | files or folders to skip, comma separated (`src/vendor`, `./gen/a.c`): whole path parts |
 | `--gcc PROGRAM`, `--clang-tidy PROGRAM` | the programs to run, for a versioned name such as `gcc-14` |
 | `--clang PROGRAM` | the clang that dumps the AST for the rules |
