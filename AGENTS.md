@@ -7,9 +7,10 @@ code of ours except the annotation header and the C fixtures of the tests.
 ## Map
 
 ```text
-agentica.toml     the package (name, [style], the native module, [dependencies]: prop for the property tests)
-agentica.lock     the locked commit and hash of prop; `make deps` installs it into deps/ (gitignored)
-native/           scan.c: the native module that scans clang's AST dump (src/scan.agc)
+agentica.toml     the package (name, [style], the native module, [dependencies]: prop for the property tests, native-gen)
+agentica.lock     the locked commits and hashes of prop and native-gen; `make deps` installs it into deps/ (gitignored)
+native/           scan.c: the native module that scans clang's AST dump (src/scan.agc), on cchecker_scan_native.h,
+                  the header that native-gen makes from its `extern module` block (`make header`, `make header-check`)
 cchecker.agc      main: the options, the run, the exit code
 src/              one module per topic (`ls src/`): the compile database, running the tools, parsing their
                   output, the findings, the baseline, the report; for the rules: scan (the project's declarations
@@ -39,8 +40,8 @@ test/             unit tests of the pure helpers (the parsers, the scan of the A
   `make fmt-check`: `agentica fmt --check` (`agentica fmt` fixes it). `make test`: `agentica test --jobs 4` (the
   features and the unit tests) without the scenarios tagged `@slow`; `make test-slow` runs those, in a CI job of
   their own (on a shared machine, run at most one, with `--only`). Both first run `make deps` (`agentica install`:
-  prop into `deps/`, with the network only when the download cache lacks the locked commit) and `make native`, which
-  builds the native module once. `make check` runs `make deps` too.
+  prop (property tests) and native-gen (`make header`) into `deps/`, with the network only when the download cache
+  lacks the locked commit) and `make native`, which builds the native module once. `make check` runs `make deps` too.
   `agentica test --only TEXT` runs the scenarios whose name contains `TEXT`.
 - The tests need `gcc`, `clang`, `clang-tidy`, `sh` and `timeout` (coreutils) on PATH. CI installs them and fails if
   one is missing; a local run without one fails the scenarios too.

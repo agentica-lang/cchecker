@@ -40,14 +40,16 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "agentica_native.h"
+/* The C side of the module (the wrappers, the argument checks, the tables) is made from src/scan.agc by native-gen: see
+ * cchecker_scan_native.h. This file holds the scan. */
+#define CCHECKER_SCAN_NATIVE_IMPLEMENTATION
+#include "cchecker_scan_native.h"
 
 #define LINE_BYTES 16777216
 #define MAX_DECL_LINES 1000000
 /* Above the deepest indent that `step` tells apart (10 spaces). */
 #define INDENT_CAP 12
 
-enum { NATIVE_DUMP, PLACE };
 enum phase { BETWEEN, OPEN, KEPT, DROPPED, OVERSIZED };
 
 typedef struct {
@@ -273,28 +275,23 @@ static bool next_line(lines *r, slice *line, bool *done) {
   }
 }
 
-/* A copy of the String term `term`, NUL-terminated, in malloc memory; NULL when out of memory. */
-static char *c_path(an_env *env, an_term term, bool *bad) {
-  const char *data;
-  size_t len;
-  *bad = !an_get_string(env, term, &data, &len);
-  if (*bad) return NULL;
-  char *path = malloc(len + 1);
-  if (!path) return NULL;
-  memcpy(path, data, len);
-  path[len] = '\0';
-  return path;
+/* A copy of `path`, NUL-terminated, in malloc memory; NULL when out of memory. */
+static char *c_copy(ng_str path) {
+  char *copy = malloc(path.len + 1);
+  if (!copy) return NULL;
+  memcpy(copy, path.data, path.len);
+  copy[path.len] = '\0';
+  return copy;
 }
 
-/* Opens the file at `path_term`, or with `timeout_ms` >= 0 the FIFO there, read until that many milliseconds from
+/* Opens the file at `path_text`, or with `timeout_ms` >= 0 the FIFO there, read until that many milliseconds from
  * now. A FIFO opened without blocking does not wait for its writer. */
-static bool open_lines_until(an_env *env, an_term path_term, int64_t timeout_ms, lines *r, an_term *failure) {
+static bool open_lines_until(an_env *env, ng_str path_text, int64_t timeout_ms, lines *r, an_term *failure) {
   memset(r, 0, sizeof *r);
   r->fd = -1;
-  bool bad;
-  char *path = c_path(env, path_term, &bad);
-  if (bad || !path) {
-    *failure = bad ? an_badarg(env, 0) : an_raise(env, "out of memory");
+  char *path = c_copy(path_text);
+  if (!path) {
+    *failure = an_raise(env, "out of memory");
     return false;
   }
   bool opened;
@@ -326,8 +323,8 @@ static bool open_lines_until(an_env *env, an_term path_term, int64_t timeout_ms,
   return true;
 }
 
-static bool open_lines(an_env *env, an_term path_term, lines *r, an_term *failure) {
-  return open_lines_until(env, path_term, -1, r, failure);
+static bool open_lines(an_env *env, ng_str path_text, lines *r, an_term *failure) {
+  return open_lines_until(env, path_text, -1, r, failure);
 }
 
 static void close_lines(lines *r) {
@@ -336,12 +333,8 @@ static void close_lines(lines *r) {
   free(r->data);
 }
 
-/* fifo(path: String) -> Result[Bool] */
-static an_term fifo(an_env *env, int argc, const an_term *argv) {
-  (void)argc;
-  bool bad;
-  char *path = c_path(env, argv[0], &bad);
-  if (bad) return an_badarg(env, 0);
+an_term cchecker_scan_fifo(an_env *env, ng_str path_text) {
+  char *path = c_copy(path_text);
   if (!path) return an_raise(env, "out of memory");
   int made = mkfifo(path, 0600);
   int why = errno;
@@ -351,7 +344,7 @@ static an_term fifo(an_env *env, int argc, const an_term *argv) {
     int n = snprintf(message, sizeof message, "the FIFO of the AST dump could not be made: %s", strerror(why));
     return an_error(env, message, n < 0 ? 0 : (size_t)n < sizeof message ? (size_t)n : sizeof message - 1);
   }
-  return an_ok(env, an_bool(env, true));
+  return cchecker_scan_result_Bool_ok(env, true);
 }
 
 /* The distinct values of the `"file": ` lines, as written. Few distinct files (some hundreds), each seen many times: a
@@ -406,34 +399,26 @@ static an_term file_values_end(an_env *env, file_values *f, lines *r) {
   } else if (f->failed || f->seen.failed) {
     result = an_raise(env, "out of memory");
   } else {
-    an_list_builder b;
-    an_list_begin(env, &b, f->count);
+    cchecker_scan_list_String_builder b;
+    cchecker_scan_list_String_begin(env, &b, f->count);
     for (size_t k = 0; k < f->count; k++)
-      an_list_push(env, &b, an_string(env, f->seen.data + f->values[k].at, f->values[k].n));
-    result = an_ok(env, an_list_end(env, &b));
+      cchecker_scan_list_String_push(env, &b, (ng_str){f->seen.data + f->values[k].at, f->values[k].n});
+    result = cchecker_scan_result_list_String_ok(env, cchecker_scan_list_String_end(env, &b));
   }
   free(f->values);
   free(f->seen.data);
   return result;
 }
 
-/* compact(from: String, to: String, timeout_ms: Int) -> Result[List[String]] */
-static an_term compact(an_env *env, int argc, const an_term *argv) {
-  (void)argc;
+an_term cchecker_scan_compact(an_env *env, ng_str from, ng_str to, int64_t timeout_ms) {
   static const char spaces[INDENT_CAP] = {' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' '};
-  bool bad;
-  char *to = c_path(env, argv[1], &bad);
-  if (bad) return an_badarg(env, 1);
-  if (!to) return an_raise(env, "out of memory");
-  int64_t timeout_ms;
-  if (!an_get_int(env, argv[2], &timeout_ms) || timeout_ms < 0) {
-    free(to);
-    return an_badarg(env, 2);
-  }
+  if (timeout_ms < 0) return an_badarg(env, 2);
+  char *path = c_copy(to);
+  if (!path) return an_raise(env, "out of memory");
   lines r;
   an_term result;
-  if (!open_lines_until(env, argv[0], timeout_ms, &r, &result)) {
-    free(to);
+  if (!open_lines_until(env, from, timeout_ms, &r, &result)) {
+    free(path);
     return r.error ? copy_error(env, &r, r.error) : result;
   }
   /* The bytes are copied as they are: `scan` checks them. */
@@ -444,8 +429,8 @@ static an_term compact(an_env *env, int argc, const an_term *argv) {
    * about -j 64 of these) the call fails, and new pipes of the user get only 2 pages: slower, still correct. */
   (void)fcntl(r.fd, F_SETPIPE_SZ, (int)BLOCK_BYTES);
 #endif
-  FILE *out = fopen(to, "wb");
-  free(to);
+  FILE *out = fopen(path, "wb");
+  free(path);
   file_values f = {0};
   bool written = out != NULL, noted = true, done = false;
   slice line;
@@ -472,12 +457,10 @@ static an_term compact(an_env *env, int argc, const an_term *argv) {
   return result;
 }
 
-/* files(path: String) -> Result[List[String]] */
-static an_term files(an_env *env, int argc, const an_term *argv) {
-  (void)argc;
+an_term cchecker_scan_files(an_env *env, ng_str path) {
   lines r;
   an_term failure;
-  if (!open_lines(env, argv[0], &r, &failure)) return failure;
+  if (!open_lines(env, path, &r, &failure)) return failure;
   r.any_bytes = true;
   file_values f = {0};
   bool done = false;
@@ -908,34 +891,31 @@ static void step(state *s, slice line) {
   located_or_kept(s, text);
 }
 
-/* scan(path: String, places: List[Place], prune: Bool) -> Result[NativeDump] */
-static an_term scan(an_env *env, int argc, const an_term *argv) {
-  (void)argc;
-  an_list_cursor c;
-  size_t count;
+an_term cchecker_scan_scan(an_env *env, ng_str path, cchecker_scan_list_Place places, bool prune) {
   state s;
   memset(&s, 0, sizeof s);
-  if (!an_get_bool(env, argv[2], &s.prune)) return an_badarg(env, 2);
-  if (!an_list_cursor_begin(env, argv[1], &c, &count)) return an_badarg(env, 1);
+  s.prune = prune;
   s.encoded = empty_encoded;
   s.encoded_n = sizeof empty_encoded - 1;
-  s.places = calloc(count ? count : 1, sizeof *s.places);
+  s.places = calloc(places.len ? places.len : 1, sizeof *s.places);
   if (!s.places) return an_raise(env, "out of memory");
   /* The strings of the places are borrowed from the argument, which lives until the call returns. */
-  an_term item, field;
-  while (an_list_next(env, &c, &item)) {
-    place *p = &s.places[s.count];
-    if (!an_get_field(env, item, PLACE, 0, &field) || !an_get_string(env, field, &p->raw, &p->raw_n) ||
-        !an_get_field(env, item, PLACE, 1, &field) || !an_get_string(env, field, &p->encoded, &p->encoded_n) ||
-        !an_get_field(env, item, PLACE, 2, &field) || !an_get_bool(env, field, &p->inside)) {
-      free(s.places);
-      return an_badarg(env, 1);
-    }
-    s.count++;
+  cchecker_scan_Place item;
+  int more;
+  while ((more = cchecker_scan_list_Place_next(env, &places, &item)) == 1) {
+    place *p = &s.places[s.count++];
+    p->raw = item.raw.data, p->raw_n = item.raw.len;
+    p->encoded = item.encoded.data, p->encoded_n = item.encoded.len;
+    p->inside = item.inside;
+  }
+  if (more < 0) {
+    /* A bad item: the call has failed already. */
+    free(s.places);
+    return an_void(env);
   }
   an_term result;
   lines r;
-  if (!open_lines(env, argv[0], &r, &result)) {
+  if (!open_lines(env, path, &r, &result)) {
     free(s.places);
     return result;
   }
@@ -951,18 +931,18 @@ static an_term scan(an_env *env, int argc, const an_term *argv) {
   } else if (failed) {
     result = an_raise(env, "out of memory");
   } else {
-    an_list_builder b;
-    an_list_begin(env, &b, s.oversized_count);
+    cchecker_scan_list_String_builder b;
+    cchecker_scan_list_String_begin(env, &b, s.oversized_count);
     for (size_t at = 0; at < s.oversized.len;) {
       size_t n;
       memcpy(&n, s.oversized.data + at, sizeof n);
       at += sizeof n;
-      an_list_push(env, &b, an_string(env, s.oversized.data + at, n));
+      cchecker_scan_list_String_push(env, &b, (ng_str){s.oversized.data + at, n});
       at += n;
     }
-    an_term fields[4] = {an_string(env, s.out.data, s.out.len), an_list_end(env, &b), an_int(env, s.skipped),
-                         an_bool(env, s.ended)};
-    result = an_ok(env, an_struct(env, NATIVE_DUMP, fields));
+    cchecker_scan_NativeDump dump = {
+        (ng_str){s.out.data, s.out.len}, cchecker_scan_list_String_end(env, &b), s.skipped, s.ended};
+    result = cchecker_scan_result_NativeDump_ok(env, dump);
   }
   free(s.places);
   free(s.decl.data);
@@ -977,16 +957,4 @@ static an_term scan(an_env *env, int argc, const an_term *argv) {
   return result;
 }
 
-static const an_type types[] = {
-  {"NativeDump", AN_STRUCT, "decls: String, oversized: List[String], skipped: Int, ended: Bool"},
-  {"Place", AN_STRUCT, "raw: String, encoded: String, inside: Bool"},
-};
-
-static const an_function functions[] = {
-  {"fifo", "(String) -> Result[Bool]", fifo, AN_DIRTY},
-  {"compact", "(String, String, Int) -> Result[List[String]]", compact, AN_DIRTY},
-  {"files", "(String) -> Result[List[String]]", files, AN_DIRTY},
-  {"scan", "(String, List[Place], Bool) -> Result[NativeDump]", scan, AN_DIRTY},
-};
-
-AN_MODULE_TYPES("cchecker_scan", functions, types, NULL)
+CCHECKER_SCAN_NATIVE_MODULE(NULL)

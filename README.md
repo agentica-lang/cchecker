@@ -19,7 +19,7 @@ memory from `malloc` or in a static.
 
 ## Install
 
-cchecker needs Agentica 0.26.1 or later, and `gcc` 10 or later, `clang` and
+cchecker needs Agentica 0.27.0 or later, and `gcc` 10 or later, `clang` and
 `clang-tidy` on PATH, and `sh`. The scan of clang's AST is a small native module
 in C (`native/`), which the first run (or `agentica compile`) builds with the
 system C compiler (`cc`); a module that cannot be built or loaded is a tool
@@ -136,7 +136,9 @@ make check       # agentica check, then agentica lint --strict (make lint alone)
 make fmt-check   # agentica fmt --check; `agentica fmt` fixes it
 make test        # agentica test --jobs 4 without the @slow scenarios, from the root of the repository
 make test-slow   # the @slow scenarios only (the bounds of specs/limits.feature, the property tests on many cases)
-make deps        # agentica install: prop into deps/; make check, test and test-slow run it first
+make deps        # agentica install: prop (property tests) and native-gen (make header) into deps/; make check, test and test-slow run it first
+make header      # regenerates native/cchecker_scan_native.h from the extern module of src/scan.agc (native-gen)
+make header-check # fails when that header is stale; CI runs it
 make native      # builds the native module once; make test and make test-slow run it first
 make bench       # the rules on the C VM of Agentica: wall time and peak RSS (BENCH_JOBS=2 for -j 2)
 ```

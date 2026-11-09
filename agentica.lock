@@ -1,6 +1,14 @@
 version = 1
 
 [[package]]
+name = "native-gen"
+git = "https://github.com/agentica-lang/packages"
+subdir = "native-gen"
+tag = "native-gen-0.1.0"
+commit = "10d19759411618064d95d792dbea407b054419da"
+hash = "sha256:7931b1fefb73ac332f31805c04eced8dc5b5825c14e0d02e572a7ea9fc543b47"
+
+[[package]]
 name = "prop"
 git = "https://github.com/agentica-lang/packages"
 subdir = "prop"
