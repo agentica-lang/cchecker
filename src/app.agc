@@ -139,6 +139,7 @@ export def run(options: Options) -> Result[Int]
     config.stops.empty? and
     config.short_locks.empty? and
     config.stop_fields.empty? and
+    config.may_jump.empty? and
     config.jumps.empty?
   )
 

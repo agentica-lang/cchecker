@@ -6,11 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- `[roots]` and `[assume]` (`short`, `stop`, `may_jump`) take `name@path`, the function of that name whose file ends
+- `[roots]` and `[assume]` (`short`, `stop`, `may_jump`, `jumps`) take `name@path`, the function of that name whose file ends
   with `path`, so a name shared by static functions of several files no longer marks all of them.
+- `CC_JUMPS` and `[assume] jumps`: a call of a function that always jumps out and never returns (an interpreter's raise
+  with `longjmp`) is a way out of its caller, where a pointer that still owns is `CC-OWN-LEAK` and a lock held is
+  `CC-PATH-LOCK-NOT-RELEASED`, and the path ends there.
 
 ### Changed
 
+- **Breaking:** `CC_MAY_JUMP` or `[assume] may_jump` on a function that never returns (`_Noreturn`, `CC_NORETURN`) now
+  means `CC_JUMPS`: its calls are checked as a way out, where before they only ended the path and found nothing. A
+  project with that combination may get new findings that its baseline does not hold.
 - A file listed more than once with the same flags is checked once; flags that differ only by `-fPIC`, `-fPIE` and
   CMake's `-D<target>_EXPORTS` count as the same (a static and a shared library of CMake), any other define does not
   (libuv's `BUILDING_UV_SHARED` keeps both entries). `folded` of `--json` counts the repeated entries left out.

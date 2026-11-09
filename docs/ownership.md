@@ -27,13 +27,16 @@ returns, each one is freed or handed on: returned, stored in a `CC_OWNS` field
 `CC_OWNS` parameter. A call of a function that may jump out (`CC_MAY_JUMP` or
 `[assume] may_jump`, see [Locks](rules.md#locks-on-every-path)) is a way out
 too: each one that still owns after the call is a leak, with the call as the
-last step of `path`. What the call itself frees or takes (a `CC_FREES` or
-`CC_OWNS` parameter) is the callee's from the call on, jump or not. A jump does
-not run the `cleanup(f)` functions of the variables, and a call through a
-function pointer never jumps. Stored anywhere else or passed to another
-parameter, it is lent and still owns. A condition that tells that a pointer is
-null (`if (!p)`, `if ((p = malloc(n)) == NULL)`) leaves it owning nothing on
-that side.
+last step of `path`. A call of a function that always jumps out and never
+returns (`CC_JUMPS`, `[assume] jumps`, or `CC_MAY_JUMP` on a function that never
+returns) is that way out alone: the leaks are checked there and the path ends,
+so a pointer freed before the call is not freed twice by the code after it. What
+the call itself frees or takes (a `CC_FREES` or `CC_OWNS` parameter) is the
+callee's from the call on, jump or not. A jump does not run the `cleanup(f)`
+functions of the variables, and a call through a function pointer never jumps.
+Stored anywhere else or passed to another parameter, it is lent and still owns.
+A condition that tells that a pointer is null (`if (!p)`, `if ((p = malloc(n))
+== NULL)`) leaves it owning nothing on that side.
 
 A local without a mark that gets a pointer that owns (`char *c = p`) stands for
 it: freeing `c` frees `p`; a `malloc` into it later owns nothing, as in any
@@ -74,7 +77,7 @@ a store that hands a pointer on, each side of `?:` gives its own value (`x->held
 
 | Code | |
 |---|---|
-| `CC-OWN-LEAK` | a path returns, jumps out at a `CC_MAY_JUMP` call, or gives a pointer a new value, while it still owns; or drops the value of a `CC_OWNS` function (kept nowhere: not in a local, a `CC_OWNS` place, a return or a parameter that takes it) |
+| `CC-OWN-LEAK` | a path returns, jumps out at a `CC_MAY_JUMP` or `CC_JUMPS` call, or gives a pointer a new value, while it still owns; or drops the value of a `CC_OWNS` function (kept nowhere: not in a local, a `CC_OWNS` place, a return or a parameter that takes it) |
 | `CC-OWN-DOUBLE-FREE` | a path frees a pointer that it already freed or handed on |
 | `CC-OWN-USE-AFTER-FREE` | a path reads, returns or hands on a pointer after it freed it or handed it on |
 

@@ -513,6 +513,8 @@ Feature: Effects on the call graph
       | CC_SHORT | typedef void nr(const char *) __attribute__((noreturn, regparm(1))); nr fatal; |                           |
       | CC_SHORT | __attribute__((cold)) void fatal(const char *why);                 |                           |
       | CC_SHORT | CC_NORETURN void fatal(const char *why);                           |                           |
+      | CC_SHORT | CC_JUMPS void fatal(const char *why);                              |                           |
+      | CC_SHORT | CC_MAY_JUMP _Noreturn void fatal(const char *why);                 |                           |
       | CC_HOT   |                                                                    | __attribute__((cold))     |
 
   Scenario Outline: follow_cold in [effects] follows a call into a function that never returns or is cold (<mark>)
@@ -542,6 +544,39 @@ Feature: Effects on the call graph
       """
     When I run cchecker in its folder with "--tools rules --json fatal.c -- -I../../../include"
     Then the exit code is 0
+
+    Examples:
+      | mark     |
+      | CC_SHORT |
+      | CC_HOT   |
+
+  Scenario Outline: A function of [assume] jumps is an error exit too (<mark>)
+    Given the C file "fatal.c" holds:
+      """
+      #include "cchecker.h"
+
+      long write(int fd, const void *buf, unsigned long n);
+      void fatal(const char *why) { write(2, why, 1); }
+      <mark> int lookup(int key) { if (key < 0) fatal("bad key"); return key; }
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [assume]
+      jumps = ["fatal"]
+      """
+    When I run cchecker in its folder with "--tools rules --json fatal.c -- -I../../../include"
+    Then the exit code is 0
+    Given the file "cchecker.toml" holds:
+      """
+      [assume]
+      may_jump = ["fatal"]
+      """
+    When I run cchecker in its folder with "--tools rules --json fatal.c -- -I../../../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "path":["lookup","fatal","write"]
+      """
 
     Examples:
       | mark     |

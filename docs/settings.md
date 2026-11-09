@@ -40,6 +40,7 @@ stop = ["trace_emit"]
 short_locks = ["queue.mu"]
 stop_fields = ["request.call"]
 may_jump = ["raise_type_error"]
+jumps = ["raise_error"]
 ```
 
 `[library]` turns each family of library knowledge on or off. All are on by
@@ -88,7 +89,7 @@ the end of the path of the file as it is, with no `..`; a leading `./` is
 ignored. In `[assume]` it may be the file of the definition or of any
 declaration of the function (`slow@slow.h` for a prototype in a header); in
 `[roots]` it is the file of the definition. It works in every list of `[roots]`
-and in `short`, `stop` and `may_jump` of `[assume]` (`stop_fields` and
+and in `short`, `stop`, `may_jump` and `jumps` of `[assume]` (`stop_fields` and
 `short_locks` name fields and locks), and a `name@path` that matches no
 function is an error (exit 2) like a bare name that does.
 
@@ -125,6 +126,14 @@ walk goes into it, and a call of it is still a way out of its caller, as `stop`
 is about what the function calls and `may_jump` about the path of the caller. A
 name that no function of the compile database declares is an error (exit 2), as
 for `short` and `stop` (`raise_type_error (assume.may_jump)`).
+
+`jumps` names the functions that always jump out of their caller and never
+return (an interpreter's raise, which calls `longjmp`), as `CC_JUMPS` does on a
+declaration: a call of one is a way out of the caller, as for `may_jump`, and
+the path ends there, as at a call that never returns. Such a function is an
+error exit for the walk of the effect rules, as a `_Noreturn` one is. A name
+that no function of the compile database declares is an error (exit 2)
+(`raise_error (assume.jumps)`).
 
 A short lock is one held for a few instructions: a lock whose field or global is
 marked `CC_NO_SYSCALL_UNDER()`, or whose class `[assume] short_locks` names:

@@ -10,7 +10,8 @@
 ## the times it released it, and the value of the conditions it went through that the function tests twice (`if
 ## (locked) lock(); ... if (locked) unlock();`), so a path that would need a condition to be true and false is not
 ## followed. A write to a variable forgets the conditions that read it. A call that may jump out (CC_MAY_JUMP) is also
-## a way out of the function, with the locks held before it.
+## a way out of the function, with the locks held before it, and so is one that always jumps (CC_JUMPS), where the path
+## ends.
 
 import Effects from "effects"
 import {Finding, IncompleteFunction} from "findings"
@@ -200,14 +201,21 @@ export def stops?(site: Site, functions: Map[String, Function]) -> Bool
   return site.stops or noreturn
 end
 
-## Returns whether a call may jump out of its caller (CC_MAY_JUMP, `[assume] may_jump`): the call is a way out of the
-## caller as well as a step of its path. A call that never comes back stops the path instead (`stops?` wins).
+## Returns whether a call may jump out of its caller (CC_MAY_JUMP, `[assume] may_jump`, CC_JUMPS, `[assume] jumps`):
+## the call is a way out of the caller. When it also never comes back (`stops?`), the jump is its only way out and the
+## path ends there; otherwise the path goes on after the call too.
 export def jumps?(site: Site, functions: Map[String, Function]) -> Bool
-  return functions.get(site.key).map do |f| f.marks.include?(Effects.MAY_JUMP) end.unwrap_or(false)
+  marks = functions.get(site.key).map do |f| f.marks end.unwrap_or([])
+  return marks.include?(Effects.MAY_JUMP) or marks.include?(Effects.JUMPS)
 end
 
-## Returns the step that ends a path at a call that may jump out of the caller.
-export def jump_text(site: Site) -> String
+## Returns the step that ends a path at a call that jumps out of the caller: `jumps in` for a call that never comes
+## back (`stops`), `may jump in` for one that may also return.
+export def jump_text(site: Site, stops: Bool) -> String
+  if stops
+    return "#{site.line}:#{site.column} jumps in #{site.name}"
+  end
+
   return "#{site.line}:#{site.column} may jump in #{site.name}"
 end
 
@@ -337,14 +345,16 @@ end
 
 # A call that may jump out is a way out of the function too, with the locks the path holds before the call: one that
 # jumps did not finish, so it took and released nothing. The jump is an error exit (`failed: true` for `with_exit`).
+# A call that never comes back and jumps (CC_JUMPS) is checked here too, before `stepped` ends its path.
 def with_jump(found: Map[String, Finding], walker: Walker, item: Item, event: Event) -> Map[String, Finding]
   case event
     Event.Call(site) ->
-      if stops?(site, walker.functions) or not jumps?(site, walker.functions)
+      if not jumps?(site, walker.functions)
         return found
       end
 
-      return with_exit(found, walker, item.state, item.path.push(Step(text: jump_text(site))), true)
+      step = Step(text: jump_text(site, stops?(site, walker.functions)))
+      return with_exit(found, walker, item.state, item.path.push(step), true)
     _ -> return found
   end
 end
