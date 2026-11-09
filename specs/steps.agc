@@ -33,7 +33,7 @@ def main() -> Void
     BDD.step("I run cchecker in its folder with {string}", &run_in_folder),
     BDD.step("I run cchecker in its folder {string} with {string}", &run_in_subfolder),
     BDD.step("the folder {string} is empty", &folder_empty),
-    BDD.step("clang dumps the AST of {string} as the rules do", &dump_ast),
+    BDD.step("clang dumps the AST of {string} with CCHECKER_AST", &dump_ast),
     BDD.step("clang preprocesses {string}", &preprocess),
     BDD.step("clang dumps the JSON AST of {string}", &dump_json_ast),
     BDD.step("the dump is larger than 1 MiB", &dump_is_large),
@@ -167,7 +167,8 @@ def folder_empty(ctx: BDD.Context, args: List[String]) -> BDD.Context
   end
 end
 
-# The text dump with CCHECKER_AST, as the rules ask for it (they read the JSON dump; the text shows the same marks).
+# The text dump with CCHECKER_AST, the define the rules dump uses (the rules read the JSON dump; the text shows
+# the marks).
 def dump_ast(ctx: BDD.Context, args: List[String]) -> BDD.Context
   return run_program(
     ctx,

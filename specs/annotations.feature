@@ -3,7 +3,7 @@ Feature: The annotation header
   dumps the AST (CCHECKER_AST, clang); in every other build, with any compiler, they are empty.
 
   Scenario: clang keeps each annotation in the AST dump of the rules
-    When clang dumps the AST of "fixtures/annotated.c" as the rules do
+    When clang dumps the AST of "fixtures/annotated.c" with CCHECKER_AST
     Then the exit code is 0
     And the output includes:
       """
@@ -62,6 +62,20 @@ Feature: The annotation header
     And the output includes:
       """
       "code":"CC-OWN-LEAK"
+      """
+
+  Scenario: A marked file that frees its pointer on every path has no finding
+    Given the C file "mark.c" holds:
+      """
+      #include "stdlib.h"
+      #include "cchecker.h"
+      int f(int n) { CC_OWNS char *b = malloc(n); if (n > 3) { free(b); return 1; } free(b); return 0; }
+      """
+    When I run cchecker with "--tools rules --json $DIR/mark.c -- -I../include"
+    Then the exit code is 0
+    And the output does not include:
+      """
+      CC-OWN-LEAK
       """
 
   Scenario Outline: The macros are empty for gcc, in every C standard
