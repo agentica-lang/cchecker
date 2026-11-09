@@ -162,6 +162,30 @@ Feature: Time and memory on large generated inputs
       "incomplete_functions":[{"file":"$DIR/many.c","line":4,"function":"many"}]
       """
 
+  Scenario Outline: Blocks that declare a pointer of the same name do not multiply the states of the ownership walk (<case>)
+    Given the C file "blocks.c" holds, with ITEMS as 24 times " if (pick()) { <block> }":
+      """
+      #include <stdlib.h>
+      #include "cchecker.h"
+      CC_OWNS char *make(void);
+      int pick(void);
+      void emit(char *s);
+      void many(void) {ITEMS
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/blocks.c -- -I../include" in at most 1500 MiB and 20 seconds
+    Then the exit code is 0
+    And the output includes:
+      """
+      "incomplete_functions":[]
+      """
+
+    Examples:
+      | case                 | block                                                         |
+      | plain                | char *s = make(); emit(s); free(s);                           |
+      | alias                | char *s = make(); char *t = s; if (!t) emit(0); else free(t); |
+      | statement expression | char *q = ({ CC_OWNS char *t = make(); t; }); free(q);        |
+
   Scenario: A lock held in a function with more paths than the walk follows is not inferred short
     Given the file "compile_commands.json" holds:
       """

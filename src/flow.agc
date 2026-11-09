@@ -37,6 +37,11 @@ OWNS_MARK = "cchecker:owns"
 # The kinds of declarations a pointer that owns can be: a local variable or a parameter.
 VARIABLES = Set.new(["VarDecl", "ParmVarDecl"])
 
+# What the key of a variable that shares its name with an earlier declaration of the function, or with a variable that
+# the function reads and does not declare (a global), has between the name and its number (`p#2`). A C name has no
+# such character, so a key is its name when nothing else of the function has that name.
+KEY_MARK = "#"
+
 ## A lock: `key` is what tells two locks apart (`q.mu` for `&q->mu`, `q->mu` and `(&q->mu)`), `shown` how the code
 ## wrote it, and `class` the field it is (`queue.mu`, by struct and field name) or the global, which the marks of
 ## CC_NO_SYSCALL_UNDER() and CC_LOCK_LEVEL name; "" when the rules cannot tell. `pair` is the restore of the lock of
@@ -77,9 +82,10 @@ export struct Site
   unnamed: Bool = false
 end
 
-## The value a condition has on an edge. `text` is "" for a condition that may change between two reads (a call).
-## `roots` are the variables it reads, so a write to one forgets it. `nulls` are the pointers that own which are null
-## on this edge (`if (!p)`, `if ((p = malloc(n)) == NULL)`), and `set` those that are not.
+## The value a condition has on an edge. `text` is the condition with the key of each variable (`variable_key`), ""
+## for a condition that may change between two reads (a call). `roots` are the variables it reads, by key, so a write
+## to one forgets it. `nulls` are the pointers that own which are null on this edge (`if (!p)`,
+## `if ((p = malloc(n)) == NULL)`), and `set` those that are not.
 export struct Fact
   text: String
   value: Bool
@@ -130,7 +136,8 @@ export struct Mark
   failed: Bool = false
 end
 
-## What happens at a node.
+## What happens at a node. `Writes` names the variables a node writes, by key (see `variable_key`), and `Closes` the
+## pointers of the blocks that a path leaves (`Closing`).
 export enum Event
   Join
   Call(Site)
@@ -142,6 +149,14 @@ export enum Event
   Assigns(Assign)
   Gives(Give)
   Lends(List[String])
+  Closes(Closing)
+end
+
+## The pointers that own, or may stand for one, of the blocks that a path leaves (`names`, by key), and where it leaves
+## them (`mark`): the end of a block, or the statement that jumps out. Nothing names them after.
+export struct Closing
+  names: List[String]
+  mark: Mark
 end
 
 export struct Node
@@ -218,10 +233,14 @@ struct Arg
   through: Bool = false
 end
 
-# A block: its id, and the cleanup calls of its variables so far, in the order they were declared.
+# A block (or a `for` with its declarations): its id, the cleanup calls of its variables so far, in the order they were
+# declared, and the keys of its pointers that own or may stand for one (`declared`). The block of a statement
+# expression keeps the pending pointers of the statement around it (`outer`), which its own statements do not close.
 struct Scope
   id: String
   cleanups: List[Site]
+  declared: List[String] = []
+  outer: List[String] = []
 end
 
 # A loop or a switch, for its `break`, `continue` and `case`. `depth` is the number of blocks open around it.
@@ -249,17 +268,22 @@ struct Builder
   labels: Map[String, Int]
   gotos: List[Goto]
   owners: Owners
+  # The pointers of the statement expressions of the statement being built: they close at its end (`flushed`).
+  pending: List[String] = []
 end
 
 # The places of a function that keep an owned pointer stored in them: its parameters and local variables (`locals`),
 # `*p` of a parameter that frees it only (`freed`, CC_FREES) or that hands an owned pointer out to the caller (`outs`,
 # CC_OWNS_OUT; `out[i]` too), and an item of a pointer whose items own what is stored in them (`arrays`: the pointers
-# that own or stand for one, and the locals that get the value of an allocation).
+# that own or stand for one, and the locals that get the value of an allocation). The sets hold the keys of the
+# variables (`variable_key`), and `keys` gives the key of each variable the function declares, by the id of its
+# declaration.
 struct Places
   locals: Set[String]
   freed: Set[String]
   outs: Set[String]
   arrays: Set[String]
+  keys: Map[String, String]
 end
 
 # The pointers of a function that own or may stand for one that does, by name (`names`): its parameters that own
@@ -441,19 +465,19 @@ export def marked_owner?(node: Json) -> Bool
   end
 end
 
-## Returns the values that the local variables and the parameters (`locals`) get among the nodes `all`: at their
-## declaration and in a plain assignment.
-export def writes_of(all: List[Json], locals: Set[String]) -> List[Written]
+## Returns the values that the local variables and the parameters (`locals`, by key) get among the nodes `all`: at
+## their declaration and in a plain assignment.
+export def writes_of(all: List[Json], locals: Set[String], keys: Map[String, String]) -> List[Written]
   found: List[Written] = []
   for n in all
     if Ast.kind(n) == "VarDecl"
       values = Ast.children(n).select do |child| not Ast.kind(child).end_with?("Attr") end
       if values.size == 1
-        found = found.push(Written(name: Ast.text(n, "name"), value: values.first))
+        found = found.push(Written(name: declared_key(keys, n), value: values.first))
       end
     elsif Ast.kind(n) == "BinaryOperator" and Ast.text(n, "opcode") == "="
       parts = Ast.children(n)
-      name = variable_name(parts.first)
+      name = variable_key(keys, parts.first)
       if locals.include?(name)
         found = found.push(Written(name: name, value: parts[1]))
       end
@@ -483,6 +507,28 @@ export def variable_name(node: Json) -> String
   end
 
   return ""
+end
+
+## Returns the key of the local variable or parameter that an expression is, through casts and parentheses: the key
+## that `keys` gives its declaration; "" for any other expression, and for a variable the function does not declare (a
+## global). Two variables of one function never share a key, so a local that shadows another has a state of its own.
+export def variable_key(keys: Map[String, String], node: Json) -> String
+  bare = see_through(node)
+  if Ast.kind(bare) == "DeclRefExpr" and VARIABLES.include?(Ast.referenced_kind(bare))
+    return keys.get(Ast.referenced_id(bare), "")
+  end
+
+  return ""
+end
+
+## Returns the key of a variable at its declaration (see `variable_key`).
+export def declared_key(keys: Map[String, String], decl: Json) -> String
+  return keys.get(Ast.text(decl, "id"), Ast.text(decl, "name"))
+end
+
+## Returns the name that a key stands for: what the code calls the variable.
+export def plain(key: String) -> String
+  return key.split(KEY_MARK).first
 end
 
 ## Returns every node under the given ones, each before the nodes inside it.
@@ -609,29 +655,30 @@ def owners_of(ctx: Context, key: String, node: Json) -> Owners
       .map do |i| names_of_params[i] end,
   )
 
+  keys = keys_of(node, all)
   decls = all.select do |n| Ast.kind(n) == "VarDecl" end
   locals = Set.new(
     names_of_params.concat(
-      decls.select do |n| Ast.text(n, "storageClass") != "static" end.map do |n| Ast.text(n, "name") end,
+      decls.select do |n| Ast.text(n, "storageClass") != "static" end.map do |n| declared_key(keys, n) end,
     ),
   )
 
   marked = Set.new(
     decls.select do |n| marked_owner?(n) and Ast.text(n, "storageClass") != "static" end
-      .map do |n| Ast.text(n, "name") end,
+      .map do |n| declared_key(keys, n) end,
   )
 
   outs = Set.new(
     ctx.owning.outs.get(key, []).select do |i| i < names_of_params.size end.map do |i| names_of_params[i] end,
   )
 
-  written = writes_of(all, locals)
-  names = Set.new(params).union(marked).union(filled_locals(ctx, all, locals))
+  written = writes_of(all, locals, keys)
+  names = Set.new(params).union(marked).union(filled_locals(ctx, all, locals, keys))
   grew = true
   while grew
     grew = false
     for w in written
-      if not names.include?(w.name) and gets_owner?(ctx, names, freed, w.value)
+      if not names.include?(w.name) and gets_owner?(ctx, keys, names, freed, w.value)
         names = names.add(w.name)
         grew = true
       end
@@ -639,7 +686,14 @@ def owners_of(ctx: Context, key: String, node: Json) -> Owners
   end
 
   allocated = written.select do |w| allocation?(w.value) end.map do |w| w.name end
-  places = Places(locals: locals, freed: freed, outs: outs, arrays: names.union(outs).union(Set.new(allocated)))
+  places = Places(
+    locals: locals,
+    freed: freed,
+    outs: outs,
+    arrays: names.union(outs).union(Set.new(allocated)),
+    keys: keys,
+  )
+
   return Owners(
     params: params,
     places: places,
@@ -657,14 +711,14 @@ def allocation?(node: Json) -> Bool
 end
 
 # The locals whose address a call passes to a parameter that hands an owned pointer out (`fill(&p)`).
-def filled_locals(ctx: Context, all: List[Json], locals: Set[String]) -> Set[String]
+def filled_locals(ctx: Context, all: List[Json], locals: Set[String], keys: Map[String, String]) -> Set[String]
   found: Set[String] = Set.new([])
   for n in all
     if Ast.kind(n) == "CallExpr"
       args = Ast.children(n).drop(1)
       for i in out_params(ctx, callee_name(n))
         if i < args.size and address?(args[i])
-          name = variable_name(Ast.children(see_through(args[i])).first)
+          name = variable_key(keys, Ast.children(see_through(args[i])).first)
           if locals.include?(name)
             found = found.add(name)
           end
@@ -701,12 +755,12 @@ end
 
 # Whether a value makes the variable that gets it stand for an owned pointer: a call that returns one, a realloc of a
 # pointer in `names`, or a pointer in `names` (`*p` of a CC_FREES parameter in `freed` is `p`).
-def gets_owner?(ctx: Context, names: Set[String], freed: Set[String], value: Json) -> Bool
+def gets_owner?(ctx: Context, keys: Map[String, String], names: Set[String], freed: Set[String], value: Json) -> Bool
   if CHOICES.include?(Ast.kind(see_through(value)))
-    return values_of(value).any? do |branch| gets_owner?(ctx, names, freed, branch) end
+    return values_of(value).any? do |branch| gets_owner?(ctx, keys, names, freed, branch) end
   end
 
-  if names.include?(variable_name(value)) or pointee_param(value, freed) != "" or owning_call?(ctx, value)
+  if names.include?(variable_key(keys, value)) or pointee_param(keys, value, freed) != "" or owning_call?(ctx, value)
     return true
   end
 
@@ -716,7 +770,7 @@ def gets_owner?(ctx: Context, names: Set[String], freed: Set[String], value: Jso
     Ast.kind(bare) == "CallExpr" and
     Known.RESIZES.include?(callee_name(bare)) and
     parts.size > 1 and
-    names.include?(variable_name(parts[1]))
+    names.include?(variable_key(keys, parts[1]))
   )
 end
 
@@ -734,9 +788,9 @@ def kept_calls(ctx: Context, all: List[Json], places: Places) -> Set[String]
       "BinaryOperator" ->
         target = parts[0]
         keeps = (
-          places.locals.include?(variable_name(target)) or
+          places.locals.include?(variable_key(places.keys, target)) or
           place_owns?(ctx, target) or
-          pointee_param(target, places.freed) != "" or
+          pointee_param(places.keys, target, places.freed) != "" or
           handed_place?(places, target)
         )
 
@@ -786,6 +840,42 @@ def values_of(node: Json) -> List[Json]
   return [node]
 end
 
+# The key of each variable that a function declares (its parameters, then its locals in the order of the source), by
+# the id of its declaration: its name, or `name#2`, `name#3` for a variable whose name an earlier one has, or a name
+# that the function reads and does not declare (a global: it keeps its name).
+def keys_of(node: Json, all: List[Json]) -> Map[String, String]
+  params = Ast.children(node).select do |child| Ast.kind(child) == "ParmVarDecl" end
+  decls = params.concat(all.select do |n| VARIABLES.include?(Ast.kind(n)) end)
+  ids = Set.new(decls.map do |decl| Ast.text(decl, "id") end)
+  seen: Map[String, Int] = {}
+  for n in all
+    if Ast.kind(n) == "DeclRefExpr" and not ids.include?(Ast.referenced_id(n))
+      seen = seen.put(Ast.referenced_name(n), 1)
+    end
+  end
+
+  keys: Map[String, String] = {}
+  for decl in decls
+    name = Ast.text(decl, "name")
+    count = seen.get(name, 0) + 1
+    seen = seen.put(name, count)
+    key = name
+    if count > 1
+      key = "#{name}#{KEY_MARK}#{count}"
+    end
+
+    keys = keys.put(Ast.text(decl, "id"), key)
+  end
+
+  return keys
+end
+
+# The key of what a reference names: the key of a variable of the function, else the name (a global, a function, an
+# enum constant), which no key of the function has. Conditions and writes name variables so.
+def referenced_key(keys: Map[String, String], ref: Json) -> String
+  return keys.get(Ast.referenced_id(ref), Ast.referenced_name(ref))
+end
+
 # The indices of the parameters of a function that take or free what a call passes: CC_OWNS and CC_FREES, the first
 # of `free`, and the first of a realloc, which moves it.
 def taken(ctx: Context, name: String, key: String) -> List[Int]
@@ -825,12 +915,15 @@ end
 # Whether a store into an expression of a function hands a pointer on to a place that `places` names: `*out` of a
 # parameter that hands an owned pointer out, or an item of a pointer whose items own (`argv[i]`).
 def handed_place?(places: Places, node: Json) -> Bool
-  if pointee_param(node, places.outs) != ""
+  if pointee_param(places.keys, node, places.outs) != ""
     return true
   end
 
   bare = see_through(node)
-  return Ast.kind(bare) == "ArraySubscriptExpr" and places.arrays.include?(variable_name(Ast.children(bare).first))
+  return (
+    Ast.kind(bare) == "ArraySubscriptExpr" and
+    places.arrays.include?(variable_key(places.keys, Ast.children(bare).first))
+  )
 end
 
 def identifier_char?(c: String) -> Bool
@@ -854,7 +947,7 @@ def aliases_of(bodies: List[Json]) -> Map[String, Json]
         written = written.add(name)
       end
     elsif writes?(node)
-      written = written.add(target_root(Ast.children(node).first))
+      written = written.add(target_root({}, Ast.children(node).first))
     end
   end
 
@@ -872,12 +965,13 @@ def writes?(node: Json) -> Bool
   end
 end
 
-# The blocks around each label, by the id of the label's declaration, from the outermost.
+# The blocks (and the `for` loops, a scope of their own) around each label, by the id of the label's declaration, from
+# the outermost.
 def label_blocks(nodes: List[Json], around: List[String]) -> Map[String, List[String]]
   found: Map[String, List[String]] = {}
   for node in nodes
     inner = around
-    if Ast.kind(node) == "CompoundStmt"
+    if Ast.kind(node) == "CompoundStmt" or Ast.kind(node) == "ForStmt"
       inner = around.push(Ast.text(node, "id"))
     end
 
@@ -905,21 +999,81 @@ def statement(b: Builder, node: Json, preds: List[Int]) -> Built
     "SwitchStmt" -> return switch_statement(b, node, preds)
     "CaseStmt" -> return case_label(b, node, preds, "case")
     "DefaultStmt" -> return case_label(b, node, preds, "default")
-    "BreakStmt" -> return break_statement(b, preds)
-    "ContinueStmt" -> return continue_statement(b, preds)
+    "BreakStmt" -> return break_statement(b, node, preds)
+    "ContinueStmt" -> return continue_statement(b, node, preds)
     "ReturnStmt" -> return return_statement(b, node, preds)
-    "GotoStmt" -> return goto_statement(b, Ast.text(node, "targetLabelDeclId"), preds)
-    "IndirectGotoStmt" -> return goto_statement(b, "", preds)
+    "GotoStmt" -> return goto_statement(b, node, Ast.text(node, "targetLabelDeclId"), preds)
+    "IndirectGotoStmt" -> return goto_statement(b, node, "", preds)
     "LabelStmt" ->
       label = add(b, Event.Join, preds)
       labelled = label.b.with(labels: label.b.labels.put(Ast.text(node, "declId"), label.exits.first))
       return statement(labelled, last_child(node), label.exits)
     "AttributedStmt" -> return statement(b, last_child(node), preds)
-    "DeclStmt" -> return declarations(b, node, preds)
+    "DeclStmt" ->
+      declared = declarations(b, node, preds)
+      return flushed(declared.b, node, declared.exits)
     "NullStmt" -> return Built(b: b, exits: preds)
     "GCCAsmStmt" -> return Built(b: b, exits: preds)
-    _ -> return expression(b, node, preds)
+    _ ->
+      done = expression(b, node, preds)
+      return flushed(done.b, node, done.exits)
   end
+end
+
+# The end of a full statement (`node`): the pointers of its statement expressions close there (`pending`). One that a
+# variable still stands for stays, so they close again with the block around the statement, where that variable may
+# close with them.
+def flushed(b: Builder, node: Json, preds: List[Int]) -> Built
+  if b.pending.empty?
+    return Built(b: b, exits: preds)
+  end
+
+  scopes = b.scopes
+  if not scopes.empty?
+    scope = scopes.last
+    added = b.pending.select do |name| not scope.declared.include?(name) end
+    scopes = scopes.set(scopes.size - 1, scope.with(declared: scope.declared.concat(added)))
+  end
+
+  place = Ast.end_of(node)
+  mark = Mark(word: "ends", line: place.line, column: place.column)
+  return closes_at(b.with(pending: [], scopes: scopes), b.pending, mark, preds)
+end
+
+# `flushed` on both sides of a condition (`node`) of a statement.
+def flushed_split(split: Split, node: Json) -> Split
+  yes = flushed(split.b, node, split.yes)
+  no = flushed(yes.b.with(pending: split.b.pending), node, split.no)
+  return Split(b: no.b, yes: yes.exits, no: no.exits)
+end
+
+# A close of the pointers `names` at `mark` after `preds`; nothing for no names, or no node before it.
+def closes_at(b: Builder, names: List[String], mark: Mark, preds: List[Int]) -> Built
+  if names.empty? or preds.empty?
+    return Built(b: b, exits: preds)
+  end
+
+  return add(b, Event.Closes(Closing(names: names, mark: mark)), preds)
+end
+
+# The block of a statement expression `({ ...; v; })` opens as a scope for the cleanups of its variables.
+def opened_expression(b: Builder, node: Json) -> Builder
+  scope = Scope(id: Ast.text(last_child(see_through(node)), "id"), cleanups: [], outer: b.pending)
+  return b.with(scopes: b.scopes.push(scope), pending: [])
+end
+
+# The end of the block of a statement expression: the cleanups of its variables run, and its pointers close at the end
+# of the statement around it (`pending`), as its value outlives the block.
+def closed_expression(b: Builder, preds: List[Int]) -> Built
+  scope = b.scopes.last
+  called = calls(b, scope.cleanups.reverse, preds)
+  return Built(
+    b: called.b.with(
+      scopes: called.b.scopes.take(called.b.scopes.size - 1),
+      pending: scope.outer.concat(called.b.pending).concat(scope.declared),
+    ),
+    exits: called.exits,
+  )
 end
 
 def block(b: Builder, node: Json, preds: List[Int]) -> Built
@@ -929,10 +1083,15 @@ def block(b: Builder, node: Json, preds: List[Int]) -> Built
     built = statement(built.b, child, built.exits)
   end
 
-  scope = built.b.scopes.last
-  cleaned = calls(built.b, scope.cleanups.reverse, built.exits)
-  closed = cleaned.b.with(scopes: cleaned.b.scopes.take(cleaned.b.scopes.size - 1))
-  return Built(b: closed, exits: cleaned.exits)
+  return closed(built.b, node, built.exits)
+end
+
+# The way out of the innermost scope (`node`) at its end: its cleanup calls, the close of its pointers, and the scope
+# gone.
+def closed(b: Builder, node: Json, preds: List[Int]) -> Built
+  place = Ast.end_of(node)
+  left = leaving(b, b.scopes.size - 1, preds, some(Mark(word: "ends", line: place.line, column: place.column)))
+  return Built(b: left.b.with(scopes: left.b.scopes.take(left.b.scopes.size - 1)), exits: left.exits)
 end
 
 # An `if` and the `else if` chain after it, in a loop: a recursion would keep every builder of the chain alive.
@@ -943,7 +1102,7 @@ def if_statement(b: Builder, node: Json, preds: List[Int]) -> Built
   exits: List[Int] = []
   while true
     parts = Ast.children(current)
-    split = condition(built, parts[0], pending)
+    split = flushed_split(condition(built, parts[0], pending), parts[0])
     then_part = statement(split.b, parts[1], split.yes)
     exits = exits.concat(then_part.exits)
     if not Ast.flag?(current, "hasElse")
@@ -966,7 +1125,7 @@ end
 def while_loop(b: Builder, node: Json, preds: List[Int]) -> Built
   parts = Ast.children(node)
   head = add(b, Event.Join, preds)
-  split = condition(head.b, parts[0], head.exits)
+  split = flushed_split(condition(head.b, parts[0], head.exits), parts[0])
   return looped(split.b, parts[1], split, head.exits.first, JSON.from(""))
 end
 
@@ -978,22 +1137,24 @@ def do_loop(b: Builder, node: Json, preds: List[Int]) -> Built
   jump = body.b.jumps.last
   closed = body.b.with(jumps: body.b.jumps.take(body.b.jumps.size - 1))
   test = add(closed, Event.Join, body.exits.concat(jump.continues))
-  split = condition(test.b, parts[1], test.exits)
+  split = flushed_split(condition(test.b, parts[1], test.exits), parts[1])
   return Built(b: link(split.b, split.yes, head.exits.first), exits: split.no.concat(jump.breaks))
 end
 
 def for_loop(b: Builder, node: Json, preds: List[Int]) -> Built
   # The parts are the init, a C++ condition variable, the condition, the increment and the body; a missing one is an
-  # empty node.
+  # empty node. The variables of the init live until the loop ends, as in a block.
   parts = Ast.children(node)
-  init = statement(b, parts[0], preds)
+  opened = b.with(scopes: b.scopes.push(Scope(id: Ast.text(node, "id"), cleanups: [])))
+  init = statement(opened, parts[0], preds)
   head = add(init.b, Event.Join, init.exits)
   split = Split(b: head.b, yes: head.exits, no: [])
   if Ast.kind(parts[2]) != ""
-    split = condition(head.b, parts[2], head.exits)
+    split = flushed_split(condition(head.b, parts[2], head.exits), parts[2])
   end
 
-  return looped(split.b, parts[4], split, head.exits.first, parts[3])
+  ran = looped(split.b, parts[4], split, head.exits.first, parts[3])
+  return closed(ran.b, node, ran.exits)
 end
 
 # The body of a `while` or a `for` from the true side of its condition, then the increment (an empty node for a
@@ -1003,7 +1164,8 @@ def looped(b: Builder, body: Json, split: Split, head: Int, increment: Json) -> 
   ran = statement(opened, body, split.yes)
   jump = ran.b.jumps.last
   closed = ran.b.with(jumps: ran.b.jumps.take(ran.b.jumps.size - 1))
-  stepped = expression(closed, increment, ran.exits.concat(jump.continues))
+  ran_increment = expression(closed, increment, ran.exits.concat(jump.continues))
+  stepped = flushed(ran_increment.b, increment, ran_increment.exits)
   return Built(b: link(stepped.b, stepped.exits, head), exits: split.no.concat(jump.breaks))
 end
 
@@ -1015,7 +1177,8 @@ end
 # names goes past the body.
 def switch_statement(b: Builder, node: Json, preds: List[Int]) -> Built
   parts = Ast.children(node)
-  value = expression(b, parts[0], preds)
+  evaluated = expression(b, parts[0], preds)
+  value = flushed(evaluated.b, parts[0], evaluated.exits)
   head = add(value.b, Event.Join, value.exits)
   jump = Jump(
     switch: true,
@@ -1053,13 +1216,13 @@ def case_label(b: Builder, node: Json, preds: List[Int], word: String) -> Built
   return statement(updated, last_child(node), entry.exits)
 end
 
-def break_statement(b: Builder, preds: List[Int]) -> Built
+def break_statement(b: Builder, node: Json, preds: List[Int]) -> Built
   at = innermost(b.jumps, false)
   if at < 0
     return Built(b: b, exits: [])
   end
 
-  left = leaving(b, b.jumps[at].depth, preds)
+  left = leaving(b, b.jumps[at].depth, preds, some(mark_at(node, "break")))
   jump = left.b.jumps[at]
   return Built(
     b: left.b.with(jumps: left.b.jumps.set(at, jump.with(breaks: jump.breaks.concat(left.exits)))),
@@ -1067,13 +1230,13 @@ def break_statement(b: Builder, preds: List[Int]) -> Built
   )
 end
 
-def continue_statement(b: Builder, preds: List[Int]) -> Built
+def continue_statement(b: Builder, node: Json, preds: List[Int]) -> Built
   at = innermost_loop(b.jumps)
   if at < 0
     return Built(b: b, exits: [])
   end
 
-  left = leaving(b, b.jumps[at].depth, preds)
+  left = leaving(b, b.jumps[at].depth, preds, some(mark_at(node, "continue")))
   jump = left.b.jumps[at]
   updated = left.b.jumps.set(at, jump.with(continues: jump.continues.concat(left.exits)))
   return Built(b: left.b.with(jumps: updated), exits: [])
@@ -1110,34 +1273,51 @@ end
 def return_statement(b: Builder, node: Json, preds: List[Int]) -> Built
   value = Built(b: b, exits: preds)
   for child in Ast.children(node)
-    given = owner_named(value.b, child)
-    if given != ""
-      place = Ast.start_of(child)
-      give = Give(name: given, word: "returns", line: place.line, column: place.column)
-      value = add(value.b, Event.Gives(give), value.exits)
-    else
-      value = expression(value.b, child, value.exits)
-    end
+    value = returned(value.b, child, value.exits)
   end
 
-  left = leaving(value.b, 0, value.exits)
-  place = Ast.start_of(node)
   failed = Ast.children(node).any?(&error_value?)
-  mark = Mark(word: "returns", line: place.line, column: place.column, failed: failed)
+  mark = mark_at(node, "returns").with(failed: failed)
+  left = leaving(value.b, 0, value.exits, some(mark))
   ended = add(left.b, Event.Exit(mark), left.exits)
-  return Built(b: ended.b, exits: [])
+  return Built(b: ended.b.with(pending: []), exits: [])
+end
+
+# The value of a return: a pointer that owns is handed on, also as the value of a statement expression.
+def returned(b: Builder, value: Json, preds: List[Int]) -> Built
+  bare = see_through(value)
+  statements = Ast.children(last_child(bare))
+  if Ast.kind(bare) == "StmtExpr" and not statements.empty?
+    opened = opened_expression(b, bare)
+    built = in_order_statements(opened, statements.take(statements.size - 1), preds)
+    last = returned(built.b, statements.last, built.exits)
+    return closed_expression(last.b, last.exits)
+  end
+
+  given = owner_named(b, value)
+  if given == ""
+    return expression(b, value, preds)
+  end
+
+  place = Ast.start_of(value)
+  return add(b, Event.Gives(Give(name: given, word: "returns", line: place.line, column: place.column)), preds)
 end
 
 # A `goto` leaves the blocks that are not around its label. The label is linked at the end, when every label is known;
-# an indirect `goto` ("") may go to any label.
-def goto_statement(b: Builder, label: String, preds: List[Int]) -> Built
+# an indirect `goto` ("") may go to any label, so it closes no block: the pointers of each may still be read there.
+def goto_statement(b: Builder, node: Json, label: String, preds: List[Int]) -> Built
   around = Set.new(b.label_blocks.get(label).unwrap_or([]))
   depth = 0
   while depth < b.scopes.size and around.include?(b.scopes[depth].id)
     depth += 1
   end
 
-  left = leaving(b, depth, preds)
+  mark: Optional[Mark] = none
+  if label != ""
+    mark = some(mark_at(node, "goto"))
+  end
+
+  left = leaving(b, depth, preds, mark)
   jumped = add(left.b, Event.Join, left.exits)
   return Built(b: jumped.b.with(gotos: jumped.b.gotos.push(Goto(from: jumped.exits.first, label: label))), exits: [])
 end
@@ -1160,16 +1340,37 @@ def with_gotos(b: Builder) -> Builder
   return linked
 end
 
-# The cleanup calls of the blocks from `depth` in, the innermost first, on the way out of them.
-def leaving(b: Builder, depth: Int, preds: List[Int]) -> Built
+# The way out of the blocks from `depth` in: their cleanup calls, the innermost first, then one close of their pointers
+# and of the pending ones of the statements left (`pending`, and `outer` of a statement expression) at `at` (none
+# closes nothing), which lets the walks drop what they knew of them. The pending ones stay for the path that does not
+# jump. The block of the function never closes: the exit of the path reads its pointers.
+def leaving(b: Builder, depth: Int, preds: List[Int], at: Optional[Mark]) -> Built
   sites: List[Site] = []
+  names: List[String] = []
   i = b.scopes.size - 1
   while i >= depth
     sites = sites.concat(b.scopes[i].cleanups.reverse)
+    if i > 0
+      names = names.concat(b.scopes[i].declared)
+    end
+
+    # A jump out of a statement expression leaves the statement around it too: its pending pointers close here.
+    names = names.concat(b.scopes[i].outer)
+
     i -= 1
   end
 
-  return calls(b, sites, preds)
+  called = calls(b, sites, preds)
+  case at
+    some(mark) -> return closes_at(called.b, b.pending.concat(names), mark, called.exits)
+    none -> return called
+  end
+end
+
+# A mark at the start of a statement.
+def mark_at(node: Json, word: String) -> Mark
+  place = Ast.start_of(node)
+  return Mark(word: word, line: place.line, column: place.column)
 end
 
 def calls(b: Builder, sites: List[Site], preds: List[Int]) -> Built
@@ -1195,13 +1396,20 @@ end
 # A variable: its value, then the write of it, and its cleanup call for the way out of its block.
 def declaration(b: Builder, node: Json, preds: List[Int]) -> Built
   name = Ast.text(node, "name")
+  key = declared_key(b.owners.places.keys, node)
   values = Ast.children(node).select do |child| not Ast.kind(child).end_with?("Attr") end
   written = Built(b: b, exits: preds)
-  if b.owners.names.include?(name) and values.size == 1
-    written = owner_assigned(b, name, values.first, preds)
+  if b.owners.names.include?(key) and values.size == 1
+    written = owner_assigned(b, key, values.first, preds)
   else
     built = in_order(b, values, preds)
-    written = add(built.b, Event.Writes([name]), built.exits)
+    written = add(built.b, Event.Writes([key]), built.exits)
+  end
+
+  if written.b.owners.names.include?(key) and not written.b.scopes.empty?
+    scope = written.b.scopes.last
+    scopes = written.b.scopes.set(written.b.scopes.size - 1, scope.with(declared: scope.declared.push(key)))
+    written = Built(b: written.b.with(scopes: scopes), exits: written.exits)
   end
 
   cleanup = Ast.children(node).select do |child| Ast.kind(child) == "CleanupAttr" end
@@ -1212,8 +1420,8 @@ def declaration(b: Builder, node: Json, preds: List[Int]) -> Built
   function = Ast.text(JSON.get(cleanup.first, "cleanup_function").unwrap_or(JSON.from("")), "name")
   place = Ast.place_of(node)
   owner = ""
-  if written.b.owners.names.include?(name)
-    owner = name
+  if written.b.owners.names.include?(key)
+    owner = key
   end
 
   var = Arg(
@@ -1259,11 +1467,11 @@ def expression(b: Builder, node: Json, preds: List[Int]) -> Built
 
       inner = expression(b, operand, preds)
       if opcode == "++" or opcode == "--"
-        return add(inner.b, Event.Writes([target_root(operand)]), inner.exits)
+        return add(inner.b, Event.Writes([target_root(b.owners.places.keys, operand)]), inner.exits)
       end
 
       # The address of a variable lets a callee change it; the address of `q->mu` does not change `q`.
-      root = storage_root(operand)
+      root = storage_root(b.owners.places.keys, operand)
       if opcode == "&" and root != ""
         return add(inner.b, Event.Writes([root]), inner.exits)
       end
@@ -1281,7 +1489,10 @@ def expression(b: Builder, node: Json, preds: List[Int]) -> Built
       split = condition(b, parts[0], preds)
       other = expression(split.b, parts.last, split.no)
       return Built(b: other.b, exits: split.yes.concat(other.exits))
-    "StmtExpr" -> return in_order_statements(b, Ast.children(node), preds)
+    "StmtExpr" ->
+      opened = opened_expression(b, node)
+      built = in_order_statements(opened, Ast.children(last_child(node)), preds)
+      return closed_expression(built.b, built.exits)
     "UnaryExprOrTypeTraitExpr" -> return Built(b: b, exits: preds)
     _ -> return in_order(b, Ast.children(node), preds)
   end
@@ -1310,7 +1521,7 @@ end
 def assignment(b: Builder, node: Json, preds: List[Int]) -> Built
   parts = Ast.children(node)
   if Ast.kind(node) == "BinaryOperator" and Ast.text(node, "opcode") == "=" and parts.size == 2
-    name = variable_name(parts[0])
+    name = variable_key(b.owners.places.keys, parts[0])
     if b.owners.names.include?(name)
       return owner_assigned(b, name, parts[1], preds)
     end
@@ -1338,7 +1549,13 @@ def assignment(b: Builder, node: Json, preds: List[Int]) -> Built
 
       value = Built(b: b, exits: preds)
       if given != ""
-        give = Give(name: given, word: "stores #{given} in *#{pointed}", line: place.line, column: place.column)
+        give = Give(
+          name: given,
+          word: "stores #{plain(given)} in *#{plain(pointed)}",
+          line: place.line,
+          column: place.column,
+        )
+
         value = add(b, Event.Gives(give), preds)
       else
         value = expression(b, parts[1], preds)
@@ -1352,7 +1569,7 @@ def assignment(b: Builder, node: Json, preds: List[Int]) -> Built
     if handing and values_of(parts[1]).any? do |value| owner_named(b, value) != "" end
       target = expression(b, parts[0], preds)
       gave = stored(target.b, text_of(b, parts[0], false), parts[1], target.exits)
-      return add(gave.b, Event.Writes([target_root(parts[0])]), gave.exits)
+      return add(gave.b, Event.Writes([target_root(b.owners.places.keys, parts[0])]), gave.exits)
     end
 
     if name != ""
@@ -1362,7 +1579,7 @@ def assignment(b: Builder, node: Json, preds: List[Int]) -> Built
   end
 
   value = in_order(b, parts.drop(1).concat(parts.take(1)), preds)
-  return add(value.b, Event.Writes([target_root(parts.first)]), value.exits)
+  return add(value.b, Event.Writes([target_root(b.owners.places.keys, parts.first)]), value.exits)
 end
 
 # A value stored in a place that hands it on (`shown`): a pointer that owns is handed on there, on its side of a `?:`
@@ -1394,8 +1611,10 @@ def stored(b: Builder, shown: String, value: Json, preds: List[Int]) -> Built
   if Ast.kind(bare) == "StmtExpr"
     statements = Ast.children(last_child(bare))
     if not statements.empty?
-      built = in_order_statements(b, statements.take(statements.size - 1), preds)
-      return stored(built.b, shown, statements.last, built.exits)
+      opened = opened_expression(b, bare)
+      built = in_order_statements(opened, statements.take(statements.size - 1), preds)
+      last = stored(built.b, shown, statements.last, built.exits)
+      return closed_expression(last.b, last.exits)
     end
   end
 
@@ -1410,7 +1629,7 @@ end
 def handed_on(b: Builder, shown: String, value: Json, preds: List[Int]) -> Built
   given = owner_named(b, value)
   place = Ast.start_of(value)
-  give = Give(name: given, word: "stores #{given} in #{shown}", line: place.line, column: place.column)
+  give = Give(name: given, word: "stores #{plain(given)} in #{shown}", line: place.line, column: place.column)
   return add(b, Event.Gives(give), preds)
 end
 
@@ -1440,8 +1659,10 @@ def owner_assigned(b: Builder, name: String, value: Json, preds: List[Int]) -> B
     # `({ char *q = make(n); ...; q; })`: its statements, then the value of the last one.
     statements = Ast.children(last_child(bare))
     if not statements.empty?
-      built = in_order_statements(b, statements.take(statements.size - 1), preds)
-      return owner_assigned(built.b, name, statements.last, built.exits)
+      opened = opened_expression(b, bare)
+      built = in_order_statements(opened, statements.take(statements.size - 1), preds)
+      last = owner_assigned(built.b, name, statements.last, built.exits)
+      return closed_expression(last.b, last.exits)
     end
   end
 
@@ -1472,10 +1693,10 @@ def assigned(b: Builder, name: String, value: Json) -> Assign
 
   if source != ""
     if marked
-      return start.with(value: "moved", from: source, shown: source)
+      return start.with(value: "moved", from: source, shown: plain(source))
     end
 
-    return start.with(value: "alias", from: source, shown: source)
+    return start.with(value: "alias", from: source, shown: plain(source))
   end
 
   if Ast.kind(bare) == "CallExpr"
@@ -1518,7 +1739,7 @@ end
 
 # The pointer that owns, or may stand for one, that an expression is, through casts and parentheses; "".
 def owner_named(b: Builder, node: Json) -> String
-  name = variable_name(node)
+  name = variable_key(b.owners.places.keys, node)
   if b.owners.names.include?(name)
     return name
   end
@@ -1551,17 +1772,17 @@ end
 # The CC_FREES parameter that `*p` stands for when the parameter points to the pointer it frees (`T **p`, a cleanup
 # function); "" for any other.
 def pointee_owner(b: Builder, node: Json) -> String
-  return pointee_param(node, b.owners.places.freed)
+  return pointee_param(b.owners.places.keys, node, b.owners.places.freed)
 end
 
 # The parameter in `freed` that `*p` is, when `*p` is itself a pointer; "" for any other expression.
-def pointee_param(node: Json, freed: Set[String]) -> String
+def pointee_param(keys: Map[String, String], node: Json, freed: Set[String]) -> String
   bare = see_through(node)
   if Ast.kind(bare) != "UnaryOperator" or Ast.text(bare, "opcode") != "*" or not pointer_type?(bare)
     return ""
   end
 
-  name = variable_name(Ast.children(bare).first)
+  name = variable_key(keys, Ast.children(bare).first)
   if not freed.include?(name)
     return ""
   end
@@ -1888,8 +2109,9 @@ end
 # A condition of any other form: its calls, then a node for each of its values.
 def branch(b: Builder, bare: Json, preds: List[Int]) -> Split
   value = expression(b, bare, preds)
-  text = text_of(value.b, bare, false)
-  roots = roots_of(bare)
+  keys = value.b.owners.places.keys
+  text = written_text(value.b, bare, false, keys, 0)
+  roots = roots_of(keys, bare)
   place = Ast.start_of(bare)
   fact = Fact(text: text, value: true, roots: roots, line: place.line, column: place.column)
   null_on_true: List[String] = []
@@ -1993,10 +2215,12 @@ end
 # The text of an expression, from the names, fields, constants and operators of `UNARY_TEXT` and `BINARY_TEXT`; ""
 # for anything else. With `aliases`, a local variable set once reads as its value.
 def text_of(b: Builder, node: Json, aliases: Bool) -> String
-  return written_text(b, node, aliases, 0)
+  return written_text(b, node, aliases, {}, 0)
 end
 
-def written_text(b: Builder, node: Json, aliases: Bool, depth: Int) -> String
+# `text_of`, with the key that `keys` gives a variable in place of its name: the text of a condition, so a condition on
+# a local is not one on another variable of its name.
+def written_text(b: Builder, node: Json, aliases: Bool, keys: Map[String, String], depth: Int) -> String
   bare = see_through(node)
   parts = Ast.children(bare)
   case Ast.kind(bare)
@@ -2004,16 +2228,16 @@ def written_text(b: Builder, node: Json, aliases: Bool, depth: Int) -> String
       name = Ast.referenced_name(bare)
       aliased = ""
       if aliases and depth < ALIAS_DEPTH
-        aliased = b.aliases.get(name).map do |value| written_text(b, value, aliases, depth + 1) end.unwrap_or("")
+        aliased = b.aliases.get(name).map do |value| written_text(b, value, aliases, keys, depth + 1) end.unwrap_or("")
       end
 
       if aliased != ""
         return aliased
       end
 
-      return name
+      return referenced_key(keys, bare)
     "MemberExpr" ->
-      base = written_text(b, parts.first, aliases, depth)
+      base = written_text(b, parts.first, aliases, keys, depth)
       if base == ""
         return ""
       end
@@ -2024,23 +2248,23 @@ def written_text(b: Builder, node: Json, aliases: Bool, depth: Int) -> String
 
       return "#{base}.#{Ast.text(bare, "name")}"
     "ArraySubscriptExpr" ->
-      array = written_text(b, parts[0], aliases, depth)
-      index = written_text(b, parts[1], aliases, depth)
+      array = written_text(b, parts[0], aliases, keys, depth)
+      index = written_text(b, parts[1], aliases, keys, depth)
       if array == "" or index == ""
         return ""
       end
 
       return "#{array}[#{index}]"
     "UnaryOperator" ->
-      operand = written_text(b, parts.first, aliases, depth)
+      operand = written_text(b, parts.first, aliases, keys, depth)
       if operand == "" or Ast.flag?(bare, "isPostfix") or not UNARY_TEXT.include?(Ast.text(bare, "opcode"))
         return ""
       end
 
       return "#{Ast.text(bare, "opcode")}#{operand}"
     "BinaryOperator" ->
-      left = written_text(b, parts[0], aliases, depth)
-      right = written_text(b, parts[1], aliases, depth)
+      left = written_text(b, parts[0], aliases, keys, depth)
+      right = written_text(b, parts[1], aliases, keys, depth)
       if left == "" or right == "" or not BINARY_TEXT.include?(Ast.text(bare, "opcode"))
         return ""
       end
@@ -2066,46 +2290,46 @@ def local_text(b: Builder, name: String) -> String
   end
 end
 
-# The variables an expression reads.
-def roots_of(node: Json) -> List[String]
+# The variables an expression reads, by key (`referenced_key`).
+def roots_of(keys: Map[String, String], node: Json) -> List[String]
   if Ast.kind(node) == "DeclRefExpr"
-    return [Ast.referenced_name(node)]
+    return [referenced_key(keys, node)]
   end
 
-  return Ast.children(node).flat_map(&roots_of).uniq
+  return Ast.children(node).flat_map do |child| roots_of(keys, child) end.uniq
 end
 
-# The variable an assignment writes: the root of `x`, `x->a.b` or `x[i]`.
-def target_root(node: Json) -> String
+# The variable an assignment writes, by key (`referenced_key`): the root of `x`, `x->a.b` or `x[i]`.
+def target_root(keys: Map[String, String], node: Json) -> String
   bare = see_through(node)
   case Ast.kind(bare)
-    "DeclRefExpr" -> return Ast.referenced_name(bare)
-    "MemberExpr" -> return target_root(Ast.children(bare).first)
-    "ArraySubscriptExpr" -> return target_root(Ast.children(bare).first)
-    "UnaryOperator" -> return target_root(Ast.children(bare).first)
+    "DeclRefExpr" -> return referenced_key(keys, bare)
+    "MemberExpr" -> return target_root(keys, Ast.children(bare).first)
+    "ArraySubscriptExpr" -> return target_root(keys, Ast.children(bare).first)
+    "UnaryOperator" -> return target_root(keys, Ast.children(bare).first)
     _ -> return ""
   end
 end
 
-# The variable whose own storage an expression is: `x`, `x.a`, `x[i]` of an array `x`; "" through a pointer (`q->mu`,
-# `*p`, `p[i]`), whose variable a write through the address does not change.
-def storage_root(node: Json) -> String
+# The variable whose own storage an expression is, by key: `x`, `x.a`, `x[i]` of an array `x`; "" through a pointer
+# (`q->mu`, `*p`, `p[i]`), whose variable a write through the address does not change.
+def storage_root(keys: Map[String, String], node: Json) -> String
   bare = see_through(node)
   case Ast.kind(bare)
-    "DeclRefExpr" -> return Ast.referenced_name(bare)
+    "DeclRefExpr" -> return referenced_key(keys, bare)
     "MemberExpr" ->
       if Ast.flag?(bare, "isArrow")
         return ""
       end
 
-      return storage_root(Ast.children(bare).first)
+      return storage_root(keys, Ast.children(bare).first)
     "ArraySubscriptExpr" ->
       base = Ast.children(bare).first
       if Ast.text(base, "castKind") != "ArrayToPointerDecay"
         return ""
       end
 
-      return storage_root(Ast.children(base).first)
+      return storage_root(keys, Ast.children(base).first)
     _ -> return ""
   end
 end

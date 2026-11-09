@@ -38,6 +38,12 @@ and a call through a function pointer never jumps. Stored anywhere else or
 passed to another parameter, it is lent and still owns. A condition that tells
 that a pointer is null (`if (!p)`, `if ((p = malloc(n)) == NULL)`) leaves it
 owning nothing on that side.
+A pointer declared in an inner block is checked where a path leaves the block
+(its end, a `break`, `continue`, `goto` or `return`): one that still owns there
+leaks, with that point as the last step of `path`, unless a pointer outside the
+block stands for it (`t = s`, `r = realloc(s, n)`). The pointers of a statement
+expression (`({ ...; p; })`) are checked so at the end of the statement around
+it, and its cleanup functions run at its own end.
 
 A local without a mark that gets a pointer that owns (`char *c = p`) stands for
 it: freeing `c` frees `p`; a `malloc` into it later owns nothing, as in any
@@ -78,7 +84,7 @@ a store that hands a pointer on, each side of `?:` gives its own value (`x->held
 
 | Code | |
 |---|---|
-| `CC-OWN-LEAK` | a path returns, jumps out at a `CC_MAY_JUMP` or `CC_JUMPS` call, or gives a pointer a new value, while it still owns; or drops the value of a `CC_OWNS` function (kept nowhere: not in a local, a `CC_OWNS` place, a return or a parameter that takes it) |
+| `CC-OWN-LEAK` | a path returns, jumps out at a `CC_MAY_JUMP` or `CC_JUMPS` call, leaves the block of a local, or gives a pointer a new value, while it still owns; or drops the value of a `CC_OWNS` function (kept nowhere: not in a local, a `CC_OWNS` place, a return or a parameter that takes it) |
 | `CC-OWN-DOUBLE-FREE` | a path frees a pointer that it already freed or handed on |
 | `CC-OWN-USE-AFTER-FREE` | a path reads, returns or hands on a pointer after it freed it or handed it on |
 
@@ -96,17 +102,20 @@ those leaks, and the mark makes the contract part of the code. The rules do not
 follow a pointer into a struct or an array (a store into a `CC_OWNS` field is
 where they stop), through a function pointer, or out through a parameter without
 `CC_OWNS_OUT` (`int open_buf(char **out)`: the caller lends `&p` to be set). Two
-locals of the same name in one function are one pointer. A local that stands for
-a pointer still stands for it after that pointer gets a new value, except
-through a `CC_FREES` parameter that points to the pointer: after `old = *p; *p =
-v;`, `old` holds the old value. `return p` hands `p` on even when the function
-has no `CC_OWNS` mark, and `p = realloc(p, n)` is trusted to work. A pointer put
-in a struct or a compound literal is not followed, and only one level of pointer
-is (`*p` of a `char **p`, not `**p`). A pointer freed through its address
-(`free_and_null(&p)`, a cleanup function) is freed or null: it may be read and
-freed again (`free(NULL)`), and where a condition says it is not null it is
-freed. The rules assume that a helper that frees through `&p` sets the pointer
-to null; one that only frees leaves a later double free or use unreported.
+variables of the same name in one function (a local that shadows another, a
+parameter or a global, or the same name in two blocks) are two variables: each
+pointer has its own state, and a condition on one is not a condition on the
+other. A local that stands for a pointer still stands for it after that pointer
+gets a new value, except through a `CC_FREES` parameter that points to the
+pointer: after `old = *p; *p = v;`, `old` holds the old value. `return p` hands
+`p` on even when the function has no `CC_OWNS` mark, and `p = realloc(p, n)` is
+trusted to work. A pointer put in a struct or a compound literal is not
+followed, and only one level of pointer is (`*p` of a `char **p`, not `**p`). A
+pointer freed through its address (`free_and_null(&p)`, a cleanup function) is
+freed or null: it may be read and freed again (`free(NULL)`), and where a
+condition says it is not null it is freed. The rules assume that a helper that
+frees through `&p` sets the pointer to null; one that only frees leaves a later
+double free or use unreported.
 
 A filled pointer that the path never reads is not reported (`take(&b); return
 0;`): telling it from what a call that failed left would need a mark that says
