@@ -544,7 +544,11 @@ def functions_by_key(units: List[Unit]) -> Map[String, List[Function]]
   found: Map[String, List[Function]] = {}
   for unit in units
     for function in unit.functions
-      found = found.put(function.key, found.get(function.key).unwrap_or([]).push(function))
+      known = found.get(function.key).unwrap_or([])
+      # One entry for each file: a header read by many units declares the same function in each.
+      if not known.any? do |f| f.file == function.file end
+        found = found.put(function.key, known.push(function))
+      end
     end
   end
 

@@ -590,3 +590,89 @@ Feature: What the project assumes of its functions
       """
       run@a.c>put@a.c
       """
+
+  Scenario Outline: [assume] stop_calls cuts all the calls of the callee in the caller, and not a path through another function (<case>)
+    Given the C file "calls.c" holds:
+      """
+      #include "unistd.h"
+      #include "cchecker.h"
+      static void trace(int fd) { (void)write(fd, "a", 1); }
+      static void mid(int fd) { trace(fd); }
+      <code>
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [assume]
+      <list>
+      """
+    When I run cchecker in its folder with "--tools rules --json calls.c -- -I../../../include"
+    Then the exit code is <exit>
+    And the output <found>:
+      """
+      "file":"calls.c","line":5,
+      """
+
+    Examples:
+      | case                  | code                                                      | list                       | exit | found            |
+      | two call sites        | CC_SHORT void first(int fd) { trace(fd); trace(fd); }     | stop_calls = ["first>trace"] | 0  | does not include |
+      | another path          | CC_SHORT void first(int fd) { trace(fd); mid(fd); }       | stop_calls = ["first>trace"] | 1  | includes         |
+      | the edge below        | CC_SHORT void first(int fd) { mid(fd); }                  | stop_calls = ["mid>trace"]   | 0  | does not include |
+      | the edge above        | CC_SHORT void first(int fd) { mid(fd); }                  | stop_calls = ["first>mid"]   | 0  | does not include |
+      | no pair               | CC_SHORT void first(int fd) { trace(fd); trace(fd); }     |                              | 1  | includes         |
+
+  Scenario Outline: [assume] stop_calls also cuts the call for the lock rules (<list>)
+    Given the C file "held.c" holds:
+      """
+      #include "pthread.h"
+      #include "unistd.h"
+      #include "cchecker.h"
+      struct queue { CC_NO_SYSCALL_UNDER() pthread_mutex_t mu; int fd; };
+      static void deep(int fd) { (void)write(fd, "x", 1); }
+      static void mid(int fd) { deep(fd); }
+      void push(struct queue *q) { pthread_mutex_lock(&q->mu); mid(q->fd); pthread_mutex_unlock(&q->mu); }
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [assume]
+      <list>
+      """
+    When I run cchecker in its folder with "--tools rules --json held.c -- -I../../../include"
+    Then the exit code is <exit>
+    And the output <found>:
+      """
+      "CC-PATH-SYSCALL-UNDER-LOCK"
+      """
+
+    Examples:
+      | list                          | exit | found            |
+      | stop_calls = ["mid>deep"]     | 0    | does not include |
+      | stop_calls = ["push>deep"]    | 1    | includes         |
+      | stop = ["unused"]             | 1    | includes         |
+
+  Scenario Outline: [assume] stop_calls also cuts the call from the inference of may_jump_callers (<list>)
+    Given the C file "jump.c" holds:
+      """
+      #include "stdlib.h"
+      #include "cchecker.h"
+      CC_JUMPS void fail(void);
+      int w(int n) { if (0 > n) fail(); return n; }
+      int x(int n) { return w(n) + 1; }
+      int start(int n) { CC_OWNS char *p = malloc(8); if (!p) return -1; p[0] = (char)x(n); free(p); return 0; }
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [assume]
+      <list>
+      """
+    When I run cchecker in its folder with "--tools rules --json jump.c -- -I../../../include"
+    Then the exit code is <exit>
+    And the output <found>:
+      """
+      "source":"may_jump_callers"
+      """
+
+    Examples:
+      | list                      | exit | found            |
+      | stop_calls = ["x>w"]      | 0    | does not include |
+      | stop_calls = ["x>fail"]   | 1    | includes         |
+      | stop = ["unused"]         | 1    | includes         |

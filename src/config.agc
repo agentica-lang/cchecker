@@ -141,19 +141,24 @@ export def flags() -> List[String]
   )
 end
 
-## Returns the pair that `text` writes, or none when it is not `caller>callee` with a name on each side.
+## Returns the pair that `text` writes, or none when it is not `caller>callee`: a name on each side, with no blank or
+## `>` inside, and no `-` before the `>` (`a->b` is not a pair).
 export def edge_of(text: String) -> Optional[Edge]
   case text.index_of(">")
     some(at) ->
       caller = text.slice(0, at)
       callee = text.slice(at + 1, text.length - at - 1)
-      if caller == "" or callee == ""
+      if caller == "" or callee == "" or caller.end_with?("-") or not plain?(caller) or not plain?(callee)
         return none
       end
 
       return some(Edge(caller: caller, callee: callee))
     none -> return none
   end
+end
+
+def plain?(name: String) -> Bool
+  return not (name.include?(">") or name.include?(" ") or name.include?("\t"))
 end
 
 # The note of an unknown key of a file of -c read whole: only a file that looks like a manifest of Agentica (it has a
