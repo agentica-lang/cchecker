@@ -86,6 +86,9 @@ README and described in [Rules](rules.md) and [Ownership](ownership.md).
 | `--no-infer` | no roots inferred from the callbacks of libuv (see [Roots](settings.md#roots)) |
 | `--all-paths` | a finding of the rules for each bad call that a root reaches, not only the nearest (see [Rules](rules.md#effects)) |
 
+The value of an option can be the next word even when it starts with `-`, as
+with getopt: `--checks '-*,bugprone-*'` is `--checks='-*,bugprone-*'`.
+
 The default checks are `-*`, `clang-analyzer-core.*`, `clang-analyzer-unix.*`
 and `clang-analyzer-security.*` (without `insecureAPI`), and the bugprone checks
 `sizeof-expression`, `integer-division`, `suspicious-memory-comparison`,

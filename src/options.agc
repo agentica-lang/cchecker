@@ -76,6 +76,7 @@ OPTIONS = [
 ]
 
 VALUE_LONG = Set.new(OPTIONS.select do |o| o.kind != Kind.Flag end.map do |o| o.name end)
+VALUE_SHORT = Set.new(OPTIONS.select do |o| o.kind != Kind.Flag and o.short != "" end.map do |o| o.short end)
 
 # The words before `--`, told apart: the FILEs and the words for option_parser.
 struct Words
@@ -225,20 +226,19 @@ end
 
 # option_parser has no variable-length positional argument, so the files are told apart here: a word that does not
 # start with "-" and is not the value of the option before it. option_parser takes a value that starts with "-" for an
-# option, so an option and its value in two words become one, `--NAME=VALUE`, as getopt reads `--checks -*,...`.
+# option, so an option and its value in two words become one (see `joined`), as getopt reads `--checks -*,...`.
 def tell_apart(words: List[String]) -> Words
   files: List[String] = []
   options: List[String] = []
   pending = ""
   for word in words
     if pending != ""
-      options = options.push("--#{pending}=#{word}")
+      options = options.concat(joined(pending, word))
       pending = ""
+    elsif word.start_with?("-") and takes_value?(word)
+      pending = word
     elsif word.start_with?("-")
-      pending = value_name(word)
-      if pending == ""
-        options = options.push(word)
-      end
+      options = options.push(word)
     else
       files = files.push(word)
     end
@@ -246,30 +246,30 @@ def tell_apart(words: List[String]) -> Words
 
   # An option that takes a value but is the last word: option_parser says that it needs one.
   if pending != ""
-    options = options.push("--#{pending}")
+    options = options.push(pending)
   end
 
   return Words(files: files, options: options)
 end
 
-# The long name of an option that takes its value from the next word (`--checks`, `-p`), or "".
-def value_name(word: String) -> String
+# An option and its value as option_parser reads them: `--checks=VALUE`, and `-pVALUE` for a short option, in the form
+# that was typed. An empty value stays a word of its own, as before: `-p` alone would need a value.
+def joined(option: String, value: String) -> List[String]
+  if value == ""
+    return [option, value]
+  end
+
+  if option.start_with?("--")
+    return ["#{option}=#{value}"]
+  end
+
+  return ["#{option}#{value}"]
+end
+
+def takes_value?(word: String) -> Bool
   if word.start_with?("--")
-    name = word.slice(2, word.length - 2)
-    if not word.include?("=") and VALUE_LONG.include?(name)
-      return name
-    end
-
-    return ""
+    return not word.include?("=") and VALUE_LONG.include?(word.slice(2, word.length - 2))
   end
 
-  if word.length == 2
-    short = word.slice(1, 1)
-    named = OPTIONS.select do |o| o.kind != Kind.Flag and o.short == short end
-    if not named.empty?
-      return named.first.name
-    end
-  end
-
-  return ""
+  return word.length == 2 and VALUE_SHORT.include?(word.slice(1, 1))
 end

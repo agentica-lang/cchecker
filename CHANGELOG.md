@@ -9,8 +9,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A `.clang-tidy` with `UseColor: true`, or a `-fdiagnostics-color=always` or `-fdiagnostics-urls=always` in the
   flags, no longer drops or renames the findings of that tool without a word: cchecker turns colours and links off
   after the project's settings, and a diagnostic line that it cannot read is a tool error (exit 2).
-- An option and its value in two words take a value that starts with `-`, as getopt does: `--checks '-*,bugprone-*'`
-  works like `--checks='-*,bugprone-*'` instead of saying that `--checks` needs a value.
+- A value that starts with `-` is taken from the next word, as getopt does: `--checks '-*,bugprone-*'` works like
+  `--checks='-*,bugprone-*'` instead of saying that `--checks` needs a value (and `-j -1` now says that `-1` is too
+  small).
 
 ## [0.2.0] - 2026-11-09
 
