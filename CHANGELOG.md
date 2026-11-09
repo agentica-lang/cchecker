@@ -4,6 +4,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- A file listed more than once with the same flags is checked once; flags that differ only by `-fPIC`, `-fPIE` and
+  CMake's `-D<target>_EXPORTS` count as the same (a static and a shared library of CMake), any other define does not
+  (libuv's `BUILDING_UV_SHARED` keeps both entries). `folded` of `--json` counts the repeated entries left out.
+
 ### Fixed
 
 - A `.clang-tidy` with `UseColor: true`, or a `-fdiagnostics-color=always` or `-fdiagnostics-urls=always` in the

@@ -5,23 +5,34 @@
 A finding is one line, `file:line:column CODE message`, then a summary line and
 a line for each stale entry of the baseline (see
 [Baseline](suppressions.md#baseline)). `--json` prints one object for tools and
-agents: `clean`, `findings` (each has `code`, `tool`, `file`, `line`, `column`,
-`message`, `path`, the call path of a finding of the rules, `source`, the
-`[library]` flag that made it or `""`, and `root`, where an inferred root comes
-from or `""`), `baselined`, `fixed`, `stale` (the entries of the baseline behind
-`fixed`: `code`, `file`, `message` and `count`), `errors` (a tool that did not
-run or could not compile a file: `tool`, `file` and `message`), `skipped`,
-`suppressed` (see [Suppressions](suppressions.md#suppressions)), `config`, the
-settings file that was read or `"defaults"` (see [Settings](settings.md)),
-`unresolved_callbacks` (see [Roots](settings.md#roots)), `unchecked_files`:
-the files that were not checked because a header they include is not found
-(`file` and `missing`, the header as the `#include` wrote it), and
-`version_changes`: the tools whose version is not the one that made the baseline
-(`tool`, `baseline` and `current`; see
-[Baseline](suppressions.md#versions-of-the-tools)). A file that was not checked
-is skipped with a warning on standard error and does not change the exit code.
-The rules also add `incomplete_functions` and `skipped_declarations` (see
-[Rules](rules.md)).
+agents:
+
+- `clean`;
+- `findings`: each has `code`, `tool`, `file`, `line`, `column`, `message`,
+  `path` (the call path of a finding of the rules), `source` (the `[library]`
+  flag that made it, or `""`) and `root` (where an inferred root comes from, or
+  `""`);
+- `baselined`, `fixed`, and `stale`: the entries of the baseline behind
+  `fixed` (`code`, `file`, `message` and `count`);
+- `errors`: a tool that did not run or could not compile a file (`tool`,
+  `file` and `message`);
+- `skipped`: the files outside the working directory, which were not run;
+- `suppressed` (see [Suppressions](suppressions.md#suppressions));
+- `config`: the settings file that was read, or `"defaults"` (see
+  [Settings](settings.md));
+- `unresolved_callbacks` (see [Roots](settings.md#roots));
+- `unchecked_files`: the files that were not checked because a header they
+  include is not found (`file` and `missing`, the header as the `#include`
+  wrote it);
+- `version_changes`: the tools whose version is not the one that made the
+  baseline (`tool`, `baseline` and `current`; see
+  [Baseline](suppressions.md#versions-of-the-tools));
+- `folded`: the repeated entries left out (see [Options](#options));
+- from the rules, `incomplete_functions` and `skipped_declarations` (see
+  [Rules](rules.md)).
+
+A file that was not checked is skipped with a warning on standard error and does
+not change the exit code.
 
 ## Exit codes
 
@@ -88,6 +99,15 @@ README and described in [Rules](rules.md) and [Ownership](ownership.md).
 
 The value of an option can be the next word even when it starts with `-`, as
 with getopt: `--checks '-*,bugprone-*'` is `--checks='-*,bugprone-*'`.
+
+An entry that repeats a file is left out: the same file in the same folder with
+the same flags, from the compile database or the FILEs (`cchecker a.c ./a.c`
+checks `a.c` once). The flags that only change the code the compiler makes for
+a shared library do not count: `-fPIC`, `-fpic`, `-fPIE`, `-fpie` and CMake's
+`-D<target>_EXPORTS`. So the entries of a file in a static and a shared library
+of CMake fold when they differ only in those. Any other define or include path
+can change the findings, so such entries are each checked: libuv's shared
+library adds `-DBUILDING_UV_SHARED=1`, and both of its entries run.
 
 The default checks are `-*`, `clang-analyzer-core.*`, `clang-analyzer-unix.*`
 and `clang-analyzer-security.*` (without `insecureAPI`), and the bugprone checks

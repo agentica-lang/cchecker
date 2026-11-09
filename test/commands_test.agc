@@ -18,3 +18,30 @@ def test_the_source_file_is_left_out_however_it_is_spelled() -> Result[Void]
   words = ["cc", "-c", "./src/../a.c", "-DA=1", "b.c"]
   return Test.eq(Commands.flags_of(words, "/p/a.c", "/p"), ["-DA=1", "b.c"])
 end
+
+def test_a_file_listed_again_for_a_shared_library_is_folded() -> Result[Void]
+  entries = [
+    Commands.Entry(directory: "/p", file: "x.c", args: ["-DA", "-I."]),
+    Commands.Entry(directory: "/p", file: "./x.c", args: ["-DA", "-Dx_EXPORTS", "-I.", "-fPIC"]),
+    Commands.Entry(directory: "/p", file: "x.c", args: ["-DA", "-Iother"]),
+  ]
+
+  folded = Commands.fold(entries)
+  try Test.eq(folded.folded, 1)
+  return Test.eq(folded.entries.map do |e| e.args end, [["-DA", "-I."], ["-DA", "-Iother"]])
+end
+
+def test_entries_that_may_find_other_things_are_not_folded() -> Result[Void]
+  entries = [
+    Commands.Entry(directory: "/p", file: "/p/x.c", args: ["-I."]),
+    # Another folder: `-I.` names another folder.
+    Commands.Entry(directory: "/q", file: "/p/x.c", args: ["-I."]),
+    # A value for the define: code may read it.
+    Commands.Entry(directory: "/p", file: "/p/x.c", args: ["-I.", "-Dfoo_EXPORTS=1"]),
+    # One word of `arguments` with a space is not the two words of a `command`.
+    Commands.Entry(directory: "/p", file: "/p/x.c", args: ["-DA B"]),
+    Commands.Entry(directory: "/p", file: "/p/x.c", args: ["-DA", "B"]),
+  ]
+
+  return Test.eq(Commands.fold(entries).folded, 0)
+end
