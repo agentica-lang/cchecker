@@ -46,7 +46,8 @@ end
 ## `[assume] catches`, those that catch the jumps of what they call (as CC_CATCHES), `jump_releases` is `[assume]
 ## jump_releases`, the lock helpers whose lock the catcher of a jump gives back (as CC_JUMP_RELEASES), and `stop_calls`
 ## is `[assume] stop_calls`, the `caller>callee` pairs whose call no walk follows. `fold_ignoring` is `[database]
-## fold_ignoring`, the defines that do not tell two entries of one file apart.
+## fold_ignoring`, the defines that do not tell two entries of one file apart. `nonblocking` is `[assume] nonblocking`,
+## the functions whose descriptors are non-blocking: their calls of `Known.FD_CALLS` return at once.
 export struct Config
   origin: String
   off: Set[String]
@@ -63,6 +64,7 @@ export struct Config
   stop_calls: List[String] = []
   jump_releases: List[String] = []
   fold_ignoring: List[String] = []
+  nonblocking: List[String] = []
 end
 
 ## Returns the settings of a run in `folder`, the project folder: those of `explicit` (the file of -c) when given.
@@ -125,6 +127,7 @@ export def from_table(origin: String, prefix: String, table: Toml.Value, note: S
             "stop_calls" -> config = config.with(stop_calls: try pairs_of(origin, path, assume.get(name).unwrap!))
             "jump_releases" ->
               config = config.with(jump_releases: try names_of(origin, path, assume.get(name).unwrap!))
+            "nonblocking" -> config = config.with(nonblocking: try names_of(origin, path, assume.get(name).unwrap!))
             _ -> return error(unknown(origin, path, note))
           end
         end

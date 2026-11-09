@@ -169,6 +169,7 @@ Feature: The settings of a project
       | [assume]   | stop_calls = ["a>b>c"]  | assume.stop_calls      |
       | [assume]   | stop_calls = ["a > b"]  | assume.stop_calls      |
       | [assume]   | jump_releases = "a"     | assume.jump_releases   |
+      | [assume]   | nonblocking = "a"       | assume.nonblocking     |
       | [database] | fold_ignoring = "A"     | database.fold_ignoring |
       | [database] | fold_ignoring = ["-DA"] | database.fold_ignoring |
       | [database] | fold_ignoring = ["A=1"] | database.fold_ignoring |

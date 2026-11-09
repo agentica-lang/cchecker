@@ -148,7 +148,8 @@ export def run(options: Options) -> Result[Int]
     config.may_jump.empty? and
     config.jumps.empty? and
     config.catches.empty? and
-    config.jump_releases.empty?
+    config.jump_releases.empty? and
+    config.nonblocking.empty?
   )
 
   if options.tools.include?(Tool.Rules) and assumes

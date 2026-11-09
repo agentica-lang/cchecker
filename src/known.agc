@@ -249,11 +249,23 @@ export LIBGC_ALLOC = Set.new([
 export NONBLOCKING_FLAG = "libc_nonblocking_flags"
 
 ## The calls that a flag makes return at once, and the place of their flags among their arguments (from 0):
-## O_NONBLOCK for `open` and `openat`, MSG_DONTWAIT for `recv`, `send`, `recvfrom` and `sendto`, and the mode
-## UV_RUN_NOWAIT for `uv_run`.
+## O_NONBLOCK for `open` and `openat`, MSG_DONTWAIT for `recv`, `send`, `recvfrom` and `sendto`, WNOHANG for
+## `waitpid`, `wait4` and `waitid`, and the mode UV_RUN_NOWAIT for `uv_run`.
 export FLAG_ARGUMENTS: Map[String, Int] = {
-  "open": 1, "openat": 2, "recv": 3, "send": 3, "recvfrom": 3, "sendto": 3, "uv_run": 1,
+  "open": 1, "openat": 2, "recv": 3, "send": 3, "recvfrom": 3, "sendto": 3, "uv_run": 1, "waitpid": 2, "wait4": 2,
+  "waitid": 3,
 }
+
+## The calls on a descriptor that return at once when it is non-blocking (O_NONBLOCK): those of the functions of
+## `[assume] nonblocking` are not blocking for CC_SHORT. `pread` and `pwrite` are not among them: they read a file,
+## which O_NONBLOCK does not make return at once.
+export FD_CALLS = Set.new([
+  "read", "write", "readv", "writev", "recv", "send", "recvfrom", "sendto", "recvmsg", "sendmsg", "recvmmsg",
+  "sendmmsg", "accept", "accept4", "connect",
+])
+
+# The calls whose flag is WNOHANG.
+WAIT_CALLS = ["waitpid", "wait4", "waitid"]
 
 # The value of UV_RUN_NOWAIT, the same on every target: libuv's `uv_run_mode` is an enum (DEFAULT 0, ONCE 1, NOWAIT 2).
 UV_RUN_NOWAIT_VALUE = 2
@@ -275,6 +287,10 @@ export def nonblocking_name(call: String) -> String
     return "O_NONBLOCK"
   end
 
+  if WAIT_CALLS.include?(call)
+    return "WNOHANG"
+  end
+
   return "MSG_DONTWAIT"
 end
 
@@ -286,10 +302,18 @@ end
 
 ## Returns the bit of the flag that makes a call of `FLAG_ARGUMENTS` return at once on `target`, a triple of clang
 ## (`x86_64-pc-linux-gnu`), or 0 when the rules do not know its value there: Linux, but on MIPS, SPARC, Alpha and
-## PA-RISC, whose values differ, and macOS.
+## PA-RISC, whose values differ, and macOS. WNOHANG is 1 on Linux (every architecture) and macOS.
 export def nonblocking_bit(target: String, call: String) -> Int
   if one_value?(call)
     return UV_RUN_NOWAIT_VALUE
+  end
+
+  if WAIT_CALLS.include?(call)
+    if apple?(target) or target.include?("-linux")
+      return 1
+    end
+
+    return 0
   end
 
   dontwait = call != "open" and call != "openat"

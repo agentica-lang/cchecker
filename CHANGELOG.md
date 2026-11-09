@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `waitpid`, `wait4` and `waitid` with `WNOHANG` are not blocking calls for `CC_SHORT` (`libc_nonblocking_flags`).
+- The flag of `libc_nonblocking_flags` may be in a local variable that gets only constants and gets one before the
+  call on every path (`options = WNOHANG; waitpid(pid, &status, options)`).
+- `[assume] nonblocking = ["uv__read"]`: the calls on a descriptor (`read`, `write`, `recv`, `send`, `accept`, ...)
+  that these functions make are not blocking for `CC_SHORT`, for code whose descriptors are all non-blocking.
 - `[database] fold_ignoring = ["NAME"]`: two entries of one file that differ only in those defines (any value) are
   checked once, the first of the database, like the `-D<target>_EXPORTS` of a shared library (libuv's
   `BUILDING_UV_SHARED`). A define that changes the C the rules read hides it from the entries left out.

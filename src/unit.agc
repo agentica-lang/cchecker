@@ -210,6 +210,8 @@ struct Scope
   caller: String
   params: Map[String, Int]
   locals: Set[String]
+  # The bodies of the function, where a flag in a local variable gets its values.
+  bodies: List[Json] = []
 end
 
 # What a walk found so far.
@@ -901,7 +903,7 @@ def in_function(tables: Tables, key: String, node: Json, found: Found) -> Found
     Flow.descendants(bodies).select do |n| Ast.kind(n) == "VarDecl" end.map do |n| Ast.text(n, "name") end,
   )
 
-  scope = Scope(caller: key, params: params, locals: locals)
+  scope = Scope(caller: key, params: params, locals: locals, bodies: bodies)
   walked = found
   for body in bodies
     walked = walk(tables, scope, body, walked)
@@ -964,8 +966,10 @@ def with_call(tables: Tables, scope: Scope, node: Json, found: Found) -> Found
       flag = Known.nonblocking_name(Ast.referenced_name(callee))
       # A mode is one value, not bits to add: only the constant itself names it (`UV_RUN_ONCE | UV_RUN_NOWAIT`
       # does not).
-      named = names_flag?(parts[at + 1], flag, Known.one_value?(Ast.referenced_name(callee)))
-      call = call.with(flags: constant(parts[at + 1]), named: named)
+      exact = Known.one_value?(Ast.referenced_name(callee))
+      written = flag_values(scope, node, parts[at + 1])
+      named = written.all? do |value| names_flag?(value, flag, exact) end
+      call = call.with(flags: joined(written, exact), named: named)
     end
 
     called = noted.with(calls: noted.calls.push(call))
@@ -1053,6 +1057,141 @@ def constant(node: Json) -> Int
       return Int.bit_or(left, right)
     _ -> return -1
   end
+end
+
+# The values a flag argument may have: the argument itself, or, for a local variable that gets only constants (no
+# `&`, `++` or `op=`) and gets one before the call on every path, the constants it gets.
+def flag_values(scope: Scope, call: Json, argument: Json) -> List[Json]
+  value = Flow.see_through(argument)
+  if Ast.kind(value) != "DeclRefExpr" or Ast.referenced_kind(value) != "VarDecl"
+    return [argument]
+  end
+
+  id = Ast.referenced_id(value)
+  nodes = Flow.descendants(scope.bodies)
+  declared = nodes.select do |n| Ast.kind(n) == "VarDecl" and Ast.text(n, "id") == id end
+  # A goto may jump over the store that would come first; a static variable keeps the value of another call.
+  if (
+    declared.empty? or
+    Ast.text(declared.first, "storageClass") == "static" or
+    nodes.any? do |n| Ast.kind(n) == "GotoStmt" or Ast.kind(n) == "IndirectGotoStmt" end
+  )
+    return [argument]
+  end
+
+  stored: List[Json] = values(declared.first)
+  for n in nodes
+    parts = Ast.children(n)
+    kind = Ast.kind(n)
+    opcode = Ast.text(n, "opcode")
+    if kind == "BinaryOperator" and opcode == "=" and refers?(parts.first, id)
+      stored = stored.push(parts.last)
+    elsif kind == "CompoundAssignOperator" and refers?(parts.first, id)
+      return [argument]
+    elsif kind == "UnaryOperator" and opcode != "-" and opcode != "!" and opcode != "~" and refers?(parts.first, id)
+      return [argument]
+    end
+  end
+
+  if stored.empty? or not first_on_every_path?(scope.bodies, call, id)
+    return [argument]
+  end
+
+  return stored
+end
+
+# Whether an expression is the variable of declaration `id`, as it is.
+def refers?(node: Json, id: String) -> Bool
+  value = Flow.see_through(node)
+  return Ast.kind(value) == "DeclRefExpr" and Ast.referenced_id(value) == id
+end
+
+# Whether the variable `id` gets a value before `call` on every path: a statement that stores it comes before the
+# call in a block that holds both, and no `case` or `default` of a switch outside that statement comes between them.
+def first_on_every_path?(bodies: List[Json], call: Json, id: String) -> Bool
+  chain: List[Json] = []
+  for body in bodies
+    chain = chain.concat(path_to(body, Ast.text(call, "id")))
+  end
+
+  for i in 0...(chain.size - 1)
+    block = chain[i]
+    if Ast.kind(block) == "CompoundStmt"
+      parts = Ast.children(block)
+      inner = Ast.text(chain[i + 1], "id")
+      at = parts.take_while do |part| Ast.text(part, "id") != inner end.size
+      # The nearest store: a `case` between it and the call is between any earlier one and the call too.
+      j = at - 1
+      while j >= 0
+        if stores?(parts[j], id)
+          return not parts.drop(j + 1).take(at - j).any?(&labelled?)
+        end
+
+        j -= 1
+      end
+    end
+  end
+
+  return false
+end
+
+# The nodes from `node` down to the one whose id is `id`, or none when it is not inside.
+def path_to(node: Json, id: String) -> List[Json]
+  if Ast.text(node, "id") == id
+    return [node]
+  end
+
+  for child in Ast.children(node)
+    below = path_to(child, id)
+    if not below.empty?
+      return [node].concat(below)
+    end
+  end
+
+  return []
+end
+
+# Whether a statement stores the variable `id`: an assignment, or a declaration with a value.
+def stores?(statement: Json, id: String) -> Bool
+  value = Flow.see_through(statement)
+  if Ast.kind(value) == "BinaryOperator" and Ast.text(value, "opcode") == "="
+    return refers?(Ast.children(value).first, id)
+  end
+
+  return (
+    Ast.kind(value) == "DeclStmt" and
+    Ast.children(value).any? do |decl| Ast.text(decl, "id") == id and not values(decl).empty? end
+  )
+end
+
+# Whether a statement holds a `case` or `default` of a switch outside it: a switch may jump there. Those of a switch
+# inside it are reached only through that switch.
+def labelled?(statement: Json) -> Bool
+  kind = Ast.kind(statement)
+  if kind == "CaseStmt" or kind == "DefaultStmt"
+    return true
+  end
+
+  return kind != "SwitchStmt" and Ast.children(statement).any?(&labelled?)
+end
+
+# The flags of the values of a flag argument: those of the constant bits all of them have (the one value of an
+# `exact` mode, when all have it), or -1 when one is not a constant.
+def joined(written: List[Json], exact: Bool) -> Int
+  constants = written.map(&constant)
+  if constants.empty? or constants.any? do |c| c < 0 end
+    return -1
+  end
+
+  if exact
+    if constants.all? do |c| c == constants.first end
+      return constants.first
+    end
+
+    return -1
+  end
+
+  return constants.reduce(constants.first) do |all, c| Int.bit_and(all, c) end
 end
 
 # Whether flags joined with `|` or `+` name the constant of an enum `flag` (`MSG_DONTWAIT | MSG_NOSIGNAL`), or,
