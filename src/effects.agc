@@ -1,7 +1,7 @@
 ## The effect rules on the call graph of the project: a CC_SHORT function never reaches a blocking call, and a CC_HOT
 ## function never allocates or makes a system call.
 
-import {Config} from "config"
+import Config from "config"
 import {Finding, UnresolvedCallback} from "findings"
 import Known from "known"
 import Paths from "paths"
@@ -81,6 +81,12 @@ struct Listing
   tails: Map[String, List[String]]
 end
 
+# A pair of `[assume] stop_calls` with each side as a listing: the functions that the call may come from and go to.
+struct Cut
+  caller: Listing
+  callee: Listing
+end
+
 # The lists of `[assume] short`, `stop`, `may_jump`, `jumps`, `catches` and `jump_releases`.
 struct Assumed
   short: Listing
@@ -114,7 +120,7 @@ end
 ## `[library]` flags that are off take their families out of the blocking calls. A root gives one finding for each
 ## rule it breaks, at the nearest bad call, or one for each bad call it reaches when `all_paths`. `cwd` shortens the
 ## paths of the inferred roots and of the unresolved callbacks; one outside it stays absolute.
-export def check(units: List[Unit], config: Config, infer: Bool, all_paths: Bool, cwd: String) -> Checked
+export def check(units: List[Unit], config: Config.Config, infer: Bool, all_paths: Bool, cwd: String) -> Checked
   graph = graph_of(units)
   families = Known.BLOCKING_FAMILIES.select do |family| not config.off.include?(family.flag) end
   walk = Walk(
@@ -164,13 +170,14 @@ export def check(units: List[Unit], config: Config, infer: Bool, all_paths: Bool
 end
 
 ## Returns the units with the marks that `[assume]` gives the functions it names, as if the C had them, and without
-## the calls through the fields of `[assume] stop_fields`, which no walk follows. A call through a copy of such a field
-## (a local that got it) is still followed.
-export def assumed(units: List[Unit], config: Config) -> List[Unit]
+## the calls through the fields of `[assume] stop_fields`, which no walk follows, and the direct calls of the pairs of
+## `[assume] stop_calls`. A call through a copy of such a field (a local that got it) is still followed.
+export def assumed(units: List[Unit], config: Config.Config) -> List[Unit]
   if (
     config.trusted.empty? and
     config.stops.empty? and
     config.stop_fields.empty? and
+    config.stop_calls.empty? and
     config.may_jump.empty? and
     config.jumps.empty? and
     config.catches.empty? and
@@ -180,6 +187,8 @@ export def assumed(units: List[Unit], config: Config) -> List[Unit]
   end
 
   cut = Set.new(config.stop_fields.map do |field| "#{FIELD_SLOT}#{field}" end)
+  edges = edges_of(config)
+  functions = functions_by_key(units)
   lists = Assumed(
     short: listing_of(config.trusted),
     stop: listing_of(config.stops),
@@ -192,7 +201,7 @@ export def assumed(units: List[Unit], config: Config) -> List[Unit]
   return units.map do |unit|
     unit.with(
       functions: unit.functions.map do |f| with_assumed(f, lists) end,
-      calls: unit.calls.select do |call| not cut_call?(cut, call) end,
+      calls: unit.calls.select do |call| not cut_call?(cut, call) and not cut_edge?(edges, functions, call) end,
     )
   end
 end
@@ -262,7 +271,7 @@ end
 
 ## Returns the fields of `[assume] stop_fields` that the units neither store a function in nor call through, each with
 ## its key (`request.cal (assume.stop_fields)`). It reads the units before `assumed` takes the calls out.
-export def missing_fields(units: List[Unit], config: Config) -> List[String]
+export def missing_fields(units: List[Unit], config: Config.Config) -> List[String]
   if config.stop_fields.empty?
     return []
   end
@@ -283,6 +292,23 @@ export def missing_fields(units: List[Unit], config: Config) -> List[String]
 
   missing = config.stop_fields.uniq.select do |field| not known.include?("#{FIELD_SLOT}#{field}") end
   return missing.map do |field| "#{field} (assume.stop_fields)" end
+end
+
+## Returns the pairs of `[assume] stop_calls` that match no call of the units, each with its key
+## (`on_exit>close (assume.stop_calls)`). It reads the units before `assumed` takes the calls out.
+export def missing_calls(units: List[Unit], config: Config.Config) -> List[String]
+  if config.stop_calls.empty?
+    return []
+  end
+
+  functions = functions_by_key(units)
+  calls = units.flat_map do |unit| unit.calls end
+  missing = config.stop_calls.uniq.select do |text|
+    edge = edges_of_texts([text])
+    not calls.any? do |call| cut_edge?(edge, functions, call) end
+  end
+
+  return missing.map do |text| "#{text} (assume.stop_calls)" end
 end
 
 ## Returns whether no walk goes into a function: it is marked CC_STOP or named in `[assume] stop`.
@@ -403,7 +429,7 @@ export def graph_of(units: List[Unit]) -> Graph
 end
 
 # The classes of the short locks: those marked CC_NO_SYSCALL_UNDER() and those of `[assume] short_locks`.
-def short_locks_of(units: List[Unit], config: Config) -> Set[String]
+def short_locks_of(units: List[Unit], config: Config.Config) -> Set[String]
   marked = units.flat_map do |unit| unit.lock_marks end
     .select do |m| m.mark == SHORT_LOCK_MARK end
     .map do |m| m.class end
@@ -502,8 +528,57 @@ def cut_call?(cut: Set[String], call: Call) -> Bool
   end
 end
 
+def edges_of(config: Config.Config) -> List[Cut]
+  return edges_of_texts(config.stop_calls)
+end
+
+def edges_of_texts(texts: List[String]) -> List[Cut]
+  edges: List[Cut] = []
+  for text in texts
+    case Config.edge_of(text)
+      some(edge) -> edges = edges.push(Cut(caller: listing_of([edge.caller]), callee: listing_of([edge.callee])))
+      none -> next
+    end
+  end
+
+  return edges
+end
+
+# Every declaration and definition of the functions of the units, by key: a name in `[assume]` may be the file of any.
+def functions_by_key(units: List[Unit]) -> Map[String, List[Function]]
+  found: Map[String, List[Function]] = {}
+  for unit in units
+    for function in unit.functions
+      known = found.get(function.key).unwrap_or([])
+      # One entry for each file: a header read by many units declares the same function in each.
+      if not known.any? do |f| f.file == function.file end
+        found = found.put(function.key, known.push(function))
+      end
+    end
+  end
+
+  return found
+end
+
+# Whether a call is the one of a pair of `[assume] stop_calls`: a direct call whose caller and callee are the functions
+# that the two sides name.
+def cut_edge?(edges: List[Cut], functions: Map[String, List[Function]], call: Call) -> Bool
+  case call.target
+    Target.Direct(callee) ->
+      return edges.any? do |edge|
+        named?(edge.caller, functions, call.caller) and named?(edge.callee, functions, callee)
+      end
+
+    Target.Slot(_) -> return false
+  end
+end
+
+def named?(listing: Listing, functions: Map[String, List[Function]], key: String) -> Bool
+  return functions.get(key).unwrap_or([]).any? do |function| listed?(listing, function) end
+end
+
 # The classes of `[assume] short_locks` that no lock of the units has: none taken and none marked, with their key.
-def missing_locks(units: List[Unit], graph: Graph, config: Config) -> List[String]
+def missing_locks(units: List[Unit], graph: Graph, config: Config.Config) -> List[String]
   if config.short_locks.empty?
     return []
   end
@@ -581,7 +656,7 @@ end
 
 # The entries of `[assume]` that no function of the units has, with their key. A `name@file` counts when the file of
 # any declaration of the function, or of its definition, ends with the path: the same functions that `assumed` marks.
-def missing_assumed(units: List[Unit], config: Config) -> List[String]
+def missing_assumed(units: List[Unit], config: Config.Config) -> List[String]
   if (
     config.trusted.empty? and
     config.stops.empty? and
@@ -634,7 +709,7 @@ def marked?(graph: Graph, key: String, mark: String) -> Bool
 end
 
 # The entries of `[roots]` that no function of the graph defines.
-def missing_roots(graph: Graph, config: Config) -> List[String]
+def missing_roots(graph: Graph, config: Config.Config) -> List[String]
   names = config.short.concat(config.hot).uniq
   if names.empty?
     return []

@@ -24,6 +24,12 @@ TOOL_TABLE = "tool.cchecker"
 # What an unknown key of a file of -c without that table adds: the file may be a manifest that lacks it.
 WHOLE_NOTE = " (no [tool.cchecker] table; read as a cchecker file)"
 
+## A `caller>callee` pair of `[assume] stop_calls`: the call of `callee` in `caller`, each a function name or `name@path`.
+export struct Edge
+  caller: String
+  callee: String
+end
+
 ## The settings of a run. `origin` is the file they were read from, as the user wrote it, or "defaults". `off` holds
 ## the `[library]` flags that are false; `short` and `hot` are the names of `[roots]`. `follow_cold` is
 ## `[effects] follow_cold`: the walk goes into the functions that never return or are cold. `trusted` and `stops` are
@@ -32,8 +38,9 @@ WHOLE_NOTE = " (no [tool.cchecker] table; read as a cchecker file)"
 ## `stop_fields` is `[assume] stop_fields`, the function-pointer fields (`request.call`) whose calls no walk follows,
 ## `may_jump` is `[assume] may_jump`, the functions that may jump out of their caller (as CC_MAY_JUMP), `jumps` is
 ## `[assume] jumps`, those that always do and never return (as CC_JUMPS), `catches` is `[assume] catches`, those
-## that catch the jumps of what they call (as CC_CATCHES), and `jump_releases` is `[assume] jump_releases`, the lock
-## helpers whose lock the catcher of a jump gives back (as CC_JUMP_RELEASES).
+## that catch the jumps of what they call (as CC_CATCHES), `jump_releases` is `[assume] jump_releases`, the lock
+## helpers whose lock the catcher of a jump gives back (as CC_JUMP_RELEASES), and `stop_calls` is
+## `[assume] stop_calls`, the `caller>callee` pairs whose call no walk follows.
 export struct Config
   origin: String
   off: Set[String]
@@ -47,6 +54,7 @@ export struct Config
   may_jump: List[String] = []
   jumps: List[String] = []
   catches: List[String] = []
+  stop_calls: List[String] = []
   jump_releases: List[String] = []
 end
 
@@ -107,6 +115,7 @@ export def from_table(origin: String, prefix: String, table: Toml.Value, note: S
             "may_jump" -> config = config.with(may_jump: try names_of(origin, path, assume.get(name).unwrap!))
             "jumps" -> config = config.with(jumps: try names_of(origin, path, assume.get(name).unwrap!))
             "catches" -> config = config.with(catches: try names_of(origin, path, assume.get(name).unwrap!))
+            "stop_calls" -> config = config.with(stop_calls: try pairs_of(origin, path, assume.get(name).unwrap!))
             "jump_releases" ->
               config = config.with(jump_releases: try names_of(origin, path, assume.get(name).unwrap!))
             _ -> return error(unknown(origin, path, note))
@@ -134,6 +143,26 @@ export def flags() -> List[String]
       .push(Known.NONBLOCKING_FLAG)
       .push(Known.JUMP_CALLERS_FLAG)
   )
+end
+
+## Returns the pair that `text` writes, or none when it is not `caller>callee`: a name on each side, with no blank or
+## `>` inside, and no `-` before the `>` (`a->b` is not a pair).
+export def edge_of(text: String) -> Optional[Edge]
+  case text.index_of(">")
+    some(at) ->
+      caller = text.slice(0, at)
+      callee = text.slice(at + 1, text.length - at - 1)
+      if caller == "" or callee == "" or caller.end_with?("-") or not plain?(caller) or not plain?(callee)
+        return none
+      end
+
+      return some(Edge(caller: caller, callee: callee))
+    none -> return none
+  end
+end
+
+def plain?(name: String) -> Bool
+  return not (name.include?(">") or name.include?(" ") or name.include?("\t"))
 end
 
 # The note of an unknown key of a file of -c read whole: only a file that looks like a manifest of Agentica (it has a
@@ -203,6 +232,17 @@ def names_of(origin: String, path: String, value: Toml.Value) -> Result[List[Str
       return ok(names)
     _ -> return error("#{origin}: #{path} must be a list of function names")
   end
+end
+
+def pairs_of(origin: String, path: String, value: Toml.Value) -> Result[List[String]]
+  names = try names_of(origin, path, value)
+  for name in names
+    if not edge_of(name).some?
+      return error("#{origin}: #{path} must be a list of caller>callee pairs of function names")
+    end
+  end
+
+  return ok(names)
 end
 
 def table_of(origin: String, path: String, value: Toml.Value) -> Result[Map[String, Toml.Value]]
