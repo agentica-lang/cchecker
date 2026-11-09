@@ -61,6 +61,10 @@ export BLOCKING_FAMILIES = [
 ## Every call that can block, whatever the settings: each enters the kernel, which the CC_HOT rule forbids.
 export BLOCKING = LIBC_BLOCKING.union(PTHREAD_BLOCKING).union(LIBUV_BLOCKING).union(LIBGC_BLOCKING)
 
+## The `[library]` flag of the jumps inferred through the calls: a function that calls one that may jump out may jump
+## out too (`Effects.with_jumps`).
+export JUMP_CALLERS_FLAG = "may_jump_callers"
+
 ## The `[library]` flag of the roots inferred from `LOOP_CALLBACKS`.
 export CALLBACKS_FLAG = "libuv_callbacks_short"
 
@@ -194,6 +198,10 @@ export WAITS = Set.new([
   "pthread_cond_wait", "pthread_cond_timedwait", "pthread_cond_clockwait", "cnd_wait", "cnd_timedwait", "uv_cond_wait",
   "uv_cond_timedwait", "SleepConditionVariableCS", "SleepConditionVariableSRW",
 ])
+
+## The calls that catch a jump: a `longjmp` lands in the function that called one. glibc's `setjmp` and `sigsetjmp`
+## are macros of `_setjmp` and `__sigsetjmp`.
+export SETJMP = Set.new(["setjmp", "_setjmp", "__setjmp", "sigsetjmp", "__sigsetjmp", "__builtin_setjmp"])
 
 ## The calls that never come back, besides those whose type says `noreturn`.
 export NORETURN = Set.new([

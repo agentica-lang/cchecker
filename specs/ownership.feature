@@ -494,6 +494,136 @@ Feature: Ownership on every path
       | jumps in a ?:      | CC_JUMPS                |             |                        | CC_OWNS struct conf *c = malloc(sizeof *c); if (!c) return -1; c->path = strdup(path); c->mode = mode ? as_mode(mode) : 0; keep(c); return 0; | 1    | includes         |
       | only never returns | CC_NORETURN             |             |                        | CC_OWNS struct conf *c = malloc(sizeof *c); if (!c) return -1; c->path = strdup(path); c->mode = as_mode(mode); keep(c); return 0;            | 0    | does not include |
 
+  Scenario Outline: A function that calls a function that may jump out may jump out too (<case>)
+    Given the C file "chain.c" holds:
+      """
+      #include "stdlib.h"
+      #include "setjmp.h"
+      #include "cchecker.h"
+      jmp_buf env;
+      <raiser> void wrong_tag(int v);
+      <helper> int as_string(int v) { <check> return v; }
+      int path_of(int v) { return as_string(v) + 1; }
+      void keep(CC_OWNS char *p);
+      int start(int v) { CC_OWNS char *b = malloc(8); if (!b) return -1; b[0] = (char)path_of(v); keep(b); return 0; }
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [assume]
+      <list>
+      """
+    When I run cchecker in its folder with "--tools rules --json chain.c -- -I../../../include"
+    Then the exit code is <exit>
+    And the output <found>:
+      """
+      "CC-OWN-LEAK"
+      """
+    And the output <found>:
+      """
+      may jump in path_of (as_string, wrong_tag)"]
+      """
+
+    Examples:
+      | case               | raiser      | helper     | check                                              | list                     | exit | found            |
+      | jumps              | CC_JUMPS    |            | if (v < 0) wrong_tag(v);                           |                          | 1    | includes         |
+      | may jump           | CC_MAY_JUMP |            | wrong_tag(v);                                      |                          | 1    | includes         |
+      | listed             |             |            | if (v < 0) wrong_tag(v);                           | jumps = ["wrong_tag"]    | 1    | includes         |
+      | not marked         |             |            | if (v < 0) wrong_tag(v);                           |                          | 0    | does not include |
+      | caught             | CC_JUMPS    |            | if (setjmp(env)) return -1; if (v < 0) wrong_tag(v); |                        | 0    | does not include |
+      | marked as catching | CC_JUMPS    | CC_CATCHES | if (v < 0) wrong_tag(v);                           |                          | 0    | does not include |
+      | listed as catching | CC_JUMPS    |            | if (v < 0) wrong_tag(v);                           | catches = ["as_string"]  | 0    | does not include |
+      | not walked         | CC_JUMPS    | CC_STOP    | if (v < 0) wrong_tag(v);                           |                          | 0    | does not include |
+
+  Scenario Outline: A function that never returns and calls a function that jumps out is a way out where the path ends (<case>)
+    Given the C file "raise.c" holds:
+      """
+      #include "stdlib.h"
+      #include "cchecker.h"
+      <mark> void fail(const char *what);
+      _Noreturn void bad_signature(int n) { <raise> }
+      int build(int n) { CC_OWNS char *b = malloc(n); if (!b) return -1; if (n > 8) { free(b); bad_signature(n); } if (n > 4) bad_signature(n); free(b); return 0; }
+      """
+    When I run cchecker in its folder with "--tools rules --json raise.c -- -I../../../include"
+    Then the exit code is <exit>
+    And the output <found>:
+      """
+      may jump in bad_signature (fail), never returns"]
+      """
+    And the output does not include:
+      """
+      "CC-OWN-DOUBLE-FREE"
+      """
+
+    Examples:
+      | case       | mark     | raise              | exit | found            |
+      | jumps      | CC_JUMPS | fail("signature"); | 1    | includes         |
+      | not marked |          | fail("signature"); | 0    | does not include |
+      | exits      | CC_JUMPS | abort();           | 0    | does not include |
+      | exits      | CC_JUMPS | exit(1);           | 0    | does not include |
+
+  Scenario Outline: The inference of jumps goes round a cycle of calls, and names at most three of the chain (<case>)
+    Given the C file "cycle.c" holds:
+      """
+      #include "stdlib.h"
+      #include "cchecker.h"
+      <mark> void fail(void);
+      int b(int n);
+      int a(int n) { if (n > 2) return a(n - 1); return b(n); }
+      int b(int n) { if (0 > n) fail(); return n > 1 ? a(n - 1) : n; }
+      int w(int n) { if (0 > n) fail(); return n; }
+      int x(int n) { return w(n) + 1; }
+      int y(int n) { return x(n) + 1; }
+      int z(int n) { return y(n) + 1; }
+      int start(int n) { CC_OWNS char *p = malloc(8); if (!p) return -1; p[0] = (char)<call>; free(p); return 0; }
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [library]
+      may_jump_callers = <infer>
+      """
+    When I run cchecker in its folder with "--tools rules --json cycle.c -- -I../../../include"
+    Then the exit code is <exit>
+    And the output <found>:
+      """
+      <step>"],"source":"may_jump_callers"
+      """
+
+    Examples:
+      | case                | mark     | call | infer | exit | found            | step                          |
+      | cycle               | CC_JUMPS | a(n) | true  | 1    | includes         | may jump in a (b, fail)       |
+      | long chain          | CC_JUMPS | z(n) | true  | 1    | includes         | may jump in z (y, x, w, ...)  |
+      | not marked          |          | a(n) | true  | 0    | does not include | may jump in a                 |
+      | inference turned off | CC_JUMPS | a(n) | false | 0    | does not include | may jump in a                 |
+
+  Scenario: A chain through a static function that another file has too names it by its file
+    Given the C file "a.c" holds:
+      """
+      #include "stdlib.h"
+      #include "cchecker.h"
+      CC_JUMPS void fail(void);
+      static int helper(int v) { if (v < 0) fail(); return v; }
+      int outer_a(int v) { return helper(v) + 1; }
+      int run_a(int v) { CC_OWNS char *p = malloc(8); if (!p) return -1; p[0] = (char)outer_a(v); free(p); return 0; }
+      """
+    And the C file "b.c" holds:
+      """
+      #include "stdlib.h"
+      #include "cchecker.h"
+      static int helper(int v) { return v; }
+      int outer_b(int v) { return helper(v) + 1; }
+      int run_b(int v) { CC_OWNS char *p = malloc(8); if (!p) return -1; p[0] = (char)outer_b(v); free(p); return 0; }
+      """
+    When I run cchecker in its folder with "--tools rules --json a.c b.c -- -I../../../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      may jump in outer_a (helper@a.c, fail)"]
+      """
+    And the output does not include:
+      """
+      run_b
+      """
+
   Scenario Outline: No path goes on after a call that jumps out and never returns (<case>)
     Given the C file "jump.c" holds:
       """

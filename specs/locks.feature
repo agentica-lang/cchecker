@@ -170,6 +170,28 @@ Feature: Locks on every path
       | noreturn only | CC_NORETURN             |                           | pthread_mutex_lock(&q->mu); q->n += check_size(n); pthread_mutex_unlock(&q->mu); return 0;                                | 0    | does not include | jumps in check_size                                       |
       | released      | CC_JUMPS                |                           | pthread_mutex_lock(&q->mu); if (n < 0) { pthread_mutex_unlock(&q->mu); check_size(n); } q->n += n; pthread_mutex_unlock(&q->mu); return 0; | 0 | does not include | jumps in check_size                     |
 
+  Scenario Outline: A lock held at a call of a function that reaches a jump is not released on that way out (<case>)
+    Given the C file "chain.c" holds:
+      """
+      #include "pthread.h" /* found in the system folders */
+      #include "cchecker.h"
+      struct queue { pthread_mutex_t mu; int n; };
+      CC_MAY_JUMP int check_size(int n);
+      static int sized(int n) { return check_size(n) + 1; }
+      int push(struct queue *q, int n) { <body> }
+      """
+    When I run cchecker with "--tools rules --json $DIR/chain.c -- -I../include"
+    Then the exit code is <exit>
+    And the output <found>:
+      """
+      may jump in sized (check_size)"]
+      """
+
+    Examples:
+      | case          | body                                                                                  | exit | found            |
+      | held          | pthread_mutex_lock(&q->mu); q->n += sized(n); pthread_mutex_unlock(&q->mu); return 0; | 1    | includes         |
+      | checked first | int k = sized(n); pthread_mutex_lock(&q->mu); q->n += k; pthread_mutex_unlock(&q->mu); return 0; | 0 | does not include |
+
   Scenario: The path of a finding goes from the lock to the return that leaves it held
     Given the C file "pop.c" holds:
       """
