@@ -1772,7 +1772,7 @@ def expression(b: Builder, node: Json, preds: List[Int]) -> Built
       built = Built(b: b, exits: preds)
       for item in Ast.children(node)
         if owner_named(built.b, item) != ""
-          built = handed_on(built.b, "an initializer", item, built.exits)
+          built = handed_on(built.b, some("an initializer"), item, built.exits)
         else
           built = expression(built.b, item, built.exits)
         end
