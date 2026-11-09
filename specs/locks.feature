@@ -2,8 +2,9 @@ Feature: Locks on every path
   The rules tool builds a control flow graph of each function that takes or drops a lock, and follows every path: a
   lock the function takes is released on every path that returns, and a lock it releases is one it holds. A lock is
   the expression the call names (`&q->mu` is `q->mu`). A path that ends in a call that does not return holds what it
-  holds. A function that takes a lock for its caller says so with CC_ACQUIRES, and one that drops it with
-  CC_RELEASES. The finding is at the function, and `path` is the path that breaks the rule.
+  holds; a call that may jump out (CC_MAY_JUMP) is a way out where the lock must be released too. A function that
+  takes a lock for its caller says so with CC_ACQUIRES, and one that drops it with CC_RELEASES. The finding is at the
+  function, and `path` is the path that breaks the rule.
 
   Scenario Outline: A path that leaves a lock held is a finding at the function (<case>)
     Given the C file "pop.c" holds:
@@ -127,6 +128,40 @@ Feature: Locks on every path
       | nested break      | int pop(struct queue *q) { for (;;) { pthread_mutex_lock(&q->mu); for (int i = 0; i < q->n; i++) { if (work(q)) break; } pthread_mutex_unlock(&q->mu); if (q->n) break; } return 0; }                          |
       | nested continue   | int pop(struct queue *q) { for (int j = 0; j < 2; j++) { pthread_mutex_lock(&q->mu); for (int i = 0; i < q->n; i++) { if (work(q)) continue; q->n--; } pthread_mutex_unlock(&q->mu); } return 0; }             |
       | switch in a loop  | int pop(struct queue *q) { for (int i = 0; i < q->n; i++) { pthread_mutex_lock(&q->mu); switch (work(q)) { case 0: break; default: pthread_mutex_unlock(&q->mu); continue; } pthread_mutex_unlock(&q->mu); } return 0; } |
+
+  Scenario Outline: A lock held at a call that may jump out is not released on that way out (<case>)
+    Given the C file "jump.c" holds:
+      """
+      #include "pthread.h" /* found in the system folders */
+      #include "cchecker.h"
+
+      struct queue { pthread_mutex_t mu; int n; };
+      <mark> int check_size(int n);
+
+      int push(struct queue *q, int n) { <body> }
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [assume]
+      <list>
+      """
+    When I run cchecker in its folder with "--tools rules --json jump.c -- -I../../../include"
+    Then the exit code is <exit>
+    And the output <found>:
+      """
+      "CC-PATH-LOCK-NOT-RELEASED"
+      """
+    And the output <found>:
+      """
+      "path":["7:36 takes q->mu","7:72 may jump in check_size"]
+      """
+
+    Examples:
+      | case          | mark        | list                       | body                                                                                                 | exit | found            |
+      | marked        | CC_MAY_JUMP |                            | pthread_mutex_lock(&q->mu); q->n += check_size(n); pthread_mutex_unlock(&q->mu); return 0;           | 1    | includes         |
+      | listed        |             | may_jump = ["check_size"]  | pthread_mutex_lock(&q->mu); q->n += check_size(n); pthread_mutex_unlock(&q->mu); return 0;           | 1    | includes         |
+      | not marked    |             |                            | pthread_mutex_lock(&q->mu); q->n += check_size(n); pthread_mutex_unlock(&q->mu); return 0;           | 0    | does not include |
+      | checked first | CC_MAY_JUMP |                            | int k = check_size(n); pthread_mutex_lock(&q->mu); q->n += k; pthread_mutex_unlock(&q->mu); return 0; | 0    | does not include |
 
   Scenario: The path of a finding goes from the lock to the return that leaves it held
     Given the C file "pop.c" holds:

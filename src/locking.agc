@@ -9,7 +9,8 @@
 ## The walk follows the graph of `Flow` in breadth, with the state of each path: how many times it took each lock less
 ## the times it released it, and the value of the conditions it went through that the function tests twice (`if
 ## (locked) lock(); ... if (locked) unlock();`), so a path that would need a condition to be true and false is not
-## followed. A write to a variable forgets the conditions that read it.
+## followed. A write to a variable forgets the conditions that read it. A call that may jump out (CC_MAY_JUMP) is also
+## a way out of the function, with the locks held before it.
 
 import Effects from "effects"
 import {Finding, IncompleteFunction} from "findings"
@@ -199,6 +200,17 @@ export def stops?(site: Site, functions: Map[String, Function]) -> Bool
   return site.stops or noreturn
 end
 
+## Returns whether a call may jump out of its caller (CC_MAY_JUMP, `[assume] may_jump`): the call is a way out of the
+## caller as well as a step of its path. A call that never comes back stops the path instead (`stops?` wins).
+export def jumps?(site: Site, functions: Map[String, Function]) -> Bool
+  return functions.get(site.key).map do |f| f.marks.include?(Effects.MAY_JUMP) end.unwrap_or(false)
+end
+
+## Returns the step that ends a path at a call that may jump out of the caller.
+export def jump_text(site: Site) -> String
+  return "#{site.line}:#{site.column} may jump in #{site.name}"
+end
+
 ## Returns the word of the value of a condition on a step of a path.
 export def truth(fact: Fact) -> String
   if fact.value
@@ -305,6 +317,7 @@ def walked(walker: Walker) -> Walk
     i += 1
     node = body.nodes[item.node]
     found = with_breaches(found, walker, item, node.event)
+    found = with_jump(found, walker, item, node.event)
     case stepped(walker, node.event, item)
       Moved.Ended(path) -> found = with_exit(found, walker, item.state, path, failed?(node.event))
       Moved.Stopped -> next
@@ -320,6 +333,20 @@ def walked(walker: Walker) -> Walk
   end
 
   return Walk(findings: found, complete: true)
+end
+
+# A call that may jump out is a way out of the function too, with the locks the path holds before the call: one that
+# jumps did not finish, so it took and released nothing. The jump is an error exit (`failed`).
+def with_jump(found: Map[String, Finding], walker: Walker, item: Item, event: Event) -> Map[String, Finding]
+  case event
+    Event.Call(site) ->
+      if stops?(site, walker.functions) or not jumps?(site, walker.functions)
+        return found
+      end
+
+      return with_exit(found, walker, item.state, item.path.push(Step(text: jump_text(site))), true)
+    _ -> return found
+  end
 end
 
 # Whether an event is a return of an error value.

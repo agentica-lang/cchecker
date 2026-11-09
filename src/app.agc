@@ -135,7 +135,11 @@ export def run(options: Options) -> Result[Int]
   end
 
   assumes = not (
-    config.trusted.empty? and config.stops.empty? and config.short_locks.empty? and config.stop_fields.empty?
+    config.trusted.empty? and
+    config.stops.empty? and
+    config.short_locks.empty? and
+    config.stop_fields.empty? and
+    config.jumps.empty?
   )
 
   if options.tools.include?(Tool.Rules) and assumes

@@ -3,8 +3,8 @@ Feature: Ownership on every path
   what the caller passes), a function (it returns an owned value) or a field. A pointer that a function owns is freed
   or handed on on every path that returns: returned, stored in a CC_OWNS field, or passed to a CC_OWNS parameter.
   `free` frees, and so does a function on its CC_FREES parameter. A local variable that gets an owned value owns it
-  too. A value is not freed twice, and not used after it was freed or handed on. The finding is at the function, and
-  `path` is the path that breaks the rule.
+  too. A value is not freed twice, and not used after it was freed or handed on. A call that may jump out (CC_MAY_JUMP,
+  `[assume] may_jump`) is a way out too. The finding is at the function, and `path` is the path that breaks the rule.
 
   Scenario Outline: An owned pointer that a path does not free or hand on is a finding at the function (<case>)
     Given the C file "own.c" holds:
@@ -350,4 +350,70 @@ Feature: Ownership on every path
     And the output includes:
       """
       {"code":"CC-OWN-DOUBLE-FREE","tool":"rules","file":"$DIR/own.c","line":12,
+      """
+
+  Scenario Outline: A call that may jump out is a way out of the function too (<case>)
+    Given the C file "jump.c" holds:
+      """
+      #include "stdlib.h"
+      #include "string.h"
+      #include "cchecker.h"
+      struct conf { CC_OWNS char *path; int mode; };
+      <mark> int as_mode(const char *text); <mark> int adopt_mode(CC_OWNS struct conf *c, const char *text);
+      void keep(CC_OWNS struct conf *c);
+
+      int start(const char *path, const char *mode) { <body> }
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [assume]
+      <list>
+      """
+    When I run cchecker in its folder with "--tools rules --json jump.c -- -I../../../include"
+    Then the exit code is <exit>
+    And the output <found>:
+      """
+      "CC-OWN-LEAK"
+      """
+
+    Examples:
+      | case             | mark                    | list                    | body                                                                                                                                           | exit | found            |
+      | marked           | CC_MAY_JUMP             |                         | CC_OWNS struct conf *c = malloc(sizeof *c); if (!c) return -1; c->path = strdup(path); c->mode = as_mode(mode); keep(c); return 0;             | 1    | includes         |
+      | listed           |                         | may_jump = ["as_mode"]  | CC_OWNS struct conf *c = malloc(sizeof *c); if (!c) return -1; c->path = strdup(path); c->mode = as_mode(mode); keep(c); return 0;             | 1    | includes         |
+      | not marked       |                         |                         | CC_OWNS struct conf *c = malloc(sizeof *c); if (!c) return -1; c->path = strdup(path); c->mode = as_mode(mode); keep(c); return 0;             | 0    | does not include |
+      | checked first    | CC_MAY_JUMP             |                         | int m = as_mode(mode); CC_OWNS struct conf *c = malloc(sizeof *c); if (!c) return -1; c->path = strdup(path); c->mode = m; keep(c); return 0; | 0    | does not include |
+      | handed on first  | CC_MAY_JUMP             |                         | CC_OWNS struct conf *c = malloc(sizeof *c); if (!c) return -1; c->path = strdup(path); keep(c); return as_mode(mode);                          | 0    | does not include |
+      | taken by the call | CC_MAY_JUMP            |                         | CC_OWNS struct conf *c = malloc(sizeof *c); if (!c) return -1; c->path = strdup(path); return adopt_mode(c, mode);                             | 0    | does not include |
+      | never returns    | CC_NORETURN CC_MAY_JUMP |                         | CC_OWNS struct conf *c = malloc(sizeof *c); if (!c) return -1; c->path = strdup(path); c->mode = as_mode(mode); keep(c); return 0;             | 0    | does not include |
+
+  Scenario: The path of a leak on a jump ends at the call that may jump
+    Given the C file "jump.c" holds:
+      """
+      #include <stdlib.h>
+      #include <string.h>
+      #include "cchecker.h"
+
+      struct conf { CC_OWNS char *path; int mode; };
+      CC_MAY_JUMP int as_mode(const char *text);
+      void keep(CC_OWNS struct conf *c);
+
+      int start(const char *path, const char *mode) {
+        CC_OWNS struct conf *c = malloc(sizeof *c);
+        if (!c)
+          return -1;
+        c->path = strdup(path);
+        c->mode = as_mode(mode);
+        keep(c);
+        return 0;
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/jump.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      {"code":"CC-OWN-LEAK","tool":"rules","file":"$DIR/jump.c","line":9,"column":5,
+      """
+    And the output includes:
+      """
+      "path":["10:28 c = malloc","11:8 true","14:13 may jump in as_mode"]
       """

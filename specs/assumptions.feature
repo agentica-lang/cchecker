@@ -3,8 +3,9 @@ Feature: What the project assumes of its functions
   inline on the right thread only, or reads a descriptor that never blocks), or that no walk goes into a function at
   all (a trace call behind a runtime flag), or that a lock is held for a few instructions only. CC_ASSUME_SHORT, CC_STOP
   and CC_NO_SYSCALL_UNDER() say it in the C, `[assume] short`, `stop` and `short_locks` in the settings;
-  `[assume] stop_fields` names the function-pointer fields that no walk follows. A name of `[assume]` that nothing of
-  the compile database has is an error.
+  `[assume] stop_fields` names the function-pointer fields that no walk follows, and `[assume] may_jump` the functions
+  that may jump out of their caller (as CC_MAY_JUMP). A name of `[assume]` that nothing of the compile database has is
+  an error.
 
   Scenario Outline: A function trusted for CC_SHORT is not walked into by the short rule only (<case>)
     Given the C file "short.c" holds:
@@ -247,6 +248,7 @@ Feature: What the project assumes of its functions
       [assume]
       short = ["helper"]
       stop = ["helper", "external"]
+      may_jump = ["external"]
       """
     When I run cchecker in its folder with "--tools rules"
     Then the exit code is 0
@@ -254,12 +256,17 @@ Feature: What the project assumes of its functions
       """
       [assume]
       stop = ["helper", "tracer"]
+      may_jump = ["raise_error"]
       """
     When I run cchecker in its folder with "--tools rules"
     Then the exit code is 2
     And the errors include:
       """
       tracer (assume.stop)
+      """
+    And the errors include:
+      """
+      raise_error (assume.may_jump)
       """
     When I run cchecker in its folder with "--tools rules tick.c"
     Then the exit code is 0
