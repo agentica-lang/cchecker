@@ -18,7 +18,9 @@ the files that were not checked because a header they include is not found
 (`file` and `missing`, the header as the `#include` wrote it), and
 `version_changes`: the tools whose version is not the one that made the baseline
 (`tool`, `baseline` and `current`; see
-[Baseline](suppressions.md#versions-of-the-tools)). A file that was not checked
+[Baseline](suppressions.md#versions-of-the-tools)), and `folded`: the entries of
+the compile database that were not run because they repeat a file (see
+[Options](#options)). A file that was not checked
 is skipped with a warning on standard error and does not change the exit code.
 The rules also add `incomplete_functions` and `skipped_declarations` (see
 [Rules](rules.md)).
@@ -88,6 +90,13 @@ README and described in [Rules](rules.md) and [Ownership](ownership.md).
 
 The value of an option can be the next word even when it starts with `-`, as
 with getopt: `--checks '-*,bugprone-*'` is `--checks='-*,bugprone-*'`.
+
+A file that the compile database lists more than once is checked once for each
+set of flags: CMake lists a source file for each library it goes in, static and
+shared. Two entries are one when they run in the same folder with the same
+flags, leaving out the ones a shared library adds (`-fPIC`, `-fpic`, `-fPIE`,
+`-fpie` and CMake's `-D<target>_EXPORTS`); entries with other defines or include
+paths are each checked, as those can change the findings.
 
 The default checks are `-*`, `clang-analyzer-core.*`, `clang-analyzer-unix.*`
 and `clang-analyzer-security.*` (without `insecureAPI`), and the bugprone checks

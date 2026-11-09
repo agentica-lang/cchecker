@@ -3,6 +3,11 @@
 import Files from "files"
 import Paths from "paths"
 
+# Flags that a build system adds to the entry of a file for a shared library and not for the static one: position
+# independent code (its `__PIC__` and `__PIE__` macros pick assembly, not C). CMake adds `-D<target>_EXPORTS` too
+# (see `export_define?`).
+UNFOLDED = Set.new(["-fPIC", "-fpic", "-fPIE", "-fpie"])
+
 # Flags of a build that mean nothing to an analysis and would write files or stop the tools: the object file, the
 # dependency files. Those in the second set take a value in the next word.
 DROPPED = Set.new(["-c", "-MD", "-MMD", "-MP", "-MG"])
@@ -13,6 +18,13 @@ export struct Entry
   directory: String
   file: String
   args: List[String]
+end
+
+## The entries of a run with each file once for each set of flags that can change what the tools find, and the
+## count of the entries that were left out for it.
+export struct Folded
+  entries: List[Entry]
+  folded: Int
 end
 
 # A line of compile_commands.json: `arguments` or `command`, one of them.
@@ -48,6 +60,27 @@ end
 export def from_files(files: List[String], flags: List[String]) -> Result[List[Entry]]
   cwd = try Paths.working_directory()
   return ok(files.map do |file| Entry(directory: cwd, file: file, args: flags) end)
+end
+
+## Returns the entries with the repeats of a file left out, the first one kept: CMake lists a source file once for
+## each library it goes in (static and shared), and each tool would check it as many times. Two entries are one when
+## they run in the same folder on the same file with the same flags, leaving out those that only a shared library adds
+## (`UNFOLDED`, `-D<target>_EXPORTS`). Other defines or include paths may change what the tools find: such entries are
+## each kept.
+export def fold(entries: List[Entry]) -> Folded
+  seen: Set[String] = Set.new([])
+  kept: List[Entry] = []
+  for entry in entries
+    path = Paths.absolute(entry.directory, entry.file).unwrap_or(entry.file)
+    flags = entry.args.select do |flag| not UNFOLDED.include?(flag) and not export_define?(flag) end
+    key = [entry.directory, path].concat(flags).join("\n")
+    if not seen.include?(key)
+      seen = seen.add(key)
+      kept = kept.push(entry)
+    end
+  end
+
+  return Folded(entries: kept, folded: entries.size - kept.size)
 end
 
 ## Returns the words of a shell command line: spaces separate them, quotes and backslashes group and escape.
@@ -145,4 +178,10 @@ def names?(word: String, source: String, directory: String) -> Bool
   end
 
   return Paths.absolute(directory, word).unwrap_or("") == source
+end
+
+# Whether the flag is the define that CMake adds to each file of a shared library, `-D<target>_EXPORTS`, which code
+# reads only to mark what the library exports.
+def export_define?(flag: String) -> Bool
+  return flag.start_with?("-D") and flag.end_with?("_EXPORTS") and not flag.include?("=")
 end

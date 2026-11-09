@@ -72,9 +72,9 @@ export def run(options: Options) -> Result[Int]
   end
 
   loaded = try baseline_file(options)
-  entries = try gather(options)
+  gathered = Commands.fold(try gather(options))
   scratch = try scratch_path(cwd)
-  plan = try plan_for(options, entries, cwd, scratch)
+  plan = try plan_for(options, gathered.entries, cwd, scratch)
   if plan.jobs.empty?
     return error("no C files to check")
   end
@@ -189,6 +189,7 @@ export def run(options: Options) -> Result[Int]
             config: config.origin,
             unresolved_callbacks: collected.unresolved,
             unchecked_files: collected.unchecked,
+            folded: gathered.folded,
           ),
         ),
       )
@@ -208,6 +209,7 @@ export def run(options: Options) -> Result[Int]
             config: config.origin,
             unresolved_callbacks: collected.unresolved,
             unchecked_files: collected.unchecked,
+            folded: gathered.folded,
           ),
         ),
       )

@@ -4,6 +4,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- A file that the compile database lists more than once with the same flags (CMake's static and shared library) is
+  checked once instead of once for each entry; `folded` of `--json` counts the entries left out.
+
 ### Fixed
 
 - A `.clang-tidy` with `UseColor: true`, or a `-fdiagnostics-color=always` or `-fdiagnostics-urls=always` in the

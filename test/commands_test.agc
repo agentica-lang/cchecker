@@ -18,3 +18,15 @@ def test_the_source_file_is_left_out_however_it_is_spelled() -> Result[Void]
   words = ["cc", "-c", "./src/../a.c", "-DA=1", "b.c"]
   return Test.eq(Commands.flags_of(words, "/p/a.c", "/p"), ["-DA=1", "b.c"])
 end
+
+def test_a_file_listed_again_for_a_shared_library_is_folded() -> Result[Void]
+  entries = [
+    Commands.Entry(directory: "/p", file: "x.c", args: ["-DA", "-I."]),
+    Commands.Entry(directory: "/p", file: "./x.c", args: ["-DA", "-Dx_EXPORTS", "-I.", "-fPIC"]),
+    Commands.Entry(directory: "/p", file: "x.c", args: ["-DA", "-Iother"]),
+  ]
+
+  folded = Commands.fold(entries)
+  try Test.eq(folded.folded, 1)
+  return Test.eq(folded.entries.map do |e| e.args end, [["-DA", "-I."], ["-DA", "-Iother"]])
+end

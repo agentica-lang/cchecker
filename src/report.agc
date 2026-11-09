@@ -14,7 +14,8 @@ import {Suppressed} from "suppressions"
 ## not checked because a header they include is not found. `stale` are the entries of the baseline behind `fixed`,
 ## and `failing` those of them that fail the run (`--strict-baseline`); `rules_off` says that a check of the rules was
 ## off, so the entries of the rules did not fail it and an update needs every check of the rules on. `version_changes`
-## are the tools that ran with another version than the one that made the baseline.
+## are the tools that ran with another version than the one that made the baseline. `folded` counts the entries of
+## the compile database that were not run because they repeat a file with the same flags (see `Commands.fold`).
 export struct Report
   findings: List[Finding]
   baselined: Int
@@ -31,6 +32,7 @@ export struct Report
   failing: List[Entry] = []
   rules_off: Bool = false
   version_changes: List[VersionChange] = []
+  folded: Int = 0
 end
 
 # The JSON form of a report, which says in `clean` whether the run is clean.
@@ -49,6 +51,7 @@ struct Encoded
   unresolved_callbacks: List[UnresolvedCallback]
   unchecked_files: List[UncheckedFile]
   version_changes: List[VersionChange]
+  folded: Int
 end
 
 ## Returns the report for people: one line for each finding, a summary line, then one line for each stale entry of
@@ -95,6 +98,7 @@ export def json(report: Report) -> String
       unresolved_callbacks: report.unresolved_callbacks,
       unchecked_files: report.unchecked_files,
       version_changes: report.version_changes,
+      folded: report.folded,
     ),
   )
 end

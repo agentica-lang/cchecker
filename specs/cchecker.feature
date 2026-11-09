@@ -114,6 +114,73 @@ Feature: Running the analyzers on C files
       fixtures/clean.c
       """
 
+  Scenario: A file that the database lists for a static and a shared library is checked once
+    Given the C file "x.c" holds:
+      """
+      #include <stdlib.h>
+
+      int use_buffer(int n) {
+        char *buf = malloc(10);
+        if (n > 3) {
+          return 1;
+        }
+        free(buf);
+        return 0;
+      }
+      """
+    And the C file "compile_commands.json" holds:
+      """
+      [
+        {"directory": ".", "command": "cc -DLEVEL=1 -I. -o a.o -c x.c", "file": "x.c"},
+        {"directory": ".", "command": "cc -DLEVEL=1 -Dx_EXPORTS -I. -fPIC -o b.o -c x.c", "file": "x.c"}
+      ]
+      """
+    When I run cchecker in its folder with "--json --tools gcc --gcc ../../fixtures/fake_gcc_count.sh -p ."
+    Then the exit code is 0
+    And the output includes:
+      """
+      "folded":1
+      """
+    And the file "$DIR/runs.log" includes:
+      """
+      ran
+      """
+    And the file "$DIR/runs.log" does not include:
+      """
+      ran
+      ran
+      """
+    When I run cchecker in its folder with "--json --tools gcc -p ."
+    Then the exit code is 1
+    And the output includes once:
+      """
+      "code":"CC-GCC-ANALYZER-MALLOC-LEAK"
+      """
+
+  Scenario: The entries of one file with other defines are each checked
+    Given the C file "x.c" holds:
+      """
+      int f(void) { return 0; }
+      """
+    And the C file "compile_commands.json" holds:
+      """
+      [
+        {"directory": ".", "command": "cc -DA -o a.o -c x.c", "file": "x.c"},
+        {"directory": ".", "command": "cc -DB -o b.o -c x.c", "file": "x.c"}
+      ]
+      """
+    When I run cchecker in its folder with "--json --tools gcc --gcc ../../fixtures/fake_gcc_count.sh -p ."
+    Then the exit code is 0
+    And the output includes:
+      """
+      "folded":0
+      """
+    And the file "$DIR/runs.log" includes:
+      """
+      ran
+      ran
+      """
+
   Scenario: The number of runs at once is bounded by --jobs
     When I run cchecker with "--tools gcc --gcc fixtures/fake_gcc_serial.sh -j 1 fixtures/clean.c fixtures/leak.c"
     Then the exit code is 0
