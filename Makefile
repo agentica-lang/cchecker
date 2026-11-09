@@ -34,16 +34,24 @@ test-slow: deps native
 	@agentica test --tags "@slow and not @pending" specs
 
 # The rows tagged @pending (specs/clean_c.feature: idioms that an open issue will make pass) must all still fail: one
-# that passes has to move up, out of its @pending block. The counts come from the summary of `--json`.
+# that passes has to move up, out of its @pending block. With no tag line that holds @pending (a line of tags only,
+# not prose or a comment) there is nothing to run, and the target passes. The counts come from the summary of `--json`;
+# a report without them, a file error or no row selected is a failure of the run, not a row that passes.
+PENDING_TAG = ^[[:space:]]*(@[^[:space:]]+[[:space:]]+)*@pending([[:space:]]+@[^[:space:]]+)*[[:space:]]*$$
+
 test-pending: deps native
-	@grep -qs '@pending' specs/*.feature || { echo "pending ok: no @pending row"; exit 0; }; \
-	report=$$(agentica test --json --tags "@pending" specs); \
-	if echo "$$report" | grep -q '"passed":0,' && echo "$$report" | grep -q '"file_errors":0,'; then \
-	  echo "pending ok: $$(echo "$$report" | grep -o '"failed":[0-9]*' | cut -d: -f2) rows still fail"; \
-	else \
-	  agentica test --tags "@pending" specs | grep '^PASS\|file errors'; \
+	@grep -qsE '$(PENDING_TAG)' specs/*.feature || { echo "pending ok: no @pending row"; exit 0; }; \
+	report=$$(agentica test --json --tags "@pending" specs 2>&1); \
+	count() { echo "$$report" | grep -o "\"$$1\":[0-9]*" | head -n 1 | cut -d: -f2; }; \
+	passed=$$(count passed); failed=$$(count failed); errors=$$(count file_errors); \
+	if [ -z "$$passed" ] || [ -z "$$failed" ] || [ "$$errors" != 0 ] || [ "$$passed$$failed" = 00 ]; then \
+	  echo "agentica failed, or no @pending row ran:" >&2; echo "$$report" | cut -c1-2000 >&2; exit 2; \
+	fi; \
+	if [ "$$passed" != 0 ]; then \
+	  agentica test --tags "@pending" specs | grep '^PASS'; \
 	  echo "a @pending row passes: move it up" >&2; exit 1; \
-	fi
+	fi; \
+	echo "pending ok: $$failed rows still fail"
 
 # The packages of agentica.lock into deps/: prop (property tests) and native-gen (`make header`). cchecker itself needs none.
 deps:

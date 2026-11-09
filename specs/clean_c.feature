@@ -1,12 +1,12 @@
 Feature: C that must stay clean
   A corpus of common C idioms that the rules must give no finding on. Each row is one small function. A false finding
   that a review or a user finds becomes a row here, and a new rule gets rows for the idioms near it. A row is worth
-  keeping when a small change to it gives a finding: the second outline holds that change for the rows that have one
+  keeping when one change to it gives a finding: the second outline holds that change for the rows that have one
   (its `case` is the name of the clean row), so a clean row cannot pass because the rules do not look, the C does not
   compile (exit 2) or the lines above the function are broken. A row named `... parses` only says that the rules read
-  the C. A row that does not pass yet stays, in an `Examples` block tagged `@pending` and with its issue (`@issue-N`):
-  `make test` leaves those out, `make test-pending` fails when one of them passes, and the PR that closes the issue
-  moves its rows up.
+  the C. A row that does not pass yet stays, in an `Examples` block with the tags pending and issue-N: `make test`
+  leaves those out, `make test-pending` fails when one of them passes, and the PR that closes the issue moves its
+  rows up.
 
   Scenario Outline: A common idiom gives no finding (<case>)
     Given the C file "clean.c" holds:
@@ -72,7 +72,7 @@ Feature: C that must stay clean
       | case                          | code                                                                                                                                  |
       | last round kept in a variable | void f(int n) { char *prev = NULL; for (int i = 0; i < n; i++) { CC_OWNS char *cur = make(i); free(prev); prev = cur; } free(prev); } |
 
-  Scenario Outline: The same idiom with a small change gives a finding (<case>: <change>)
+  Scenario Outline: The same idiom with one change gives a finding (<case>: <change>)
     Given the C file "clean.c" holds:
       """
       #include <stdlib.h>
@@ -100,14 +100,14 @@ Feature: C that must stay clean
       """
 
     Examples:
-      | case                                         | change                               | code                                                                                                                                                                                             |
-      | cleanup on a pointer                         | no cleanup                           | void f(int n) { CC_OWNS char *b = malloc(n); work(b); }                                                                                                                                          |
-      | goto cleanup                                 | one free missing at the label        | int f(int n) { int rc = -1; CC_OWNS char *a = NULL; CC_OWNS char *b = NULL; a = malloc(n); if (!a) goto out; b = malloc(n); if (!b) goto out; rc = work(a) + work(b); out: free(a); return rc; } |
-      | two names for a statement expression         | the moved name returned              | char *f(int n, const char *a) { char *out = XMAKE(n), *cur = out; cur = stpcpy(cur, a); return cur; }                                                                                            |
-      | statement expression freed                   | lent, not freed                      | void f(int n) { work(TAKE(n)); }                                                                                                                                                                 |
-      | one side of ?: returned                      | the other side loses it              | CC_OWNS char *f(int n) { CC_OWNS char *p = make(n); return n ? p : NULL; }                                                                                                                       |
-      | label on the value of a statement expression | lent, not freed                      | void f(int n) { CC_OWNS char *u = make(n); work(({ if (work(u)) goto done; work(u); done: u; })); }                                                                                              |
-      | address in a statement expression            | the pointer, not its address         | void f(int n) { CC_OWNS char *b = malloc(n); work(({ b; })); }                                                                                                                                   |
-      | realloc in a loop                            | no free when realloc fails           | CC_OWNS char *f(int n) { CC_OWNS char *b = NULL; for (int i = 1; i <= n; i++) { char *t = realloc(b, i); if (!t) return NULL; b = t; } return b; }                                               |
-      | free in a loop with switch and continue      | a case that continues without a free | void f(int n) { for (int i = 0; i < n; i++) { CC_OWNS char *b = malloc(n); if (!b) continue; switch (work(b)) { case 0: continue; default: free(b); break; } } }                                 |
-      | strdup                                       | returned without a free              | int f(const char *s) { CC_OWNS char *c = strdup(s); if (!c) return -1; return work(c); }                                                                                                         |
+      | case                                         | change                         | code                                                                                                                                                                                                  |
+      | cleanup on a pointer                         | no cleanup                     | void f(int n) { CC_OWNS char *b = malloc(n); work(b); }                                                                                                                                               |
+      | goto cleanup                                 | one free missing at the label  | int f(int n) { int rc = -1; CC_OWNS char *a = NULL; CC_OWNS char *b = NULL; a = malloc(n); if (!a) goto out; b = malloc(n); if (!b) goto out; rc = work(a) + work(b); out: free(a); return rc; }      |
+      | two names for a statement expression         | the moved name returned        | CC_OWNS char *f(int n, const char *a) { char *out = XMAKE(n), *cur = out; cur = stpcpy(cur, a); return cur; }                                                                                         |
+      | statement expression freed                   | lent, not freed                | void f(int n) { work(TAKE(n)); }                                                                                                                                                                      |
+      | pointer or NULL returned                     | the test is not on p           | CC_OWNS char *f(int n) { CC_OWNS char *p = malloc(n); return n ? p : NULL; }                                                                                                                          |
+      | label on the value of a statement expression | lent, not freed                | void f(int n) { CC_OWNS char *u = make(n); work(({ if (work(u)) goto done; work(u); done: u; })); }                                                                                                   |
+      | address in a statement expression            | the address of another pointer | void f(int n) { CC_OWNS char *b = malloc(n); char *c = NULL; zap(({ &c; })); }                                                                                                                        |
+      | realloc in a loop                            | no free when realloc fails     | CC_OWNS char *f(int n) { CC_OWNS char *b = NULL; for (int i = 1; i <= n; i++) { char *t = realloc(b, i); if (!t) { return NULL; } b = t; } return b; }                                                |
+      | free in a loop with switch and continue      | no free in case 0              | void f(int n) { for (int i = 0; i < n; i++) { CC_OWNS char *b = malloc(n); if (!b) continue; switch (work(b)) { case 0: continue; case 1: free(b); break; default: free(b); return; } work(NULL); } } |
+      | strdup                                       | no free when work fails        | CC_OWNS char *f(const char *s) { CC_OWNS char *c = strdup(s); if (!c) return NULL; if (work(c)) { return NULL; } return c; }                                                                          |
