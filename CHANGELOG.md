@@ -12,8 +12,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- `CC_MAY_JUMP` or `[assume] may_jump` on a function that never returns (`_Noreturn`, `CC_NORETURN`) now means
-  `CC_JUMPS`: its calls are checked as a way out, where before they only ended the path and found nothing.
+- **Breaking:** `CC_MAY_JUMP` or `[assume] may_jump` on a function that never returns (`_Noreturn`, `CC_NORETURN`) now
+  means `CC_JUMPS`: its calls are checked as a way out, where before they only ended the path and found nothing. A
+  project with that combination may get new findings that its baseline does not hold.
 - A file listed more than once with the same flags is checked once; flags that differ only by `-fPIC`, `-fPIE` and
   CMake's `-D<target>_EXPORTS` count as the same (a static and a shared library of CMake), any other define does not
   (libuv's `BUILDING_UV_SHARED` keeps both entries). `folded` of `--json` counts the repeated entries left out.

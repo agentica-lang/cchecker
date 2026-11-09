@@ -26,7 +26,8 @@
  *                               the locks held have a lower level
  *   CC_ACQUIRES(lock)           the function returns with `lock` held, for its caller to release
  *   CC_RELEASES(lock)           the function releases `lock`, which its caller took
- *   CC_NORETURN                 a call of the function never comes back (it jumps out or ends the thread)
+ *   CC_NORETURN                 a call of the function never comes back (it ends the thread or the process); a
+ *                               function that raises with `longjmp` is CC_JUMPS
  *   CC_MAY_JUMP                 a call of the function may jump out (`longjmp` on an error) or return: the jump is
  *                               a way out of the caller, where the ownership and lock rules check what it holds
  *   CC_JUMPS                    a call of the function always jumps out (`longjmp` to raise an error): a way out of

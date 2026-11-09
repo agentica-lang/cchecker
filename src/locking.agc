@@ -210,9 +210,9 @@ export def jumps?(site: Site, functions: Map[String, Function]) -> Bool
 end
 
 ## Returns the step that ends a path at a call that jumps out of the caller: `jumps in` for a call that never comes
-## back, `may jump in` for one that may also return.
-export def jump_text(site: Site, functions: Map[String, Function]) -> String
-  if stops?(site, functions)
+## back (`stops`), `may jump in` for one that may also return.
+export def jump_text(site: Site, stops: Bool) -> String
+  if stops
     return "#{site.line}:#{site.column} jumps in #{site.name}"
   end
 
@@ -353,7 +353,7 @@ def with_jump(found: Map[String, Finding], walker: Walker, item: Item, event: Ev
         return found
       end
 
-      step = Step(text: jump_text(site, walker.functions))
+      step = Step(text: jump_text(site, stops?(site, walker.functions)))
       return with_exit(found, walker, item.state, item.path.push(step), true)
     _ -> return found
   end

@@ -491,6 +491,7 @@ Feature: Ownership on every path
       | jumps              | CC_JUMPS                |             |                        | CC_OWNS struct conf *c = malloc(sizeof *c); if (!c) return -1; c->path = strdup(path); c->mode = as_mode(mode); keep(c); return 0;            | 1    | includes         |
       | listed as jumping  |                         |             | jumps = ["as_mode"]    | CC_OWNS struct conf *c = malloc(sizeof *c); if (!c) return -1; c->path = strdup(path); c->mode = as_mode(mode); keep(c); return 0;            | 1    | includes         |
       | never returns      | CC_NORETURN CC_MAY_JUMP |             |                        | CC_OWNS struct conf *c = malloc(sizeof *c); if (!c) return -1; c->path = strdup(path); c->mode = as_mode(mode); keep(c); return 0;            | 1    | includes         |
+      | jumps in a ?:      | CC_JUMPS                |             |                        | CC_OWNS struct conf *c = malloc(sizeof *c); if (!c) return -1; c->path = strdup(path); c->mode = mode ? as_mode(mode) : 0; keep(c); return 0; | 1    | includes         |
       | only never returns | CC_NORETURN             |             |                        | CC_OWNS struct conf *c = malloc(sizeof *c); if (!c) return -1; c->path = strdup(path); c->mode = as_mode(mode); keep(c); return 0;            | 0    | does not include |
 
   Scenario Outline: No path goes on after a call that jumps out and never returns (<case>)
@@ -534,15 +535,15 @@ Feature: Ownership on every path
       "code":"CC-OWN-LEAK"
       """
 
-  Scenario: The path of a leak on a jump ends at the call that may jump
+  Scenario Outline: The path of a leak on a jump ends at the call that jumps (<mark>)
     Given the C file "jump.c" holds:
       """
-      #include <stdlib.h>
-      #include <string.h>
+      #include "stdlib.h"
+      #include "string.h"
       #include "cchecker.h"
 
       struct conf { CC_OWNS char *path; int mode; };
-      CC_MAY_JUMP int as_mode(const char *text);
+      <mark> int as_mode(const char *text);
       void keep(CC_OWNS struct conf *c);
 
       int start(const char *path, const char *mode) {
@@ -563,5 +564,10 @@ Feature: Ownership on every path
       """
     And the output includes:
       """
-      "path":["10:28 c = malloc","11:8 true","14:13 may jump in as_mode"]
+      "path":["10:28 c = malloc","11:8 true","14:13 <step> as_mode"]
       """
+
+    Examples:
+      | mark        | step        |
+      | CC_MAY_JUMP | may jump in |
+      | CC_JUMPS    | jumps in    |
