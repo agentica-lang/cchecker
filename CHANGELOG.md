@@ -4,8 +4,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-09
+
 ### Added
 
+- `waitpid`, `wait3`, `wait4` and `waitid` with `WNOHANG` are not blocking calls for `CC_SHORT`
+  (`libc_nonblocking_flags`).
+- The flag of `libc_nonblocking_flags` may be in a local variable that gets only constants and gets one before the
+  call on every path (`options = WNOHANG; waitpid(pid, &status, options)`).
+- `[assume] nonblocking = ["uv__read"]`: the calls on a descriptor (`read`, `write`, `recv`, `send`, `accept`, ...)
+  that these functions make are not blocking for `CC_SHORT`, for code whose descriptors are all non-blocking.
 - `[assume] acquires` and `releases` (`"my_lock(0)"`, `"name@path(N)"`) mark a lock wrapper of code that cannot be
   edited as `CC_ACQUIRES` and `CC_RELEASES` do, with the parameter that holds the lock. `short_locks` takes the same
   `name(N)` for a wrapper whose lock cannot be named: every lock taken through it is short.
@@ -155,6 +163,7 @@ The first release.
   take 17.9 s and 411 MB at `-j 2`, and a chain of 3000 else-if 4 s and 170 MB. `-j` defaults to the number of cores,
   and the jobs of the largest files start first.
 
-[Unreleased]: https://github.com/agentica-lang/cchecker/compare/0.2.0...HEAD
+[Unreleased]: https://github.com/agentica-lang/cchecker/compare/0.3.0...HEAD
+[0.3.0]: https://github.com/agentica-lang/cchecker/compare/0.2.0...0.3.0
 [0.2.0]: https://github.com/agentica-lang/cchecker/compare/0.1.0...0.2.0
 [0.1.0]: https://github.com/agentica-lang/cchecker/releases/tag/0.1.0

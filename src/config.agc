@@ -55,9 +55,10 @@ end
 ## `[assume] catches`, those that catch the jumps of what they call (as CC_CATCHES), `jump_releases` is `[assume]
 ## jump_releases`, the lock helpers whose lock the catcher of a jump gives back (as CC_JUMP_RELEASES), and `stop_calls`
 ## is `[assume] stop_calls`, the `caller>callee` pairs whose call no walk follows. `fold_ignoring` is `[database]
-## fold_ignoring`, the defines that do not tell two entries of one file apart, and `acquires` and `releases` are
-## `[assume] acquires` and `releases`, the lock wrappers that take and release the lock of a parameter (as CC_ACQUIRES
-## and CC_RELEASES).
+## fold_ignoring`, the defines that do not tell two entries of one file apart, `acquires` and `releases` are `[assume]
+## acquires` and `releases`, the lock wrappers that take and release the lock of a parameter (as CC_ACQUIRES and
+## CC_RELEASES), and `nonblocking` is `[assume] nonblocking`, the functions whose descriptors are non-blocking: their
+## calls of `Known.FD_CALLS` return at once.
 export struct Config
   origin: String
   off: Set[String]
@@ -76,6 +77,7 @@ export struct Config
   fold_ignoring: List[String] = []
   acquires: List[String] = []
   releases: List[String] = []
+  nonblocking: List[String] = []
 end
 
 ## Returns the settings of a run in `folder`, the project folder: those of `explicit` (the file of -c) when given.
@@ -140,6 +142,7 @@ export def from_table(origin: String, prefix: String, table: Toml.Value, note: S
             "stop_calls" -> config = config.with(stop_calls: try pairs_of(origin, path, assume.get(name).unwrap!))
             "jump_releases" ->
               config = config.with(jump_releases: try names_of(origin, path, assume.get(name).unwrap!))
+            "nonblocking" -> config = config.with(nonblocking: try names_of(origin, path, assume.get(name).unwrap!))
             _ -> return error(unknown(origin, path, note))
           end
         end
@@ -166,6 +169,25 @@ end
 ## Returns the settings that hold when no file gives any: every family on, no roots.
 export def defaults() -> Config
   return Config(origin: DEFAULTS, off: Set.new(OFF_BY_DEFAULT), short: [], hot: [])
+end
+
+## Returns whether the settings have any list of `[assume]`. Each list is here, so a new one is not left out of the
+## checks that skip the work when there is none.
+export def assumes_any?(config: Config) -> Bool
+  return not (
+    config.trusted.empty? and
+    config.stops.empty? and
+    config.short_locks.empty? and
+    config.stop_fields.empty? and
+    config.stop_calls.empty? and
+    config.may_jump.empty? and
+    config.jumps.empty? and
+    config.catches.empty? and
+    config.jump_releases.empty? and
+    config.acquires.empty? and
+    config.releases.empty? and
+    config.nonblocking.empty?
+  )
 end
 
 ## Returns the flags of `[library]` that a run knows, in the order of docs/settings.md.
