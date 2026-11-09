@@ -12,7 +12,7 @@ import {Suppressed} from "suppressions"
 ## took out. `config` is the settings file that was read, or "defaults". `unresolved_callbacks` are the callbacks of
 ## libuv calls that the inference of roots could not follow to a function. `unchecked_files` are the files that were
 ## not checked because a header they include is not found. `stale` are the entries of the baseline behind `fixed`,
-## and `strict` says that they fail the run (`--strict-baseline` on a run that covers the whole baseline).
+## and `failing` those of them that fail the run (`--strict-baseline`).
 export struct Report
   findings: List[Finding]
   baselined: Int
@@ -26,7 +26,7 @@ export struct Report
   unresolved_callbacks: List[UnresolvedCallback] = []
   unchecked_files: List[UncheckedFile] = []
   stale: List[Entry] = []
-  strict: Bool = false
+  failing: List[Entry] = []
 end
 
 # The JSON form of a report, which says in `clean` whether the run is clean.
@@ -52,9 +52,10 @@ export def text(report: Report) -> String
   lines = report.findings.map do |f| "#{f.file}:#{f.line}:#{f.column} #{f.code} #{f.message}#{path_text(f)}" end
   lines = lines.push(summary(report)).concat(report.stale.map(&stale_line))
   if failed_stale?(report)
+    gone = report.failing.reduce(0) do |total, entry| total + entry.count end
     lines = lines.push(
-      "cchecker: --strict-baseline: the baseline has stale entries (#{report.stale.size}); run --update-baseline " +
-      "to drop them",
+      "cchecker: --strict-baseline: the baseline accepts #{gone} #{plural(gone, "finding")} that the run did not " +
+      "find again; run --update-baseline to drop them",
     )
   end
 
@@ -63,7 +64,7 @@ end
 
 ## Returns whether the stale entries of the baseline fail the run.
 export def failed_stale?(report: Report) -> Bool
-  return report.strict and not report.stale.empty?
+  return not report.failing.empty?
 end
 
 ## Returns the report as one JSON object for tools and agents.

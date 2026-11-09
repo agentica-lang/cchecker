@@ -203,6 +203,9 @@ Feature: Running the analyzers on C files
       |                                            |
       | --tools lint fixtures/clean.c              |
       | --update-baseline fixtures/clean.c         |
+      | --strict-baseline fixtures/clean.c         |
+      | -b x.json --update-baseline --strict-baseline fixtures/clean.c |
+      | --checks=-* -b x.json --strict-baseline fixtures/clean.c |
       | --jobs 0 fixtures/clean.c                  |
       | -p fixtures fixtures/clean.c               |
       | -- -DLEAK                                  |

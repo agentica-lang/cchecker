@@ -31,19 +31,20 @@ exit code is `2` in each case.
 
 A baseline entry whose finding is gone is stale: it stays in the file, and a new
 finding of the same code, file and message would match it later and be accepted
-unseen. The summary names each stale entry of the run's scope (one line each,
-and `stale` in `--json`), and `--update-baseline` drops them. With
-`--strict-baseline`, stale entries make the run exit `1`, but only on a run that
-covers the whole baseline: a full run of the database with every tool (the
-default `--tools`), the default `--checks` and every check of the rules on (no
-`--no-infer`, no `[library]` flag set to false), as `--update-baseline` needs. A
-partial run (`--tools`, a FILE subset, `--exclude`, a skipped or failed file)
-still names them and never fails on them, as it cannot tell that an entry is
-stale. `--strict-baseline` needs `--baseline`, and does not go with
-`--update-baseline`.
+unseen. A run names each stale entry of its scope, the same entries that `fixed`
+counts and that `--update-baseline` would drop (one line each after the summary,
+and `stale` in `--json`, with the `count` that was not found again). With
+`--strict-baseline` they make the run exit `1` (and `clean` false). An entry
+outside the scope (a tool that did not run, a file left out by a FILE subset or
+`--exclude`) never fails the run. `--strict-baseline` needs `--baseline`, the
+default `--checks` (fewer checks make the entries of the others look stale), and
+does not go with `--update-baseline`. With a check of the rules off
+(`--no-infer`, a `[library]` flag set to false, a file of `-c` that leaves out
+`[roots]` of the project), the stale entries of the rules do not fail the run,
+with a warning on standard error; those of the other tools still do.
 
 ```sh
-agentica cchecker.agc -p build --baseline cchecker-baseline.json --strict-baseline   # in CI: stale entries fail
+agentica cchecker.agc -p build --baseline cchecker-baseline.json --strict-baseline   # stale entries fail the run
 ```
 
 ## Suppressions

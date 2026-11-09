@@ -23,13 +23,13 @@ rules also add `incomplete_functions` and `skipped_declarations` (see
 ## Exit codes
 
 `0` no new findings, `1` new findings (or stale entries of the baseline with
-`--strict-baseline`), `2` a usage error or a tool error. A tool error is a tool
-that is missing, ends in a timeout or exits with a non-zero code, except for the
-`1` of a compiler that found errors in the file (a file that does not compile is
-an error, never a finding: gcc 14 refuses an implicit function declaration, for
-example). gcc reports its analyzer only (`CC-GCC-ANALYZER-...`); the other
-warnings of the build flags (`-Wall`) are not findings, as they are not for
-clang-tidy.
+`--strict-baseline`, and then `clean` is false), `2` a usage error or a tool
+error. A tool error is a tool that is missing, ends in a timeout or exits with a
+non-zero code, except for the `1` of a compiler that found errors in the file (a
+file that does not compile is an error, never a finding: gcc 14 refuses an
+implicit function declaration, for example). gcc reports its analyzer only
+(`CC-GCC-ANALYZER-...`); the other warnings of the build flags (`-Wall`) are not
+findings, as they are not for clang-tidy.
 
 `-Werror` in the flags of a database does not turn the other warnings of gcc
 into tool errors: cchecker adds `-Wno-error` after the flags, and

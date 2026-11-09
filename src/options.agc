@@ -58,7 +58,7 @@ OPTIONS = [
   Opt(
     name: "strict-baseline",
     kind: Kind.Flag,
-    help: "exit 1 when a whole run finds an entry of the baseline fixed (stale)",
+    help: "exit 1 when an entry of the baseline in the scope of the run was not found again (stale)",
   ),
   Opt(name: "exclude", metavar: "LIST", help: "comma separated files or folders to skip"),
   Opt(name: "gcc", default: "gcc", metavar: "PROGRAM", help: "the gcc to run"),
@@ -183,6 +183,10 @@ def mistake(options: Options) -> String
 
   if options.strict_baseline and options.update_baseline
     return "give one of --strict-baseline, --update-baseline: an update drops the stale entries"
+  end
+
+  if options.strict_baseline and options.custom_checks
+    return "--strict-baseline needs the default --checks: with fewer checks the entries of the others look stale"
   end
 
   if options.update_baseline and options.custom_checks

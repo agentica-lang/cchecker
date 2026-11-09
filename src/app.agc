@@ -162,7 +162,7 @@ export def run(options: Options) -> Result[Int]
       end
 
       split = Baseline.split(findings, accepted, scope)
-      strict = strict?(options, config, cwd, scope)
+      failing = failing_of(options, config, cwd, split.stale)
       return ok(
         finish(
           options,
@@ -171,7 +171,7 @@ export def run(options: Options) -> Result[Int]
             baselined: split.accepted,
             fixed: split.fixed,
             stale: split.stale,
-            strict: strict,
+            failing: failing,
             errors: collected.errors,
             skipped: plan.skipped.size,
             skipped_declarations: collected.skipped_declarations,
@@ -313,17 +313,30 @@ def finish(options: Options, report: Report.Report) -> Int
   return 0
 end
 
-# Whether `--strict-baseline` holds the run to the stale entries of its baseline: only a run that covers the whole
-# baseline can tell that an entry is stale. That is a full run of the database (`Baseline.Scope.full`) with every
-# tool, the default checks and every check of the rules on, as --update-baseline needs; a partial run never fails on
-# them.
-def strict?(options: Options, config: Config.Config, cwd: String, scope: Baseline.Scope) -> Bool
-  if not options.strict_baseline or not scope.full or options.custom_checks
-    return false
+# The stale entries that fail the run with `--strict-baseline`: those of the scope of the run (`Baseline.split` keeps
+# only those). With a check of the rules off (`--no-infer`, a `[library]` flag set to false, a file of -c without the
+# [roots] of the project), the entries of the rules may look stale while they are not, so they do not fail the run,
+# with a warning; the entries of the other tools still do.
+def failing_of(
+  options: Options,
+  config: Config.Config,
+  cwd: String,
+  stale: List[Baseline.Entry],
+) -> List[Baseline.Entry]
+  if not options.strict_baseline
+    return []
   end
 
-  every = [Tool.Gcc, Tool.ClangTidy, Tool.Rules].all? do |tool| options.tools.include?(tool) end
-  return every and full_rules(options, config, cwd).ok?
+  rules = ToolKind.name(Tool.Rules)
+  if not options.tools.include?(Tool.Rules) or full_rules(options, config, cwd).ok?
+    return stale
+  end
+
+  IO.warn(
+    "cchecker: warning: --strict-baseline does not fail on the stale entries of the rules: a check of them is off",
+  )
+
+  return stale.select do |entry| Baseline.tool_of(entry.code) != rules end
 end
 
 def gather(options: Options) -> Result[List[Commands.Entry]]
