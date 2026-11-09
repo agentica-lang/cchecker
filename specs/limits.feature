@@ -186,6 +186,24 @@ Feature: Time and memory on large generated inputs
       | alias                | char *s = make(); char *t = s; if (!t) emit(0); else free(t); |
       | statement expression | char *q = ({ CC_OWNS char *t = make(); t; }); free(q);        |
 
+  Scenario: Statement expressions at the top level of a function do not multiply the states of the ownership walk
+    Given the C file "top.c" holds, with ITEMS as 24 times " s = TAKE(); if (s) free(s);":
+      """
+      #include <stdlib.h>
+      #include "cchecker.h"
+      #define TAKE() ({ CC_OWNS char *t_ = make(); t_; })
+      CC_OWNS char *make(void);
+      void many(void) {
+        char *s;ITEMS
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/top.c -- -I../include" in at most 1500 MiB and 20 seconds
+    Then the exit code is 0
+    And the output includes:
+      """
+      "incomplete_functions":[]
+      """
+
   Scenario: A lock held in a function with more paths than the walk follows is not inferred short
     Given the file "compile_commands.json" holds:
       """

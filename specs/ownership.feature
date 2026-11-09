@@ -456,8 +456,9 @@ Feature: Ownership on every path
       """
 
   Scenario: A pointer of a block stays after the block while another pointer stands for it
-    An alias or the result of a realloc outside the block keeps the pointer it stands for: its use after a free, and
-    the leak where the result of a realloc is null, are found after the block ends.
+    An alias outside the block takes the state of the pointer it stands for, and the result of a realloc outside the
+    block keeps the pointer it moved: a use after a free, and the leak where the result of a realloc is null, are found
+    after the block ends.
 
     Given the C file "held.c" holds:
       """
@@ -510,7 +511,7 @@ Feature: Ownership on every path
     Then the exit code is 1
     And the output includes:
       """
-      "line":7,"column":6,"message":"outer_alias uses s after it freed it or handed it on","path":["12:5 frees s","14:7 uses s"]
+      "line":7,"column":6,"message":"outer_alias uses t after it freed it or handed it on","path":["12:5 frees s","14:7 uses t"]
       """
     And the output includes:
       """
@@ -523,6 +524,76 @@ Feature: Ownership on every path
     And the output does not include:
       """
       "line":37,
+      """
+
+  Scenario: The pointers of a statement expression close at the end of the statement, and a loop hands a pointer on
+    A pointer declared in `({ ...; p; })` stands for its value until the end of the statement around it: returned,
+    kept in a variable, or a leak there. A pointer of a block that an alias outside the block stands for passes its
+    state to that alias when the block ends, so a loop that keeps the pointer of the last round in a variable does not
+    overwrite it.
+
+    Given the C file "expr.c" holds:
+      """
+      #include <stdlib.h>
+      #include "cchecker.h"
+
+      CC_OWNS char *make(void);
+      void use(char *p);
+
+      char *give(void) {
+        return ({ CC_OWNS char *p = make(); p; });
+      }
+
+      void temp(void) {
+        use(({ CC_OWNS char *t = make(); t; }));
+      }
+
+      void two(void) {
+        char *a = ({ CC_OWNS char *t = make(); t; }), *b = ({ use(0); CC_OWNS char *u = make(); u; });
+        free(a);
+        free(b);
+      }
+
+      void loop(int n) {
+        char *prev = NULL;
+        for (int i = 0; i < n; i++) {
+          CC_OWNS char *cur = make();
+          free(prev);
+          prev = cur;
+        }
+        free(prev);
+      }
+
+      void loop_leaks(int n) {
+        char *prev = NULL;
+        for (int i = 0; i < n; i++) {
+          CC_OWNS char *cur = make();
+          prev = cur;
+        }
+        free(prev);
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/expr.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "line":11,"column":6,"message":"temp does not free or hand on t on every path","path":["12:28 t = make","12:41 ends"]
+      """
+    And the output includes:
+      """
+      "line":31,"column":6,"message":"loop_leaks does not free or hand on prev on every path"
+      """
+    And the output does not include:
+      """
+      "line":7,
+      """
+    And the output does not include:
+      """
+      "line":15,
+      """
+    And the output does not include:
+      """
+      "line":21,
       """
 
   Scenario: An indirect goto leaves no block: it may go to a label inside one

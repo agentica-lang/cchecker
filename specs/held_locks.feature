@@ -144,6 +144,38 @@ Feature: What runs while a lock is held
       | the release alone        | pthread_mutex_unlock(m);                     | does not include |
       | a write after the unlock | pthread_mutex_unlock(m); write(1, "x", 1);   | includes         |
 
+  Scenario: The cleanup of a variable of a statement expression runs at the end of the statement expression
+    Given the C file "push.c" holds:
+      """
+      #include "pthread.h" /* found in the system folders */
+      #include "unistd.h"
+      #include "cchecker.h"
+
+      struct queue { CC_NO_SYSCALL_UNDER() pthread_mutex_t mu; int fd; int n; };
+      CC_RELEASES(*m) static void drop(pthread_mutex_t **m) { pthread_mutex_unlock(*m); }
+
+      void after(struct queue *q) {
+        int n = ({ pthread_mutex_t *held __attribute__((cleanup(drop))) = &q->mu; pthread_mutex_lock(held); q->n; });
+        write(q->fd, "x", 1);
+        q->n = n;
+      }
+
+      void inside(struct queue *q) {
+        int n = ({ pthread_mutex_t *held __attribute__((cleanup(drop))) = &q->mu; pthread_mutex_lock(held); write(q->fd, "x", 1); q->n; });
+        q->n = n;
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/push.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "line":14,"column":6,"message":"inside calls write while holding q->mu","path":["15:77 takes q->mu","15:103 calls write"]
+      """
+    And the output does not include:
+      """
+      "line":8,
+      """
+
   Scenario: A lock taken under a CC_NO_SYSCALL_UNDER lock is one finding of the rule, and its release none
     Given the C file "push.c" holds:
       """

@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - The path rules know each variable by its declaration, not by its name: a local that shadows another (a parameter, a global, a local of an outer block) has its own state and conditions, so it no longer gives false CC-OWN or lock findings or hides real ones.
+- `return ({ ...; p; })` hands `p` on, and a loop that keeps the pointer of the last round in a variable (`prev = cur`) is no longer a false CC-OWN-LEAK.
 
 ## [0.3.0] - 2026-11-09
 

@@ -41,7 +41,10 @@ owning nothing on that side.
 A pointer declared in an inner block is checked where a path leaves the block
 (its end, a `break`, `continue`, `goto` or `return`): one that still owns there
 leaks, with that point as the last step of `path`, unless a pointer outside the
-block stands for it (`t = s`, `r = realloc(s, n)`).
+block stands for it: an alias (`t = s`) takes its state, and the result of a
+realloc (`r = realloc(s, n)`) keeps it. The pointers of a statement expression
+(`({ ...; p; })`) are checked so at the end of the statement around it, and its
+cleanup functions run at its own end.
 
 A local without a mark that gets a pointer that owns (`char *c = p`) stands for
 it: freeing `c` frees `p`; a `malloc` into it later owns nothing, as in any

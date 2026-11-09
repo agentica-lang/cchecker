@@ -234,11 +234,13 @@ struct Arg
 end
 
 # A block (or a `for` with its declarations): its id, the cleanup calls of its variables so far, in the order they were
-# declared, and the keys of its pointers that own or may stand for one (`declared`).
+# declared, and the keys of its pointers that own or may stand for one (`declared`). The block of a statement
+# expression keeps the pending pointers of the statement around it (`outer`), which its own statements do not close.
 struct Scope
   id: String
   cleanups: List[Site]
   declared: List[String] = []
+  outer: List[String] = []
 end
 
 # A loop or a switch, for its `break`, `continue` and `case`. `depth` is the number of blocks open around it.
@@ -266,6 +268,8 @@ struct Builder
   labels: Map[String, Int]
   gotos: List[Goto]
   owners: Owners
+  # The pointers of the statement expressions of the statement being built: they close at its end (`flushed`).
+  pending: List[String] = []
 end
 
 # The places of a function that keep an owned pointer stored in them: its parameters and local variables (`locals`),
@@ -1005,11 +1009,62 @@ def statement(b: Builder, node: Json, preds: List[Int]) -> Built
       labelled = label.b.with(labels: label.b.labels.put(Ast.text(node, "declId"), label.exits.first))
       return statement(labelled, last_child(node), label.exits)
     "AttributedStmt" -> return statement(b, last_child(node), preds)
-    "DeclStmt" -> return declarations(b, node, preds)
+    "DeclStmt" ->
+      declared = declarations(b, node, preds)
+      return flushed(declared.b, node, declared.exits)
     "NullStmt" -> return Built(b: b, exits: preds)
     "GCCAsmStmt" -> return Built(b: b, exits: preds)
-    _ -> return expression(b, node, preds)
+    _ ->
+      done = expression(b, node, preds)
+      return flushed(done.b, node, done.exits)
   end
+end
+
+# The end of a full statement (`node`): the pointers of its statement expressions close there (`pending`).
+def flushed(b: Builder, node: Json, preds: List[Int]) -> Built
+  if b.pending.empty?
+    return Built(b: b, exits: preds)
+  end
+
+  place = Ast.end_of(node)
+  mark = Mark(word: "ends", line: place.line, column: place.column)
+  return closes_at(b.with(pending: []), b.pending, mark, preds)
+end
+
+# `flushed` on both sides of a condition (`node`) of a statement.
+def flushed_split(split: Split, node: Json) -> Split
+  yes = flushed(split.b, node, split.yes)
+  no = flushed(yes.b.with(pending: split.b.pending), node, split.no)
+  return Split(b: no.b, yes: yes.exits, no: no.exits)
+end
+
+# A close of the pointers `names` at `mark` after `preds`; nothing for no names, or no node before it.
+def closes_at(b: Builder, names: List[String], mark: Mark, preds: List[Int]) -> Built
+  if names.empty? or preds.empty?
+    return Built(b: b, exits: preds)
+  end
+
+  return add(b, Event.Closes(Closing(names: names, mark: mark)), preds)
+end
+
+# The block of a statement expression `({ ...; v; })` opens as a scope for the cleanups of its variables.
+def opened_expression(b: Builder, node: Json) -> Builder
+  scope = Scope(id: Ast.text(last_child(see_through(node)), "id"), cleanups: [], outer: b.pending)
+  return b.with(scopes: b.scopes.push(scope), pending: [])
+end
+
+# The end of the block of a statement expression: the cleanups of its variables run, and its pointers close at the end
+# of the statement around it (`pending`), as its value outlives the block.
+def closed_expression(b: Builder, preds: List[Int]) -> Built
+  scope = b.scopes.last
+  called = calls(b, scope.cleanups.reverse, preds)
+  return Built(
+    b: called.b.with(
+      scopes: called.b.scopes.take(called.b.scopes.size - 1),
+      pending: scope.outer.concat(called.b.pending).concat(scope.declared),
+    ),
+    exits: called.exits,
+  )
 end
 
 def block(b: Builder, node: Json, preds: List[Int]) -> Built
@@ -1038,7 +1093,7 @@ def if_statement(b: Builder, node: Json, preds: List[Int]) -> Built
   exits: List[Int] = []
   while true
     parts = Ast.children(current)
-    split = condition(built, parts[0], pending)
+    split = flushed_split(condition(built, parts[0], pending), parts[0])
     then_part = statement(split.b, parts[1], split.yes)
     exits = exits.concat(then_part.exits)
     if not Ast.flag?(current, "hasElse")
@@ -1061,7 +1116,7 @@ end
 def while_loop(b: Builder, node: Json, preds: List[Int]) -> Built
   parts = Ast.children(node)
   head = add(b, Event.Join, preds)
-  split = condition(head.b, parts[0], head.exits)
+  split = flushed_split(condition(head.b, parts[0], head.exits), parts[0])
   return looped(split.b, parts[1], split, head.exits.first, JSON.from(""))
 end
 
@@ -1073,7 +1128,7 @@ def do_loop(b: Builder, node: Json, preds: List[Int]) -> Built
   jump = body.b.jumps.last
   closed = body.b.with(jumps: body.b.jumps.take(body.b.jumps.size - 1))
   test = add(closed, Event.Join, body.exits.concat(jump.continues))
-  split = condition(test.b, parts[1], test.exits)
+  split = flushed_split(condition(test.b, parts[1], test.exits), parts[1])
   return Built(b: link(split.b, split.yes, head.exits.first), exits: split.no.concat(jump.breaks))
 end
 
@@ -1086,7 +1141,7 @@ def for_loop(b: Builder, node: Json, preds: List[Int]) -> Built
   head = add(init.b, Event.Join, init.exits)
   split = Split(b: head.b, yes: head.exits, no: [])
   if Ast.kind(parts[2]) != ""
-    split = condition(head.b, parts[2], head.exits)
+    split = flushed_split(condition(head.b, parts[2], head.exits), parts[2])
   end
 
   ran = looped(split.b, parts[4], split, head.exits.first, parts[3])
@@ -1100,7 +1155,8 @@ def looped(b: Builder, body: Json, split: Split, head: Int, increment: Json) -> 
   ran = statement(opened, body, split.yes)
   jump = ran.b.jumps.last
   closed = ran.b.with(jumps: ran.b.jumps.take(ran.b.jumps.size - 1))
-  stepped = expression(closed, increment, ran.exits.concat(jump.continues))
+  ran_increment = expression(closed, increment, ran.exits.concat(jump.continues))
+  stepped = flushed(ran_increment.b, increment, ran_increment.exits)
   return Built(b: link(stepped.b, stepped.exits, head), exits: split.no.concat(jump.breaks))
 end
 
@@ -1112,7 +1168,8 @@ end
 # names goes past the body.
 def switch_statement(b: Builder, node: Json, preds: List[Int]) -> Built
   parts = Ast.children(node)
-  value = expression(b, parts[0], preds)
+  evaluated = expression(b, parts[0], preds)
+  value = flushed(evaluated.b, parts[0], evaluated.exits)
   head = add(value.b, Event.Join, value.exits)
   jump = Jump(
     switch: true,
@@ -1207,14 +1264,7 @@ end
 def return_statement(b: Builder, node: Json, preds: List[Int]) -> Built
   value = Built(b: b, exits: preds)
   for child in Ast.children(node)
-    given = owner_named(value.b, child)
-    if given != ""
-      place = Ast.start_of(child)
-      give = Give(name: given, word: "returns", line: place.line, column: place.column)
-      value = add(value.b, Event.Gives(give), value.exits)
-    else
-      value = expression(value.b, child, value.exits)
-    end
+    value = returned(value.b, child, value.exits)
   end
 
   failed = Ast.children(node).any?(&error_value?)
@@ -1222,6 +1272,26 @@ def return_statement(b: Builder, node: Json, preds: List[Int]) -> Built
   left = leaving(value.b, 0, value.exits, some(mark))
   ended = add(left.b, Event.Exit(mark), left.exits)
   return Built(b: ended.b, exits: [])
+end
+
+# The value of a return: a pointer that owns is handed on, also as the value of a statement expression.
+def returned(b: Builder, value: Json, preds: List[Int]) -> Built
+  bare = see_through(value)
+  statements = Ast.children(last_child(bare))
+  if Ast.kind(bare) == "StmtExpr" and not statements.empty?
+    opened = opened_expression(b, bare)
+    built = in_order_statements(opened, statements.take(statements.size - 1), preds)
+    last = returned(built.b, statements.last, built.exits)
+    return closed_expression(last.b, last.exits)
+  end
+
+  given = owner_named(b, value)
+  if given == ""
+    return expression(b, value, preds)
+  end
+
+  place = Ast.start_of(value)
+  return add(b, Event.Gives(Give(name: given, word: "returns", line: place.line, column: place.column)), preds)
 end
 
 # A `goto` leaves the blocks that are not around its label. The label is linked at the end, when every label is known;
@@ -1262,8 +1332,8 @@ def with_gotos(b: Builder) -> Builder
 end
 
 # The way out of the blocks from `depth` in: their cleanup calls, the innermost first, then one close of their pointers
-# at `at` (none closes nothing), which lets the walks drop what they knew of them. The block of the function never
-# closes: the exit of the path reads its pointers.
+# and of the pending ones of the statement at `at` (none closes nothing), which lets the walks drop what they knew of
+# them. The block of the function never closes: the exit of the path reads its pointers.
 def leaving(b: Builder, depth: Int, preds: List[Int], at: Optional[Mark]) -> Built
   sites: List[Site] = []
   names: List[String] = []
@@ -1279,9 +1349,8 @@ def leaving(b: Builder, depth: Int, preds: List[Int], at: Optional[Mark]) -> Bui
 
   called = calls(b, sites, preds)
   case at
-    some(mark) if not names.empty? ->
-      return add(called.b, Event.Closes(Closing(names: names, mark: mark)), called.exits)
-    _ -> return called
+    some(mark) -> return closes_at(called.b.with(pending: []), b.pending.concat(names), mark, called.exits)
+    none -> return called
   end
 end
 
@@ -1407,8 +1476,10 @@ def expression(b: Builder, node: Json, preds: List[Int]) -> Built
       split = condition(b, parts[0], preds)
       other = expression(split.b, parts.last, split.no)
       return Built(b: other.b, exits: split.yes.concat(other.exits))
-    # The block of `({ ...; v; })` is no scope: its value outlives it, so its pointers close with the block around it.
-    "StmtExpr" -> return in_order_statements(b, Ast.children(last_child(node)), preds)
+    "StmtExpr" ->
+      opened = opened_expression(b, node)
+      built = in_order_statements(opened, Ast.children(last_child(node)), preds)
+      return closed_expression(built.b, built.exits)
     "UnaryExprOrTypeTraitExpr" -> return Built(b: b, exits: preds)
     _ -> return in_order(b, Ast.children(node), preds)
   end
@@ -1527,8 +1598,10 @@ def stored(b: Builder, shown: String, value: Json, preds: List[Int]) -> Built
   if Ast.kind(bare) == "StmtExpr"
     statements = Ast.children(last_child(bare))
     if not statements.empty?
-      built = in_order_statements(b, statements.take(statements.size - 1), preds)
-      return stored(built.b, shown, statements.last, built.exits)
+      opened = opened_expression(b, bare)
+      built = in_order_statements(opened, statements.take(statements.size - 1), preds)
+      last = stored(built.b, shown, statements.last, built.exits)
+      return closed_expression(last.b, last.exits)
     end
   end
 
@@ -1573,8 +1646,10 @@ def owner_assigned(b: Builder, name: String, value: Json, preds: List[Int]) -> B
     # `({ char *q = make(n); ...; q; })`: its statements, then the value of the last one.
     statements = Ast.children(last_child(bare))
     if not statements.empty?
-      built = in_order_statements(b, statements.take(statements.size - 1), preds)
-      return owner_assigned(built.b, name, statements.last, built.exits)
+      opened = opened_expression(b, bare)
+      built = in_order_statements(opened, statements.take(statements.size - 1), preds)
+      last = owner_assigned(built.b, name, statements.last, built.exits)
+      return closed_expression(last.b, last.exits)
     end
   end
 
