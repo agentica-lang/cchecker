@@ -171,7 +171,7 @@ end
 ## passes, and `owns` says whether the ownership rules read the function: it has a pointer that owns, or calls a
 ## function that returns one. `releases` are the keys of the locks of its CC_RELEASES in the names of its parameters,
 ## in the order of its marks ("" for the restore of a pair), and `acquires` those of its CC_ACQUIRES ("" for the set
-## of a pair).
+## of a pair). `enters` says that a `goto` goes into a block from outside it.
 export struct Body
   key: String
   name: String
@@ -183,6 +183,8 @@ export struct Body
   owns: Bool = false
   releases: List[String] = []
   acquires: List[String] = []
+  # A `goto` goes into a block from outside it (past the declarations before its label).
+  enters: Bool = false
 end
 
 ## A lock of a CC_ACQUIRES (`takes`) or a CC_RELEASES, as written, with the names of the parameters of the
@@ -282,6 +284,8 @@ struct Builder
   owners: Owners
   # The pointers of the statement expressions of the statement being built: they close at its end (`flushed`).
   pending: List[String] = []
+  # A `goto` goes into a block that is not open around it (an indirect one into any block with a label).
+  enters: Bool = false
 end
 
 # The places of a function that keep an owned pointer stored in them: its parameters and local variables (`locals`),
@@ -446,6 +450,7 @@ export def body_of(ctx: Context, key: String, node: Json) -> Body
     owns: owners.calls or not owners.names.empty?,
     releases: dropped.map do |lock| released_key(lock, names) end,
     acquires: taken.map do |lock| released_key(lock, names) end,
+    enters: linked.enters,
   )
 end
 
@@ -1552,7 +1557,14 @@ def goto_statement(b: Builder, node: Json, label: String, preds: List[Int]) -> B
     mark = some(mark_at(node, "goto"))
   end
 
-  left = leaving(b, depth, preds, mark)
+  open = Set.new(b.scopes.map do |scope| scope.id end)
+  targets = [b.label_blocks.get(label).unwrap_or([])]
+  if label == ""
+    targets = b.label_blocks.values
+  end
+
+  enters = targets.any? do |blocks| blocks.any? do |id| not open.include?(id) end end
+  left = leaving(b.with(enters: b.enters or enters), depth, preds, mark)
   jumped = add(left.b, Event.Join, left.exits)
   return Built(b: jumped.b.with(gotos: jumped.b.gotos.push(Goto(from: jumped.exits.first, label: label))), exits: [])
 end

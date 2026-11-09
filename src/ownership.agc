@@ -48,12 +48,14 @@ FILLED = "filled"
 MAX_STATES = 200_000
 
 # The state of a path: what each pointer owns, the aliases (a local that stands for a pointer that owns), the result
-# of a realloc and the pointer it moved (which owns again when the result is null), and the known conditions.
+# of a realloc and the pointer it moved (which owns again when the result is null), the known conditions, and the
+# pointers whose block closed while a pointer still in the state stood for them (`kept`, see `closed`).
 struct State
   owns: Map[String, String]
   aliases: Map[String, String]
   links: Map[String, String]
   facts: Map[String, Bool]
+  kept: Set[String]
 end
 
 # One step of a path, as the finding shows it, the pointer it is about, and whether it gave the pointer its value
@@ -170,7 +172,7 @@ def walked(walker: Walker) -> Walk
     owns = owns.put(name, OWNED)
   end
 
-  queue = [Item(node: 0, state: State(owns: owns, aliases: {}, links: {}, facts: {}), path: [])]
+  queue = [Item(node: 0, state: State(owns: owns, aliases: {}, links: {}, facts: {}, kept: Set.new([])), path: [])]
   visited: Set[String] = Set.new([])
   unread: Set[String] = Set.new([])
   found: Map[String, Finding] = {}
@@ -195,7 +197,13 @@ def walked(walker: Walker) -> Walk
         end
 
       Moved.Stopped -> next
-      Moved.Went(moved) ->
+      Moved.Went(went_on) ->
+        # A `goto` into a block reaches its pointers again past their declarations: none of them is dropped.
+        moved = went_on
+        if not body.enters
+          moved = went_on.with(state: released(went_on.state))
+        end
+
         for after in node.next
           next_state = moved.state.with(facts: Locking.kept(moved.state.facts, walker.live.get(after, unread)))
           seen = "#{after}|#{encoded(next_state)}"
@@ -288,6 +296,10 @@ def closed(body: Body, item: Item, closing: Closing) -> Outcome
   breaches: List[Breach] = []
   for name in closing.names
     if held.include?(name)
+      if not state.kept.include?(name)
+        state = state.with(kept: state.kept.add(name))
+      end
+
       next
     end
 
@@ -306,6 +318,31 @@ def closed(body: Body, item: Item, closing: Closing) -> Outcome
   end
 
   return Outcome(moved: Moved.Went(item.with(state: state)), breaches: breaches)
+end
+
+# The state without the kept pointers that nothing stands for any more (the alias got a new value, was lent, or
+# closed too) and that own nothing: nothing names them after, so two paths that differ only in them are one (a macro
+# that returns an owned pointer, used many times into one variable, leaves no dead pointer per use). One that may still
+# own stays, to leak where the path ends.
+def released(state: State) -> State
+  if state.kept.empty?
+    return state
+  end
+
+  named = Set.new(state.aliases.values.concat(state.links.values))
+  for name in state.kept.to_a.sort
+    owns = state.owns.get(name).map do |own| own == OWNED or own == FILLED end.unwrap_or(false)
+    if not named.include?(name) and not owns
+      state = state.with(
+        owns: state.owns.delete(name),
+        aliases: state.aliases.delete(name),
+        links: state.links.delete(name),
+        kept: state.kept.delete(name),
+      )
+    end
+  end
+
+  return state
 end
 
 def went(item: Item) -> Outcome
@@ -352,11 +389,18 @@ def after_call(body: Body, item: Item, site: Site) -> Outcome
 
   for name in site.fills
     step = Step(text: "#{at} #{site.name} sets #{plain(name)}", name: name, origin: true)
-    if current.state.owns.get(name).map do |own| own == OWNED end.unwrap_or(false)
+    state = current.state
+    if kept_by_alias?(state, name)
+      state = handed_over(state, name)
+    elsif state.owns.get(name).map do |own| own == OWNED end.unwrap_or(false)
       breaches = breaches.push(overwritten(body, current, name, step))
     end
 
-    state = current.state
+    # A kept pointer that a call fills is declared again (the next round of a loop): it is live again.
+    if state.kept.include?(name)
+      state = state.with(kept: state.kept.delete(name))
+    end
+
     current = current.with(
       state: state.with(
         owns: state.owns.put(name, FILLED),
@@ -466,24 +510,9 @@ def after_assign(body: Body, item: Item, assign: Assign) -> Outcome
   breaches: List[Breach] = []
   state = item.state
   owned = state.owns.get(assign.name).map do |own| own == OWNED end.unwrap_or(false)
-  # `old = *p; *p = v;` in a CC_FREES parameter, or `old = p; p = q;`: the locals that stood for the pointer keep its
-  # old value, in the state it had; the first one holds it and the others stand for it. A realloc moves the old value
-  # itself (`resized`).
-  keepers = state.aliases.keys.sort.select do |alias| state.aliases[alias] == assign.name end
-  if assign.value != "resized" and not keepers.empty?
-    holder = keepers.first
-    aliases = state.aliases.delete(holder)
-    for other in keepers.drop(1)
-      aliases = aliases.put(other, holder)
-    end
-
-    owns = state.owns
-    case state.owns.get(assign.name)
-      some(own) -> owns = owns.put(holder, own)
-      none -> owns = owns
-    end
-
-    state = state.with(aliases: aliases, owns: owns)
+  # A realloc moves the old value itself (`resized`).
+  if assign.value != "resized" and kept_by_alias?(state, assign.name)
+    state = handed_over(state, assign.name)
     owned = false
   end
 
@@ -492,6 +521,11 @@ def after_assign(body: Body, item: Item, assign: Assign) -> Outcome
   end
 
   state = state.with(aliases: state.aliases.delete(assign.name), links: state.links.delete(assign.name))
+  # A new value of a kept pointer is a new declaration of its name (the next round of a loop): it is live again.
+  if state.kept.include?(assign.name)
+    state = state.with(kept: state.kept.delete(assign.name))
+  end
+
   state = state.with(owns: state.owns.delete(assign.name))
   case assign.value
     "owned" -> state = state.with(owns: state.owns.put(assign.name, OWNED))
@@ -514,6 +548,27 @@ def after_assign(body: Body, item: Item, assign: Assign) -> Outcome
   end
 
   return Outcome(moved: Moved.Went(item.with(state: state, path: item.path.push(step))), breaches: breaches)
+end
+
+# Whether a local stands for the pointer `name`.
+def kept_by_alias?(state: State, name: String) -> Bool
+  return state.aliases.values.include?(name)
+end
+
+# `old = *p; *p = v;` in a CC_FREES parameter, `old = p; p = q;` or `old = p; take(&p);`: the locals that stood for the
+# pointer keep its old value, in the state it had; the first one holds it and the others stand for it.
+def handed_over(state: State, name: String) -> State
+  keepers = state.aliases.keys.sort.select do |alias| state.aliases[alias] == name end
+  holder = keepers.first
+  aliases = state.aliases.delete(holder)
+  for other in keepers.drop(1)
+    aliases = aliases.put(other, holder)
+  end
+
+  case state.owns.get(name)
+    some(own) -> return state.with(aliases: aliases, owns: state.owns.put(holder, own))
+    none -> return state.with(aliases: aliases)
+  end
 end
 
 # The result of a realloc owns; the pointer it moved owns again where the result is null.
@@ -585,5 +640,6 @@ def encoded(state: State) -> String
   aliases = state.aliases.keys.sort.map do |name| "#{name}>#{state.aliases[name]}" end
   links = state.links.keys.sort.map do |name| "#{name}<#{state.links[name]}" end
   facts = state.facts.keys.sort.map do |text| "#{text}=#{state.facts[text]}" end
-  return "#{owns.join(";")}|#{aliases.join(";")}|#{links.join(";")}|#{facts.join(";")}"
+  kept = state.kept.to_a.sort
+  return "#{owns.join(";")}|#{aliases.join(";")}|#{links.join(";")}|#{facts.join(";")}|#{kept.join(";")}"
 end

@@ -46,7 +46,18 @@ Feature: C that must stay clean
       | realloc in a loop                               | CC_OWNS char *f(int n) { CC_OWNS char *b = NULL; for (int i = 1; i <= n; i++) { char *t = realloc(b, i); if (!t) { free(b); return NULL; } b = t; } return b; }                                                |
       | free in a loop with switch and continue         | void f(int n) { for (int i = 0; i < n; i++) { CC_OWNS char *b = malloc(n); if (!b) continue; switch (work(b)) { case 0: free(b); continue; case 1: free(b); break; default: free(b); return; } work(NULL); } } |
       | strdup                                          | CC_OWNS char *f(const char *s) { CC_OWNS char *c = strdup(s); if (!c) return NULL; if (work(c)) { free(c); return NULL; } return c; }                                                                          |
+      | one macro into one variable                     | void f(int n) { char *s; s = TAKE(n); if (s) free(s); s = TAKE(n); if (s) free(s); s = TAKE(n); if (s) free(s); }                                                                                              |
       | designated initializer of a plain struct parses | void f(int n) { struct conf c = { .name = "x", .n = n }; use(&c); }                                                                                                                                            |
+
+    # Initializers that the rules read by the name of a top-level struct (#111): a struct of a function body, an
+    # anonymous member, a union, and a key on the stack whose field takes the pointer while the function frees it.
+    @pending @issue-111
+    Examples:
+      | case                            | code                                                                                                                                                                                    |
+      | struct declared in the function | void submit(void *j); void f(int n) { struct job { CC_OWNS char *buf; }; CC_OWNS char *b = make(n); struct job j = { b }; submit(&j); }                                                 |
+      | anonymous struct member         | struct conn { int fd; struct { CC_OWNS char *buf; }; }; void sink(struct conn *c); void f(int n) { CC_OWNS char *b = make(n); struct conn c = { n, { b } }; sink(&c); }                 |
+      | union initializer               | union u { CC_OWNS char *p; long l; }; void sink(union u *v); void f(int n) { CC_OWNS char *b = make(n); union u v = { .p = b }; sink(&v); }                                             |
+      | lookup key on the stack         | struct entry { CC_OWNS char *name; }; struct entry *find(struct entry *k); void f(int n) { CC_OWNS char *name = make(n); struct entry key = { .name = name }; find(&key); free(name); } |
 
     # The CC_OWNS fields of a local struct (#110), and a local that keeps the old value of a pointer that gets a new
     # one (the last round of a loop, TAKE_PTR of a CC_OWNS local: #107, #115).
@@ -58,6 +69,7 @@ Feature: C that must stay clean
       | field freed through a local           | void f(int n) { struct pair p = {0}; p.left = make(n); char *q = p.left; free(q); }                                                                                                         |
       | struct filled, then passed by pointer | void f(int n) { struct pair p = {0}; p.left = make(n); keep(&p); }                                                                                                                          |
       | last round kept in a variable         | void f(int n) { char *prev = NULL; for (int i = 0; i < n; i++) { CC_OWNS char *cur = make(i); free(prev); prev = cur; } free(prev); }                                                       |
+      | last round filled into a variable     | int take(CC_OWNS_OUT char **out); void f(int n) { char *prev = NULL; for (int i = 0; i < n; i++) { CC_OWNS char *cur; if (take(&cur) < 0) break; work(cur); free(prev); prev = cur; } free(prev); } |
       | TAKE_PTR returned                     | CC_OWNS char *f(int n) { CC_OWNS char *b = malloc(n); if (!b) return NULL; return TAKE_PTR(b); }                                                                                            |
       | TAKE_PTR stored in a field            | void f(struct box *x, int n) { CC_OWNS char *b = malloc(n); if (!b) return; x->held = TAKE_PTR(b); }                                                                                        |
       | TAKE_PTR handed out                   | int f(CC_OWNS_OUT char **out, int n) { CC_OWNS char *b = malloc(n); if (!b) return -1; *out = TAKE_PTR(b); return 0; }                                                                      |
@@ -108,6 +120,8 @@ Feature: C that must stay clean
       | goto cleanup of struct fields                | one free missing at the label   | int f(int n) { int rc = -1; struct pair p = {0}; p.left = make(n); if (!p.left) goto out; p.right = make(n); if (!p.right) goto out; rc = 0; out: free(p.left); return rc; }                          |
       | field freed through a local                  | lent, not freed                 | void f(int n) { struct pair p = {0}; p.left = make(n); char *q = p.left; work(q); }                                                                                                                   |
       | last round kept in a variable                | the last round not freed        | void f(int n) { char *prev = NULL; for (int i = 0; i < n; i++) { CC_OWNS char *cur = make(i); free(prev); prev = cur; } }                                                                             |
+      | last round filled into a variable            | the last round not freed        | int take(CC_OWNS_OUT char **out); void f(int n) { char *prev = NULL; for (int i = 0; i < n; i++) { CC_OWNS char *cur; if (take(&cur) < 0) break; work(cur); free(prev); prev = cur; } } |
+      | one macro into one variable                  | the first use not freed         | void f(int n) { char *s; s = TAKE(n); s = TAKE(n); if (s) free(s); s = TAKE(n); if (s) free(s); } |
       | TAKE_PTR returned                            | the taken value lent            | CC_OWNS char *f(int n) { CC_OWNS char *b = malloc(n); if (!b) return NULL; work(TAKE_PTR(b)); return NULL; }                                                                                          |
       | TAKE_PTR handed out                          | the taken value not handed out  | int f(CC_OWNS_OUT char **out, int n) { CC_OWNS char *b = malloc(n); if (!b) return -1; char *t = TAKE_PTR(b); work(t); *out = NULL; return 0; }                                                       |
       | TAKE_PTR stored in a field                   | the taken value not stored      | void f(struct box *x, int n) { CC_OWNS char *b = malloc(n); if (!b) return; char *t = TAKE_PTR(b); work(t); x->held = NULL; }                                                                         |

@@ -41,9 +41,15 @@ owning nothing on that side.
 A pointer declared in an inner block is checked where a path leaves the block
 (its end, a `break`, `continue`, `goto` or `return`): one that still owns there
 leaks, with that point as the last step of `path`, unless a pointer outside the
-block stands for it (`t = s`, `r = realloc(s, n)`). The pointers of a statement
-expression (`({ ...; p; })`) are checked so at the end of the statement around
-it, and its cleanup functions run at its own end.
+block stands for it (`t = s`, `r = realloc(s, n)`). It then leaves the walk once
+nothing stands for it and it owns nothing, unless a `goto` of the function goes
+into a block, past the declarations before its label; one that still owns leaks
+where the path ends, as one finding on the pointer of the block. A known gap: a
+`case` label inside a nested block of a `switch` is not such a jump yet, so a
+pointer declared before it can leave the walk too early
+([#111](https://github.com/agentica-lang/cchecker/issues/111)). The pointers of
+a statement expression (`({ ...; p; })`) are checked so at the end of the
+statement around it, and its cleanup functions run at its own end.
 
 A local without a mark that gets a pointer that owns (`char *c = p`) stands for
 it: freeing `c` frees `p`; a `malloc` into it later owns nothing, as in any
@@ -106,9 +112,10 @@ variables of the same name in one function (a local that shadows another, a
 parameter or a global, or the same name in two blocks) are two variables: each
 pointer has its own state, and a condition on one is not a condition on the
 other. A local that stands for a pointer holds the old value when the pointer
-gets a new one (`old = p; p = make();`, `old = *p; *p = v;` through a `CC_FREES`
-parameter), except after `p = realloc(p, n)`, which is trusted to work. `return
-p` hands `p` on even when the function has no `CC_OWNS` mark. A pointer stored
+gets a new one (`old = p; p = make();`, `take(&p)` at a `CC_OWNS_OUT`
+parameter, `old = *p; *p = v;` through a `CC_FREES` parameter), except after
+`p = realloc(p, n)`, which is trusted to work. `return p` hands `p` on even when
+the function has no `CC_OWNS` mark. A pointer stored
 in a field without `CC_OWNS` is not followed, one that an initializer or a
 compound literal puts in a `CC_OWNS` field is handed on there (in any other
 field or item it is only read), and only one level of pointer is (`*p` of a
@@ -126,7 +133,10 @@ make() };`, `p.left` owns and is freed or handed on on every path, as a
 `CC_OWNS` local, and the findings name it `p.left`. A struct whose address is
 taken (`&p`, `&p.left`), that is copied, passed, returned or named in any other
 way, or that has a `cleanup` function, is not followed, nor a static one or a
-union: a store into their `CC_OWNS` fields hands the pointer on.
+union: a store into their `CC_OWNS` fields hands the pointer on. A known gap: an
+initializer of a union (`union u v = { .p = b };`) does not hand the pointer on
+yet, which gives a false leak
+([#111](https://github.com/agentica-lang/cchecker/issues/111)).
 
 A filled pointer that the path never reads is not reported (`take(&b); return
 0;`): telling it from what a call that failed left would need a mark that says

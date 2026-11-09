@@ -186,6 +186,27 @@ Feature: Time and memory on large generated inputs
       | alias                | char *s = make(); char *t = s; if (!t) emit(0); else free(t); |
       | statement expression | char *q = ({ CC_OWNS char *t = make(); t; }); free(q);        |
 
+  Scenario: A statement-expression macro used 24 times into one variable stays in its bounds
+    Each use leaves the pointer of the macro, which the variable stood for, freed on one side of the test and null on
+    the other: once the variable gets the next value nothing names it, and it leaves the state.
+
+    Given the C file "macro.c" holds, with ITEMS as 24 times " s = TAKE(); if (s) free(s);":
+      """
+      #include <stdlib.h>
+      #include "cchecker.h"
+      CC_OWNS char *make(void);
+      #define TAKE() ({ CC_OWNS char *t_ = make(); t_; })
+      void many(void) {
+        char *s;ITEMS
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/macro.c -- -I../include" in at most 1500 MiB and 20 seconds
+    Then the exit code is 0
+    And the output includes:
+      """
+      "incomplete_functions":[]
+      """
+
   Scenario: A local struct of eight CC_OWNS fields set under conditions stays in its bounds
     Given the C file "fields.c" holds:
       """
