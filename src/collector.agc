@@ -93,7 +93,7 @@ export def stores(
       .map do |n| Ast.text(n, "name") end,
   )
 
-  written = Flow.writes_of(all, locals)
+  written = Flow.writes_of(all, locals, {})
   marked = decls.select(&Flow.marked_owner?).map do |n| Ast.text(n, "name") end
   start = Scope(
     marks: marks,

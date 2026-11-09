@@ -96,8 +96,9 @@ those leaks, and the mark makes the contract part of the code. The rules do not
 follow a pointer into a struct or an array (a store into a `CC_OWNS` field is
 where they stop), through a function pointer, or out through a parameter without
 `CC_OWNS_OUT` (`int open_buf(char **out)`: the caller lends `&p` to be set). Two
-locals of the same name in one function are one pointer. A local that stands for
-a pointer still stands for it after that pointer gets a new value, except
+variables of the same name in one function (a local that shadows another or a
+parameter, or the same name in two blocks) are two pointers, each with its own
+state. A local that stands for a pointer still stands for it after that pointer gets a new value, except
 through a `CC_FREES` parameter that points to the pointer: after `old = *p; *p =
 v;`, `old` holds the old value. `return p` hands `p` on even when the function
 has no `CC_OWNS` mark, and `p = realloc(p, n)` is trusted to work. A pointer put

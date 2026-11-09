@@ -17,7 +17,7 @@
 
 import Effects from "effects"
 import {Finding, IncompleteFunction} from "findings"
-import {Assign, Body, Event, Fact, Give, Mark, Site, Use} from "flow"
+import {Assign, Body, Event, Fact, Give, Mark, Site, Use, plain} from "flow"
 import Locking from "locking"
 import {Function, Unit} from "unit"
 
@@ -278,10 +278,10 @@ def after_call(body: Body, item: Item, site: Site) -> Outcome
   breaches: List[Breach] = []
   for name in site.frees
     root = owner(current.state, name)
-    step = Step(text: "#{at} frees #{root}", name: root, ended: true)
+    step = Step(text: "#{at} frees #{plain(root)}", name: root, ended: true)
     case current.state.owns.get(root)
       some(state) if state == FREED or state == MOVED ->
-        message = "#{body.name} frees #{root}, which it already freed or handed on"
+        message = "#{body.name} frees #{plain(root)}, which it already freed or handed on"
         breaches = breaches.push(
           Breach(code: DOUBLE_FREE, name: root, message: message, path: ended_path(current, root, step)),
         )
@@ -294,7 +294,7 @@ def after_call(body: Body, item: Item, site: Site) -> Outcome
 
   for name in site.hands
     root = owner(current.state, name)
-    step = Step(text: "#{at} hands #{root} to #{site.name}", name: root, ended: true)
+    step = Step(text: "#{at} hands #{plain(root)} to #{site.name}", name: root, ended: true)
     case current.state.owns.get(root)
       some(state) if state == FREED or state == MOVED ->
         breaches = breaches.push(used_after(body, current, root, step))
@@ -305,7 +305,7 @@ def after_call(body: Body, item: Item, site: Site) -> Outcome
   end
 
   for name in site.fills
-    step = Step(text: "#{at} #{site.name} sets #{name}", name: name, origin: true)
+    step = Step(text: "#{at} #{site.name} sets #{plain(name)}", name: name, origin: true)
     if current.state.owns.get(name).map do |own| own == OWNED end.unwrap_or(false)
       breaches = breaches.push(overwritten(body, current, name, step))
     end
@@ -388,7 +388,7 @@ def after_use(body: Body, item: Item, use: Use) -> Outcome
   root = owner(item.state, use.name)
   case item.state.owns.get(root)
     some(state) if state == FREED or state == MOVED ->
-      step = Step(text: "#{use.line}:#{use.column} uses #{root}", name: root)
+      step = Step(text: "#{use.line}:#{use.column} uses #{plain(root)}", name: root)
       return Outcome(moved: Moved.Went(item), breaches: [used_after(body, item, root, step)])
     some(state) if state == FILLED ->
       return went(item.with(state: item.state.with(owns: item.state.owns.put(root, OWNED))))
@@ -400,7 +400,7 @@ def after_give(body: Body, item: Item, give: Give) -> Outcome
   root = owner(item.state, give.name)
   word = give.word
   if word == "returns"
-    word = "returns #{root}"
+    word = "returns #{plain(root)}"
   end
 
   step = Step(text: "#{give.line}:#{give.column} #{word}", name: root, ended: true)
@@ -416,7 +416,7 @@ end
 # A new value of a pointer: one that still owns loses what it owned. (A realloc of it moved it first.)
 def after_assign(body: Body, item: Item, assign: Assign) -> Outcome
   at = "#{assign.line}:#{assign.column}"
-  step = Step(text: "#{at} #{assign.name} = #{assign.shown}", name: assign.name, origin: true)
+  step = Step(text: "#{at} #{plain(assign.name)} = #{assign.shown}", name: assign.name, origin: true)
   breaches: List[Breach] = []
   state = item.state
   owned = state.owns.get(assign.name).map do |own| own == OWNED end.unwrap_or(false)
@@ -477,7 +477,7 @@ end
 
 # A pointer that owns gets a new value at `step` (an assignment, or a call that fills it): what it owned leaks.
 def overwritten(body: Body, item: Item, name: String, step: Step) -> Breach
-  message = "#{body.name} does not free or hand on #{name} on every path"
+  message = "#{body.name} does not free or hand on #{plain(name)} on every path"
   return Breach(code: LEAK, name: name, message: message, path: from_last(item.path, name, true).push(step))
 end
 
@@ -486,7 +486,7 @@ def leaks(body: Body, state: State, path: List[Step]) -> List[Breach]
   found: List[Breach] = []
   for name in state.owns.keys.sort
     if state.owns[name] == OWNED
-      message = "#{body.name} does not free or hand on #{name} on every path"
+      message = "#{body.name} does not free or hand on #{plain(name)} on every path"
       found = found.push(Breach(code: LEAK, name: name, message: message, path: from_last(path, name, true)))
     end
   end
@@ -495,7 +495,7 @@ def leaks(body: Body, state: State, path: List[Step]) -> List[Breach]
 end
 
 def used_after(body: Body, item: Item, name: String, step: Step) -> Breach
-  message = "#{body.name} uses #{name} after it freed it or handed it on"
+  message = "#{body.name} uses #{plain(name)} after it freed it or handed it on"
   return Breach(code: USE_AFTER_FREE, name: name, message: message, path: ended_path(item, name, step))
 end
 

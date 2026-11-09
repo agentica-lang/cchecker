@@ -37,6 +37,10 @@ OWNS_MARK = "cchecker:owns"
 # The kinds of declarations a pointer that owns can be: a local variable or a parameter.
 VARIABLES = Set.new(["VarDecl", "ParmVarDecl"])
 
+# What the key of a variable that shares its name with an earlier declaration of the function has between the name and
+# its number (`p#2`). A C name has no such character, so a key is its name when the function declares it once.
+KEY_MARK = "#"
+
 ## A lock: `key` is what tells two locks apart (`q.mu` for `&q->mu`, `q->mu` and `(&q->mu)`), `shown` how the code
 ## wrote it, and `class` the field it is (`queue.mu`, by struct and field name) or the global, which the marks of
 ## CC_NO_SYSCALL_UNDER() and CC_LOCK_LEVEL name; "" when the rules cannot tell. `pair` is the restore of the lock of
@@ -254,12 +258,14 @@ end
 # The places of a function that keep an owned pointer stored in them: its parameters and local variables (`locals`),
 # `*p` of a parameter that frees it only (`freed`, CC_FREES) or that hands an owned pointer out to the caller (`outs`,
 # CC_OWNS_OUT; `out[i]` too), and an item of a pointer whose items own what is stored in them (`arrays`: the pointers
-# that own or stand for one, and the locals that get the value of an allocation).
+# that own or stand for one, and the locals that get the value of an allocation). The sets hold the keys of the
+# variables (`variable_key`), and `keys` gives the key of each declaration that shares its name with an earlier one.
 struct Places
   locals: Set[String]
   freed: Set[String]
   outs: Set[String]
   arrays: Set[String]
+  keys: Map[String, String]
 end
 
 # The pointers of a function that own or may stand for one that does, by name (`names`): its parameters that own
@@ -441,19 +447,19 @@ export def marked_owner?(node: Json) -> Bool
   end
 end
 
-## Returns the values that the local variables and the parameters (`locals`) get among the nodes `all`: at their
-## declaration and in a plain assignment.
-export def writes_of(all: List[Json], locals: Set[String]) -> List[Written]
+## Returns the values that the local variables and the parameters (`locals`, by key) get among the nodes `all`: at
+## their declaration and in a plain assignment.
+export def writes_of(all: List[Json], locals: Set[String], keys: Map[String, String]) -> List[Written]
   found: List[Written] = []
   for n in all
     if Ast.kind(n) == "VarDecl"
       values = Ast.children(n).select do |child| not Ast.kind(child).end_with?("Attr") end
       if values.size == 1
-        found = found.push(Written(name: Ast.text(n, "name"), value: values.first))
+        found = found.push(Written(name: declared_key(keys, n), value: values.first))
       end
     elsif Ast.kind(n) == "BinaryOperator" and Ast.text(n, "opcode") == "="
       parts = Ast.children(n)
-      name = variable_name(parts.first)
+      name = variable_key(keys, parts.first)
       if locals.include?(name)
         found = found.push(Written(name: name, value: parts[1]))
       end
@@ -483,6 +489,28 @@ export def variable_name(node: Json) -> String
   end
 
   return ""
+end
+
+## Returns the key of the variable that an expression is, through casts and parentheses, in the ownership rules: its
+## name, or the key that `keys` gives its declaration when the function declares the name again; "" for any other. Two
+## variables of one function never share a key, so a local that shadows another has a state of its own.
+export def variable_key(keys: Map[String, String], node: Json) -> String
+  bare = see_through(node)
+  if Ast.kind(bare) == "DeclRefExpr" and VARIABLES.include?(Ast.referenced_kind(bare))
+    return keys.get(Ast.referenced_id(bare), Ast.referenced_name(bare))
+  end
+
+  return ""
+end
+
+## Returns the key of a variable at its declaration (see `variable_key`).
+export def declared_key(keys: Map[String, String], decl: Json) -> String
+  return keys.get(Ast.text(decl, "id"), Ast.text(decl, "name"))
+end
+
+## Returns the name that a key stands for: what the code calls the variable.
+export def plain(key: String) -> String
+  return key.split(KEY_MARK).first
 end
 
 ## Returns every node under the given ones, each before the nodes inside it.
@@ -609,29 +637,30 @@ def owners_of(ctx: Context, key: String, node: Json) -> Owners
       .map do |i| names_of_params[i] end,
   )
 
+  keys = keys_of(node, all)
   decls = all.select do |n| Ast.kind(n) == "VarDecl" end
   locals = Set.new(
     names_of_params.concat(
-      decls.select do |n| Ast.text(n, "storageClass") != "static" end.map do |n| Ast.text(n, "name") end,
+      decls.select do |n| Ast.text(n, "storageClass") != "static" end.map do |n| declared_key(keys, n) end,
     ),
   )
 
   marked = Set.new(
     decls.select do |n| marked_owner?(n) and Ast.text(n, "storageClass") != "static" end
-      .map do |n| Ast.text(n, "name") end,
+      .map do |n| declared_key(keys, n) end,
   )
 
   outs = Set.new(
     ctx.owning.outs.get(key, []).select do |i| i < names_of_params.size end.map do |i| names_of_params[i] end,
   )
 
-  written = writes_of(all, locals)
-  names = Set.new(params).union(marked).union(filled_locals(ctx, all, locals))
+  written = writes_of(all, locals, keys)
+  names = Set.new(params).union(marked).union(filled_locals(ctx, all, locals, keys))
   grew = true
   while grew
     grew = false
     for w in written
-      if not names.include?(w.name) and gets_owner?(ctx, names, freed, w.value)
+      if not names.include?(w.name) and gets_owner?(ctx, keys, names, freed, w.value)
         names = names.add(w.name)
         grew = true
       end
@@ -639,7 +668,14 @@ def owners_of(ctx: Context, key: String, node: Json) -> Owners
   end
 
   allocated = written.select do |w| allocation?(w.value) end.map do |w| w.name end
-  places = Places(locals: locals, freed: freed, outs: outs, arrays: names.union(outs).union(Set.new(allocated)))
+  places = Places(
+    locals: locals,
+    freed: freed,
+    outs: outs,
+    arrays: names.union(outs).union(Set.new(allocated)),
+    keys: keys,
+  )
+
   return Owners(
     params: params,
     places: places,
@@ -657,14 +693,14 @@ def allocation?(node: Json) -> Bool
 end
 
 # The locals whose address a call passes to a parameter that hands an owned pointer out (`fill(&p)`).
-def filled_locals(ctx: Context, all: List[Json], locals: Set[String]) -> Set[String]
+def filled_locals(ctx: Context, all: List[Json], locals: Set[String], keys: Map[String, String]) -> Set[String]
   found: Set[String] = Set.new([])
   for n in all
     if Ast.kind(n) == "CallExpr"
       args = Ast.children(n).drop(1)
       for i in out_params(ctx, callee_name(n))
         if i < args.size and address?(args[i])
-          name = variable_name(Ast.children(see_through(args[i])).first)
+          name = variable_key(keys, Ast.children(see_through(args[i])).first)
           if locals.include?(name)
             found = found.add(name)
           end
@@ -701,12 +737,12 @@ end
 
 # Whether a value makes the variable that gets it stand for an owned pointer: a call that returns one, a realloc of a
 # pointer in `names`, or a pointer in `names` (`*p` of a CC_FREES parameter in `freed` is `p`).
-def gets_owner?(ctx: Context, names: Set[String], freed: Set[String], value: Json) -> Bool
+def gets_owner?(ctx: Context, keys: Map[String, String], names: Set[String], freed: Set[String], value: Json) -> Bool
   if CHOICES.include?(Ast.kind(see_through(value)))
-    return values_of(value).any? do |branch| gets_owner?(ctx, names, freed, branch) end
+    return values_of(value).any? do |branch| gets_owner?(ctx, keys, names, freed, branch) end
   end
 
-  if names.include?(variable_name(value)) or pointee_param(value, freed) != "" or owning_call?(ctx, value)
+  if names.include?(variable_key(keys, value)) or pointee_param(keys, value, freed) != "" or owning_call?(ctx, value)
     return true
   end
 
@@ -716,7 +752,7 @@ def gets_owner?(ctx: Context, names: Set[String], freed: Set[String], value: Jso
     Ast.kind(bare) == "CallExpr" and
     Known.RESIZES.include?(callee_name(bare)) and
     parts.size > 1 and
-    names.include?(variable_name(parts[1]))
+    names.include?(variable_key(keys, parts[1]))
   )
 end
 
@@ -734,9 +770,9 @@ def kept_calls(ctx: Context, all: List[Json], places: Places) -> Set[String]
       "BinaryOperator" ->
         target = parts[0]
         keeps = (
-          places.locals.include?(variable_name(target)) or
+          places.locals.include?(variable_key(places.keys, target)) or
           place_owns?(ctx, target) or
-          pointee_param(target, places.freed) != "" or
+          pointee_param(places.keys, target, places.freed) != "" or
           handed_place?(places, target)
         )
 
@@ -786,6 +822,24 @@ def values_of(node: Json) -> List[Json]
   return [node]
 end
 
+# The keys of the variables that a function declares with a name that an earlier declaration (a parameter, or a local
+# before it in the source) has: `name#2` for the second, `name#3` for the third. The first keeps its name.
+def keys_of(node: Json, all: List[Json]) -> Map[String, String]
+  seen: Map[String, Int] = {}
+  keys: Map[String, String] = {}
+  params = Ast.children(node).select do |child| Ast.kind(child) == "ParmVarDecl" end
+  for decl in params.concat(all.select do |n| VARIABLES.include?(Ast.kind(n)) end)
+    name = Ast.text(decl, "name")
+    count = seen.get(name, 0) + 1
+    seen = seen.put(name, count)
+    if count > 1
+      keys = keys.put(Ast.text(decl, "id"), "#{name}#{KEY_MARK}#{count}")
+    end
+  end
+
+  return keys
+end
+
 # The indices of the parameters of a function that take or free what a call passes: CC_OWNS and CC_FREES, the first
 # of `free`, and the first of a realloc, which moves it.
 def taken(ctx: Context, name: String, key: String) -> List[Int]
@@ -825,12 +879,15 @@ end
 # Whether a store into an expression of a function hands a pointer on to a place that `places` names: `*out` of a
 # parameter that hands an owned pointer out, or an item of a pointer whose items own (`argv[i]`).
 def handed_place?(places: Places, node: Json) -> Bool
-  if pointee_param(node, places.outs) != ""
+  if pointee_param(places.keys, node, places.outs) != ""
     return true
   end
 
   bare = see_through(node)
-  return Ast.kind(bare) == "ArraySubscriptExpr" and places.arrays.include?(variable_name(Ast.children(bare).first))
+  return (
+    Ast.kind(bare) == "ArraySubscriptExpr" and
+    places.arrays.include?(variable_key(places.keys, Ast.children(bare).first))
+  )
 end
 
 def identifier_char?(c: String) -> Bool
@@ -1195,10 +1252,11 @@ end
 # A variable: its value, then the write of it, and its cleanup call for the way out of its block.
 def declaration(b: Builder, node: Json, preds: List[Int]) -> Built
   name = Ast.text(node, "name")
+  key = declared_key(b.owners.places.keys, node)
   values = Ast.children(node).select do |child| not Ast.kind(child).end_with?("Attr") end
   written = Built(b: b, exits: preds)
-  if b.owners.names.include?(name) and values.size == 1
-    written = owner_assigned(b, name, values.first, preds)
+  if b.owners.names.include?(key) and values.size == 1
+    written = owner_assigned(b, key, values.first, preds)
   else
     built = in_order(b, values, preds)
     written = add(built.b, Event.Writes([name]), built.exits)
@@ -1212,8 +1270,8 @@ def declaration(b: Builder, node: Json, preds: List[Int]) -> Built
   function = Ast.text(JSON.get(cleanup.first, "cleanup_function").unwrap_or(JSON.from("")), "name")
   place = Ast.place_of(node)
   owner = ""
-  if written.b.owners.names.include?(name)
-    owner = name
+  if written.b.owners.names.include?(key)
+    owner = key
   end
 
   var = Arg(
@@ -1253,7 +1311,7 @@ def expression(b: Builder, node: Json, preds: List[Int]) -> Built
       lent = owner_named(b, operand)
       if opcode == "&" and lent != ""
         # `&p` lends the pointer itself, to be set: what it owns after that is not known.
-        written = add(b, Event.Writes([lent]), preds)
+        written = add(b, Event.Writes([plain(lent)]), preds)
         return add(written.b, Event.Lends([lent]), written.exits)
       end
 
@@ -1310,7 +1368,7 @@ end
 def assignment(b: Builder, node: Json, preds: List[Int]) -> Built
   parts = Ast.children(node)
   if Ast.kind(node) == "BinaryOperator" and Ast.text(node, "opcode") == "=" and parts.size == 2
-    name = variable_name(parts[0])
+    name = variable_key(b.owners.places.keys, parts[0])
     if b.owners.names.include?(name)
       return owner_assigned(b, name, parts[1], preds)
     end
@@ -1338,13 +1396,19 @@ def assignment(b: Builder, node: Json, preds: List[Int]) -> Built
 
       value = Built(b: b, exits: preds)
       if given != ""
-        give = Give(name: given, word: "stores #{given} in *#{pointed}", line: place.line, column: place.column)
+        give = Give(
+          name: given,
+          word: "stores #{plain(given)} in *#{plain(pointed)}",
+          line: place.line,
+          column: place.column,
+        )
+
         value = add(b, Event.Gives(give), preds)
       else
         value = expression(b, parts[1], preds)
       end
 
-      written = add(value.b, Event.Writes([pointed]), value.exits)
+      written = add(value.b, Event.Writes([plain(pointed)]), value.exits)
       return add(written.b, Event.Assigns(assign), written.exits)
     end
 
@@ -1357,7 +1421,7 @@ def assignment(b: Builder, node: Json, preds: List[Int]) -> Built
 
     if name != ""
       value = expression(b, parts[1], preds)
-      return add(value.b, Event.Writes([name]), value.exits)
+      return add(value.b, Event.Writes([plain(name)]), value.exits)
     end
   end
 
@@ -1410,7 +1474,7 @@ end
 def handed_on(b: Builder, shown: String, value: Json, preds: List[Int]) -> Built
   given = owner_named(b, value)
   place = Ast.start_of(value)
-  give = Give(name: given, word: "stores #{given} in #{shown}", line: place.line, column: place.column)
+  give = Give(name: given, word: "stores #{plain(given)} in #{shown}", line: place.line, column: place.column)
   return add(b, Event.Gives(give), preds)
 end
 
@@ -1430,7 +1494,7 @@ def owner_assigned(b: Builder, name: String, value: Json, preds: List[Int]) -> B
     # `x ?: y`: `x`, read once by the condition, where it is true, else `y`.
     parts = Ast.children(bare)
     split = condition(b, parts.first, preds)
-    kept = add(split.b, Event.Writes([name]), split.yes)
+    kept = add(split.b, Event.Writes([plain(name)]), split.yes)
     chosen = add(kept.b, Event.Assigns(assigned(kept.b, name, parts.first)), kept.exits)
     other = owner_assigned(chosen.b, name, parts.last, split.no)
     return Built(b: other.b, exits: chosen.exits.concat(other.exits))
@@ -1451,7 +1515,7 @@ def owner_assigned(b: Builder, name: String, value: Json, preds: List[Int]) -> B
     built = expression(b, value, preds)
   end
 
-  written = add(built.b, Event.Writes([name]), built.exits)
+  written = add(built.b, Event.Writes([plain(name)]), built.exits)
   return add(written.b, Event.Assigns(assign), written.exits)
 end
 
@@ -1472,10 +1536,10 @@ def assigned(b: Builder, name: String, value: Json) -> Assign
 
   if source != ""
     if marked
-      return start.with(value: "moved", from: source, shown: source)
+      return start.with(value: "moved", from: source, shown: plain(source))
     end
 
-    return start.with(value: "alias", from: source, shown: source)
+    return start.with(value: "alias", from: source, shown: plain(source))
   end
 
   if Ast.kind(bare) == "CallExpr"
@@ -1518,7 +1582,7 @@ end
 
 # The pointer that owns, or may stand for one, that an expression is, through casts and parentheses; "".
 def owner_named(b: Builder, node: Json) -> String
-  name = variable_name(node)
+  name = variable_key(b.owners.places.keys, node)
   if b.owners.names.include?(name)
     return name
   end
@@ -1551,17 +1615,17 @@ end
 # The CC_FREES parameter that `*p` stands for when the parameter points to the pointer it frees (`T **p`, a cleanup
 # function); "" for any other.
 def pointee_owner(b: Builder, node: Json) -> String
-  return pointee_param(node, b.owners.places.freed)
+  return pointee_param(b.owners.places.keys, node, b.owners.places.freed)
 end
 
 # The parameter in `freed` that `*p` is, when `*p` is itself a pointer; "" for any other expression.
-def pointee_param(node: Json, freed: Set[String]) -> String
+def pointee_param(keys: Map[String, String], node: Json, freed: Set[String]) -> String
   bare = see_through(node)
   if Ast.kind(bare) != "UnaryOperator" or Ast.text(bare, "opcode") != "*" or not pointer_type?(bare)
     return ""
   end
 
-  name = variable_name(Ast.children(bare).first)
+  name = variable_key(keys, Ast.children(bare).first)
   if not freed.include?(name)
     return ""
   end
@@ -1627,7 +1691,7 @@ def call(b: Builder, node: Json, preds: List[Int], tried: Bool) -> Built
       built = expression(built.b, args[i], built.exits)
     elsif address?(args[i])
       # `free_and_null(&p)` may set `p`: a condition on it is forgotten.
-      built = add(built.b, Event.Writes([owner]), built.exits)
+      built = add(built.b, Event.Writes([plain(owner)]), built.exits)
     end
   end
 

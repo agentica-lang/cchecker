@@ -300,6 +300,75 @@ Feature: Ownership on every path
       "line":6,"column":5,"message":"f does not free or hand on b on every path","path":["9:21 b = malloc","10:8 true","12:7 true","13:5 returns"]
       """
 
+  Scenario: Two variables of one name in a function have a state each
+    A local that shadows another, or a parameter, is a pointer of its own, and so is the second of two blocks that
+    declare the same name.
+
+    Given the C file "shadow.c" holds:
+      """
+      #include <stdlib.h>
+      #include "cchecker.h"
+
+      CC_OWNS char *make(void);
+      char *other(void);
+      void use(char *p);
+
+      void inner_not_owner(void) {
+        CC_OWNS char *p = make();
+        {
+          char *p = other();
+          use(p);
+        }
+        free(p);
+      }
+
+      void shadowed_param(CC_OWNS char *p) {
+        {
+          char *p = other();
+          use(p);
+        }
+        free(p);
+      }
+
+      void inner_leaks(void) {
+        char *p = other();
+        {
+          CC_OWNS char *p = make();
+          use(p);
+        }
+        use(p);
+      }
+
+      void sequential(void) {
+        {
+          CC_OWNS char *p = make();
+          free(p);
+        }
+        {
+          CC_OWNS char *p = make();
+          use(p);
+        }
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/shadow.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "line":25,"column":6,"message":"inner_leaks does not free or hand on p on every path","path":["28:23 p = make","32:1 ends"]
+      """
+    And the output includes:
+      """
+      "line":34,"column":6,"message":"sequential does not free or hand on p on every path","path":["40:23 p = make","43:1 ends"]
+      """
+    And the output does not include:
+      """
+      "line":8,
+      """
+    And the output does not include:
+      """
+      "line":17,
+      """
+
   Scenario: A function with more paths than the rules follow is checked on those it went through and counted
     Given the C file "many.c" holds:
       """
