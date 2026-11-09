@@ -414,7 +414,7 @@ an_term cchecker_scan_compact(an_env *env, ng_str from, ng_str to, int64_t timeo
   static const char spaces[INDENT_CAP] = {' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' '};
   if (timeout_ms < 0) return an_badarg(env, 2);
   char *path = c_copy(to);
-  if (!to) return an_raise(env, "out of memory");
+  if (!path) return an_raise(env, "out of memory");
   lines r;
   an_term result;
   if (!open_lines_until(env, from, timeout_ms, &r, &result)) {
