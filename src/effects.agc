@@ -768,9 +768,8 @@ def named?(listing: Listing, functions: Map[String, List[Function]], key: String
   return functions.get(key).unwrap_or([]).any? do |function| listed?(listing, function) end
 end
 
-# The classes of `[assume] short_locks` and `owned_locks` that no lock of the units has: none taken and none marked,
-# with their key. A class of `owned_locks` may also be one that a lock helper takes (`CC_ACQUIRES(l->mutex)`), as the
-# lock walk reads those too.
+# The classes of `[assume] short_locks` that no lock of the units has (none taken and none marked), and those of
+# `owned_locks` that no lock through a pointer has, with their key.
 def missing_locks(units: List[Unit], graph: Graph, config: Config.Config) -> List[String]
   if config.short_locks.empty? and config.owned_locks.empty?
     return []
@@ -790,22 +789,34 @@ def missing_locks(units: List[Unit], graph: Graph, config: Config.Config) -> Lis
     )
   end
 
-  walked = classes.concat(units.flat_map do |unit| unit.bodies end.flat_map(&walked_classes))
-  walked_known = Set.new(walked.concat(walked.map(&bare_class)))
-  owned = config.owned_locks.uniq.select do |c|
-    not walked_known.include?(c) and not walked.any? do |class| in_file?(c, class) end
-  end
-
-  return missing.map do |c| "#{c} (assume.short_locks)" end.concat(owned.map do |c| "#{c} (assume.owned_locks)" end)
+  return missing.map do |c| "#{c} (assume.short_locks)" end.concat(missing_owned(units, config))
 end
 
-# The classes of the locks that the calls of a body take, release or wait on.
-def walked_classes(body: Body) -> List[String]
+# The classes of `[assume] owned_locks` that no lock through a pointer has, with their key: the name of a mutex that
+# is not behind a pointer would do nothing.
+def missing_owned(units: List[Unit], config: Config.Config) -> List[String]
+  if config.owned_locks.empty?
+    return []
+  end
+
+  classes = units.flat_map do |unit| unit.bodies end.flat_map(&pointer_classes)
+  known = Set.new(classes.concat(classes.map(&bare_class)))
+  missing = config.owned_locks.uniq.select do |c|
+    not known.include?(c) and not classes.any? do |class| in_file?(c, class) end
+  end
+
+  return missing.map do |c| "#{c} (assume.owned_locks)" end
+end
+
+# The classes of the locks through a pointer field or global that the calls of a body take, release or wait on, a lock
+# helper among them (`CC_ACQUIRES(l->mutex)` of `void *mutex`).
+def pointer_classes(body: Body) -> List[String]
   classes: List[String] = []
   for node in body.nodes
     case node.event
       Event.Call(site) ->
-        classes = classes.concat(site.takes.concat(site.drops).concat(site.waits).map do |lock| lock.class end)
+        locks = site.takes.concat(site.drops).concat(site.waits).select do |lock| lock.through end
+        classes = classes.concat(locks.map do |lock| lock.class end)
       _ -> next
     end
   end

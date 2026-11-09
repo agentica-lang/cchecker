@@ -145,7 +145,7 @@ export def from_table(origin: String, prefix: String, table: Toml.Value, note: S
             "jump_releases" ->
               config = config.with(jump_releases: try names_of(origin, path, assume.get(name).unwrap!))
             "nonblocking" -> config = config.with(nonblocking: try names_of(origin, path, assume.get(name).unwrap!))
-            "owned_locks" -> config = config.with(owned_locks: try names_of(origin, path, assume.get(name).unwrap!))
+            "owned_locks" -> config = config.with(owned_locks: try classes_of(origin, path, assume.get(name).unwrap!))
             _ -> return error(unknown(origin, path, note))
           end
         end
@@ -412,6 +412,24 @@ def locks_of(origin: String, path: String, value: Toml.Value) -> Result[List[Str
   end
 
   return ok(names)
+end
+
+# The lock classes of `owned_locks`: `struct.field`, a global, or `name@path` for a static global; never a wrapper.
+def classes_of(origin: String, path: String, value: Toml.Value) -> Result[List[String]]
+  wrong = "#{origin}: #{path} must be a list of lock classes (struct.field, or the name of a global)"
+  case value
+    Toml.Value.Array(items) ->
+      names: List[String] = []
+      for item in items
+        case item
+          Toml.Value.Str(name) if name != "" and not name.include?("(") -> names = names.push(name)
+          _ -> return error(wrong)
+        end
+      end
+
+      return ok(names)
+    _ -> return error(wrong)
+  end
 end
 
 def pairs_of(origin: String, path: String, value: Toml.Value) -> Result[List[String]]

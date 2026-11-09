@@ -75,7 +75,8 @@ Feature: Short locks inferred from their critical sections
 
   Scenario Outline: A lock through a pointer of [assume] owned_locks has the class of the pointer (<case>)
     A pointer field or global of `owned_locks` is the lock's own storage, which no other class names: a lock reached
-    through it has its class, so its blocking sections make that class long and leave the other classes alone.
+    through it has its class, so its blocking sections make that class long and leave the other classes alone. A
+    pointer that the list does not name still stops the inference.
 
     Given the C file "sections.c" holds:
       """
@@ -98,6 +99,7 @@ Feature: Short locks inferred from their critical sections
 
       [assume]
       owned_locks = <owned>
+      <also>
       """
     When I run cchecker in its folder with "--tools rules --json"
     Then the exit code is <exit>
@@ -111,40 +113,88 @@ Feature: Short locks inferred from their critical sections
       """
 
     Examples:
-      | case                            | more                                                                                                                                                                                                  | owned                   | exit | found            | inferred                            |
-      | a field that owns its mutex     | void wait_conn(struct conn *c) { pthread_mutex_lock(c->lk); (void)sleep(1); pthread_mutex_unlock(c->lk); }                                                                                            | ["conn.lk"]             | 0    | does not include | ["loop.mutex","other.mu"]           |
-      | another field named             | void wait_conn(struct conn *c) { pthread_mutex_lock(c->lk); (void)sleep(1); pthread_mutex_unlock(c->lk); }                                                                                            | ["other.mu"]            | 1    | includes         | []                                  |
-      | a short field that owns         | void tap_conn(struct conn *c) { pthread_mutex_lock(c->lk); c->n++; pthread_mutex_unlock(c->lk); }                                                                                                     | ["conn.lk"]             | 0    | does not include | ["conn.lk","loop.mutex","other.mu"] |
-      | a global that owns its mutex    | pthread_mutex_t *shared; void wait_shared(void) { pthread_mutex_lock(shared); (void)sleep(1); pthread_mutex_unlock(shared); }                                                                         | ["shared"]              | 0    | does not include | ["loop.mutex","other.mu"]           |
-      | a helper of a field that owns   | struct lk { void *mutex; }; CC_ACQUIRES(l->mutex) void lk_take(struct lk *l); CC_RELEASES(l->mutex) void lk_drop(struct lk *l); struct lk *big; void wait_big(void) { lk_take(big); (void)sleep(1); lk_drop(big); } | ["lk.mutex"]            | 0    | does not include | ["loop.mutex","other.mu"]           |
-      | a helper of a field not named   | struct lk { void *mutex; }; CC_ACQUIRES(l->mutex) void lk_take(struct lk *l); CC_RELEASES(l->mutex) void lk_drop(struct lk *l); struct lk *big; void wait_big(void) { lk_take(big); (void)sleep(1); lk_drop(big); } | ["other.mu"]            | 1    | includes         | []                                  |
+      | case                            | more                                                                                                                                                                                                                                                                                                                                                            | owned                 | also                      | exit | found            | inferred                            |
+      | a field that owns its mutex     | void wait_conn(struct conn *c) { pthread_mutex_lock(c->lk); (void)sleep(1); pthread_mutex_unlock(c->lk); }                                                                                                                                                                                                                                                      | ["conn.lk"]           |                           | 0    | does not include | ["loop.mutex","other.mu"]           |
+      | another field named             | void wait_conn(struct conn *c) { pthread_mutex_lock(c->lk); (void)sleep(1); pthread_mutex_unlock(c->lk); } struct spare { pthread_mutex_t *sp; int n; }; void tap(struct spare *s) { pthread_mutex_lock(s->sp); s->n++; pthread_mutex_unlock(s->sp); }                                                                                                          | ["spare.sp"]          |                           | 1    | includes         | []                                  |
+      | a short field that owns         | void tap_conn(struct conn *c) { pthread_mutex_lock(c->lk); c->n++; pthread_mutex_unlock(c->lk); }                                                                                                                                                                                                                                                               | ["conn.lk"]           |                           | 0    | does not include | ["conn.lk","loop.mutex","other.mu"] |
+      | a global that owns its mutex    | pthread_mutex_t *shared; void wait_shared(void) { pthread_mutex_lock(shared); (void)sleep(1); pthread_mutex_unlock(shared); }                                                                                                                                                                                                                                   | ["shared"]            |                           | 0    | does not include | ["loop.mutex","other.mu"]           |
+      | a static global by its file     | static pthread_mutex_t *shared; void wait_shared(void) { pthread_mutex_lock(shared); (void)sleep(1); pthread_mutex_unlock(shared); }                                                                                                                                                                                                                            | ["shared@sections.c"] |                           | 0    | does not include | ["loop.mutex","other.mu"]           |
+      | a static global of another file | static pthread_mutex_t *shared; void wait_shared(void) { pthread_mutex_lock(shared); (void)sleep(1); pthread_mutex_unlock(shared); } struct spare { pthread_mutex_t *sp; int n; }; void tap(struct spare *s) { pthread_mutex_lock(s->sp); s->n++; pthread_mutex_unlock(s->sp); }                                                                                | ["spare.sp"]          |                           | 1    | includes         | []                                  |
+      | a helper of a field that owns   | struct lk { void *mutex; }; CC_ACQUIRES(l->mutex) void lk_take(struct lk *l); CC_RELEASES(l->mutex) void lk_drop(struct lk *l); struct lk *big; void wait_big(void) { lk_take(big); (void)sleep(1); lk_drop(big); }                                                                                                                                             | ["lk.mutex"]          |                           | 0    | does not include | ["loop.mutex","other.mu"]           |
+      | a helper of a field not named   | struct lk { void *mutex; }; CC_ACQUIRES(l->mutex) void lk_take(struct lk *l); CC_RELEASES(l->mutex) void lk_drop(struct lk *l); struct lk *big; void wait_big(void) { lk_take(big); (void)sleep(1); lk_drop(big); } struct spare { pthread_mutex_t *sp; int n; }; void tap(struct spare *s) { pthread_mutex_lock(s->sp); s->n++; pthread_mutex_unlock(s->sp); } | ["spare.sp"]          |                           | 1    | includes         | []                                  |
+      | a field also in short_locks     | void wait_conn(struct conn *c) { pthread_mutex_lock(c->lk); (void)sleep(1); pthread_mutex_unlock(c->lk); }                                                                                                                                                                                                                                                      | ["conn.lk"]           | short_locks = ["conn.lk"] | 0    | does not include | ["loop.mutex","other.mu"]           |
 
-  Scenario: A lock of [assume] owned_locks that no lock of the compile database has is an error
+  Scenario: [assume] owned_locks changes nothing with the inference off
     Given the C file "sections.c" holds:
       """
       #include "pthread.h" /* found in the system folders */
+      #include "cchecker.h"
 
+      struct loop { pthread_mutex_t mutex; int n; };
       struct conn { pthread_mutex_t *lk; int n; };
-      void bump(struct conn *c) { pthread_mutex_lock(c->lk); c->n++; pthread_mutex_unlock(c->lk); }
+      void tap_conn(struct conn *c) { pthread_mutex_lock(c->lk); c->n++; pthread_mutex_unlock(c->lk); }
+      CC_SHORT void tick(struct loop *l) { pthread_mutex_lock(&l->mutex); l->n = 0; pthread_mutex_unlock(&l->mutex); }
+      CC_SHORT void tock(struct conn *c) { tap_conn(c); }
       """
     And the file "cchecker.toml" holds:
       """
       [assume]
       owned_locks = ["conn.lk"]
       """
+    When I run cchecker in its folder with "--tools rules --json"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "code":"CC-EFFECT-SHORT-BLOCKS","tool":"rules","file":"sections.c","line":7,
+      """
+    And the output includes:
+      """
+      "code":"CC-EFFECT-SHORT-BLOCKS","tool":"rules","file":"sections.c","line":8,
+      """
+    And the output does not include:
+      """
+      inferred_short_locks
+      """
+
+  Scenario Outline: A name of [assume] owned_locks that no lock through a pointer has is an error (<name>)
+    Given the C file "sections.c" holds:
+      """
+      #include "pthread.h" /* found in the system folders */
+      #include "cchecker.h"
+
+      struct queue { pthread_mutex_t mu; int n; };
+      struct conn { pthread_mutex_t *lk; int n; };
+      struct lk { void *mutex; };
+      CC_ACQUIRES(l->mutex) void lk_take(struct lk *l);
+      CC_RELEASES(l->mutex) void lk_drop(struct lk *l);
+      void bump(struct conn *c) { pthread_mutex_lock(c->lk); c->n++; pthread_mutex_unlock(c->lk); }
+      void push(struct queue *q) { pthread_mutex_lock(&q->mu); q->n++; pthread_mutex_unlock(&q->mu); }
+      void both(struct lk *l, struct queue *q) { lk_take(l); q->n++; lk_drop(l); }
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [assume]
+      owned_locks = ["conn.lk", "lk.mutex"]
+      """
     When I run cchecker in its folder with "--tools rules"
     Then the exit code is 0
     Given the file "cchecker.toml" holds:
       """
       [assume]
-      owned_locks = ["conn.lk", "conn.lck"]
+      owned_locks = ["conn.lk", "lk.mutex", "<name>"]
       """
     When I run cchecker in its folder with "--tools rules"
     Then the exit code is 2
     And the errors include:
       """
-      no function, lock or field of the compile database is named conn.lck (assume.owned_locks)
+      no function, lock or field of the compile database is named <name> (assume.owned_locks)
       """
+
+    Examples:
+      | name     |
+      | conn.lck |
+      | lk.mutx  |
+      | queue.mu |
 
   Scenario: A static lock named like a short global of another file is not short
     Given the file "compile_commands.json" holds:
