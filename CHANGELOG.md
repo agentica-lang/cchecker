@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `--strict-baseline`: a stale baseline entry (its finding is gone) of the tools and files that the run covered exits
+  1. Every run now names its stale entries after the summary and in `stale` of `--json`.
 - `CC_MAY_JUMP` and `[assume] may_jump`: a call of a function that may jump out (`longjmp` on an error) is also a way
   out of its caller, where a pointer that still owns is `CC-OWN-LEAK` and a lock held is `CC-PATH-LOCK-NOT-RELEASED`.
 

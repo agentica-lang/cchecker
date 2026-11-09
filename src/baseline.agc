@@ -30,11 +30,13 @@ export struct Scope
   full: Bool
 end
 
-## The findings of a run, split by the baseline.
+## The findings of a run, split by the baseline. `stale` are the entries behind `fixed`, each with the count that was
+## not found again, in the order of the file.
 export struct Split
   new_findings: List[Finding]
   accepted: Int
   fixed: Int
+  stale: List[Entry] = []
 end
 
 ## Returns the entries of the baseline file, or an error when it cannot be read or is not a baseline.
@@ -111,15 +113,19 @@ end
 
 ## Takes the accepted findings out of `findings`. When a kind has more findings than the baseline holds, the last ones
 ## in the order of the report are the new ones. `fixed` counts the accepted findings of the scope of the run that were
-## not found again.
+## not found again, and `stale` names their entries.
 export def split(findings: List[Finding], entries: List[Entry], scope: Scope) -> Split
   left: Map[String, Int] = {}
   scoped: Set[String] = Set.new([])
+  firsts: Map[String, Entry] = {}
+  order: List[String] = []
   for entry in entries
     key = Findings.key(entry.code, entry.file, entry.message)
     left = left.put(key, left.get(key, 0) + entry.count)
-    if covered?(scope, entry)
+    if covered?(scope, entry) and not scoped.include?(key)
       scoped = scoped.add(key)
+      firsts = firsts.put(key, entry)
+      order = order.push(key)
     end
   end
 
@@ -135,12 +141,16 @@ export def split(findings: List[Finding], entries: List[Entry], scope: Scope) ->
     end
   end
 
-  fixed = 0
-  for key in scoped.to_a
-    fixed += left.get(key, 0)
+  stale: List[Entry] = []
+  for key in order
+    count = left.get(key, 0)
+    if count > 0
+      stale = stale.push(firsts[key].with(count: count))
+    end
   end
 
-  return Split(new_findings: new_findings, accepted: matched, fixed: fixed)
+  fixed = stale.reduce(0) do |total, entry| total + entry.count end
+  return Split(new_findings: new_findings, accepted: matched, fixed: fixed, stale: stale)
 end
 
 ## Returns the tool that makes the codes with the prefix of `code`, or "" for none; an entry of no tool is never

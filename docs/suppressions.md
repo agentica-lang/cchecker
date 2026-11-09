@@ -29,6 +29,24 @@ name of `short` or `hot` of `[roots]` of the project's settings, for the same
 reason (only `[roots]` is compared: `follow_cold` and `[assume]` are not). The
 exit code is `2` in each case.
 
+A baseline entry whose finding is gone is stale: it stays in the file, and a new
+finding of the same code, file and message would match it later and be accepted
+unseen. A run names each stale entry of its scope, the same entries that `fixed`
+counts and that `--update-baseline` would drop (one line each after the summary,
+and `stale` in `--json`, with the `count` that was not found again). With
+`--strict-baseline` they make the run exit `1` (and `clean` false). An entry
+outside the scope (a tool that did not run, a file left out by a FILE subset or
+`--exclude`) never fails the run. `--strict-baseline` needs `--baseline`, the
+default `--checks` (fewer checks make the entries of the others look stale), and
+does not go with `--update-baseline`. With a check of the rules off
+(`--no-infer`, a `[library]` flag set to false, a file of `-c` that leaves out
+`[roots]` of the project), the stale entries of the rules do not fail the run,
+with a warning on standard error; those of the other tools still do.
+
+```sh
+agentica cchecker.agc -p build --baseline cchecker-baseline.json --strict-baseline   # stale entries fail the run
+```
+
 ## Suppressions
 
 A finding that is a false positive, where the check cannot be made smarter, is

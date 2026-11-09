@@ -162,6 +162,13 @@ export def run(options: Options) -> Result[Int]
       end
 
       split = Baseline.split(findings, accepted, scope)
+      rules_off = (
+        options.strict_baseline and
+        options.tools.include?(Tool.Rules) and
+        not full_rules(options, config, cwd).ok?
+      )
+
+      failing = failing_of(options, rules_off, split.stale)
       return ok(
         finish(
           options,
@@ -169,6 +176,9 @@ export def run(options: Options) -> Result[Int]
             findings: split.new_findings,
             baselined: split.accepted,
             fixed: split.fixed,
+            stale: split.stale,
+            failing: failing,
+            rules_off: rules_off,
             errors: collected.errors,
             skipped: plan.skipped.size,
             skipped_declarations: collected.skipped_declarations,
@@ -303,11 +313,35 @@ def finish(options: Options, report: Report.Report) -> Int
     return 2
   end
 
-  if not report.findings.empty?
+  if not report.findings.empty? or Report.failed_stale?(report)
     return 1
   end
 
   return 0
+end
+
+# The stale entries that fail the run with `--strict-baseline`: those of the scope of the run (`Baseline.split` keeps
+# only those). With a check of the rules off (`rules_off`: `--no-infer`, a `[library]` flag set to false, a file of -c
+# without the [roots] of the project), the entries of the rules may look stale while they are not, so they do not fail
+# the run, with a warning when there is one; the entries of the other tools still do.
+def failing_of(options: Options, rules_off: Bool, stale: List[Baseline.Entry]) -> List[Baseline.Entry]
+  if not options.strict_baseline
+    return []
+  end
+
+  if not rules_off
+    return stale
+  end
+
+  rules = ToolKind.name(Tool.Rules)
+  kept = stale.select do |entry| Baseline.tool_of(entry.code) != rules end
+  if kept.size < stale.size
+    IO.warn(
+      "cchecker: warning: --strict-baseline does not fail on the stale entries of the rules: a check of them is off",
+    )
+  end
+
+  return kept
 end
 
 def gather(options: Options) -> Result[List[Commands.Entry]]
