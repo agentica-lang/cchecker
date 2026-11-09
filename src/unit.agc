@@ -7,6 +7,7 @@
 
 import Ast from "ast"
 import Collector from "collector"
+import Config from "config"
 import {Finding} from "findings"
 import Flow from "flow"
 import Known from "known"
@@ -157,6 +158,12 @@ export struct Unit
   target: String = ""
 end
 
+# The lock wrappers of `[assume] acquires` and `releases`.
+struct Wrappers
+  acquires: List[Config.Wrapper]
+  releases: List[Config.Wrapper]
+end
+
 # A struct or union: its name (a typedef name for an anonymous one), the ids and names of its fields, and their types
 # as written and without their typedefs ("" for a type with none).
 struct Record
@@ -206,9 +213,18 @@ end
 
 ## Returns the unit of the declarations that `Scan` kept, a JSON array.
 export def read(decls: Json) -> Result[Unit]
+  return read_with(decls, [], [])
+end
+
+## Returns the unit of the declarations, with the lock wrappers of `[assume] acquires` and `releases` (`name(N)` or
+## `name@path(N)`) marked as CC_ACQUIRES and CC_RELEASES of their parameter `N` would: the C of a library cannot be
+## edited, so the settings say it.
+export def read_with(decls: Json, acquires: List[String], releases: List[String]) -> Result[Unit]
   nodes = try JSON.list(decls)
+  wrappers = Wrappers(acquires: parsed_wrappers(acquires), releases: parsed_wrappers(releases))
+
   tables = tables_of(nodes)
-  ctx = context_of(tables, nodes)
+  ctx = context_of(tables, nodes, wrappers)
   marks = collector_marks(tables, nodes)
   functions: List[Function] = []
   bodies: List[Flow.Body] = []
@@ -218,7 +234,7 @@ export def read(decls: Json) -> Result[Unit]
   for node in nodes
     case Ast.kind(node)
       "FunctionDecl" ->
-        function = function_of(tables, node)
+        function = function_of(tables, node, wrappers)
         functions = functions.push(function)
         found = in_function(tables, function.key, node, found)
         own = paired(ctx, tables, function)
@@ -264,7 +280,7 @@ end
 # What the functions of the unit say about locks, from all their declarations: the locks of CC_ACQUIRES and
 # CC_RELEASES, with the names of the parameters of the declaration that carries them, and whether they never return
 # (`_Noreturn`, `__attribute__((noreturn))`, CC_NORETURN).
-def context_of(tables: Tables, nodes: List[Json]) -> Flow.Context
+def context_of(tables: Tables, nodes: List[Json], wrappers: Wrappers) -> Flow.Context
   callees: Map[String, Flow.Callee] = {}
   variables = nodes.select do |node| Ast.kind(node) == "VarDecl" end
   globals: Map[String, String] = {}
@@ -277,12 +293,13 @@ def context_of(tables: Tables, nodes: List[Json]) -> Flow.Context
 
   declarations = nodes.select do |node| Ast.kind(node) == "FunctionDecl" end
   for node in declarations
-    function = function_of(tables, node)
+    function = function_of(tables, node, wrappers)
     params = Flow.params_named(node)
     types = param_types_of(node)
     # A definition inherits the annotations of the prototype before it, in the names of the prototype's parameters:
     # only the declaration that wrote an annotation knows what its names are.
     locks = own_marks(node)
+      .concat(assumed_marks(wrappers, node))
       .flat_map do |mark| annotated(mark, params) end
       .map do |lock| lock.with(class: class_of_text(tables, globals, lock.text, params, types)) end
 
@@ -633,6 +650,53 @@ def annotated(mark: String, params: List[String]) -> List[Flow.Annotated]
   return []
 end
 
+# The wrappers that the entries write; the settings only hold valid ones.
+def parsed_wrappers(texts: List[String]) -> List[Config.Wrapper]
+  found: List[Config.Wrapper] = []
+  for text in texts
+    case Config.wrapper_of(text)
+      some(wrapper) -> found = found.push(wrapper)
+      none -> next
+    end
+  end
+
+  return found
+end
+
+# The marks that `[assume] acquires` and `releases` give a declaration: `acquires(p)` and `releases(p)`, with `p` the
+# name of the parameter at the place the entry gives. A declaration that does not name that parameter (a prototype
+# with no names, or too few parameters) gets none: the definition, or a prototype with names, gives it.
+def assumed_marks(wrappers: Wrappers, node: Json) -> List[String]
+  if wrappers.acquires.empty? and wrappers.releases.empty?
+    return []
+  end
+
+  names = Flow.params_named(node)
+  file = Ast.place_of(node).file
+  marks: List[String] = []
+  for wrapper in wrappers.acquires
+    marks = marks.concat(wrapper_mark("acquires", wrapper, node, file, names))
+  end
+
+  for wrapper in wrappers.releases
+    marks = marks.concat(wrapper_mark("releases", wrapper, node, file, names))
+  end
+
+  return marks
+end
+
+def wrapper_mark(word: String, wrapper: Config.Wrapper, node: Json, file: String, names: List[String]) -> List[String]
+  if Ast.text(node, "name") != wrapper.name or wrapper.index >= names.size or names[wrapper.index] == ""
+    return []
+  end
+
+  if wrapper.tail != "" and not (file == wrapper.tail or file.end_with?("/#{wrapper.tail}"))
+    return []
+  end
+
+  return ["#{word}(#{names[wrapper.index]})"]
+end
+
 def own_marks(node: Json) -> List[String]
   written = Ast.children(node).select do |child|
     Ast.kind(child) == "DeprecatedAttr" and not Ast.flag?(child, "inherited")
@@ -790,7 +854,7 @@ def record_id_of(node: Json) -> String
   return ""
 end
 
-def function_of(tables: Tables, node: Json) -> Function
+def function_of(tables: Tables, node: Json, wrappers: Wrappers) -> Function
   name = Ast.text(node, "name")
   place = Ast.place_of(node)
   marks = Ast.children(node)
@@ -798,6 +862,7 @@ def function_of(tables: Tables, node: Json) -> Function
     .map do |child|
       Ast.text(child, "message").slice(MARK_PREFIX.length, Ast.text(child, "message").length - MARK_PREFIX.length)
     end
+    .concat(assumed_marks(wrappers, node))
 
   return Function(
     key: function_key(tables, name),

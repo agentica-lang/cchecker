@@ -31,6 +31,15 @@ export struct Edge
   callee: String
 end
 
+## A lock wrapper of `[assume] acquires`, `releases` and `short_locks`: `name(N)` or `name@path(N)`, with `N` the place
+## of the parameter (from 0) that holds the lock. `tail` is the end of the path of the file of `name@path`, "" for a
+## bare name.
+export struct Wrapper
+  name: String
+  tail: String
+  index: Int
+end
+
 ## The settings of a run. `origin` is the file they were read from, as the user wrote it, or "defaults". `off` holds
 ## the `[library]` flags that are false; `short` and `hot` are the names of `[roots]`. `follow_cold` is
 ## `[effects] follow_cold`: the walk goes into the functions that never return or are cold. `trusted` and `stops` are
@@ -42,7 +51,9 @@ end
 ## that catch the jumps of what they call (as CC_CATCHES), `jump_releases` is `[assume] jump_releases`, the lock
 ## helpers whose lock the catcher of a jump gives back (as CC_JUMP_RELEASES), and `stop_calls` is
 ## `[assume] stop_calls`, the `caller>callee` pairs whose call no walk follows. `fold_ignoring` is `[database]
-## fold_ignoring`, the defines that do not tell two entries of one file apart.
+## fold_ignoring`, the defines that do not tell two entries of one file apart, and `acquires` and `releases` are
+## `[assume] acquires` and `releases`, the lock wrappers that take and release the lock of a parameter (as CC_ACQUIRES
+## and CC_RELEASES).
 export struct Config
   origin: String
   off: Set[String]
@@ -59,6 +70,8 @@ export struct Config
   stop_calls: List[String] = []
   jump_releases: List[String] = []
   fold_ignoring: List[String] = []
+  acquires: List[String] = []
+  releases: List[String] = []
 end
 
 ## Returns the settings of a run in `folder`, the project folder: those of `explicit` (the file of -c) when given.
@@ -113,7 +126,9 @@ export def from_table(origin: String, prefix: String, table: Toml.Value, note: S
           case name
             "short" -> config = config.with(trusted: try names_of(origin, path, assume.get(name).unwrap!))
             "stop" -> config = config.with(stops: try names_of(origin, path, assume.get(name).unwrap!))
-            "short_locks" -> config = config.with(short_locks: try names_of(origin, path, assume.get(name).unwrap!))
+            "short_locks" -> config = config.with(short_locks: try locks_of(origin, path, assume.get(name).unwrap!))
+            "acquires" -> config = config.with(acquires: try wrappers_of(origin, path, assume.get(name).unwrap!))
+            "releases" -> config = config.with(releases: try wrappers_of(origin, path, assume.get(name).unwrap!))
             "stop_fields" -> config = config.with(stop_fields: try names_of(origin, path, assume.get(name).unwrap!))
             "may_jump" -> config = config.with(may_jump: try names_of(origin, path, assume.get(name).unwrap!))
             "jumps" -> config = config.with(jumps: try names_of(origin, path, assume.get(name).unwrap!))
@@ -172,6 +187,36 @@ export def edge_of(text: String) -> Optional[Edge]
 
       return some(Edge(caller: caller, callee: callee))
     none -> return none
+  end
+end
+
+## Returns the wrapper that `text` writes, or none when it is not `name(N)` or `name@path(N)` with a decimal `N`.
+export def wrapper_of(text: String) -> Optional[Wrapper]
+  parts = text.split("(")
+  if parts.size != 2 or not parts[1].end_with?(")")
+    return none
+  end
+
+  head = parts[0]
+  digits = parts[1].slice(0, parts[1].length - 1)
+  if digits == "" or not digits.split("").all? do |c| c.code >= 48 and c.code <= 57 end
+    return none
+  end
+
+  if head == "" or head.include?(" ") or head.include?(")")
+    return none
+  end
+
+  index = digits.to_i.unwrap_or(0)
+  case head.index_of("@")
+    some(at) ->
+      tail = head.slice(at + 1, head.length - at - 1)
+      if at == 0 or tail == ""
+        return none
+      end
+
+      return some(Wrapper(name: head.slice(0, at), tail: tail, index: index))
+    none -> return some(Wrapper(name: head, tail: "", index: index))
   end
 end
 
@@ -255,6 +300,32 @@ def defines_of(origin: String, path: String, value: Toml.Value) -> Result[List[S
   for name in names
     if not Regex.match(name, /\A[A-Za-z_][A-Za-z0-9_]*\z/).ok?
       return error("#{origin}: #{path} must be a list of macro names (NAME, not -DNAME, NAME=1 or A,B)")
+    end
+  end
+
+  return ok(names)
+end
+
+# The wrappers of `acquires` and `releases`: each `name(N)` or `name@path(N)`.
+def wrappers_of(origin: String, path: String, value: Toml.Value) -> Result[List[String]]
+  names = try names_of(origin, path, value)
+  for name in names
+    if not wrapper_of(name).some?
+      return error(
+        "#{origin}: #{path} must be a list of lock wrappers (name(N): N is the place of the lock parameter)",
+      )
+    end
+  end
+
+  return ok(names)
+end
+
+# The locks of `short_locks`: lock classes, or wrappers `name(N)` whose lock counts as short.
+def locks_of(origin: String, path: String, value: Toml.Value) -> Result[List[String]]
+  names = try names_of(origin, path, value)
+  for name in names
+    if name.include?("(") and not wrapper_of(name).some?
+      return error("#{origin}: #{path} has a wrapper that is not name(N), N the place of the lock parameter")
     end
   end
 

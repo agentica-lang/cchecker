@@ -74,7 +74,7 @@ export def run(options: Options) -> Result[Int]
   loaded = try baseline_file(options)
   gathered = Commands.fold(try gather(options), config.fold_ignoring)
   scratch = try scratch_path(cwd)
-  plan = try plan_for(options, gathered.entries, cwd, scratch)
+  plan = try plan_for(options, config, gathered.entries, cwd, scratch)
   if plan.jobs.empty?
     return error("no C files to check")
   end
@@ -143,7 +143,9 @@ export def run(options: Options) -> Result[Int]
     config.may_jump.empty? and
     config.jumps.empty? and
     config.catches.empty? and
-    config.jump_releases.empty?
+    config.jump_releases.empty? and
+    config.acquires.empty? and
+    config.releases.empty?
   )
 
   if options.tools.include?(Tool.Rules) and assumes
@@ -392,7 +394,13 @@ end
 # its name; any other file of the database is ignored).
 # Excluded files are not run. Files outside the working directory are not run either, as their findings would be
 # dropped, and the report says so.
-def plan_for(options: Options, entries: List[Commands.Entry], cwd: String, scratch: String) -> Result[Plan]
+def plan_for(
+  options: Options,
+  config: Config.Config,
+  entries: List[Commands.Entry],
+  cwd: String,
+  scratch: String,
+) -> Result[Plan]
   wrapped = Tools.timeout_available?()
   # The target of the rules, once for each set of flags that choose one: most databases have one.
   targets: Map[String, String] = {}
@@ -432,6 +440,8 @@ def plan_for(options: Options, entries: List[Commands.Entry], cwd: String, scrat
                 dump: dump,
                 cwd: cwd,
                 target: target,
+                acquires: config.acquires,
+                releases: config.releases,
               ),
             )
           end

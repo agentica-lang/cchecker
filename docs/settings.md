@@ -48,6 +48,8 @@ may_jump = ["raise_type_error"]
 jumps = ["raise_error"]
 catches = ["run_protected"]
 jump_releases = ["take_recorded"]
+acquires = ["uv_mutex_lock(0)"]
+releases = ["uv_mutex_unlock(0)"]
 ```
 
 `[library]` turns each family of library knowledge on or off. All are on by
@@ -117,7 +119,8 @@ declaration of the function (`slow@slow.h` for a prototype in a header); in
 and in `short`, `stop`, `may_jump`, `jumps`, `catches` and `jump_releases` of
 `[assume]`, and on each side of a `stop_calls` pair (`stop_fields` and
 `short_locks` name fields and locks), and a `name@path` that matches no function
-is an error (exit 2) like a bare name that does.
+is an error (exit 2) like a bare name that does. `acquires`, `releases` and the
+wrappers of `short_locks` add the place of the parameter: `name@path(0)`.
 
 `[assume]` says what the project knows of its own functions and cchecker cannot
 see in the C, as `CC_ASSUME_SHORT` and `CC_STOP` do on a declaration. `short`
@@ -182,6 +185,17 @@ that takes or releases no lock for its caller is accepted and changes nothing. A
 name that no function of the compile database declares is an error (exit 2)
 (`take_recorded (assume.jump_releases)`).
 
+`acquires` and `releases` name lock wrappers in code that cannot be edited (a
+vendored library), as `CC_ACQUIRES` and `CC_RELEASES` do on a declaration. An
+entry is `name(N)` or `name@path(N)`, `N` the place of the parameter (from 0)
+that holds the lock: `uv_mutex_lock(0)` takes the lock it is given and returns
+with it held, `uv_mutex_unlock(0)` releases it. The body of the wrapper is then
+no `CC-PATH-LOCK-NOT-RELEASED` or `CC-PATH-LOCK-NOT-HELD`, and a call of it is a
+lock for its callers, as the mark's (the lock is the argument at that place).
+The parameter must be named in a declaration of the function (the definition or
+a prototype with names). A wrapper that no function of the compile database
+declares is an error (exit 2) (`uv_mutex_lock(0) (assume.acquires)`).
+
 A short lock is one held for a few instructions: a lock whose field or global is
 marked `CC_NO_SYSCALL_UNDER()`, or whose class `[assume] short_locks` names:
 `queue.mu` for the field `mu` of `struct queue`, the name of a global, and for a
@@ -195,6 +209,14 @@ parameter, or through a local that points to it (`pthread_mutex_t *m = &q->mu;
 pthread_mutex_lock(m)`). A lock wrapper is assumed short with `CC_ASSUME_SHORT`
 or `[assume] short`. A class of `short_locks` that no lock of the compile
 database has (none taken, none marked) is an error, as for the names.
+
+A lock that reaches a wrapper as a parameter has no class to name. An entry
+`name(N)` of `short_locks` (`uv_mutex_lock(0)`, `my_lock(0)`) says that every
+lock taken through that wrapper is short: a call of a known take such as
+`uv_mutex_lock`, and the takes inside a function of the project of that name, are
+not blocking for `CC_SHORT`, whatever the lock. `N` only has to be a number; the
+rules do not check that the parameter is the lock. A wrapper that no function
+of the compile database declares is an error (exit 2).
 
 `stop_fields` names the function-pointer fields that no walk follows, by struct
 and field (`request.call` for the field `call` of `struct request`, also when

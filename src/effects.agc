@@ -58,12 +58,14 @@ end
 # How a rule walks the graph: the families of blocking calls that are on, whether it goes into the functions that never
 # return or are cold, whether it finds every bad call or stops at the first, and the classes of the short locks, whose
 # taking is not blocking, and whether a call with a flag that makes it return at once is not blocking (`flags`).
+# `short_wrappers` are the functions of `[assume] short_locks` whose locks are short, whatever the lock.
 struct Walk
   families: List[Known.Family]
   follow_cold: Bool
   all: Bool
   short_locks: Set[String]
   flags: Bool = false
+  short_wrappers: List[Config.Wrapper] = []
 end
 
 # One entry of `[roots]` or `[assume]`: a bare name (every function of that name, a static one in any file), or
@@ -129,6 +131,7 @@ export def check(units: List[Unit], config: Config.Config, infer: Bool, all_path
     all: all_paths,
     short_locks: short_locks_of(units, config),
     flags: not config.off.include?(Known.NONBLOCKING_FLAG),
+    short_wrappers: wrappers_of(config.short_locks),
   )
 
   short_roots = listing_of(config.short)
@@ -428,19 +431,53 @@ export def graph_of(units: List[Unit]) -> Graph
   )
 end
 
-# The classes of the short locks: those marked CC_NO_SYSCALL_UNDER() and those of `[assume] short_locks`.
+# The classes of the short locks: those marked CC_NO_SYSCALL_UNDER() and those of `[assume] short_locks`. An entry
+# `name(N)` is a wrapper (see `wrappers_of`), not a class.
 def short_locks_of(units: List[Unit], config: Config.Config) -> Set[String]
   marked = units.flat_map do |unit| unit.lock_marks end
     .select do |m| m.mark == SHORT_LOCK_MARK end
     .map do |m| m.class end
 
-  return Set.new(marked.concat(config.short_locks))
+  return Set.new(marked.concat(config.short_locks.select do |entry| not entry.include?("(") end))
 end
 
-# Whether every call of the lock function `callee` in `key` takes a short lock, so the short rule does not count it.
+# The wrappers `name(N)` among the entries of `short_locks`.
+def wrappers_of(entries: List[String]) -> List[Config.Wrapper]
+  found: List[Config.Wrapper] = []
+  for entry in entries
+    case Config.wrapper_of(entry)
+      some(wrapper) -> found = found.push(wrapper)
+      none -> next
+    end
+  end
+
+  return found
+end
+
+# Whether every call of the lock function `callee` in `key` takes a short lock, so the short rule does not count it:
+# the lock is of a short class, or the call is of a wrapper of `short_locks` (`uv_mutex_lock(0)`), or it is made in
+# one (a lock wrapper of the project: the lock it takes is its parameter's, whatever the caller passes).
 def short_takes?(graph: Graph, walk: Walk, key: String, callee: String) -> Bool
+  if (
+    not walk.short_wrappers.empty? and
+    Known.TAKES.include?(name_of_key(graph.functions, callee)) and
+    (listed_wrapper?(graph, walk, callee) or listed_wrapper?(graph, walk, key))
+  )
+    return true
+  end
+
   classes = graph.locks.get("#{key}>#{callee}").unwrap_or([])
   return not classes.empty? and classes.all? do |c| c != "" and short_lock?(walk.short_locks, c) end
+end
+
+# Whether the function of a key is a wrapper of `short_locks`: by its name, and the end of its file when the entry
+# gives one.
+def listed_wrapper?(graph: Graph, walk: Walk, key: String) -> Bool
+  name = name_of_key(graph.functions, key)
+  file = graph.functions.get(key).map do |f| f.file end.unwrap_or("")
+  return walk.short_wrappers.any? do |wrapper|
+    wrapper.name == name and (wrapper.tail == "" or ends_with_path?(file, wrapper.tail))
+  end
 end
 
 # Whether a class is among the short locks: as it is, or by the name of a static global (`big_lock` for
@@ -589,11 +626,27 @@ def missing_locks(units: List[Unit], graph: Graph, config: Config.Config) -> Lis
     .concat(units.flat_map do |unit| unit.lock_marks end.map do |m| m.class end)
 
   known = Set.new(classes.concat(classes.map(&bare_class)))
+  files = files_by_name(units.flat_map do |unit| unit.functions end)
   missing = config.short_locks.uniq.select do |c|
-    not known.include?(c) and not classes.any? do |class| in_file?(c, class) end
+    (
+      (c.include?("(") and not wrapper_matches?(c, files)) or
+      (not c.include?("(") and not known.include?(c) and not classes.any? do |class| in_file?(c, class) end)
+    )
   end
 
   return missing.map do |c| "#{c} (assume.short_locks)" end
+end
+
+# Whether a wrapper `name(N)` or `name@path(N)` names a function of the units, whose files are `files` by name.
+def wrapper_matches?(text: String, files: Map[String, List[String]]) -> Bool
+  case Config.wrapper_of(text)
+    some(wrapper) ->
+      return files.get(wrapper.name)
+        .unwrap_or([])
+        .any? do |file| wrapper.tail == "" or ends_with_path?(file, wrapper.tail) end
+
+    none -> return false
+  end
 end
 
 # Whether a function may jump out or jumps by a mark (or `[assume]`): where the inference starts.
@@ -663,7 +716,9 @@ def missing_assumed(units: List[Unit], config: Config.Config) -> List[String]
     config.may_jump.empty? and
     config.jumps.empty? and
     config.catches.empty? and
-    config.jump_releases.empty?
+    config.jump_releases.empty? and
+    config.acquires.empty? and
+    config.releases.empty?
   )
     return []
   end
@@ -675,7 +730,25 @@ def missing_assumed(units: List[Unit], config: Config.Config) -> List[String]
   jumps = unmatched(config.jumps, files).map do |name| "#{name} (assume.jumps)" end
   catches = unmatched(config.catches, files).map do |name| "#{name} (assume.catches)" end
   releases = unmatched(config.jump_releases, files).map do |name| "#{name} (assume.jump_releases)" end
-  return short.concat(stop).concat(may_jump).concat(jumps).concat(catches).concat(releases)
+  acquires = config.acquires
+    .uniq
+    .select do |text| not wrapper_matches?(text, files) end
+    .map do |text| "#{text} (assume.acquires)" end
+
+  given_back = config.releases
+    .uniq
+    .select do |text| not wrapper_matches?(text, files) end
+    .map do |text| "#{text} (assume.releases)" end
+
+  return (
+    short.concat(stop)
+      .concat(may_jump)
+      .concat(jumps)
+      .concat(catches)
+      .concat(releases)
+      .concat(acquires)
+      .concat(given_back)
+  )
 end
 
 # The files of the functions, by name.

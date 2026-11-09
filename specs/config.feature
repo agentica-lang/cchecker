@@ -149,32 +149,38 @@ Feature: The settings of a project
       """
 
     Examples:
-      | table      | line                    | key                    |
-      | [librray]  |                         | librray                |
-      | [library]  | libc_blockng = false    | library.libc_blockng   |
-      | [library]  | libc_blocking = "no"    | library.libc_blocking  |
-      | [roots]    | short = "tick"          | roots.short            |
-      | [roots]    | short = [1]             | roots.short            |
-      | [effects]  | follow_cld = true       | effects.follow_cld     |
-      | [effects]  | follow_cold = 1         | effects.follow_cold    |
-      | [assume]   | shrot = ["tick"]        | assume.shrot           |
-      | [assume]   | stop = "tick"           | assume.stop            |
-      | [assume]   | short_locks = [1]       | assume.short_locks     |
-      | [assume]   | stop_fields = "a.b"     | assume.stop_fields     |
-      | [assume]   | stop_calls = "a>b"      | assume.stop_calls      |
-      | [assume]   | stop_calls = ["a"]      | assume.stop_calls      |
-      | [assume]   | stop_calls = [">b"]     | assume.stop_calls      |
-      | [assume]   | stop_calls = ["a>"]     | assume.stop_calls      |
-      | [assume]   | stop_calls = ["a->b"]   | assume.stop_calls      |
-      | [assume]   | stop_calls = ["a>b>c"]  | assume.stop_calls      |
-      | [assume]   | stop_calls = ["a > b"]  | assume.stop_calls      |
-      | [assume]   | jump_releases = "a"     | assume.jump_releases   |
-      | [database] | fold_ignoring = "A"     | database.fold_ignoring |
-      | [database] | fold_ignoring = ["-DA"] | database.fold_ignoring |
-      | [database] | fold_ignoring = ["A=1"] | database.fold_ignoring |
-      | [database] | fold_ignores = ["A"]    | database.fold_ignores  |
-      | [database] | fold_ignoring = ["A,B"] | database.fold_ignoring |
-      | [database] | fold_ignoring = ["1A"]  | database.fold_ignoring |
+      | table      | line                      | key                    |
+      | [librray]  |                           | librray                |
+      | [library]  | libc_blockng = false      | library.libc_blockng   |
+      | [library]  | libc_blocking = "no"      | library.libc_blocking  |
+      | [roots]    | short = "tick"            | roots.short            |
+      | [roots]    | short = [1]               | roots.short            |
+      | [effects]  | follow_cld = true         | effects.follow_cld     |
+      | [effects]  | follow_cold = 1           | effects.follow_cold    |
+      | [assume]   | shrot = ["tick"]          | assume.shrot           |
+      | [assume]   | stop = "tick"             | assume.stop            |
+      | [assume]   | short_locks = [1]         | assume.short_locks     |
+      | [assume]   | stop_fields = "a.b"       | assume.stop_fields     |
+      | [assume]   | stop_calls = "a>b"        | assume.stop_calls      |
+      | [assume]   | stop_calls = ["a"]        | assume.stop_calls      |
+      | [assume]   | stop_calls = [">b"]       | assume.stop_calls      |
+      | [assume]   | stop_calls = ["a>"]       | assume.stop_calls      |
+      | [assume]   | stop_calls = ["a->b"]     | assume.stop_calls      |
+      | [assume]   | stop_calls = ["a>b>c"]    | assume.stop_calls      |
+      | [assume]   | stop_calls = ["a > b"]    | assume.stop_calls      |
+      | [assume]   | jump_releases = "a"       | assume.jump_releases   |
+      | [database] | fold_ignoring = "A"       | database.fold_ignoring |
+      | [database] | fold_ignoring = ["-DA"]   | database.fold_ignoring |
+      | [database] | fold_ignoring = ["A=1"]   | database.fold_ignoring |
+      | [database] | fold_ignores = ["A"]      | database.fold_ignores  |
+      | [assume]   | acquires = "lock(0)"      | assume.acquires        |
+      | [assume]   | acquires = ["lock"]       | assume.acquires        |
+      | [assume]   | acquires = ["lock()"]     | assume.acquires        |
+      | [assume]   | releases = ["lock(x)"]    | assume.releases        |
+      | [assume]   | releases = ["lock@(0)"]   | assume.releases        |
+      | [assume]   | short_locks = ["lock(x)"] | assume.short_locks     |
+      | [database] | fold_ignoring = ["A,B"]   | database.fold_ignoring |
+      | [database] | fold_ignoring = ["1A"]    | database.fold_ignoring |
 
   Scenario Outline: Each family of library knowledge can be turned off
     Given the C file "family.c" holds:
