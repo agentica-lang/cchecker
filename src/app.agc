@@ -71,7 +71,7 @@ export def run(options: Options) -> Result[Int]
     IO.warn("cchecker: settings: #{config.origin}")
   end
 
-  accepted = try baseline_entries(options)
+  loaded = try baseline_file(options)
   entries = try gather(options)
   scratch = try scratch_path(cwd)
   plan = try plan_for(options, entries, cwd, scratch)
@@ -158,10 +158,11 @@ export def run(options: Options) -> Result[Int]
   case options.baseline
     some(path) ->
       if options.update_baseline
-        return update(path, accepted, scope, findings, collected.errors, options)
+        return update(path, loaded, scope, findings, collected.errors, options)
       end
 
-      split = Baseline.split(findings, accepted, scope)
+      split = Baseline.split(findings, loaded.entries, scope)
+      changes = Baseline.changes(loaded.tools, Tools.versions_of(options, loaded.tools.keys))
       rules_off = (
         options.strict_baseline and
         options.tools.include?(Tool.Rules) and
@@ -179,6 +180,7 @@ export def run(options: Options) -> Result[Int]
             stale: split.stale,
             failing: failing,
             rules_off: rules_off,
+            version_changes: changes,
             errors: collected.errors,
             skipped: plan.skipped.size,
             skipped_declarations: collected.skipped_declarations,
@@ -253,25 +255,26 @@ def left_out(key: String, project: List[String], given: List[String]) -> List[St
   return ["#{key}: #{names.join(", ")}"]
 end
 
-# The accepted findings, read before any tool runs so that a baseline that cannot be read costs no time. A baseline
-# that is not there yet is empty when it is about to be written.
-def baseline_entries(options: Options) -> Result[List[Baseline.Entry]]
+# The baseline file, read before any tool runs so that a baseline that cannot be read costs no time. A baseline that is
+# not there yet is empty when it is about to be written.
+def baseline_file(options: Options) -> Result[Baseline.Loaded]
   case options.baseline
     some(path) ->
       if options.update_baseline and not File.stat(path).ok?
-        return ok([])
+        return ok(Baseline.Loaded(entries: []))
       end
 
       return Baseline.load(path)
-    none -> return ok([])
+    none -> return ok(Baseline.Loaded(entries: []))
   end
 end
 
 # Writes the baseline when every tool ran: a baseline made from a half run would accept less than the project has. The
-# entries of the tools and files that the run did not cover stay as they were.
+# entries of the tools and files that the run did not cover stay as they were. The versions of the tools are written
+# only by a run of every file (no FILE, no --exclude): see `Baseline.updated_tools`.
 def update(
   path: String,
-  accepted: List[Baseline.Entry],
+  loaded: Baseline.Loaded,
   scope: Baseline.Scope,
   findings: List[Finding],
   errors: List[ToolError],
@@ -283,13 +286,29 @@ def update(
 
   # An unused suppression is fixed by editing its comment, never accepted: the baseline could not tell when it goes.
   kept = findings.select do |f| f.code != Suppressions.UNUSED end
-  entries = Baseline.merged(accepted, scope, kept)
-  try Baseline.write(path, entries)
+  entries = Baseline.merged(loaded.entries, scope, kept)
+  ran = options.tools.map(&Tools.version_key)
+  versions = Tools.versions_of(options, ran)
+  for tool in ran
+    if not versions.key?(tool)
+      IO.warn(
+        "cchecker: warning: no version from #{tool}: its --version printed nothing or failed, so none is recorded",
+      )
+    end
+  end
+
+  whole = options.files.empty? and options.exclude.empty?
+  try Baseline.write(path, entries, Baseline.updated_tools(loaded.tools, versions, ran, whole))
   puts("cchecker: wrote #{entries.reduce(0) do |total, entry| total + entry.count end} findings to #{path}")
   return ok(0)
 end
 
 def finish(options: Options, report: Report.Report) -> Int
+  versions = Report.version_line(report)
+  if not options.json and versions.some?
+    IO.warn(versions.unwrap!)
+  end
+
   if options.json
     puts(Report.json(report))
   else

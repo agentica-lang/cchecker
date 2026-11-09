@@ -3,6 +3,7 @@
 import Files from "files"
 import Findings from "findings"
 import {Finding} from "findings"
+import Regex from "std/regex"
 
 # The version of the file format, for the day it changes.
 VERSION = 1
@@ -16,9 +17,25 @@ export struct Entry
   count: Int
 end
 
+# The file as it is read. `tools` are the versions of the tools that made it, by name (`gcc`, `clang`, `clang-tidy`);
+# a baseline of 0.1.0 has none, and the format stays version 1 because a reader that ignores `tools` loses nothing.
 struct Document
   version: Int
   findings: List[Entry]
+  tools: Optional[Map[String, String]]
+end
+
+## A baseline file: its entries, and the versions of the tools that made it (none for a file of 0.1.0).
+export struct Loaded
+  entries: List[Entry]
+  tools: Map[String, String] = {}
+end
+
+## A tool whose version is not the one that made the baseline.
+export struct VersionChange
+  tool: String
+  baseline: String
+  current: String
 end
 
 ## What a run covered: the tools it ran, and the pairs of a tool and a file whose job ended well (see `pair`).
@@ -39,14 +56,14 @@ export struct Split
   stale: List[Entry] = []
 end
 
-## Returns the entries of the baseline file, or an error when it cannot be read or is not a baseline.
-export def load(path: String) -> Result[List[Entry]]
+## Returns the baseline file, or an error when it cannot be read or is not a baseline.
+export def load(path: String) -> Result[Loaded]
   text = try Files.read_all(path)
   return parse(path, text)
 end
 
-## Returns the entries of the text of a baseline file.
-export def parse(path: String, text: String) -> Result[List[Entry]]
+## Returns the baseline in the text of a baseline file.
+export def parse(path: String, text: String) -> Result[Loaded]
   document = try decode(path, text)
   if document.version != VERSION
     return error("#{path}: version #{document.version} is not supported, expected #{VERSION}")
@@ -58,7 +75,7 @@ export def parse(path: String, text: String) -> Result[List[Entry]]
     end
   end
 
-  return ok(document.findings)
+  return ok(Loaded(entries: document.findings, tools: document.tools.unwrap_or({})))
 end
 
 ## Returns the entries for the findings: one for each kind, in the order of the report.
@@ -97,11 +114,59 @@ export def merged(entries: List[Entry], scope: Scope, findings: List[Finding]) -
   return combined.sort_by do |entry| "#{entry.file}\n#{entry.code}\n#{entry.message}" end
 end
 
-## Writes the baseline, one line for each entry. A file that exists is swapped for the new one in a single rename, so a
-## reader never sees half of it.
-export def write(path: String, entries: List[Entry]) -> Result[Void]
+## Returns the versions for an updated baseline, by name in order. Only a `whole` run (every file of its tools) writes
+## versions: it drops those of the tools in `ran` and adds those of `current` (a tool that printed none loses its
+## version, as its entries were just rewritten by an unknown one). A run of some files returns `stored`, as the entries
+## of the other files are still those of the old versions.
+export def updated_tools(
+  stored: Map[String, String],
+  current: Map[String, String],
+  ran: List[String],
+  whole: Bool,
+) -> Map[String, String]
+  if not whole
+    return stored
+  end
+
+  merged: Map[String, String] = {}
+  for tool in stored.keys
+    if not ran.include?(tool)
+      merged = merged.put(tool, stored[tool])
+    end
+  end
+
+  for tool in current.keys
+    merged = merged.put(tool, current[tool])
+  end
+
+  ordered: Map[String, String] = {}
+  for tool in merged.keys.sort
+    ordered = ordered.put(tool, merged[tool])
+  end
+
+  return ordered
+end
+
+## Returns the tools of `current` whose version is not the one in `stored`, in the order of the names. A tool of only
+## one of them is not compared: it did not run, or it did not name its version. Versions are compared by their number
+## (`14.2.0` of `gcc (Debian 14.2.0-19) 14.2.0`), so the build of another distribution of the same version is no
+## change; a line with no number is compared whole. The changes keep the full lines.
+export def changes(stored: Map[String, String], current: Map[String, String]) -> List[VersionChange]
+  names = stored.keys.select do |tool| current.key?(tool) and number(current[tool]) != number(stored[tool]) end
+  return names.sort.map do |tool| VersionChange(tool: tool, baseline: stored[tool], current: current[tool]) end
+end
+
+## Returns the text of the baseline file, one line for each entry. `tools` are written as they come: see
+## `updated_tools`.
+export def render(entries: List[Entry], tools: Map[String, String]) -> String
   body = entries.map do |entry| "    #{JSON.encode(entry)}" end.join(",\n")
-  text = "{\n  \"version\": #{VERSION},\n  \"findings\": [\n#{body}\n  ]\n}\n"
+  return "{\n  \"version\": #{VERSION},\n  \"tools\": #{JSON.encode(tools)},\n  \"findings\": [\n#{body}\n  ]\n}\n"
+end
+
+## Writes the baseline. A file that exists is swapped for the new one in a single rename, so a reader never sees half
+## of it.
+export def write(path: String, entries: List[Entry], tools: Map[String, String]) -> Result[Void]
+  text = render(entries, tools)
   if File.stat(path).ok?
     return File.replace(path, text.bytes)
   end
@@ -169,6 +234,14 @@ export def tool_of(code: String) -> String
   end
 
   return ""
+end
+
+# The first dotted number of a version line, or the line.
+def number(line: String) -> String
+  case Regex.match(line, /\d+(\.\d+)+/)
+    ok(found) -> return found.text
+    error(_) -> return line
+  end
 end
 
 def larger(a: Int, b: Int) -> Int

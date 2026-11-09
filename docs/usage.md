@@ -13,11 +13,14 @@ from or `""`), `baselined`, `fixed`, `stale` (the entries of the baseline behind
 run or could not compile a file: `tool`, `file` and `message`), `skipped`,
 `suppressed` (see [Suppressions](suppressions.md#suppressions)), `config`, the
 settings file that was read or `"defaults"` (see [Settings](settings.md)),
-`unresolved_callbacks` (see [Roots](settings.md#roots)), and `unchecked_files`:
+`unresolved_callbacks` (see [Roots](settings.md#roots)), `unchecked_files`:
 the files that were not checked because a header they include is not found
-(`file` and `missing`, the header as the `#include` wrote it). Such a file is
-skipped with a warning on standard error and does not change the exit code. The
-rules also add `incomplete_functions` and `skipped_declarations` (see
+(`file` and `missing`, the header as the `#include` wrote it), and
+`version_changes`: the tools whose version is not the one that made the baseline
+(`tool`, `baseline` and `current`; see
+[Baseline](suppressions.md#versions-of-the-tools)). A file that was not checked
+is skipped with a warning on standard error and does not change the exit code.
+The rules also add `incomplete_functions` and `skipped_declarations` (see
 [Rules](rules.md)).
 
 ## Exit codes

@@ -1,6 +1,6 @@
 ## What a run prints.
 
-import {Entry} from "baseline"
+import {Entry, VersionChange} from "baseline"
 import {Finding, IncompleteFunction, ToolError, UncheckedFile, UnresolvedCallback} from "findings"
 import {Suppressed} from "suppressions"
 
@@ -13,7 +13,8 @@ import {Suppressed} from "suppressions"
 ## libuv calls that the inference of roots could not follow to a function. `unchecked_files` are the files that were
 ## not checked because a header they include is not found. `stale` are the entries of the baseline behind `fixed`,
 ## and `failing` those of them that fail the run (`--strict-baseline`); `rules_off` says that a check of the rules was
-## off, so the entries of the rules did not fail it and an update needs every check of the rules on.
+## off, so the entries of the rules did not fail it and an update needs every check of the rules on. `version_changes`
+## are the tools that ran with another version than the one that made the baseline.
 export struct Report
   findings: List[Finding]
   baselined: Int
@@ -29,6 +30,7 @@ export struct Report
   stale: List[Entry] = []
   failing: List[Entry] = []
   rules_off: Bool = false
+  version_changes: List[VersionChange] = []
 end
 
 # The JSON form of a report, which says in `clean` whether the run is clean.
@@ -46,6 +48,7 @@ struct Encoded
   config: String
   unresolved_callbacks: List[UnresolvedCallback]
   unchecked_files: List[UncheckedFile]
+  version_changes: List[VersionChange]
 end
 
 ## Returns the report for people: one line for each finding, a summary line, then one line for each stale entry of
@@ -91,6 +94,7 @@ export def json(report: Report) -> String
       config: report.config,
       unresolved_callbacks: report.unresolved_callbacks,
       unchecked_files: report.unchecked_files,
+      version_changes: report.version_changes,
     ),
   )
 end
@@ -98,6 +102,26 @@ end
 ## Returns the lines for standard error: one for each tool error.
 export def error_lines(report: Report) -> List[String]
   return report.errors.map do |e| "cchecker: error: #{e.tool} on #{e.file}: #{e.message}" end
+end
+
+## Returns the line for standard error about the tools whose version is not the one that made the baseline, or none.
+## The findings of the analyzers change with their version, so the new and fixed ones may come from it.
+export def version_line(report: Report) -> Optional[String]
+  if report.version_changes.empty?
+    return none
+  end
+
+  changed = report.version_changes.map do |c| "#{c.tool} was #{c.baseline}, is #{c.current}" end.join("; ")
+  line = (
+    "cchecker: warning: the tools are not the ones that made the baseline (#{changed}); " +
+    "its new and fixed findings may come from that"
+  )
+
+  if not report.stale.empty?
+    line = line + ", and so may its stale entries"
+  end
+
+  return some(line)
 end
 
 ## Returns the lines for standard error: one for each file that was not checked.

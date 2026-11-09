@@ -47,6 +47,37 @@ with a warning on standard error; those of the other tools still do.
 agentica cchecker.agc -p build --baseline cchecker-baseline.json --strict-baseline   # stale entries fail the run
 ```
 
+### Versions of the tools
+
+The findings of `gcc -fanalyzer` and `clang-tidy` change with the version of the
+tool, so a baseline made with one version gives new and fixed findings with
+another. An `--update-baseline` of every file (no FILE and no `--exclude`)
+writes the first line of `--version` of each tool it ran into `tools` of the
+file (`gcc`, `clang-tidy`, and `clang` for the rules):
+
+```json
+{"version": 1, "tools": {"clang":"Debian clang version 19.1.7 (3+b1)","clang-tidy":"Debian LLVM version 19.1.7","gcc":"gcc (Debian 14.2.0-19) 14.2.0"}, "findings": [...]}
+```
+
+A run with a tool of another version prints a warning on standard error, before
+the summary, that names both lines; `version_changes` of `--json` lists them.
+Versions are compared by their number (`14.2.0`), so another build of the same
+version (Debian and Ubuntu) is no change. It is not an error: the counts decide
+the exit code. When the run also has stale entries, the warning says that they
+may come from the change, so write the baseline again with the tools of the
+project (the ones CI uses) before you trust `--strict-baseline`.
+
+Only the tools that the run ran are compared, and a tool that prints no version
+is not. A version is written only by an update of every file: an update of some
+files (`--tools gcc` is every file of gcc; FILEs and `--exclude` are not) keeps
+the stored versions, as the entries of the other files are still those of the
+old version, and writes none when the file has none. After an update of every
+file, a tool that ran and printed no version loses its stored one (the update
+says so on standard error), and a tool that did not run keeps it. A baseline of
+0.1.0 has no `tools`: it reads as before, with no warning, and the next update
+of every file adds them. The file stays `"version": 1`; a cchecker of 0.1.0
+reads the new file and ignores `tools`.
+
 ## Suppressions
 
 A finding that is a false positive, where the check cannot be made smarter, is

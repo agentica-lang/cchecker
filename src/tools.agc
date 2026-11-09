@@ -139,6 +139,32 @@ export def target_of(clang: String, entry: Commands.Entry) -> String
   end
 end
 
+## Returns the name that the baseline gives the program of a tool: `gcc`, `clang-tidy`, and `clang` for the rules.
+export def version_key(tool: Tool) -> String
+  case tool
+    Tool.Gcc -> return "gcc"
+    Tool.ClangTidy -> return "clang-tidy"
+    Tool.Rules -> return "clang"
+  end
+end
+
+## Returns the first line of what `--version` prints for the programs of the tools of `options` that `keys` names
+## (see `version_key`), by key. A program that does not start, fails, or prints nothing has no entry.
+export def versions_of(options: Options, keys: List[String]) -> Map[String, String]
+  found: Map[String, String] = {}
+  for tool in options.tools
+    key = version_key(tool)
+    if keys.include?(key)
+      line = version_line(program_of(options, tool))
+      if line != ""
+        found = found.put(key, line)
+      end
+    end
+  end
+
+  return found
+end
+
 ## Returns the flags of a compile command that choose its target: `--target=`, `-target T`, `-arch A`, `-m32`, ...
 export def target_flags(args: List[String]) -> List[String]
   found: List[String] = []
@@ -296,10 +322,32 @@ export def fifo_path(dump: String) -> String
 end
 
 def executable(job: Job) -> String
-  case job.tool
-    Tool.Gcc -> return job.options.gcc
-    Tool.ClangTidy -> return job.options.clang_tidy
-    Tool.Rules -> return job.options.clang
+  return program_of(job.options, job.tool)
+end
+
+def program_of(options: Options, tool: Tool) -> String
+  case tool
+    Tool.Gcc -> return options.gcc
+    Tool.ClangTidy -> return options.clang_tidy
+    Tool.Rules -> return options.clang
+  end
+end
+
+# The first line of `PROGRAM --version`, or "" when it does not say. The C locale keeps the text the same from one
+# machine to the next. The timeout of `spawn_captured` is not documented as a kill, so `close` ends a program that
+# is still running, and the waits are short: the first line is out by then.
+def version_line(program: String) -> String
+  case Process.spawn_captured(program, ["--version"], ".", 5_000, {"LC_ALL": "C"})
+    ok(process) ->
+      line = Process.read_line(process, 5_000).unwrap_or("")
+      code = Process.wait(process, 1_000).unwrap_or(1)
+      Process.close(process)
+      if code != 0
+        return ""
+      end
+
+      return line.strip
+    error(_) -> return ""
   end
 end
 
