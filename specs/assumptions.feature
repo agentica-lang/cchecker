@@ -783,7 +783,7 @@ Feature: What the project assumes of its functions
       [assume]
       acquires = ["my_lock(0)", "my_lok(0)", "my_lock(1)"]
       releases = ["my_unlock@other.c(0)"]
-      short_locks = ["my_lock(0)", "mine(0)"]
+      short_locks = ["my_lock(0)", "mine(0)", "uv_mutex_lock@typo.h(0)"]
       """
     When I run cchecker in its folder with "--tools rules"
     Then the exit code is 2
@@ -803,9 +803,35 @@ Feature: What the project assumes of its functions
       """
       mine(0) (assume.short_locks)
       """
+    And the errors include:
+      """
+      uv_mutex_lock@typo.h(0) (assume.short_locks)
+      """
     And the errors do not include:
       """
       my_lock(0) (assume
+      """
+    Given the file "cchecker.toml" holds:
+      """
+      [assume]
+      acquires = ["my_lok(0)"]
+      """
+    When I run cchecker in its folder with "--tools rules"
+    Then the exit code is 2
+    And the errors include:
+      """
+      my_lok(0) (assume.acquires)
+      """
+    Given the file "cchecker.toml" holds:
+      """
+      [assume]
+      releases = ["my_unlok(0)"]
+      """
+    When I run cchecker in its folder with "--tools rules"
+    Then the exit code is 2
+    And the errors include:
+      """
+      my_unlok(0) (assume.releases)
       """
 
   Scenario: A lock wrapper of acquires and releases is one lock for the callers of its prototype and of its definition
@@ -951,3 +977,38 @@ Feature: What the project assumes of its functions
       | list                      | exit |
       | uv_mutex_lock@uv.h(0)     | 0    |
       | uv_mutex_lock@other.h(0)  | 1    |
+
+  Scenario: A static wrapper named by the file of a prototype that is not its definition is an error
+    Given the C file "h.h" holds:
+      """
+      #include "pthread.h"
+      static void grab(pthread_mutex_t *m);
+      """
+    And the C file "a.c" holds:
+      """
+      #include "h.h"
+      static void grab(pthread_mutex_t *m) { pthread_mutex_lock(m); }
+      void leak(pthread_mutex_t *m) { grab(m); }
+      """
+    And the file "compile_commands.json" holds:
+      """
+      [{"directory": ".", "file": "a.c", "arguments": ["cc", "-c", "a.c"]}]
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [assume]
+      acquires = ["grab@a.c(0)"]
+      """
+    When I run cchecker in its folder with "--tools rules"
+    Then the exit code is 1
+    Given the file "cchecker.toml" holds:
+      """
+      [assume]
+      acquires = ["grab@h.h(0)"]
+      """
+    When I run cchecker in its folder with "--tools rules"
+    Then the exit code is 2
+    And the errors include:
+      """
+      grab@h.h(0) (assume.acquires)
+      """

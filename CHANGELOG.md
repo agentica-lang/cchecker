@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- `[assume] acquires` and `releases` (`"uv_mutex_lock(0)"`, `"name@path(N)"`) mark a lock wrapper of code that cannot be
+- `[assume] acquires` and `releases` (`"my_lock(0)"`, `"name@path(N)"`) mark a lock wrapper of code that cannot be
   edited as `CC_ACQUIRES` and `CC_RELEASES` do, with the parameter that holds the lock. `short_locks` takes the same
   `name(N)` for a wrapper whose lock cannot be named: every lock taken through it is short.
 - `[database] fold_ignoring = ["NAME"]`: two entries of one file that differ only in those defines (any value) are

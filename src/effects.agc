@@ -216,7 +216,9 @@ export def assumed(units: List[Unit], config: Config.Config) -> List[Unit]
     config.may_jump.empty? and
     config.jumps.empty? and
     config.catches.empty? and
-    config.jump_releases.empty?
+    config.jump_releases.empty? and
+    config.acquires.empty? and
+    config.releases.empty?
   )
     return units
   end
@@ -566,6 +568,10 @@ def blocks?(graph: Graph, walk: Walk, section: Section, blocking: Set[String]) -
       return true
     end
 
+    if wrapper_take?(graph, walk, section.caller, section.callee)
+      return false
+    end
+
     return not section.tried and not section.takes.all? do |c| short_class?(walk, c) end
   end
 
@@ -591,11 +597,7 @@ end
 # the lock is of a short class, or the call is of a wrapper of `short_locks` (`uv_mutex_lock(0)`), or it is made in
 # one (a lock wrapper of the project: the lock it takes is its parameter's, whatever the caller passes).
 def short_takes?(graph: Graph, walk: Walk, key: String, callee: String) -> Bool
-  if (
-    not walk.short_wrappers.empty? and
-    Known.TAKES.include?(name_of_key(graph.functions, callee)) and
-    (listed_wrapper?(graph, walk, callee) or listed_wrapper?(graph, walk, key))
-  )
+  if wrapper_take?(graph, walk, key, callee)
     return true
   end
 
@@ -607,6 +609,15 @@ end
 # inferred, as it is.
 def short_class?(walk: Walk, class: String) -> Bool
   return class != "" and (short_lock?(walk.short_locks, class) or walk.inferred.include?(class))
+end
+
+# Whether a call of the known take `callee` in `key` is of a wrapper of `short_locks`, or made in one.
+def wrapper_take?(graph: Graph, walk: Walk, key: String, callee: String) -> Bool
+  return (
+    not walk.short_wrappers.empty? and
+    Known.TAKES.include?(name_of_key(graph.functions, callee)) and
+    (listed_wrapper?(graph, walk, callee) or listed_wrapper?(graph, walk, key))
+  )
 end
 
 # Whether the function of a key is a wrapper of `short_locks`: by its name, and the end of the file of any declaration
@@ -783,14 +794,23 @@ def lock_declared?(text: String, functions: List[Function]) -> Bool
   case Config.wrapper_of(text)
     some(wrapper) ->
       return functions.any? do |f|
-        (
-          f.name == wrapper.name and
-          f.arity > wrapper.index and
-          (wrapper.tail == "" or ends_with_path?(f.file, wrapper.tail))
-        )
+        f.name == wrapper.name and f.arity > wrapper.index and file_named?(f, wrapper.tail)
       end
 
     none -> return false
+  end
+end
+
+# Whether the path `tail` ("" is any) names the function: the file of a static one is that of its definition, as its
+# key says, and a function with external linkage has the file of any of its declarations.
+def file_named?(function: Function, tail: String) -> Bool
+  if tail == ""
+    return true
+  end
+
+  case function.key.index_of("@")
+    some(at) -> return ends_with_path?(function.key.slice(at + 1, function.key.length - at - 1), tail)
+    none -> return ends_with_path?(function.file, tail)
   end
 end
 
@@ -798,7 +818,7 @@ end
 # declaring it in its own files, so it is not missing when no unit has it.
 def known_take?(text: String) -> Bool
   case Config.wrapper_of(text)
-    some(wrapper) -> return Known.TAKES.include?(wrapper.name)
+    some(wrapper) -> return wrapper.tail == "" and Known.TAKES.include?(wrapper.name)
     none -> return false
   end
 end

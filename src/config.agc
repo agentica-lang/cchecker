@@ -349,14 +349,27 @@ def apart(origin: String, prefix: String, config: Config) -> Result[Void]
   return ok()
 end
 
-# The wrappers of `acquires` and `releases`: each `name(N)` or `name@path(N)`.
+# The wrappers of `acquires` and `releases`: each `name(N)` or `name@path(N)`, of a function of the project. A known
+# lock call already takes or releases its lock, so naming one would count it twice.
 def wrappers_of(origin: String, path: String, value: Toml.Value) -> Result[List[String]]
   names = try names_of(origin, path, value)
   for name in names
-    if not wrapper_of(name).some?
-      return error(
-        "#{origin}: #{path} must be a list of lock wrappers (name(N): N is the place of the lock parameter)",
-      )
+    case wrapper_of(name)
+      some(wrapper) ->
+        if (
+          Known.TAKES.include?(wrapper.name) or
+          Known.TRIES.include?(wrapper.name) or
+          Known.DROPS.include?(wrapper.name)
+        )
+          return error(
+            "#{origin}: #{path} cannot name #{wrapper.name}: a known lock call takes or releases its lock already",
+          )
+        end
+
+      none ->
+        return error(
+          "#{origin}: #{path} must be a list of lock wrappers (name(N): N is the place of the lock parameter)",
+        )
     end
   end
 

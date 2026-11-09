@@ -181,6 +181,9 @@ Feature: The settings of a project
       | [assume]   | short_locks = ["lock(x)"]                 | assume.short_locks     |
       | [assume]   | acquires = ["lock(99999999999999999999)"] | assume.acquires        |
       | [assume]   | acquires = ["lock a(0)"]                  | assume.acquires        |
+      | [assume]   | acquires = ["uv_mutex_lock(0)"]           | assume.acquires        |
+      | [assume]   | releases = ["pthread_mutex_unlock(0)"]    | assume.releases        |
+      | [assume]   | acquires = ["uv_mutex_trylock(0)"]        | assume.acquires        |
       | [database] | fold_ignoring = ["A,B"]                   | database.fold_ignoring |
       | [database] | fold_ignoring = ["1A"]                    | database.fold_ignoring |
 

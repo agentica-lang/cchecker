@@ -48,8 +48,8 @@ may_jump = ["raise_type_error"]
 jumps = ["raise_error"]
 catches = ["run_protected"]
 jump_releases = ["take_recorded"]
-acquires = ["uv_mutex_lock(0)"]
-releases = ["uv_mutex_unlock(0)"]
+acquires = ["my_lock(0)"]
+releases = ["my_unlock(0)"]
 ```
 
 `[library]` turns each family of library knowledge on or off. All are on by
@@ -190,19 +190,25 @@ name that no function of the compile database declares is an error (exit 2)
 `acquires` and `releases` name lock wrappers in code that cannot be edited (a
 vendored library), as `CC_ACQUIRES` and `CC_RELEASES` do on a declaration. An
 entry is `name(N)` or `name@path(N)`, `N` the place of the parameter (from 0)
-that holds the lock: `uv_mutex_lock(0)` takes the lock it is given and returns
-with it held, `uv_mutex_unlock(0)` releases it. The body of the wrapper is then
-no `CC-PATH-LOCK-NOT-RELEASED` or `CC-PATH-LOCK-NOT-HELD`, and a call of it is a
-lock for its callers, as the mark's (the lock is the argument at that place).
-The function has one such lock whatever its declarations call the parameter (or
-call nothing), and it keeps the one a `CC_ACQUIRES` already gives it. `N` has to
-be a named parameter of a declaration (not one past the end or in the `...`),
-and a function is in only one of the two lists. The path tells the static
-functions of one name apart (`grab@a.c(0)`, by the file of the definition); a
-function with external linkage is one in the whole project, and its path must
-only match a declaration of it (`slow@slow.h`, the definition or a prototype). A
-wrapper that no declaration matches, or whose `N` no declaration reaches, is an
-error (exit 2) (`uv_mutex_lock(0) (assume.acquires)`).
+that holds the lock: `my_lock(0)` takes the lock it is given and returns with it
+held, `my_unlock(0)` releases it. The body of the wrapper is then no
+`CC-PATH-LOCK-NOT-RELEASED` or `CC-PATH-LOCK-NOT-HELD`, and a call of it is a
+lock for its callers, as the mark's (the lock is the argument at that place). A
+known lock call (`pthread_mutex_lock`, `uv_mutex_lock`, `uv_mutex_unlock`, ...)
+already takes or releases its lock, so naming one is an error. The function has
+one such lock whatever its declarations call the parameter (or call nothing),
+and it keeps the one a `CC_ACQUIRES` already gives it. `N` has to be a named
+parameter of a declaration (not one past the end or in the `...`), and a
+function is in only one of the two lists. The path tells the static functions of
+one name apart (`grab@a.c(0)`, by the file of the definition, which a prototype
+in a header does not change); a function with external linkage is one in the
+whole project, so its path is only checked against a declaration of it
+(`slow@slow.h`, the definition or a prototype) and does not tell two such
+functions apart: `lock@a.c(0)` in `acquires` and `lock@b.c(0)` in `releases` name
+one external `lock` both ways, and `grab@a.c(0)` for a static `grab` of `a.c`
+also marks an external `grab` of another file. A wrapper that no declaration
+matches, or whose `N` no declaration reaches, is an error (exit 2)
+(`my_lock(0) (assume.acquires)`).
 
 A short lock is one held for a few instructions: a lock whose field or global is
 marked `CC_NO_SYSCALL_UNDER()`, or whose class `[assume] short_locks` names:
