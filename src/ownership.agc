@@ -550,7 +550,6 @@ def after_assign(body: Body, item: Item, assign: Assign) -> Outcome
   return Outcome(moved: Moved.Went(item.with(state: state, path: item.path.push(step))), breaches: breaches)
 end
 
-# The result of a realloc owns; the pointer it moved owns again where the result is null.
 # Whether a local stands for the pointer `name`.
 def kept_by_alias?(state: State, name: String) -> Bool
   return state.aliases.values.include?(name)
@@ -572,6 +571,7 @@ def handed_over(state: State, name: String) -> State
   end
 end
 
+# The result of a realloc owns; the pointer it moved owns again where the result is null.
 def resized(state: State, assign: Assign) -> State
   owned = state.with(owns: state.owns.put(assign.name, OWNED))
   return owned.with(links: owned.links.put(assign.name, owner(state, assign.from)))

@@ -44,7 +44,10 @@ leaks, with that point as the last step of `path`, unless a pointer outside the
 block stands for it (`t = s`, `r = realloc(s, n)`). It then leaves the walk once
 nothing stands for it and it owns nothing, unless a `goto` of the function goes
 into a block, past the declarations before its label; one that still owns leaks
-where the path ends, as one finding on the pointer of the block. The pointers of
+where the path ends, as one finding on the pointer of the block. A known gap: a
+`case` label inside a nested block of a `switch` is not such a jump yet, so a
+pointer declared before it can leave the walk too early
+([#111](https://github.com/agentica-lang/cchecker/issues/111)). The pointers of
 a statement expression (`({ ...; p; })`) are checked so at the end of the
 statement around it, and its cleanup functions run at its own end.
 
