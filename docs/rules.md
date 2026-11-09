@@ -136,10 +136,15 @@ after the call, and it also leaves the function there. A lock held before the
 call is `CC-PATH-LOCK-NOT-RELEASED` on that way out (a `CC_PAIR` set and not
 restored is `CC-PATH-PAIR-NOT-RESTORED`), with the call as the last step of
 `path` (`7:72 may jump in check_size`): the code that catches the jump does not
-know the lock. Release it before the call, or check what may fail first. A
-suppression (`CC_IGNORE`) says that a jump releases it. A function that never
-returns stays an end of the path, even with `CC_MAY_JUMP`. The jump adds no
-state to the walk, so the limits below do not change.
+know the lock. Release it before the call, or check what may fail first. A jump
+does not run the `cleanup(f)` functions of the variables, so a lock that only a
+cleanup function releases is held on the jump. There is no setting that says a
+jump releases a lock: a suppression of the code on the function (`CC_IGNORE` or
+`cchecker: ignore`) does, and it hides the findings of that code on its returns
+too, not only those of the jumps. Only a direct call can jump: a call through a
+function pointer never does. A function that never returns stays an end of the
+path, even with `CC_MAY_JUMP`. The jump adds no state to the walk, so the limits
+below do not change.
 
 | Code | |
 |---|---|

@@ -61,6 +61,28 @@ Feature: Pairs of calls restored on every path
       | one restore of two sets | CC_PAIR(mask_signals, restore_signals) void mask_signals(void); CC_PAIR(enter_quiet, restore_signals) void enter_quiet(void); int f(int n) { mask_signals(); enter_quiet(); restore_signals(); return n; }                                 |
       | restore alone           | CC_PAIR(mask_signals, restore_signals) void mask_signals(void); int reset(int n) { restore_signals(); return n; }                                                                                                                          |
 
+  Scenario Outline: A set not restored at a call that may jump out is a finding (<case>)
+    Given the C file "guard.c" holds:
+      """
+      #include "cchecker.h"
+
+      void mask_signals(void); void restore_signals(void); <mark> int check(int n);
+
+      CC_PAIR(mask_signals, restore_signals) int guarded(int n) { <body> }
+      """
+    When I run cchecker with "--tools rules --json $DIR/guard.c -- -I../include"
+    Then the exit code is <exit>
+    And the output <found>:
+      """
+      "CC-PATH-PAIR-NOT-RESTORED"
+      """
+
+    Examples:
+      | case          | mark        | body                                                         | exit | found            |
+      | marked        | CC_MAY_JUMP | mask_signals(); int r = check(n); restore_signals(); return r; | 1    | includes         |
+      | not marked    |             | mask_signals(); int r = check(n); restore_signals(); return r; | 0    | does not include |
+      | checked first | CC_MAY_JUMP | int r = check(n); mask_signals(); restore_signals(); return r; | 0    | does not include |
+
   Scenario Outline: A restore with no set before it is a finding in a function that calls the set (<case>)
     Given the C file "guard.c" holds:
       """

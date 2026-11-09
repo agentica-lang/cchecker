@@ -106,9 +106,13 @@ key (`trace (assume.stop)`), checked as those of `[roots]` are.
 or call `longjmp` on an error), as `CC_MAY_JUMP` does on a declaration: a call
 of one is a way out of the caller, where the ownership rules and the lock rules
 check what the path still owns or holds ([Ownership](ownership.md),
-[Locks](rules.md#locks-on-every-path)). The other rules do not change. A name
-that no function of the compile database declares is an error (exit 2), as for
-`short` and `stop` (`raise_type_error (assume.may_jump)`).
+[Locks](rules.md#locks-on-every-path)). The other rules do not change. Only a
+direct call can jump: a call through a function pointer never does, whatever
+function it reaches. A function that is both `stop` and `may_jump` is both: no
+walk goes into it, and a call of it is still a way out of its caller, as `stop`
+is about what the function calls and `may_jump` about the path of the caller. A
+name that no function of the compile database declares is an error (exit 2), as
+for `short` and `stop` (`raise_type_error (assume.may_jump)`).
 
 A short lock is one held for a few instructions: a lock whose field or global is
 marked `CC_NO_SYSCALL_UNDER()`, or whose class `[assume] short_locks` names:

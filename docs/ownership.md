@@ -27,10 +27,12 @@ returns, each one is freed or handed on: returned, stored in a `CC_OWNS` field
 `[assume] may_jump`, see [Locks](rules.md#locks-on-every-path)) is a way out
 too: each one that still owns after the call is a leak, with the call as the
 last step of `path`. What the call itself frees or takes (a `CC_FREES` or
-`CC_OWNS` parameter) is the callee's from the call on, jump or not. Stored
-anywhere else or passed to another parameter, it is lent and still owns. A
-condition that tells that a pointer is null (`if (!p)`, `if ((p = malloc(n)) ==
-NULL)`) leaves it owning nothing on that side.
+`CC_OWNS` parameter) is the callee's from the call on, jump or not. A jump does
+not run the `cleanup(f)` functions of the variables, and a call through a
+function pointer never jumps. Stored anywhere else or passed to another
+parameter, it is lent and still owns. A condition that tells that a pointer is
+null (`if (!p)`, `if ((p = malloc(n)) == NULL)`) leaves it owning nothing on
+that side.
 
 A local without a mark that gets a pointer that owns (`char *c = p`) stands for
 it: freeing `c` frees `p`; a `malloc` into it later owns nothing, as in any

@@ -359,8 +359,8 @@ Feature: Ownership on every path
       #include "string.h"
       #include "cchecker.h"
       struct conf { CC_OWNS char *path; int mode; };
-      <mark> int as_mode(const char *text); <mark> int adopt_mode(CC_OWNS struct conf *c, const char *text);
-      void keep(CC_OWNS struct conf *c);
+      <mark> int as_mode(const char *text); <adopt> int adopt_mode(CC_OWNS struct conf *c, const char *text);
+      <mark> CC_OWNS char *dup_mode(const char *text); <mark> int check_conf(struct conf *c); void keep(CC_OWNS struct conf *c);
 
       int start(const char *path, const char *mode) { <body> }
       """
@@ -377,14 +377,31 @@ Feature: Ownership on every path
       """
 
     Examples:
-      | case             | mark                    | list                    | body                                                                                                                                           | exit | found            |
-      | marked           | CC_MAY_JUMP             |                         | CC_OWNS struct conf *c = malloc(sizeof *c); if (!c) return -1; c->path = strdup(path); c->mode = as_mode(mode); keep(c); return 0;             | 1    | includes         |
-      | listed           |                         | may_jump = ["as_mode"]  | CC_OWNS struct conf *c = malloc(sizeof *c); if (!c) return -1; c->path = strdup(path); c->mode = as_mode(mode); keep(c); return 0;             | 1    | includes         |
-      | not marked       |                         |                         | CC_OWNS struct conf *c = malloc(sizeof *c); if (!c) return -1; c->path = strdup(path); c->mode = as_mode(mode); keep(c); return 0;             | 0    | does not include |
-      | checked first    | CC_MAY_JUMP             |                         | int m = as_mode(mode); CC_OWNS struct conf *c = malloc(sizeof *c); if (!c) return -1; c->path = strdup(path); c->mode = m; keep(c); return 0; | 0    | does not include |
-      | handed on first  | CC_MAY_JUMP             |                         | CC_OWNS struct conf *c = malloc(sizeof *c); if (!c) return -1; c->path = strdup(path); keep(c); return as_mode(mode);                          | 0    | does not include |
-      | taken by the call | CC_MAY_JUMP            |                         | CC_OWNS struct conf *c = malloc(sizeof *c); if (!c) return -1; c->path = strdup(path); return adopt_mode(c, mode);                             | 0    | does not include |
-      | never returns    | CC_NORETURN CC_MAY_JUMP |                         | CC_OWNS struct conf *c = malloc(sizeof *c); if (!c) return -1; c->path = strdup(path); c->mode = as_mode(mode); keep(c); return 0;             | 0    | does not include |
+      | case               | mark                    | adopt       | list                   | body                                                                                                                                          | exit | found            |
+      | marked             | CC_MAY_JUMP             |             |                        | CC_OWNS struct conf *c = malloc(sizeof *c); if (!c) return -1; c->path = strdup(path); c->mode = as_mode(mode); keep(c); return 0;            | 1    | includes         |
+      | listed             |                         |             | may_jump = ["as_mode"] | CC_OWNS struct conf *c = malloc(sizeof *c); if (!c) return -1; c->path = strdup(path); c->mode = as_mode(mode); keep(c); return 0;            | 1    | includes         |
+      | lent to the call   | CC_MAY_JUMP             |             |                        | CC_OWNS struct conf *c = malloc(sizeof *c); if (!c) return -1; int r = check_conf(c); free(c); return r;                                      | 1    | includes         |
+      | not marked         |                         |             |                        | CC_OWNS struct conf *c = malloc(sizeof *c); if (!c) return -1; c->path = strdup(path); c->mode = as_mode(mode); keep(c); return 0;            | 0    | does not include |
+      | checked first      | CC_MAY_JUMP             |             |                        | int m = as_mode(mode); CC_OWNS struct conf *c = malloc(sizeof *c); if (!c) return -1; c->path = strdup(path); c->mode = m; keep(c); return 0; | 0    | does not include |
+      | handed on first    | CC_MAY_JUMP             |             |                        | CC_OWNS struct conf *c = malloc(sizeof *c); if (!c) return -1; c->path = strdup(path); keep(c); return as_mode(mode);                         | 0    | does not include |
+      | taken by the call  |                         | CC_MAY_JUMP |                        | CC_OWNS struct conf *c = malloc(sizeof *c); if (!c) return -1; c->path = strdup(path); return adopt_mode(c, mode);                            | 0    | does not include |
+      | result of the call | CC_MAY_JUMP             |             |                        | CC_OWNS char *p = dup_mode(mode); free(p); return 0;                                                                                          | 0    | does not include |
+      | never returns      | CC_NORETURN CC_MAY_JUMP |             |                        | CC_OWNS struct conf *c = malloc(sizeof *c); if (!c) return -1; c->path = strdup(path); c->mode = as_mode(mode); keep(c); return 0;            | 0    | does not include |
+
+  Scenario: A pointer that leaks on a jump and on a return is one finding
+    Given the C file "jump.c" holds:
+      """
+      #include "stdlib.h"
+      #include "cchecker.h"
+      CC_MAY_JUMP int as_mode(const char *text);
+      int start(const char *mode) { CC_OWNS char *c = malloc(8); if (!c) return -1; c[0] = (char)as_mode(mode); return 0; }
+      """
+    When I run cchecker with "--tools rules --json $DIR/jump.c -- -I../include"
+    Then the exit code is 1
+    And the output includes once:
+      """
+      "code":"CC-OWN-LEAK"
+      """
 
   Scenario: The path of a leak on a jump ends at the call that may jump
     Given the C file "jump.c" holds:

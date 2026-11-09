@@ -336,7 +336,7 @@ def walked(walker: Walker) -> Walk
 end
 
 # A call that may jump out is a way out of the function too, with the locks the path holds before the call: one that
-# jumps did not finish, so it took and released nothing. The jump is an error exit (`failed`).
+# jumps did not finish, so it took and released nothing. The jump is an error exit (`failed: true` for `with_exit`).
 def with_jump(found: Map[String, Finding], walker: Walker, item: Item, event: Event) -> Map[String, Finding]
   case event
     Event.Call(site) ->

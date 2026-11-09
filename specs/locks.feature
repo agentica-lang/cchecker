@@ -136,7 +136,7 @@ Feature: Locks on every path
       #include "cchecker.h"
 
       struct queue { pthread_mutex_t mu; int n; };
-      <mark> int check_size(int n);
+      <mark> int check_size(int n); CC_RELEASES(*m) static void drop(pthread_mutex_t **m) { pthread_mutex_unlock(*m); }
 
       int push(struct queue *q, int n) { <body> }
       """
@@ -153,15 +153,17 @@ Feature: Locks on every path
       """
     And the output <found>:
       """
-      "path":["7:36 takes q->mu","7:72 may jump in check_size"]
+      <last>
       """
 
     Examples:
-      | case          | mark        | list                       | body                                                                                                 | exit | found            |
-      | marked        | CC_MAY_JUMP |                            | pthread_mutex_lock(&q->mu); q->n += check_size(n); pthread_mutex_unlock(&q->mu); return 0;           | 1    | includes         |
-      | listed        |             | may_jump = ["check_size"]  | pthread_mutex_lock(&q->mu); q->n += check_size(n); pthread_mutex_unlock(&q->mu); return 0;           | 1    | includes         |
-      | not marked    |             |                            | pthread_mutex_lock(&q->mu); q->n += check_size(n); pthread_mutex_unlock(&q->mu); return 0;           | 0    | does not include |
-      | checked first | CC_MAY_JUMP |                            | int k = check_size(n); pthread_mutex_lock(&q->mu); q->n += k; pthread_mutex_unlock(&q->mu); return 0; | 0    | does not include |
+      | case          | mark                    | list                      | body                                                                                                                      | exit | found            | last                                                      |
+      | marked        | CC_MAY_JUMP             |                           | pthread_mutex_lock(&q->mu); q->n += check_size(n); pthread_mutex_unlock(&q->mu); return 0;                                | 1    | includes         | "path":["7:36 takes q->mu","7:72 may jump in check_size"] |
+      | listed        |                         | may_jump = ["check_size"] | pthread_mutex_lock(&q->mu); q->n += check_size(n); pthread_mutex_unlock(&q->mu); return 0;                                | 1    | includes         | "path":["7:36 takes q->mu","7:72 may jump in check_size"] |
+      | cleanup       | CC_MAY_JUMP             |                           | pthread_mutex_t *held __attribute__((cleanup(drop))) = &q->mu; pthread_mutex_lock(held); q->n += check_size(n); return 0; | 1    | includes         | may jump in check_size"]                                  |
+      | not marked    |                         |                           | pthread_mutex_lock(&q->mu); q->n += check_size(n); pthread_mutex_unlock(&q->mu); return 0;                                | 0    | does not include | may jump in check_size                                    |
+      | checked first | CC_MAY_JUMP             |                           | int k = check_size(n); pthread_mutex_lock(&q->mu); q->n += k; pthread_mutex_unlock(&q->mu); return 0;                     | 0    | does not include | may jump in check_size                                    |
+      | never returns | CC_NORETURN CC_MAY_JUMP |                           | pthread_mutex_lock(&q->mu); q->n += check_size(n); pthread_mutex_unlock(&q->mu); return 0;                                | 0    | does not include | may jump in check_size                                    |
 
   Scenario: The path of a finding goes from the lock to the return that leaves it held
     Given the C file "pop.c" holds:
