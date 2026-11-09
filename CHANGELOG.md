@@ -4,6 +4,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- `include/cchecker.h`: the macros are empty unless cchecker dumps the AST (`CCHECKER_AST`), so a normal clang build no
+  longer carries an `annotate` attribute on every marked field and local. **Breaking:** a project that read the
+  `annotate` attribute defines the macros itself.
+
 ## [0.1.0] - 2026-11-08
 
 The first release.

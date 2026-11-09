@@ -62,8 +62,8 @@ findings, `1` new findings, `2` a usage error or a tool error (a missing tool, a
 timeout, a file that does not compile).
 
 Mark a function for the rules with the macros of `include/cchecker.h`, which are
-empty with any compiler but clang (all of them are in
-[Annotations](docs/rules.md#annotations)):
+empty in a normal build and only mark code while cchecker dumps the AST
+(`CCHECKER_AST`; all of them are in [Annotations](docs/rules.md#annotations)):
 
 ```c
 #include "cchecker.h"

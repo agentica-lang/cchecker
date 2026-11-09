@@ -33,7 +33,8 @@ def main() -> Void
     BDD.step("I run cchecker in its folder with {string}", &run_in_folder),
     BDD.step("I run cchecker in its folder {string} with {string}", &run_in_subfolder),
     BDD.step("the folder {string} is empty", &folder_empty),
-    BDD.step("clang dumps the AST of {string}", &dump_ast),
+    BDD.step("clang dumps the AST of {string} with CCHECKER_AST", &dump_ast),
+    BDD.step("clang preprocesses {string}", &preprocess),
     BDD.step("clang dumps the JSON AST of {string}", &dump_json_ast),
     BDD.step("the dump is larger than 1 MiB", &dump_is_large),
     BDD.step("the exit code is {int}", &exit_code_is),
@@ -166,9 +167,19 @@ def folder_empty(ctx: BDD.Context, args: List[String]) -> BDD.Context
   end
 end
 
-# The text dump, because the JSON dump of clang 19 leaves out the string of an annotate attribute.
+# The text dump with CCHECKER_AST, the define the rules dump uses (the rules read the JSON dump; the text shows
+# the marks).
 def dump_ast(ctx: BDD.Context, args: List[String]) -> BDD.Context
-  return run_program(ctx, "clang", ["-Xclang", "-ast-dump", "-fsyntax-only", "-I../include", args[0]])
+  return run_program(
+    ctx,
+    "clang",
+    ["-w", "-DCCHECKER_AST", "-Xclang", "-ast-dump", "-fsyntax-only", "-I../include", args[0]],
+  )
+end
+
+# What a normal build of a project sees: no CCHECKER_AST.
+def preprocess(ctx: BDD.Context, args: List[String]) -> BDD.Context
+  return run_program(ctx, "clang", ["-E", "-I../include", args[0]])
 end
 
 # The JSON dump as the rules tool asks for it, to show that a fixture is larger than what `Process.output` holds.

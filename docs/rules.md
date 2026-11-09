@@ -13,12 +13,14 @@ collector. The codes are listed in the README and described below and in
 restore)`, `CC_OWNS`, `CC_FREES`, `CC_GC`, `CC_GC_ALLOC`, `CC_ASSUME_SHORT` (the
 function counts as fine for `CC_SHORT`), `CC_STOP` (no rule walks into the
 function; both are assumptions, see [Settings](settings.md)) and
-`CC_IGNORE("CODE", "reason")` (a suppression). With clang each is
-`__attribute__((annotate("cchecker:...")))`; with any other compiler it is
-empty. When cchecker dumps the AST it defines `CCHECKER_AST`, and the macros
-become `deprecated("cchecker:...")`: the JSON AST of clang 19 drops the text of
-`annotate` and keeps the message of `deprecated`. The dump runs with `-w`, so
-this gives no warning.
+`CC_IGNORE("CODE", "reason")` (a suppression). The macros are empty, in every
+build and with every compiler, except when cchecker dumps the AST: it defines
+`CCHECKER_AST`, and with clang the macros become
+`__attribute__((deprecated("cchecker:...")))` (the JSON AST of clang 19 drops the
+text of `annotate` and keeps the message of `deprecated`). The dump runs with
+`-w`, so this gives no warning. A normal build of your project carries no
+annotation; a project that wants an attribute for another tool defines the
+macros itself.
 
 ```c
 #include "cchecker.h"
