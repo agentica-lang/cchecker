@@ -4,6 +4,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- The docs as a site, <https://agentica-lang.github.io/cchecker/>: README.md and docs/, with search and a Markdown
+  copy of each page.
+
 ### Changed
 
 - cchecker needs Agentica 0.27.0 or later: the C side of its native scan module is made by native-gen.

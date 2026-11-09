@@ -5,3 +5,6 @@ tmp/
 dist/
 specs/scratch/
 .bench/
+site/public/
+site/resources/
+site/.hugo_build.lock

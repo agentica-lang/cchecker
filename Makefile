@@ -60,3 +60,40 @@ BENCH_JOBS ?=
 # The rules on the C VM of Agentica (bench/run.sh): its wall time and peak RSS. It fetches Agentica into .bench/.
 bench:
 	@sh bench/run.sh $(AGENTICA_BENCH_COMMIT) $(BENCH_JOBS)
+
+# The docs site (Hugo) in site/public: README.md and docs/ with the docs theme, the submodule site/themes/docs-theme
+# (`git submodule update --init`). It needs Hugo 0.167.0 or later and Dart Sass (pinned in .github/workflows/pages.yml)
+# on PATH or in DART_SASS. The version is the newest release of CHANGELOG.md. --panicOnWarning: a Hugo warning fails
+# the build. site-tools also checks the docs: each docs/*.md needs its `[[cascade]]` in site/hugo.toml (else it gets
+# no title and no place in the order), and no page may have an agentica or signature block, since the theme's
+# highlighter does not run here and the block would stay plain.
+.PHONY: site site-serve site-tools
+
+DART_SASS ?= $(HOME)/.local/opt/dart-sass
+site site-serve site-tools: export PATH := $(DART_SASS):$(PATH)
+SITE_VERSION := $(shell sed -n 's/^## \[\([0-9][0-9.]*\)\].*/\1/p' CHANGELOG.md | head -n 1)
+site site-serve: export HUGO_PARAMS_VERSION = $(SITE_VERSION)
+
+site-tools:
+	@test -e site/themes/docs-theme/hugo.toml || { echo "The site needs the theme: git submodule update --init" >&2; \
+		exit 1; }
+	@command -v hugo >/dev/null || { echo "The site needs Hugo 0.167.0 or later on PATH" >&2; exit 1; }
+	@v=$$(hugo version | sed -n 's/^hugo v\([0-9][0-9.]*\).*/\1/p'); \
+	if [ "$$(printf '%s\n' 0.167.0 "$$v" | sort -V | head -n 1)" != 0.167.0 ]; then \
+		echo "The site needs Hugo 0.167.0 or later, found $${v:-an unknown version}" >&2; exit 1; \
+	fi
+	@command -v sass >/dev/null || { echo "The site needs Dart Sass, on PATH or in $(DART_SASS)" >&2; exit 1; }
+	@for f in docs/*.md; do \
+		name=$$(basename "$$f" .md); \
+		grep -q "^    path = \"/$$name\"$$" site/hugo.toml || \
+			{ echo "$$f has no [[cascade]] with path = \"/$$name\" in site/hugo.toml" >&2; exit 1; }; \
+	done
+	@if grep -nE '^ *(```|~~~) *(agentica|agc|signature)' README.md docs/*.md; then \
+		echo "the site does not color agentica or signature blocks: add the theme's highlighter to make site" >&2; exit 1; \
+	fi
+
+site: site-tools
+	@hugo --source site --cleanDestinationDir --panicOnWarning $(HUGO_FLAGS)
+
+site-serve: site-tools
+	@hugo server --source site
