@@ -122,6 +122,24 @@ Feature: A strict baseline
       | the file named        | leak.c            | 1    | includes         |
       | the tool named        | --tools gcc       | 1    | includes         |
 
+  Scenario: With a check of the rules off, the stale entries of the other tools still fail the run, with no warning
+    Given the C file "leak.c" holds:
+      """
+      #include "stdlib.h" /* found in the system folders */
+
+      int use_buffer(int n) {
+        char *buf = malloc(10);
+        free(buf);
+        return n;
+      }
+      """
+    When I run cchecker in its folder with "--json -b base.json --strict-baseline --no-infer"
+    Then the exit code is 1
+    And the errors do not include:
+      """
+      --strict-baseline
+      """
+
   Scenario: A kind found fewer times than the baseline holds is stale for the rest
     Given the C file "twice.c" holds:
       """

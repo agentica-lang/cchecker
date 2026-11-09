@@ -199,16 +199,16 @@ Feature: Running the analyzers on C files
     Then the exit code is 2
 
     Examples:
-      | arguments                                  |
-      |                                            |
-      | --tools lint fixtures/clean.c              |
-      | --update-baseline fixtures/clean.c         |
-      | --strict-baseline fixtures/clean.c         |
+      | arguments                                                      |
+      |                                                                |
+      | --tools lint fixtures/clean.c                                  |
+      | --update-baseline fixtures/clean.c                             |
+      | --strict-baseline fixtures/clean.c                             |
       | -b x.json --update-baseline --strict-baseline fixtures/clean.c |
-      | --checks=-* -b x.json --strict-baseline fixtures/clean.c |
-      | --jobs 0 fixtures/clean.c                  |
-      | -p fixtures fixtures/clean.c               |
-      | -- -DLEAK                                  |
+      | --checks=-* -b x.json --strict-baseline fixtures/clean.c       |
+      | --jobs 0 fixtures/clean.c                                      |
+      | -p fixtures fixtures/clean.c                                   |
+      | -- -DLEAK                                                      |
 
   Scenario: A bug in a header that several files include is reported once
     When I run cchecker with "--tools gcc fixtures/uses_a.c fixtures/uses_b.c"
