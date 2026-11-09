@@ -405,12 +405,26 @@ def owning_of(tables: Tables, nodes: List[Json]) -> Flow.Owning
   bodies = declarations.flat_map do |n| Ast.children(n).select do |child| Ast.kind(child) == "CompoundStmt" end end
   inner = Flow.descendants(bodies).select do |n| Ast.kind(n) == "DeclStmt" end.flat_map(&Ast.children)
   fields: Set[String] = Set.new([])
+  unions: Set[String] = Set.new([])
   for nested in record_decls(nodes, "").concat(record_decls(inner, ""))
     record_fields = Ast.children(nested.node).select do |child| Ast.kind(child) == "FieldDecl" end
     for field in record_fields
       if own_marks(field).include?(OWNS)
         fields = fields.add(Ast.text(field, "id"))
+        if Ast.text(nested.node, "tagUsed") == "union"
+          unions = unions.add(Ast.text(field, "id"))
+        end
       end
+    end
+  end
+
+  # The records with a CC_OWNS field that is not in a union, by type name, with all their fields in the order of the
+  # items of an initializer.
+  records: Map[String, Flow.OwnedRecord] = {}
+  for name in tables.records.keys
+    record = tables.records[name]
+    if record.field_ids.any? do |id| fields.include?(id) and not unions.include?(id) end
+      records = records.put(name, Flow.OwnedRecord(ids: record.field_ids, names: record.fields))
     end
   end
 
@@ -426,6 +440,8 @@ def owning_of(tables: Tables, nodes: List[Json]) -> Flow.Owning
     outs: outs,
     fields: fields,
     globals: Set.new(globals),
+    unions: unions,
+    records: records,
   )
 end
 

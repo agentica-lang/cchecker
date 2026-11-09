@@ -186,6 +186,41 @@ Feature: Time and memory on large generated inputs
       | alias                | char *s = make(); char *t = s; if (!t) emit(0); else free(t); |
       | statement expression | char *q = ({ CC_OWNS char *t = make(); t; }); free(q);        |
 
+  Scenario: A local struct of eight CC_OWNS fields set under conditions stays in its bounds
+    Given the C file "fields.c" holds:
+      """
+      #include <stdlib.h>
+      #include "cchecker.h"
+      CC_OWNS char *make(void);
+      int pick(void);
+      struct many { CC_OWNS char *f0; CC_OWNS char *f1; CC_OWNS char *f2; CC_OWNS char *f3; CC_OWNS char *f4; CC_OWNS char *f5; CC_OWNS char *f6; CC_OWNS char *f7; };
+      void fill(void) {
+        struct many m = {0};
+        if (pick()) m.f0 = make();
+        if (pick()) m.f1 = make();
+        if (pick()) m.f2 = make();
+        if (pick()) m.f3 = make();
+        if (pick()) m.f4 = make();
+        if (pick()) m.f5 = make();
+        if (pick()) m.f6 = make();
+        if (pick()) m.f7 = make();
+        free(m.f0);
+        free(m.f1);
+        free(m.f2);
+        free(m.f3);
+        free(m.f4);
+        free(m.f5);
+        free(m.f6);
+        free(m.f7);
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/fields.c -- -I../include" in at most 1500 MiB and 20 seconds
+    Then the exit code is 0
+    And the output includes:
+      """
+      "incomplete_functions":[]
+      """
+
   Scenario: A lock held in a function with more paths than the walk follows is not inferred short
     Given the file "compile_commands.json" holds:
       """
