@@ -160,10 +160,13 @@ export def run(options: Options) -> Result[Int]
     end
   end
 
-  if options.tools.include?(Tool.Rules) and collected.locks and not scope.full
-    if not config.off.include?(Known.SECTIONS_FLAG)
+  inferred: Optional[List[String]] = none
+  if not config.off.include?(Known.SECTIONS_FLAG)
+    inferred = some(collected.short_locks)
+    if options.tools.include?(Tool.Rules) and collected.locks and not scope.full
       IO.warn(
-        "cchecker: no lock was found short by its critical sections: only a full run of a compile database sees them all",
+        "cchecker: no lock was found short by its critical sections: only a full run of a compile database sees " +
+        "them all",
       )
     end
   end
@@ -205,7 +208,7 @@ export def run(options: Options) -> Result[Int]
             suppressed: applied.suppressed,
             config: config.origin,
             unresolved_callbacks: collected.unresolved,
-            inferred_short_locks: collected.short_locks,
+            inferred_short_locks: inferred,
             unchecked_files: collected.unchecked,
             folded: gathered.folded,
           ),
@@ -226,7 +229,7 @@ export def run(options: Options) -> Result[Int]
             suppressed: applied.suppressed,
             config: config.origin,
             unresolved_callbacks: collected.unresolved,
-            inferred_short_locks: collected.short_locks,
+            inferred_short_locks: inferred,
             unchecked_files: collected.unchecked,
             folded: gathered.folded,
           ),

@@ -36,16 +36,16 @@ export struct Edge
 end
 
 ## The settings of a run. `origin` is the file they were read from, as the user wrote it, or "defaults". `off` holds
-## the `[library]` flags that are false (`short_lock_sections` unless set true); `short` and `hot` are the names of `[roots]`. `follow_cold` is
-## `[effects] follow_cold`: the walk goes into the functions that never return or are cold. `trusted` and `stops` are
-## `[assume] short` and `[assume] stop`: the functions that count as fine for CC_SHORT, and those no walk goes into;
-## `short_locks` is `[assume] short_locks`, the classes of the locks that taking is not blocking for CC_SHORT,
-## `stop_fields` is `[assume] stop_fields`, the function-pointer fields (`request.call`) whose calls no walk follows,
-## `may_jump` is `[assume] may_jump`, the functions that may jump out of their caller (as CC_MAY_JUMP), `jumps` is
-## `[assume] jumps`, those that always do and never return (as CC_JUMPS), `catches` is `[assume] catches`, those
-## that catch the jumps of what they call (as CC_CATCHES), `jump_releases` is `[assume] jump_releases`, the lock
-## helpers whose lock the catcher of a jump gives back (as CC_JUMP_RELEASES), and `stop_calls` is
-## `[assume] stop_calls`, the `caller>callee` pairs whose call no walk follows. `fold_ignoring` is `[database]
+## the `[library]` flags that are false (`short_lock_sections` unless set true); `short` and `hot` are the names of
+## `[roots]`. `follow_cold` is `[effects] follow_cold`: the walk goes into the functions that never return or are cold.
+## `trusted` and `stops` are `[assume] short` and `[assume] stop`: the functions that count as fine for CC_SHORT, and
+## those no walk goes into; `short_locks` is `[assume] short_locks`, the classes of the locks that taking is not
+## blocking for CC_SHORT, `stop_fields` is `[assume] stop_fields`, the function-pointer fields (`request.call`) whose
+## calls no walk follows, `may_jump` is `[assume] may_jump`, the functions that may jump out of their caller (as
+## CC_MAY_JUMP), `jumps` is `[assume] jumps`, those that always do and never return (as CC_JUMPS), `catches` is
+## `[assume] catches`, those that catch the jumps of what they call (as CC_CATCHES), `jump_releases` is `[assume]
+## jump_releases`, the lock helpers whose lock the catcher of a jump gives back (as CC_JUMP_RELEASES), and `stop_calls`
+## is `[assume] stop_calls`, the `caller>callee` pairs whose call no walk follows. `fold_ignoring` is `[database]
 ## fold_ignoring`, the defines that do not tell two entries of one file apart.
 export struct Config
   origin: String

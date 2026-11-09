@@ -73,6 +73,8 @@ export struct Site
   lost: Bool = false
   clears: List[String] = []
   fills: List[String] = []
+  # Whether the call takes a lock that no text names (`&current()->mu`, `&locks[hash(k)]`): no walk sees it.
+  unnamed: Bool = false
 end
 
 ## The value a condition has on an edge. `text` is "" for a condition that may change between two reads (a call).
@@ -1663,8 +1665,10 @@ def site_of(b: Builder, name: String, args: List[Arg], place: Ast.Place, noretur
   drops: List[Lock] = []
   waits: List[Lock] = []
   stops = Known.NORETURN.include?(name) or noreturn
+  unnamed = false
   if Known.TAKES.include?(name)
     takes = lock_of(args, 0)
+    unnamed = not args.empty? and takes.empty?
   end
 
   if Known.DROPS.include?(name)
@@ -1688,6 +1692,7 @@ def site_of(b: Builder, name: String, args: List[Arg], place: Ast.Place, noretur
     hands: owners_at(args, handed(b.ctx, name, key)),
     clears: owners_at(args.map(&by_address), freed(b.ctx, name, key)),
     fills: owners_at(args.map(&by_address), out_params(b.ctx, name)),
+    unnamed: unnamed,
   )
 
   case b.ctx.callees.get(key)
@@ -1696,6 +1701,7 @@ def site_of(b: Builder, name: String, args: List[Arg], place: Ast.Place, noretur
       taken = callee.locks.select do |lock| lock.takes end
       dropped = callee.locks.select do |lock| not lock.takes end
       return site.with(
+        unnamed: unnamed or taken.any? do |lock| annotated_lock(lock, texts).empty? end,
         takes: takes.concat(taken.flat_map do |lock| annotated_lock(lock, texts) end),
         drops: drops.concat(dropped.flat_map do |lock| annotated_lock(lock, texts) end),
         stops: stops or callee.stops,

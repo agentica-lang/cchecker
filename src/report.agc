@@ -16,7 +16,8 @@ import {Suppressed} from "suppressions"
 ## off, so the entries of the rules did not fail it and an update needs every check of the rules on. `version_changes`
 ## are the tools that ran with another version than the one that made the baseline. `folded` counts the entries of
 ## the compile database that were not run because they repeat a file with the same flags (see `Commands.fold`).
-## `inferred_short_locks` are the classes of the locks that the rules found short by their critical sections.
+## `inferred_short_locks` are the classes of the locks that the rules found short by their critical sections, or none
+## when that inference is off (then `--json` leaves the key out).
 export struct Report
   findings: List[Finding]
   baselined: Int
@@ -34,7 +35,7 @@ export struct Report
   rules_off: Bool = false
   version_changes: List[VersionChange] = []
   folded: Int = 0
-  inferred_short_locks: List[String] = []
+  inferred_short_locks: Optional[List[String]] = none
 end
 
 # The JSON form of a report, which says in `clean` whether the run is clean.
@@ -54,7 +55,6 @@ struct Encoded
   unchecked_files: List[UncheckedFile]
   version_changes: List[VersionChange]
   folded: Int
-  inferred_short_locks: List[String]
 end
 
 ## Returns the report for people: one line for each finding, a summary line, then one line for each stale entry of
@@ -85,7 +85,7 @@ end
 
 ## Returns the report as one JSON object for tools and agents.
 export def json(report: Report) -> String
-  return JSON.encode(
+  encoded = JSON.encode(
     Encoded(
       clean: report.findings.empty? and report.errors.empty? and not failed_stale?(report),
       findings: report.findings,
@@ -102,9 +102,14 @@ export def json(report: Report) -> String
       unchecked_files: report.unchecked_files,
       version_changes: report.version_changes,
       folded: report.folded,
-      inferred_short_locks: report.inferred_short_locks,
     ),
   )
+
+  # The key of an experimental inference is in the object only when it ran: the object ends with its `}`.
+  case report.inferred_short_locks
+    some(classes) -> return "#{encoded.slice(0, encoded.size - 1)},\"inferred_short_locks\":#{JSON.encode(classes)}}"
+    none -> return encoded
+  end
 end
 
 ## Returns the lines for standard error: one for each tool error.
@@ -140,12 +145,13 @@ end
 ## Returns the line for standard error that says how many locks the rules found short by their critical sections, or
 ## none.
 export def inferred_line(report: Report) -> Optional[String]
-  count = report.inferred_short_locks.size
+  classes = report.inferred_short_locks.unwrap_or([])
+  count = classes.size
   if count == 0
     return none
   end
 
-  first = report.inferred_short_locks.first
+  first = classes.first
   return some(
     "cchecker: #{count} #{plural(count, "lock")} found short by #{plural_its(count)} critical sections (first: " +
     "#{first}); --json lists them",

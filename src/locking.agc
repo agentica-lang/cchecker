@@ -109,9 +109,9 @@ end
 ## those of the paths it went through). `sections` are the calls made while a lock is held, in every function that
 ## takes or releases one, helpers included, and `partial` the classes whose sections are not all known: those of the
 ## functions whose paths the walk did not all go through, and those of a lock that a function returns or jumps out
-## with, or releases without holding it (a helper: one its marks do not name), as its caller holds the lock across
-## code that no walk sees. A
-## lock of a class that the inference cannot trust (`section_class`) is "" in both.
+## with, or releases without holding it (a helper: one its marks do not name), as its caller holds the lock across code
+## that no walk sees. A lock of a class that the inference cannot trust (`section_class`) is "" in both, and a take of
+## a lock that no text names (`unnamed` of a call) puts "" in `partial`.
 export struct Checked
   findings: List[Finding]
   incomplete: List[IncompleteFunction]
@@ -136,6 +136,10 @@ export def check(units: List[Unit]) -> Checked
   partial: Set[String] = Set.new([])
   for unit in units
     for body in unit.bodies
+      if not done.include?(body.key) and unnamed?(body)
+        partial = partial.add("")
+      end
+
       if not done.include?(body.key) and not locks_of(body).empty?
         # The body of a helper is how its lock works, so its findings are not kept; what it calls after it takes the
         # lock is still a section of that lock.
@@ -455,6 +459,22 @@ def annotated_keys(body: Body, function: Optional[Function]) -> Set[String]
   end
 
   return Set.new(inside.flat_map do |text| text.split(",") end.map do |lock| Flow.key_of(lock.strip) end)
+end
+
+# Whether the function takes a lock that no text names, so that its sections are not known.
+def unnamed?(body: Body) -> Bool
+  for node in body.nodes
+    case node.event
+      Event.Call(site) ->
+        if site.unnamed
+          return true
+        end
+
+      _ -> next
+    end
+  end
+
+  return false
 end
 
 # The keys of the locks of the findings of a walk that leave a lock to the caller: held at a return or a jump, or
