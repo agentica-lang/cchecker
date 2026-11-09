@@ -9,7 +9,7 @@ collector. The codes are listed in the README and described below and in
 
 `include/cchecker.h` defines the macros that the rules read: `CC_SHORT`,
 `CC_BLOCKING`, `CC_HOT`, `CC_ACQUIRES(lock)`, `CC_RELEASES(lock)`,
-`CC_NORETURN`, `CC_MAY_JUMP`, `CC_JUMPS`, `CC_CATCHES`,
+`CC_NORETURN`, `CC_MAY_JUMP`, `CC_JUMPS`, `CC_CATCHES`, `CC_JUMP_RELEASES`,
 `CC_NO_SYSCALL_UNDER(lock)`, `CC_LOCK_LEVEL(n)`, `CC_PAIR(set, restore)`,
 `CC_OWNS`, `CC_FREES`, `CC_OWNS_OUT`, `CC_GC`, `CC_GC_ALLOC`, `CC_ASSUME_SHORT`
 (the function counts as fine for `CC_SHORT`), `CC_STOP` (no rule walks into the
@@ -140,17 +140,14 @@ restored is `CC-PATH-PAIR-NOT-RESTORED`), with the call as the last step of
 `path` (`7:72 may jump in check_size`): the code that catches the jump does not
 know the lock. Release it before the call, or check what may fail first. A jump
 does not run the `cleanup(f)` functions of the variables, so a lock that only a
-cleanup function releases is held on the jump. There is no setting that says a
-jump releases a lock: a suppression of the code on the function (`CC_IGNORE` or
-`cchecker: ignore`) does, and it hides the findings of that code on its returns
-too, not only those of the jumps. Only a direct call can jump: a call through a
-function pointer never does. A call of a function that always jumps out and
-never returns (an interpreter's raise), marked `CC_JUMPS` or named in `[assume]
-jumps`, is that way out alone: the lock rules check it as a jump, with `jumps in
-check_size` as the last step, and the path ends there, so what comes after the
-call is not on that path. `CC_MAY_JUMP` on a function that never returns
-(`_Noreturn`, `CC_NORETURN`) is the same. The jump adds no state to the walk, so
-the limits below do not change.
+cleanup function releases is held on the jump. Only a direct call can jump: a
+call through a function pointer never does. A call of a function that always
+jumps out and never returns (an interpreter's raise), marked `CC_JUMPS` or named
+in `[assume] jumps`, is that way out alone: the lock rules check it as a jump,
+with `jumps in check_size` as the last step, and the path ends there, so what
+comes after the call is not on that path. `CC_MAY_JUMP` on a function that never
+returns (`_Noreturn`, `CC_NORETURN`) is the same. The jump adds no state to the
+walk, so the limits below do not change.
 
 A function that calls a function that may jump out or jumps (marked, listed, or
 found so in turn), directly, may jump out too, unless it catches the jump: it
@@ -170,6 +167,19 @@ exit). The jump of a function that catches still counts at its own calls:
 catching stops only what its callers see. A finding at an inferred jump has
 `may_jump_callers` in `source` of `--json`, and `[library] may_jump_callers =
 false` turns the inference off (see [Settings](settings.md)).
+
+A helper may record the lock it takes for the code that catches a jump, which
+gives it back (a count of nested takes, the lock held now). Mark such a
+`CC_ACQUIRES` or `CC_RELEASES` helper `CC_JUMP_RELEASES`, or name it in
+`[assume] jump_releases`: a lock that a function takes and releases only through
+such helpers is no finding at a jump, held (`NOT-RELEASED`) or released before
+it (`NOT-HELD`), and is still checked on every return. A lock that the function
+also takes or releases another way (`pthread_mutex_lock`, a helper without the
+mark) is checked at the jumps as before, since the catcher does not know that
+take. The mark is on the helper, not on the class of the lock, as two locks of
+one class (`lock.mutex`) may be taken one through a recording helper and the
+other not. A suppression of the code on the function (`CC_IGNORE` or `cchecker:
+ignore`) hides the findings of a jump too, and those of its returns with them.
 
 | Code | |
 |---|---|

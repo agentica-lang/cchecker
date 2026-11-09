@@ -31,8 +31,9 @@ WHOLE_NOTE = " (no [tool.cchecker] table; read as a cchecker file)"
 ## `short_locks` is `[assume] short_locks`, the classes of the locks that taking is not blocking for CC_SHORT,
 ## `stop_fields` is `[assume] stop_fields`, the function-pointer fields (`request.call`) whose calls no walk follows,
 ## `may_jump` is `[assume] may_jump`, the functions that may jump out of their caller (as CC_MAY_JUMP), `jumps` is
-## `[assume] jumps`, those that always do and never return (as CC_JUMPS), and `catches` is `[assume] catches`, those
-## that catch the jumps of what they call (as CC_CATCHES).
+## `[assume] jumps`, those that always do and never return (as CC_JUMPS), `catches` is `[assume] catches`, those
+## that catch the jumps of what they call (as CC_CATCHES), and `jump_releases` is `[assume] jump_releases`, the lock
+## helpers whose lock the catcher of a jump gives back (as CC_JUMP_RELEASES).
 export struct Config
   origin: String
   off: Set[String]
@@ -46,6 +47,7 @@ export struct Config
   may_jump: List[String] = []
   jumps: List[String] = []
   catches: List[String] = []
+  jump_releases: List[String] = []
 end
 
 ## Returns the settings of a run in `folder`, the project folder: those of `explicit` (the file of -c) when given.
@@ -105,6 +107,8 @@ export def from_table(origin: String, prefix: String, table: Toml.Value, note: S
             "may_jump" -> config = config.with(may_jump: try names_of(origin, path, assume.get(name).unwrap!))
             "jumps" -> config = config.with(jumps: try names_of(origin, path, assume.get(name).unwrap!))
             "catches" -> config = config.with(catches: try names_of(origin, path, assume.get(name).unwrap!))
+            "jump_releases" ->
+              config = config.with(jump_releases: try names_of(origin, path, assume.get(name).unwrap!))
             _ -> return error(unknown(origin, path, note))
           end
         end

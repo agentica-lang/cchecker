@@ -141,7 +141,8 @@ export def run(options: Options) -> Result[Int]
     config.stop_fields.empty? and
     config.may_jump.empty? and
     config.jumps.empty? and
-    config.catches.empty?
+    config.catches.empty? and
+    config.jump_releases.empty?
   )
 
   if options.tools.include?(Tool.Rules) and assumes
