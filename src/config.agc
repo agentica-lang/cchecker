@@ -416,7 +416,7 @@ end
 
 # The lock classes of `owned_locks`: `struct.field`, a global, or `name@path` for a static global; never a wrapper.
 def classes_of(origin: String, path: String, value: Toml.Value) -> Result[List[String]]
-  wrong = "#{origin}: #{path} must be a list of lock classes (struct.field, or the name of a global)"
+  wrong = "#{origin}: #{path} must be a list of lock classes (struct.field, the name of a global, or name@path)"
   case value
     Toml.Value.Array(items) ->
       names: List[String] = []
