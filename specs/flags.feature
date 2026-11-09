@@ -1,11 +1,11 @@
 Feature: Calls that do not block by their flags
   A call of `open` or `openat` with O_NONBLOCK, of `recv`, `send`, `recvfrom` or `sendto` with MSG_DONTWAIT, or of
-  `waitpid`, `wait4` or `waitid` with WNOHANG, does not block, and neither does `uv_run` with UV_RUN_NOWAIT, so they
-  are not blocking calls for CC_SHORT. The rules read the flag argument when it is a constant, or a local variable
-  that gets only constants and gets one before the call on every path, with the values of the target that clang builds
-  for (Linux or macOS); another variable, or a target whose values the rules do not know, leaves the call blocking.
-  `[library] libc_nonblocking_flags = false` turns this off. The calls on a descriptor in a function of `[assume]
-  nonblocking` do not block either.
+  `waitpid`, `wait3`, `wait4` or `waitid` with WNOHANG, does not block, and neither does `uv_run` with UV_RUN_NOWAIT,
+  so they are not blocking calls for CC_SHORT. The rules read the flag argument when it is a constant, or a local
+  variable that gets only constants and gets one before the call on every path, with the values of the target that
+  clang builds for (Linux or macOS); another variable, or a target whose values the rules do not know, leaves the call
+  blocking. `[library] libc_nonblocking_flags = false` turns this off. The calls on a descriptor in a function of
+  `[assume] nonblocking` do not block either.
 
   Scenario Outline: A call with a flag that makes it return at once is not blocking (<case>)
     Given the C file "flags.c" holds:
@@ -41,8 +41,13 @@ Feature: Calls that do not block by their flags
       | a local given away      | int flags = READ_NOW; int *p = &flags; (void)p; return open(path, flags);                                                      | 1    | includes         |
       | a local and a goto      | int flags = READ_NOW; goto done; done: return open(path, flags);                                                               | 1    | includes         |
       | a local and a case      | int flags; switch (fd) { case 0: fd++; flags = READ_NOW; case 1: return open(path, flags); } return 0;                         | 1    | includes         |
+      | an extern local         | extern int ext_flags; ext_flags = READ_NOW; return open(path, ext_flags);                                                      | 1    | includes         |
+      | a back edge             | int flags = READ_NOW; for (int i = 0; i < 2; i++) { (void)open(path, flags); flags = O_RDONLY; } return 0;                     | 1    | includes         |
+      | a local with \|=        | int flags = O_RDONLY; flags \|= O_NONBLOCK; return open(path, flags);                                                          | 1    | includes         |
+      | a local in an asm       | int flags = READ_NOW; __asm__("" : "+r"(flags)); return open(path, flags);                                                     | 1    | includes         |
       | waitpid                 | return waitpid(fd, 0, WNOHANG);                                                                                                | 0    | does not include |
       | waitpid without flags   | return waitpid(fd, 0, 0);                                                                                                      | 1    | includes         |
+      | wait3                   | return wait3(0, WNOHANG, 0);                                                                                                   | 0    | does not include |
       | wait4                   | return wait4(fd, 0, WNOHANG \| WUNTRACED, 0);                                                                                  | 0    | does not include |
       | waitid                  | siginfo_t info; return waitid(P_PID, (id_t)fd, &info, WEXITED \| WNOHANG);                                                     | 0    | does not include |
       | waitid without WNOHANG  | siginfo_t info; return waitid(P_PID, (id_t)fd, &info, WEXITED);                                                                | 1    | includes         |
@@ -96,15 +101,17 @@ Feature: Calls that do not block by their flags
       """
 
     Examples:
-      | case                 | code                                  | exit | short            |
-      | UV_RUN_NOWAIT        | return uv_run(loop, UV_RUN_NOWAIT);   | 0    | does not include |
-      | the value 2          | return uv_run(loop, (uv_run_mode)2);  | 0    | does not include |
-      | UV_RUN_ONCE          | return uv_run(loop, UV_RUN_ONCE);     | 1    | includes         |
-      | UV_RUN_DEFAULT       | return uv_run(loop, UV_RUN_DEFAULT);  | 1    | includes         |
-      | a mode in a variable | return uv_run(loop, mode);            | 1    | includes         |
-      | one call of two      | (void)uv_run(loop, UV_RUN_NOWAIT); return uv_run(loop, UV_RUN_ONCE); | 1 | includes |
-      | two modes joined     | return uv_run(loop, UV_RUN_ONCE \| UV_RUN_NOWAIT); | 1 | includes |
-      | the value 3          | return uv_run(loop, (uv_run_mode)3);  | 1    | includes         |
+      | case                   | code                                                                 | exit | short            |
+      | UV_RUN_NOWAIT          | return uv_run(loop, UV_RUN_NOWAIT);                                  | 0    | does not include |
+      | the value 2            | return uv_run(loop, (uv_run_mode)2);                                 | 0    | does not include |
+      | UV_RUN_ONCE            | return uv_run(loop, UV_RUN_ONCE);                                    | 1    | includes         |
+      | UV_RUN_DEFAULT         | return uv_run(loop, UV_RUN_DEFAULT);                                 | 1    | includes         |
+      | a mode in a variable   | return uv_run(loop, mode);                                           | 1    | includes         |
+      | a mode in a local      | uv_run_mode m = UV_RUN_NOWAIT; return uv_run(loop, m);               | 0    | does not include |
+      | UV_RUN_ONCE in a local | uv_run_mode m = UV_RUN_ONCE; return uv_run(loop, m);                 | 1    | includes         |
+      | one call of two        | (void)uv_run(loop, UV_RUN_NOWAIT); return uv_run(loop, UV_RUN_ONCE); | 1    | includes         |
+      | two modes joined       | return uv_run(loop, UV_RUN_ONCE \| UV_RUN_NOWAIT);                   | 1    | includes         |
+      | the value 3            | return uv_run(loop, (uv_run_mode)3);                                 | 1    | includes         |
 
   Scenario: The mode of uv_run is the same on every target, so a target whose flags are not known says nothing of it
     Given the C file "run.c" holds:
@@ -229,3 +236,25 @@ Feature: Calls that do not block by their flags
       | a sleep in a listed one   | return on_sleep();             | ["on_sleep"]              | 1    | includes         |
       | a read one call below     | return read_twice(fd, buf);    | ["read_twice"]            | 1    | includes         |
       | both listed               | return read_twice(fd, buf);    | ["read_twice", "on_read"] | 0    | does not include |
+
+  Scenario: A function of the project named like a descriptor call is still followed in a function of [assume] nonblocking
+    Given the C file "own.c" holds:
+      """
+      #include "cchecker.h"
+
+      unsigned int sleep(unsigned int seconds);
+      int read(int fd, char *buf) { return (int)sleep(1) + fd + buf[0]; }
+      int on_read(int fd, char *buf) { return read(fd, buf); }
+      CC_SHORT int tick(int fd, char *buf) { return on_read(fd, buf); }
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [assume]
+      nonblocking = ["on_read"]
+      """
+    When I run cchecker in its folder with "--tools rules --json own.c -- -I../../../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "CC-EFFECT-SHORT-BLOCKS"
+      """

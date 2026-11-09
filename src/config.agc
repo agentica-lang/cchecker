@@ -155,6 +155,23 @@ export def defaults() -> Config
   return Config(origin: DEFAULTS, off: Set.new(OFF_BY_DEFAULT), short: [], hot: [])
 end
 
+## Returns whether the settings have any list of `[assume]`. Each list is here, so a new one is not left out of the
+## checks that skip the work when there is none.
+export def assumes_any?(config: Config) -> Bool
+  return not (
+    config.trusted.empty? and
+    config.stops.empty? and
+    config.short_locks.empty? and
+    config.stop_fields.empty? and
+    config.stop_calls.empty? and
+    config.may_jump.empty? and
+    config.jumps.empty? and
+    config.catches.empty? and
+    config.jump_releases.empty? and
+    config.nonblocking.empty?
+  )
+end
+
 ## Returns the flags of `[library]` that a run knows, in the order of docs/settings.md.
 export def flags() -> List[String]
   return (

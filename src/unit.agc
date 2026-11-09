@@ -1070,11 +1070,13 @@ def flag_values(scope: Scope, call: Json, argument: Json) -> List[Json]
   id = Ast.referenced_id(value)
   nodes = Flow.descendants(scope.bodies)
   declared = nodes.select do |n| Ast.kind(n) == "VarDecl" and Ast.text(n, "id") == id end
-  # A goto may jump over the store that would come first; a static variable keeps the value of another call.
+  # A goto may jump over the store that would come first; a static variable keeps the value of another call, and an
+  # extern one is stored by other functions too; an asm statement may store what it names.
   if (
     declared.empty? or
-    Ast.text(declared.first, "storageClass") == "static" or
-    nodes.any? do |n| Ast.kind(n) == "GotoStmt" or Ast.kind(n) == "IndirectGotoStmt" end
+    not ["", "auto", "register"].include?(Ast.text(declared.first, "storageClass")) or
+    nodes.any? do |n| Ast.kind(n) == "GotoStmt" or Ast.kind(n) == "IndirectGotoStmt" end or
+    nodes.any? do |n| Ast.kind(n).end_with?("AsmStmt") and Flow.descendants([n]).any? do |d| refers?(d, id) end end
   )
     return [argument]
   end

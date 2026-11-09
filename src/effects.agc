@@ -207,17 +207,7 @@ end
 ## the calls through the fields of `[assume] stop_fields`, which no walk follows, and the direct calls of the pairs of
 ## `[assume] stop_calls`. A call through a copy of such a field (a local that got it) is still followed.
 export def assumed(units: List[Unit], config: Config.Config) -> List[Unit]
-  if (
-    config.trusted.empty? and
-    config.stops.empty? and
-    config.stop_fields.empty? and
-    config.stop_calls.empty? and
-    config.may_jump.empty? and
-    config.jumps.empty? and
-    config.catches.empty? and
-    config.jump_releases.empty? and
-    config.nonblocking.empty?
-  )
+  if not Config.assumes_any?(config)
     return units
   end
 
@@ -653,7 +643,12 @@ end
 # Whether every call of `callee` in `key` has the flag that makes it return at once, or is a call on a descriptor in a
 # function of `[assume] nonblocking`, so the short rule does not count it.
 def returns_at_once?(graph: Graph, walk: Walk, key: String, callee: String) -> Bool
-  if marked?(graph, key, NONBLOCKING) and Known.FD_CALLS.include?(name_of_key(graph.functions, callee))
+  # A function of the project named `read` is not the call of libc: what it calls still counts.
+  if (
+    marked?(graph, key, NONBLOCKING) and
+    not defined?(graph, callee) and
+    Known.FD_CALLS.include?(name_of_key(graph.functions, callee))
+  )
     return true
   end
 
@@ -802,15 +797,7 @@ end
 # The entries of `[assume]` that no function of the units has, with their key. A `name@file` counts when the file of
 # any declaration of the function, or of its definition, ends with the path: the same functions that `assumed` marks.
 def missing_assumed(units: List[Unit], config: Config.Config) -> List[String]
-  if (
-    config.trusted.empty? and
-    config.stops.empty? and
-    config.may_jump.empty? and
-    config.jumps.empty? and
-    config.catches.empty? and
-    config.jump_releases.empty? and
-    config.nonblocking.empty?
-  )
+  if not Config.assumes_any?(config)
     return []
   end
 

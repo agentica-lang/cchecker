@@ -139,18 +139,7 @@ export def run(options: Options) -> Result[Int]
     end
   end
 
-  assumes = not (
-    config.trusted.empty? and
-    config.stops.empty? and
-    config.short_locks.empty? and
-    config.stop_fields.empty? and
-    config.stop_calls.empty? and
-    config.may_jump.empty? and
-    config.jumps.empty? and
-    config.catches.empty? and
-    config.jump_releases.empty? and
-    config.nonblocking.empty?
-  )
+  assumes = Config.assumes_any?(config)
 
   if options.tools.include?(Tool.Rules) and assumes
     if not scope.full

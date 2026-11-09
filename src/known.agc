@@ -250,22 +250,23 @@ export NONBLOCKING_FLAG = "libc_nonblocking_flags"
 
 ## The calls that a flag makes return at once, and the place of their flags among their arguments (from 0):
 ## O_NONBLOCK for `open` and `openat`, MSG_DONTWAIT for `recv`, `send`, `recvfrom` and `sendto`, WNOHANG for
-## `waitpid`, `wait4` and `waitid`, and the mode UV_RUN_NOWAIT for `uv_run`.
+## `waitpid`, `wait3`, `wait4` and `waitid`, and the mode UV_RUN_NOWAIT for `uv_run`.
 export FLAG_ARGUMENTS: Map[String, Int] = {
-  "open": 1, "openat": 2, "recv": 3, "send": 3, "recvfrom": 3, "sendto": 3, "uv_run": 1, "waitpid": 2, "wait4": 2,
-  "waitid": 3,
+  "open": 1, "openat": 2, "recv": 3, "send": 3, "recvfrom": 3, "sendto": 3, "uv_run": 1, "waitpid": 2, "wait3": 1,
+  "wait4": 2, "waitid": 3,
 }
 
 ## The calls on a descriptor that return at once when it is non-blocking (O_NONBLOCK): those of the functions of
-## `[assume] nonblocking` are not blocking for CC_SHORT. `pread` and `pwrite` are not among them: they read a file,
-## which O_NONBLOCK does not make return at once.
+## `[assume] nonblocking` are not blocking for CC_SHORT. The setting asserts that every descriptor they use there is a
+## socket, a pipe or a terminal: O_NONBLOCK does not make a `read` or `write` of a regular file return at once, and
+## such a call in a listed function is hidden too. `pread` and `pwrite`, which only read files, are not among them.
 export FD_CALLS = Set.new([
   "read", "write", "readv", "writev", "recv", "send", "recvfrom", "sendto", "recvmsg", "sendmsg", "recvmmsg",
   "sendmmsg", "accept", "accept4", "connect",
 ])
 
 # The calls whose flag is WNOHANG.
-WAIT_CALLS = ["waitpid", "wait4", "waitid"]
+WAIT_CALLS = ["waitpid", "wait3", "wait4", "waitid"]
 
 # The value of UV_RUN_NOWAIT, the same on every target: libuv's `uv_run_mode` is an enum (DEFAULT 0, ONCE 1, NOWAIT 2).
 UV_RUN_NOWAIT_VALUE = 2

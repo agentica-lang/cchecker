@@ -6,7 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- `waitpid`, `wait4` and `waitid` with `WNOHANG` are not blocking calls for `CC_SHORT` (`libc_nonblocking_flags`).
+- `waitpid`, `wait3`, `wait4` and `waitid` with `WNOHANG` are not blocking calls for `CC_SHORT`
+  (`libc_nonblocking_flags`).
 - The flag of `libc_nonblocking_flags` may be in a local variable that gets only constants and gets one before the
   call on every path (`options = WNOHANG; waitpid(pid, &status, options)`).
 - `[assume] nonblocking = ["uv__read"]`: the calls on a descriptor (`read`, `write`, `recv`, `send`, `accept`, ...)
