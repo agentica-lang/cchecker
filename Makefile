@@ -32,7 +32,7 @@ test: deps native
 test-slow: deps native
 	@agentica test --tags "@slow" specs
 
-# The packages of agentica.lock (prop, for the property tests of specs/) into deps/. cchecker itself needs none.
+# The packages of agentica.lock into deps/: prop (property tests) and native-gen (`make header`). cchecker itself needs none.
 deps:
 	@agentica install > /dev/null
 

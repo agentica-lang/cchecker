@@ -136,7 +136,9 @@ make check       # agentica check, then agentica lint --strict (make lint alone)
 make fmt-check   # agentica fmt --check; `agentica fmt` fixes it
 make test        # agentica test --jobs 4 without the @slow scenarios, from the root of the repository
 make test-slow   # the @slow scenarios only (the bounds of specs/limits.feature, the property tests on many cases)
-make deps        # agentica install: prop into deps/; make check, test and test-slow run it first
+make deps        # agentica install: prop (property tests) and native-gen (make header) into deps/; make check, test and test-slow run it first
+make header      # regenerates native/cchecker_scan_native.h from the extern module of src/scan.agc (native-gen)
+make header-check # fails when that header is stale; CI runs it
 make native      # builds the native module once; make test and make test-slow run it first
 make bench       # the rules on the C VM of Agentica: wall time and peak RSS (BENCH_JOBS=2 for -j 2)
 ```

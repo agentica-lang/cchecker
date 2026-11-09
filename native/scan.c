@@ -410,15 +410,15 @@ static an_term file_values_end(an_env *env, file_values *f, lines *r) {
   return result;
 }
 
-an_term cchecker_scan_compact(an_env *env, ng_str from, ng_str to_text, int64_t timeout_ms) {
+an_term cchecker_scan_compact(an_env *env, ng_str from, ng_str to, int64_t timeout_ms) {
   static const char spaces[INDENT_CAP] = {' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' '};
   if (timeout_ms < 0) return an_badarg(env, 2);
-  char *to = c_copy(to_text);
+  char *path = c_copy(to);
   if (!to) return an_raise(env, "out of memory");
   lines r;
   an_term result;
   if (!open_lines_until(env, from, timeout_ms, &r, &result)) {
-    free(to);
+    free(path);
     return r.error ? copy_error(env, &r, r.error) : result;
   }
   /* The bytes are copied as they are: `scan` checks them. */
@@ -429,8 +429,8 @@ an_term cchecker_scan_compact(an_env *env, ng_str from, ng_str to_text, int64_t 
    * about -j 64 of these) the call fails, and new pipes of the user get only 2 pages: slower, still correct. */
   (void)fcntl(r.fd, F_SETPIPE_SZ, (int)BLOCK_BYTES);
 #endif
-  FILE *out = fopen(to, "wb");
-  free(to);
+  FILE *out = fopen(path, "wb");
+  free(path);
   file_values f = {0};
   bool written = out != NULL, noted = true, done = false;
   slice line;
@@ -891,18 +891,18 @@ static void step(state *s, slice line) {
   located_or_kept(s, text);
 }
 
-an_term cchecker_scan_scan(an_env *env, ng_str path, cchecker_scan_list_Place list, bool prune) {
+an_term cchecker_scan_scan(an_env *env, ng_str path, cchecker_scan_list_Place places, bool prune) {
   state s;
   memset(&s, 0, sizeof s);
   s.prune = prune;
   s.encoded = empty_encoded;
   s.encoded_n = sizeof empty_encoded - 1;
-  s.places = calloc(list.len ? list.len : 1, sizeof *s.places);
+  s.places = calloc(places.len ? places.len : 1, sizeof *s.places);
   if (!s.places) return an_raise(env, "out of memory");
   /* The strings of the places are borrowed from the argument, which lives until the call returns. */
   cchecker_scan_Place item;
   int more;
-  while ((more = cchecker_scan_list_Place_next(env, &list, &item)) == 1) {
+  while ((more = cchecker_scan_list_Place_next(env, &places, &item)) == 1) {
     place *p = &s.places[s.count++];
     p->raw = item.raw.data, p->raw_n = item.raw.len;
     p->encoded = item.encoded.data, p->encoded_n = item.encoded.len;
