@@ -1,0 +1,71 @@
+# The docs site of cchecker. The look, the layouts and the outputs come from the docs theme (themes/docs-theme, a
+# submodule); `_merge = "deep"` takes its [outputs], [markup] and [minify] too. The pages are the repository's own
+# Markdown, mounted: README.md is the home page and docs/*.md the other pages, so they read the same on GitHub.
+_merge = "deep"
+baseURL = "https://agentica-lang.github.io/cchecker/"
+locale = "en"
+title = "cchecker"
+theme = "docs-theme"
+disableKinds = ["taxonomy", "term", "rss"]
+
+[module.hugoVersion]
+  min = "0.167.0"
+
+# The version comes from CHANGELOG.md: `make site` sets HUGO_PARAMS_VERSION.
+[params]
+  description = "Checks C code for the rules of a project, and runs gcc -fanalyzer and clang-tidy in one command."
+  repo = "https://github.com/agentica-lang/cchecker"
+  repoPublic = true
+
+[markup.goldmark.extensions]
+  typographer = false
+
+[[module.mounts]]
+  source = "../README.md"
+  target = "content/_index.md"
+
+[[module.mounts]]
+  source = "../docs"
+  target = "content"
+
+# README.md and docs/*.md have no front matter (GitHub would show it): their titles, order and descriptions are here.
+# A page's own first heading stays the heading on the page.
+[[cascade]]
+  title = "cchecker"
+  [cascade.target]
+    kind = "home"
+
+[[cascade]]
+  title = "Usage"
+  description = "The output, the options and the exit codes."
+  weight = 1
+  [cascade.target]
+    path = "/usage"
+
+[[cascade]]
+  title = "Suppressions"
+  description = "The baseline file, ignore comments and CC_IGNORE."
+  weight = 2
+  [cascade.target]
+    path = "/suppressions"
+
+[[cascade]]
+  title = "Settings"
+  description = "cchecker.toml and [tool.cchecker]: the library flags, the roots and the assumptions."
+  weight = 3
+  [cascade.target]
+    path = "/settings"
+
+[[cascade]]
+  title = "Rules"
+  description = "The annotations, and the rules on effects, locks and pairs of calls."
+  weight = 4
+  [cascade.target]
+    path = "/rules"
+
+[[cascade]]
+  title = "Ownership"
+  description = "CC_OWNS on every path, and the values of the collector."
+  weight = 5
+  [cascade.target]
+    path = "/ownership"

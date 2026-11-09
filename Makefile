@@ -60,3 +60,26 @@ BENCH_JOBS ?=
 # The rules on the C VM of Agentica (bench/run.sh): its wall time and peak RSS. It fetches Agentica into .bench/.
 bench:
 	@sh bench/run.sh $(AGENTICA_BENCH_COMMIT) $(BENCH_JOBS)
+
+# The docs site (Hugo) in site/public: README.md and docs/ with the docs theme, the submodule site/themes/docs-theme
+# (`git submodule update --init`). It needs Hugo 0.167.0 or later and Dart Sass (pinned in .github/workflows/pages.yml)
+# on PATH or in DART_SASS. The version is the newest release of CHANGELOG.md. The docs have no agentica code blocks,
+# so the theme's highlighter does not run. --panicOnWarning: a Hugo warning fails the build.
+.PHONY: site site-serve site-tools
+
+DART_SASS ?= $(HOME)/.local/opt/dart-sass
+site site-serve site-tools: export PATH := $(DART_SASS):$(PATH)
+SITE_VERSION := $(shell sed -n 's/^## \[\([0-9][0-9.]*\)\].*/\1/p' CHANGELOG.md | head -n 1)
+site site-serve: export HUGO_PARAMS_VERSION = $(SITE_VERSION)
+
+site-tools:
+	@test -e site/themes/docs-theme/hugo.toml || { echo "The site needs the theme: git submodule update --init" >&2; \
+		exit 1; }
+	@command -v hugo >/dev/null || { echo "The site needs Hugo 0.167.0 or later on PATH" >&2; exit 1; }
+	@command -v sass >/dev/null || { echo "The site needs Dart Sass, on PATH or in $(DART_SASS)" >&2; exit 1; }
+
+site: site-tools
+	@hugo --source site --cleanDestinationDir --panicOnWarning $(HUGO_FLAGS)
+
+site-serve: site-tools
+	@hugo server --source site
