@@ -11,12 +11,11 @@ collector. The codes are listed in the README and described below and in
 `CC_BLOCKING`, `CC_HOT`, `CC_ACQUIRES(lock)`, `CC_RELEASES(lock)`,
 `CC_NORETURN`, `CC_MAY_JUMP`, `CC_NO_SYSCALL_UNDER(lock)`, `CC_LOCK_LEVEL(n)`,
 `CC_PAIR(set, restore)`, `CC_OWNS`, `CC_FREES`, `CC_OWNS_OUT`, `CC_GC`,
-`CC_GC_ALLOC`,
-`CC_ASSUME_SHORT` (the function counts as fine for `CC_SHORT`), `CC_STOP` (no
-rule walks into the function; both are assumptions, see [Settings](settings.md))
-and `CC_IGNORE("CODE", "reason")` (a suppression). The macros are empty, in
-every build and with every compiler, except when cchecker dumps the AST: it
-defines `CCHECKER_AST`, and with clang the macros become
+`CC_GC_ALLOC`, `CC_ASSUME_SHORT` (the function counts as fine for `CC_SHORT`),
+`CC_STOP` (no rule walks into the function; both are assumptions, see
+[Settings](settings.md)) and `CC_IGNORE("CODE", "reason")` (a suppression). The
+macros are empty, in every build and with every compiler, except when cchecker
+dumps the AST: it defines `CCHECKER_AST`, and with clang the macros become
 `__attribute__((deprecated("cchecker:...")))` (the JSON AST of clang 19 drops
 the text of `annotate` and keeps the message of `deprecated`). The dump runs
 with `-w`, so this gives no warning. A normal build of your project carries no

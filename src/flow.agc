@@ -1356,7 +1356,8 @@ def assignment(b: Builder, node: Json, preds: List[Int]) -> Built
 end
 
 # A value stored in a place that hands it on (`shown`): a pointer that owns is handed on there, on its side of a `?:`
-# (`x->held = n ? p : NULL`).
+# (`x->held = n ? p : NULL`, `x->held = p ?: q`) or as the last expression of a statement expression, the same values
+# as `values_of`.
 def stored(b: Builder, shown: String, value: Json, preds: List[Int]) -> Built
   bare = see_through(value)
   if Ast.kind(bare) == "ConditionalOperator"
@@ -1367,11 +1368,37 @@ def stored(b: Builder, shown: String, value: Json, preds: List[Int]) -> Built
     return Built(b: other.b, exits: chosen.exits.concat(other.exits))
   end
 
-  given = owner_named(b, value)
-  if given == ""
+  if Ast.kind(bare) == "BinaryConditionalOperator"
+    # `x ?: y`: `x`, read once by the condition, where it is true, else `y`.
+    parts = Ast.children(bare)
+    split = condition(b, parts.first, preds)
+    chosen = Built(b: split.b, exits: split.yes)
+    if owner_named(b, parts.first) != ""
+      chosen = handed_on(split.b, shown, parts.first, split.yes)
+    end
+
+    other = stored(chosen.b, shown, parts.last, split.no)
+    return Built(b: other.b, exits: chosen.exits.concat(other.exits))
+  end
+
+  if Ast.kind(bare) == "StmtExpr"
+    statements = Ast.children(last_child(bare))
+    if not statements.empty?
+      built = in_order_statements(b, statements.take(statements.size - 1), preds)
+      return stored(built.b, shown, statements.last, built.exits)
+    end
+  end
+
+  if owner_named(b, value) == ""
     return expression(b, value, preds)
   end
 
+  return handed_on(b, shown, value, preds)
+end
+
+# A pointer that owns, `value`, handed on to the place `shown` by a store.
+def handed_on(b: Builder, shown: String, value: Json, preds: List[Int]) -> Built
+  given = owner_named(b, value)
   place = Ast.start_of(value)
   give = Give(name: given, word: "stores #{given} in #{shown}", line: place.line, column: place.column)
   return add(b, Event.Gives(give), preds)
@@ -1583,6 +1610,8 @@ def call(b: Builder, node: Json, preds: List[Int], tried: Bool) -> Built
   built = Built(b: b, exits: preds)
   for i in 0...args.size
     owner = owner_of(b, args[i])
+    # `&p` at a CC_OWNS_OUT parameter emits no `Lends`: the call fills `p`, and `after_call` checks that a value it
+    # still owned is not lost, which a `Lends` before it would hide.
     set = taking.include?(i) or (filling.include?(i) and address?(args[i]))
     if not (set and owner != "")
       built = expression(built.b, args[i], built.exits)

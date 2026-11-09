@@ -195,10 +195,12 @@ Feature: Ownership on every path
       | read, then an error return    | CC-OWN-LEAK        | 5      | int f(void) { CC_OWNS char *b; if (take(&b) < 0) return -1; if (work(b)) return -1; free(b); return 0; } |
       | read, then a jump             | CC-OWN-LEAK        | 6      | void f(void) { CC_OWNS char *b; take(&b); work(b); jump(); free(b); }                                   |
       | not null, then returned       | CC-OWN-LEAK        | 5      | int f(void) { char *b; take(&b); if (b) return -1; return 0; }                                          |
+      | read, then set to null        | CC-OWN-LEAK        | 6      | void f(void) { char *b; take(&b); work(b); b = NULL; }                                                  |
       | read through an alias         | CC-OWN-LEAK        | 6      | void f(void) { char *b; take(&b); char *c = b; work(c); }                                               |
       | filled over an owned value    | CC-OWN-LEAK        | 6      | void f(int n) { CC_OWNS char *b = malloc(n); take(&b); free(b); }                                       |
       | freed and filled again        | CC-OWN-LEAK        | 6      | void f(void) { CC_OWNS char *b = malloc(8); renew(&b); work(b); }                                       |
       | handed out, then freed        | CC-OWN-DOUBLE-FREE | 5      | int f(CC_OWNS_OUT char **out) { CC_OWNS char *p = malloc(8); if (!p) return -1; *out = p; free(p); return 0; } |
+      | item handed out, then freed   | CC-OWN-DOUBLE-FREE | 5      | int f(CC_OWNS_OUT char **out) { CC_OWNS char *p = malloc(8); if (!p) return -1; out[0] = p; free(p); return 0; } |
       | stored in an item, then freed | CC-OWN-DOUBLE-FREE | 16     | CC_OWNS char **f(int n) { CC_OWNS char **v = calloc(2, sizeof *v); if (!v) return NULL; CC_OWNS char *p = malloc(n); v[0] = p; free(p); return v; } |
       | stored by ?:, then freed      | CC-OWN-DOUBLE-FREE | 6      | void f(struct box *x, int n) { CC_OWNS char *p = malloc(8); x->held = n ? NULL : p; free(p); }          |
       | item of a parameter           | CC-OWN-LEAK        | 6      | void f(char **v, int n) { v[0] = make(n); }                                                             |
@@ -225,6 +227,7 @@ Feature: Ownership on every path
       | filled and null             | int f(void) { CC_OWNS char *b; take(&b); if (!b) return -1; work(b); free(b); return 0; }                               |
       | filled and not read         | int f(void) { CC_OWNS char *b; take(&b); return 0; }                                                                     |
       | filled and dropped          | void f(void) { char *b; take(&b); }                                                                                      |
+      | filled and set to null      | void f(void) { char *b; take(&b); b = NULL; }                                                                            |
       | filled again in a loop      | void f(void) { char *b = NULL; while (take(&b) < 0) retry(); free(b); }                                                 |
       | filled by a jumping call    | void f(void) { CC_OWNS char *b = NULL; take_or_jump(&b); free(b); }                                                     |
       | freed and filled again      | void f(void) { CC_OWNS char *b = malloc(8); renew(&b); free(b); }                                                       |
@@ -236,6 +239,8 @@ Feature: Ownership on every path
       | items of an owned array     | CC_OWNS char **f(CC_OWNS char *path, int n) { CC_OWNS char **v = calloc(n + 2, sizeof *v); if (!v) abort(); v[0] = path; for (int i = 1; i <= n; i++) v[i] = make(i); return v; } |
       | items of an allocated array | char **f(int n) { char **v = malloc(2 * sizeof *v); if (!v) return NULL; CC_OWNS char *p = malloc(n); v[0] = p; v[1] = make(n); return v; } |
       | item stored by ?:           | CC_OWNS char **f(int n) { CC_OWNS char **v = calloc(2, sizeof *v); if (!v) return NULL; CC_OWNS char *p = malloc(n); v[0] = n ? p : NULL; if (!n) free(p); return v; } |
+      | stored by x ?: y            | void f(struct box *x, char *q) { CC_OWNS char *p = malloc(8); x->held = p ?: q; }                                        |
+      | stored by a statement expr  | void f(struct box *x) { x->held = ({ CC_OWNS char *p = malloc(8); p; }); }                                               |
 
   Scenario: The path of a leak of a filled pointer starts at the call that set it
     Given the C file "out.c" holds:
