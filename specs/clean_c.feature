@@ -46,7 +46,18 @@ Feature: C that must stay clean
       | realloc in a loop                               | CC_OWNS char *f(int n) { CC_OWNS char *b = NULL; for (int i = 1; i <= n; i++) { char *t = realloc(b, i); if (!t) { free(b); return NULL; } b = t; } return b; }                                                |
       | free in a loop with switch and continue         | void f(int n) { for (int i = 0; i < n; i++) { CC_OWNS char *b = malloc(n); if (!b) continue; switch (work(b)) { case 0: free(b); continue; case 1: free(b); break; default: free(b); return; } work(NULL); } } |
       | strdup                                          | CC_OWNS char *f(const char *s) { CC_OWNS char *c = strdup(s); if (!c) return NULL; if (work(c)) { free(c); return NULL; } return c; }                                                                          |
+      | one macro into one variable                     | void f(int n) { char *s; s = TAKE(n); if (s) free(s); s = TAKE(n); if (s) free(s); s = TAKE(n); if (s) free(s); }                                                                                              |
       | designated initializer of a plain struct parses | void f(int n) { struct conf c = { .name = "x", .n = n }; use(&c); }                                                                                                                                            |
+
+    # Initializers that the rules read by the name of a top-level struct (#111): a struct of a function body, an
+    # anonymous member, a union, and a key on the stack whose field takes the pointer while the function frees it.
+    @pending @issue-111
+    Examples:
+      | case                            | code                                                                                                                                                                                    |
+      | struct declared in the function | void submit(void *j); void f(int n) { struct job { CC_OWNS char *buf; }; CC_OWNS char *b = make(n); struct job j = { b }; submit(&j); }                                                 |
+      | anonymous struct member         | struct conn { int fd; struct { CC_OWNS char *buf; }; }; void sink(struct conn *c); void f(int n) { CC_OWNS char *b = make(n); struct conn c = { n, { b } }; sink(&c); }                 |
+      | union initializer               | union u { CC_OWNS char *p; long l; }; void sink(union u *v); void f(int n) { CC_OWNS char *b = make(n); union u v = { .p = b }; sink(&v); }                                             |
+      | lookup key on the stack         | struct entry { CC_OWNS char *name; }; struct entry *find(struct entry *k); void f(int n) { CC_OWNS char *name = make(n); struct entry key = { .name = name }; find(&key); free(name); } |
 
     # The CC_OWNS fields of a local struct (#110), and a local that keeps the old value of a pointer that gets a new
     # one (the last round of a loop, TAKE_PTR of a CC_OWNS local: #107, #115).

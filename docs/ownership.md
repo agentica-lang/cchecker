@@ -41,9 +41,11 @@ owning nothing on that side.
 A pointer declared in an inner block is checked where a path leaves the block
 (its end, a `break`, `continue`, `goto` or `return`): one that still owns there
 leaks, with that point as the last step of `path`, unless a pointer outside the
-block stands for it (`t = s`, `r = realloc(s, n)`). The pointers of a statement
-expression (`({ ...; p; })`) are checked so at the end of the statement around
-it, and its cleanup functions run at its own end.
+block stands for it (`t = s`, `r = realloc(s, n)`). It then leaves the walk once
+nothing stands for it and it owns nothing; one that still owns leaks where the
+path ends, as one finding on the pointer of the block. The pointers of a
+statement expression (`({ ...; p; })`) are checked so at the end of the
+statement around it, and its cleanup functions run at its own end.
 
 A local without a mark that gets a pointer that owns (`char *c = p`) stands for
 it: freeing `c` frees `p`; a `malloc` into it later owns nothing, as in any
@@ -126,7 +128,8 @@ make() };`, `p.left` owns and is freed or handed on on every path, as a
 `CC_OWNS` local, and the findings name it `p.left`. A struct whose address is
 taken (`&p`, `&p.left`), that is copied, passed, returned or named in any other
 way, or that has a `cleanup` function, is not followed, nor a static one or a
-union: a store into their `CC_OWNS` fields hands the pointer on.
+union: a store into their `CC_OWNS` fields hands the pointer on. An initializer
+of a union (`union u v = { .p = b };`) only reads the pointer.
 
 A filled pointer that the path never reads is not reported (`take(&b); return
 0;`): telling it from what a call that failed left would need a mark that says

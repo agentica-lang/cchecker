@@ -126,6 +126,8 @@ Feature: Ownership on every path
       | elvis                  | void f(char *q, int n) { char *p = q ?: make(n); free(p); }                                                                               |
       | field of a local struct | void f(int n) { struct local { CC_OWNS char *held; } x; CC_OWNS char *b = malloc(n); x.held = b; work(x.held); free(x.held); }          |
       | local struct escapes    | void f(int n) { struct local { CC_OWNS char *held; } x; CC_OWNS char *b = malloc(n); x.held = b; work((char *)&x); }                     |
+      | two names, the first returned | CC_OWNS char *f(int n, const char *a) { char *z = ({ CC_OWNS char *x = malloc(n); x; }), *b = z; b = stpcpy(b, a); return z; } |
+      | two names, the second returned | CC_OWNS char *f(int n, const char *a) { char *b = ({ CC_OWNS char *x = malloc(n); x; }), *z = b; b = stpcpy(b, a); return z; } |
       | owner in a field that does not own | struct vec { void *base; int len; }; int send(struct vec *v, int c); void f(int n) { CC_OWNS char *buf = make(n); struct vec v = { .base = buf, .len = n }; send(&v, 1); free(buf); } |
       | owner in an array       | int run(char *const argv[]); void f(int n) { CC_OWNS char *path = make(n); char *argv[] = { path, NULL }; run(argv); free(path); } |
       | owner in a nested initializer | struct span { char *b; int n; }; struct wrap { struct span s; }; void f(int n) { CC_OWNS char *b = make(n); struct wrap w = {{ b, n }}; work(w.s.b); free(b); } |
@@ -480,7 +482,8 @@ Feature: Ownership on every path
 
   Scenario: A pointer of a block stays after the block while another pointer stands for it
     An alias or the result of a realloc outside the block keeps the pointer it stands for: its use after a free, and
-    the leak where the result of a realloc is null, are found after the block ends.
+    the leak where the result of a realloc is null, are found after the block ends. A leak of it is one finding, on the
+    pointer of the block.
 
     Given the C file "held.c" holds:
       """
@@ -528,6 +531,15 @@ Feature: Ownership on every path
         }
         free(r);
       }
+
+      void outer_alias_leaks(void) {
+        char *keep;
+        {
+          CC_OWNS char *t = make();
+          keep = t;
+        }
+        use(keep);
+      }
       """
     When I run cchecker with "--tools rules --json $DIR/held.c -- -I../include"
     Then the exit code is 1
@@ -538,6 +550,14 @@ Feature: Ownership on every path
     And the output includes:
       """
       "line":26,"column":6,"message":"outer_link does not free or hand on p on every path","path":["29:23 p = make","30:9 hands p to realloc","30:9 r = realloc","32:8 false","33:5 returns"]
+      """
+    And the output includes once:
+      """
+      "message":"outer_alias_leaks does not free or hand on
+      """
+    And the output includes:
+      """
+      "line":46,"column":6,"message":"outer_alias_leaks does not free or hand on t on every path","path":["49:23 t = make","50:12 keep = t","53:1 ends"]
       """
     And the output does not include:
       """

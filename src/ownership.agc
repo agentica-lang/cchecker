@@ -48,12 +48,14 @@ FILLED = "filled"
 MAX_STATES = 200_000
 
 # The state of a path: what each pointer owns, the aliases (a local that stands for a pointer that owns), the result
-# of a realloc and the pointer it moved (which owns again when the result is null), and the known conditions.
+# of a realloc and the pointer it moved (which owns again when the result is null), the known conditions, and the
+# pointers whose block closed while a pointer still in the state stood for them (`kept`, see `closed`).
 struct State
   owns: Map[String, String]
   aliases: Map[String, String]
   links: Map[String, String]
   facts: Map[String, Bool]
+  kept: Set[String]
 end
 
 # One step of a path, as the finding shows it, the pointer it is about, and whether it gave the pointer its value
@@ -170,7 +172,7 @@ def walked(walker: Walker) -> Walk
     owns = owns.put(name, OWNED)
   end
 
-  queue = [Item(node: 0, state: State(owns: owns, aliases: {}, links: {}, facts: {}), path: [])]
+  queue = [Item(node: 0, state: State(owns: owns, aliases: {}, links: {}, facts: {}, kept: Set.new([])), path: [])]
   visited: Set[String] = Set.new([])
   unread: Set[String] = Set.new([])
   found: Map[String, Finding] = {}
@@ -195,7 +197,8 @@ def walked(walker: Walker) -> Walk
         end
 
       Moved.Stopped -> next
-      Moved.Went(moved) ->
+      Moved.Went(went_on) ->
+        moved = went_on.with(state: released(went_on.state))
         for after in node.next
           next_state = moved.state.with(facts: Locking.kept(moved.state.facts, walker.live.get(after, unread)))
           seen = "#{after}|#{encoded(next_state)}"
@@ -288,6 +291,7 @@ def closed(body: Body, item: Item, closing: Closing) -> Outcome
   breaches: List[Breach] = []
   for name in closing.names
     if held.include?(name)
+      state = state.with(kept: state.kept.add(name))
       next
     end
 
@@ -306,6 +310,31 @@ def closed(body: Body, item: Item, closing: Closing) -> Outcome
   end
 
   return Outcome(moved: Moved.Went(item.with(state: state)), breaches: breaches)
+end
+
+# The state without the kept pointers that nothing stands for any more (the alias got a new value, was lent, or
+# closed too) and that own nothing: nothing names them after, so two paths that differ only in them are one (a macro
+# that returns an owned pointer, used many times into one variable, leaves no dead pointer per use). One that may still
+# own stays, to leak where the path ends.
+def released(state: State) -> State
+  if state.kept.empty?
+    return state
+  end
+
+  named = Set.new(state.aliases.values.concat(state.links.values))
+  for name in state.kept.to_a.sort
+    owns = state.owns.get(name).map do |own| own == OWNED or own == FILLED end.unwrap_or(false)
+    if not named.include?(name) and not owns
+      state = state.with(
+        owns: state.owns.delete(name),
+        aliases: state.aliases.delete(name),
+        links: state.links.delete(name),
+        kept: state.kept.delete(name),
+      )
+    end
+  end
+
+  return state
 end
 
 def went(item: Item) -> Outcome
@@ -491,7 +520,13 @@ def after_assign(body: Body, item: Item, assign: Assign) -> Outcome
     breaches = breaches.push(overwritten(body, item, assign.name, step))
   end
 
-  state = state.with(aliases: state.aliases.delete(assign.name), links: state.links.delete(assign.name))
+  # A new value of a kept pointer is a new declaration of its name (the next round of a loop): it is live again.
+  state = state.with(
+    aliases: state.aliases.delete(assign.name),
+    links: state.links.delete(assign.name),
+    kept: state.kept.delete(assign.name),
+  )
+
   state = state.with(owns: state.owns.delete(assign.name))
   case assign.value
     "owned" -> state = state.with(owns: state.owns.put(assign.name, OWNED))
@@ -585,5 +620,6 @@ def encoded(state: State) -> String
   aliases = state.aliases.keys.sort.map do |name| "#{name}>#{state.aliases[name]}" end
   links = state.links.keys.sort.map do |name| "#{name}<#{state.links[name]}" end
   facts = state.facts.keys.sort.map do |text| "#{text}=#{state.facts[text]}" end
-  return "#{owns.join(";")}|#{aliases.join(";")}|#{links.join(";")}|#{facts.join(";")}"
+  kept = state.kept.to_a.sort
+  return "#{owns.join(";")}|#{aliases.join(";")}|#{links.join(";")}|#{facts.join(";")}|#{kept.join(";")}"
 end

@@ -24,6 +24,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `old = p; p = NULL;` (the TAKE_PTR idiom, or any new value of `p`) leaves the pointer to `old`, and a pointer that an initializer or a compound literal puts in a `CC_OWNS` field is handed on: neither is a false CC-OWN-LEAK or CC-OWN-DOUBLE-FREE any more.
 - The path rules know each variable by its declaration, not by its name: a local that shadows another (a parameter, a global, a local of an outer block) has its own state and conditions, so it no longer gives false CC-OWN or lock findings or hides real ones.
 - `return ({ ...; p; })` hands `p` on: it is no longer a false CC-OWN-LEAK.
+- A statement-expression macro used many times into one variable (`s = TAKE(); if (s) free(s);`) no longer leaves the function in `incomplete_functions`: the pointer of each use leaves the walk once nothing stands for it.
 - A statement expression as the argument of a call (`free(({ ...; p; }))`, a `CC_OWNS` parameter) frees or hands on `p`, and `return c ? ({ ...; p; }) : NULL` hands `p` on: neither is a false CC-OWN-LEAK.
 
 ## [0.3.0] - 2026-11-09
