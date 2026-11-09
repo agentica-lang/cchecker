@@ -53,6 +53,7 @@ export struct Graph
   locks: Map[String, List[String]] = {}
   quiet: Map[String, List[Bool]] = {}
   unknown_targets: List[String] = []
+  declared: Map[String, List[String]] = {}
 end
 
 # How a rule walks the graph: the families of blocking calls that are on, whether it goes into the functions that never
@@ -382,10 +383,15 @@ export def graph_of(units: List[Unit]) -> Graph
   locks: Map[String, List[String]] = {}
   quiet: Map[String, List[Bool]] = {}
   unknown: List[String] = []
+  declared: Map[String, List[String]] = {}
   stores: List[Store] = []
   for unit in units
     for function in unit.functions
       functions = functions.put(function.key, merged(functions.get(function.key), function))
+      files = declared.get(function.key).unwrap_or([])
+      if not files.include?(function.file)
+        declared = declared.put(function.key, files.push(function.file))
+      end
     end
 
     for call in unit.calls
@@ -428,6 +434,7 @@ export def graph_of(units: List[Unit]) -> Graph
     locks: locks,
     quiet: quiet,
     unknown_targets: unknown,
+    declared: declared,
   )
 end
 
@@ -470,13 +477,13 @@ def short_takes?(graph: Graph, walk: Walk, key: String, callee: String) -> Bool
   return not classes.empty? and classes.all? do |c| c != "" and short_lock?(walk.short_locks, c) end
 end
 
-# Whether the function of a key is a wrapper of `short_locks`: by its name, and the end of its file when the entry
-# gives one.
+# Whether the function of a key is a wrapper of `short_locks`: by its name, and the end of the file of any declaration
+# of it when the entry gives one.
 def listed_wrapper?(graph: Graph, walk: Walk, key: String) -> Bool
   name = name_of_key(graph.functions, key)
-  file = graph.functions.get(key).map do |f| f.file end.unwrap_or("")
+  files = graph.declared.get(key).unwrap_or([])
   return walk.short_wrappers.any? do |wrapper|
-    wrapper.name == name and (wrapper.tail == "" or ends_with_path?(file, wrapper.tail))
+    wrapper.name == name and (wrapper.tail == "" or files.any? do |file| ends_with_path?(file, wrapper.tail) end)
   end
 end
 
@@ -629,12 +636,39 @@ def missing_locks(units: List[Unit], graph: Graph, config: Config.Config) -> Lis
   files = files_by_name(units.flat_map do |unit| unit.functions end)
   missing = config.short_locks.uniq.select do |c|
     (
-      (c.include?("(") and not wrapper_matches?(c, files)) or
+      (c.include?("(") and not known_take?(c) and not wrapper_matches?(c, files)) or
       (not c.include?("(") and not known.include?(c) and not classes.any? do |class| in_file?(c, class) end)
     )
   end
 
   return missing.map do |c| "#{c} (assume.short_locks)" end
+end
+
+# Whether a wrapper of `acquires` or `releases` names a function with a named parameter at its place, in a declaration
+# whose file ends with the path when it has one: a function with external linkage is one in the whole project, so any
+# of its declarations tells the file.
+def lock_declared?(text: String, functions: List[Function]) -> Bool
+  case Config.wrapper_of(text)
+    some(wrapper) ->
+      return functions.any? do |f|
+        (
+          f.name == wrapper.name and
+          f.arity > wrapper.index and
+          (wrapper.tail == "" or ends_with_path?(f.file, wrapper.tail))
+        )
+      end
+
+    none -> return false
+  end
+end
+
+# Whether a wrapper of `short_locks` names a known take (`uv_mutex_lock`): a library the project may use without
+# declaring it in its own files, so it is not missing when no unit has it.
+def known_take?(text: String) -> Bool
+  case Config.wrapper_of(text)
+    some(wrapper) -> return Known.TAKES.include?(wrapper.name)
+    none -> return false
+  end
 end
 
 # Whether a wrapper `name(N)` or `name@path(N)` names a function of the units, whose files are `files` by name.
@@ -730,14 +764,15 @@ def missing_assumed(units: List[Unit], config: Config.Config) -> List[String]
   jumps = unmatched(config.jumps, files).map do |name| "#{name} (assume.jumps)" end
   catches = unmatched(config.catches, files).map do |name| "#{name} (assume.catches)" end
   releases = unmatched(config.jump_releases, files).map do |name| "#{name} (assume.jump_releases)" end
+  declared = units.flat_map do |unit| unit.functions end
   acquires = config.acquires
     .uniq
-    .select do |text| not wrapper_matches?(text, files) end
+    .select do |text| not lock_declared?(text, declared) end
     .map do |text| "#{text} (assume.acquires)" end
 
   given_back = config.releases
     .uniq
-    .select do |text| not wrapper_matches?(text, files) end
+    .select do |text| not lock_declared?(text, declared) end
     .map do |text| "#{text} (assume.releases)" end
 
   return (

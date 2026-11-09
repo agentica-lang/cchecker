@@ -19,6 +19,10 @@ MARK_PREFIX = "cchecker:"
 # The attributes of a function that never returns (`_Noreturn`, `[[noreturn]]`).
 NORETURN_ATTRS = Set.new(["C11NoReturnAttr", "NoReturnAttr", "CXX11NoReturnAttr"])
 
+# The name that stands for the lock parameter of a wrapper of `[assume] acquires` and `releases`, whatever the
+# declarations call it (or call nothing, in a prototype with no names).
+ASSUMED_LOCK = "__cc_lock"
+
 # The annotations that name locks, and whether the function takes them.
 LOCK_MARKS = {"acquires": true, "releases": false}
 
@@ -59,7 +63,8 @@ TRANSPARENT = Set.new(["ImplicitCastExpr", "CStyleCastExpr", "ParenExpr", "Compo
 ## (`short`, `blocking`, `hot`). The place is that of the declaration, of the definition when `defined`. `noreturn`
 ## says that the declaration never returns (an attribute, its type, CC_NORETURN or CC_JUMPS), and `cold` that it is
 ## `__attribute__((cold))`: either is an error exit. `via` is the chain of calls by which a function may jump out when
-## that is inferred (`Effects.with_jumps`): the functions it calls down to the one that is marked.
+## that is inferred (`Effects.with_jumps`): the functions it calls down to the one that is marked. `arity` is the
+## number of its named parameters, as this declaration has them (no `...`).
 export struct Function
   key: String
   name: String
@@ -71,6 +76,7 @@ export struct Function
   noreturn: Bool = false
   cold: Bool = false
   via: List[String] = []
+  arity: Int = 0
 end
 
 ## Where a call goes: a function, by key, or a slot.
@@ -234,7 +240,7 @@ export def read_with(decls: Json, acquires: List[String], releases: List[String]
   for node in nodes
     case Ast.kind(node)
       "FunctionDecl" ->
-        function = function_of(tables, node, wrappers)
+        function = function_of(tables, node)
         functions = functions.push(function)
         found = in_function(tables, function.key, node, found)
         own = paired(ctx, tables, function)
@@ -264,7 +270,7 @@ export def read_with(decls: Json, acquires: List[String], releases: List[String]
   marked = lock_marks_of(tables, nodes)
   return ok(
     Unit(
-      functions: functions,
+      functions: functions.map do |f| with_assumed_marks(ctx, f) end,
       calls: found.calls,
       stores: found.stores,
       bodies: bodies,
@@ -293,13 +299,12 @@ def context_of(tables: Tables, nodes: List[Json], wrappers: Wrappers) -> Flow.Co
 
   declarations = nodes.select do |node| Ast.kind(node) == "FunctionDecl" end
   for node in declarations
-    function = function_of(tables, node, wrappers)
+    function = function_of(tables, node)
     params = Flow.params_named(node)
     types = param_types_of(node)
     # A definition inherits the annotations of the prototype before it, in the names of the prototype's parameters:
     # only the declaration that wrote an annotation knows what its names are.
     locks = own_marks(node)
-      .concat(assumed_marks(wrappers, node))
       .flat_map do |mark| annotated(mark, params) end
       .map do |lock| lock.with(class: class_of_text(tables, globals, lock.text, params, types)) end
 
@@ -309,6 +314,8 @@ def context_of(tables: Tables, nodes: List[Json], wrappers: Wrappers) -> Flow.Co
       callees = callees.put(function.key, Flow.Callee(locks: known.locks.concat(locks), stops: known.stops or stops))
     end
   end
+
+  callees = with_assumed_locks(callees, tables, globals, declarations, wrappers)
 
   # CC_PAIR(set, restore) on `set` itself holds in every function that calls it.
   for node in declarations
@@ -663,38 +670,92 @@ def parsed_wrappers(texts: List[String]) -> List[Config.Wrapper]
   return found
 end
 
-# The marks that `[assume] acquires` and `releases` give a declaration: `acquires(p)` and `releases(p)`, with `p` the
-# name of the parameter at the place the entry gives. A declaration that does not name that parameter (a prototype
-# with no names, or too few parameters) gets none: the definition, or a prototype with names, gives it.
-def assumed_marks(wrappers: Wrappers, node: Json) -> List[String]
-  if wrappers.acquires.empty? and wrappers.releases.empty?
-    return []
-  end
-
-  names = Flow.params_named(node)
-  file = Ast.place_of(node).file
-  marks: List[String] = []
+# The lock of each wrapper of `[assume] acquires` and `releases` that the unit declares, as the mark would give it:
+# the parameter at the place of the entry. A function gets one, whatever the number of its declarations: not when it
+# has a lock of that kind from the C already (CC_ACQUIRES, CC_RELEASES), and not twice when it is listed twice. A
+# bare name is every function of that name; `name@path` tells static functions apart, by the file of their key, and
+# a function with external linkage is one in the whole project, so its path is only checked against the declarations
+# of the project (`Effects.missing_assumed`). A declaration with fewer named parameters than the place gets none.
+def with_assumed_locks(
+  callees: Map[String, Flow.Callee],
+  tables: Tables,
+  globals: Map[String, String],
+  declarations: List[Json],
+  wrappers: Wrappers,
+) -> Map[String, Flow.Callee]
+  found = callees
   for wrapper in wrappers.acquires
-    marks = marks.concat(wrapper_mark("acquires", wrapper, node, file, names))
+    found = with_assumed_lock(found, tables, globals, declarations, wrapper, true)
   end
 
   for wrapper in wrappers.releases
-    marks = marks.concat(wrapper_mark("releases", wrapper, node, file, names))
+    found = with_assumed_lock(found, tables, globals, declarations, wrapper, false)
   end
 
-  return marks
+  return found
 end
 
-def wrapper_mark(word: String, wrapper: Config.Wrapper, node: Json, file: String, names: List[String]) -> List[String]
-  if Ast.text(node, "name") != wrapper.name or wrapper.index >= names.size or names[wrapper.index] == ""
-    return []
+def with_assumed_lock(
+  callees: Map[String, Flow.Callee],
+  tables: Tables,
+  globals: Map[String, String],
+  declarations: List[Json],
+  wrapper: Config.Wrapper,
+  takes: Bool,
+) -> Map[String, Flow.Callee]
+  found = callees
+  for node in declarations
+    if Ast.text(node, "name") != wrapper.name
+      next
+    end
+
+    key = function_key(tables, wrapper.name)
+    names = Flow.params_named(node)
+    known = found.get(key).unwrap_or(Flow.Callee(locks: [], stops: false))
+    if (
+      wrapper.index >= names.size or
+      not static_file_matches?(key, wrapper.tail) or
+      known.locks.any? do |l| l.takes == takes and l.pair == "" end
+    )
+      next
+    end
+
+    params = names.take(wrapper.index).concat([ASSUMED_LOCK]).concat(names.drop(wrapper.index + 1))
+    class = class_of_text(tables, globals, ASSUMED_LOCK, params, param_types_of(node))
+    lock = Flow.Annotated(text: ASSUMED_LOCK, params: params, takes: takes, class: class)
+    found = found.put(key, Flow.Callee(locks: known.locks.push(lock), stops: known.stops))
   end
 
-  if wrapper.tail != "" and not (file == wrapper.tail or file.end_with?("/#{wrapper.tail}"))
-    return []
+  return found
+end
+
+# Whether the key of a function is not that of a static one (`name`), or the file of the static function ends with the
+# path `tail` ("" matches any).
+def static_file_matches?(key: String, tail: String) -> Bool
+  case key.index_of("@")
+    some(at) ->
+      file = key.slice(at + 1, key.length - at - 1)
+      return tail == "" or file == tail or file.end_with?("/#{tail}")
+    none -> return true
+  end
+end
+
+# The marks of the wrappers of `[assume]` on a function, as `CC_ACQUIRES` and `CC_RELEASES` would put them.
+def with_assumed_marks(ctx: Flow.Context, function: Function) -> Function
+  locks = ctx.callees.get(function.key).map do |c| c.locks end.unwrap_or([])
+  marks = function.marks
+  for lock in locks
+    if lock.text == ASSUMED_LOCK
+      word = "releases"
+      if lock.takes
+        word = "acquires"
+      end
+
+      marks = marks.push("#{word}(#{lock.text})")
+    end
   end
 
-  return ["#{word}(#{names[wrapper.index]})"]
+  return function.with(marks: marks.uniq)
 end
 
 def own_marks(node: Json) -> List[String]
@@ -854,7 +915,7 @@ def record_id_of(node: Json) -> String
   return ""
 end
 
-def function_of(tables: Tables, node: Json, wrappers: Wrappers) -> Function
+def function_of(tables: Tables, node: Json) -> Function
   name = Ast.text(node, "name")
   place = Ast.place_of(node)
   marks = Ast.children(node)
@@ -862,7 +923,6 @@ def function_of(tables: Tables, node: Json, wrappers: Wrappers) -> Function
     .map do |child|
       Ast.text(child, "message").slice(MARK_PREFIX.length, Ast.text(child, "message").length - MARK_PREFIX.length)
     end
-    .concat(assumed_marks(wrappers, node))
 
   return Function(
     key: function_key(tables, name),
@@ -874,6 +934,7 @@ def function_of(tables: Tables, node: Json, wrappers: Wrappers) -> Function
     marks: marks,
     noreturn: marks.include?("noreturn") or marks.include?("jumps") or noreturn?(node),
     cold: Ast.children(node).any? do |child| Ast.kind(child) == "ColdAttr" end,
+    arity: Flow.params_named(node).size,
   )
 end
 

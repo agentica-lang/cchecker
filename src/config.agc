@@ -155,6 +155,7 @@ export def from_table(origin: String, prefix: String, table: Toml.Value, note: S
     end
   end
 
+  try apart(origin, prefix, config)
   return ok(config)
 end
 
@@ -199,18 +200,30 @@ export def wrapper_of(text: String) -> Optional[Wrapper]
 
   head = parts[0]
   digits = parts[1].slice(0, parts[1].length - 1)
-  if digits == "" or not digits.split("").all? do |c| c.code >= 48 and c.code <= 57 end
+  if digits == "" or digits.length > 6 or not digits.split("").all? do |c| c.code >= 48 and c.code <= 57 end
     return none
   end
 
-  if head == "" or head.include?(" ") or head.include?(")")
+  if head == "" or head.include?(" ") or head.include?("\t") or head.include?(")")
     return none
   end
 
-  index = digits.to_i.unwrap_or(0)
+  case digits.to_i
+    ok(index) -> return wrapper_at(head, index)
+    error(_) -> return none
+  end
+end
+
+# The wrapper of a name or `name@path` and the place of its parameter. A leading `./` of the path is ignored, as for
+# the other entries of `[assume]`.
+def wrapper_at(head: String, index: Int) -> Optional[Wrapper]
   case head.index_of("@")
     some(at) ->
       tail = head.slice(at + 1, head.length - at - 1)
+      if tail.start_with?("./")
+        tail = tail.slice(2, tail.length - 2)
+      end
+
       if at == 0 or tail == ""
         return none
       end
@@ -304,6 +317,29 @@ def defines_of(origin: String, path: String, value: Toml.Value) -> Result[List[S
   end
 
   return ok(names)
+end
+
+# A function that takes a lock for its caller does not release one too: `acquires` and `releases` name different ones.
+def apart(origin: String, prefix: String, config: Config) -> Result[Void]
+  for take in config.acquires
+    for give in config.releases
+      case wrapper_of(take)
+        some(a) ->
+          case wrapper_of(give)
+            some(r) ->
+              if a.name == r.name and (a.tail == "" or r.tail == "" or a.tail == r.tail)
+                return error("#{origin}: #{prefix}assume.acquires and releases both name #{a.name}")
+              end
+
+            none -> next
+          end
+
+        none -> next
+      end
+    end
+  end
+
+  return ok()
 end
 
 # The wrappers of `acquires` and `releases`: each `name(N)` or `name@path(N)`.

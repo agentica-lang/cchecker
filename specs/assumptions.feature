@@ -722,7 +722,6 @@ Feature: What the project assumes of its functions
       | not listed       | stop = ["unused"]                 |                                     | includes         | includes         | does not include |
       | listed           | acquires = ["my_lock(0)"]         | releases = ["my_unlock(0)"]         | does not include | does not include | includes         |
       | listed by file   | acquires = ["my_lock@wrap.c(0)"]  | releases = ["my_unlock@wrap.c(0)"]  | does not include | does not include | includes         |
-      | another file     | acquires = ["my_lock@other.c(0)"] | releases = ["my_unlock@other.c(0)"] | includes         | includes         | does not include |
 
   Scenario Outline: [assume] short_locks takes a wrapper whose locks are short (<case>)
     Given the C file "short.c" holds:
@@ -775,14 +774,14 @@ Feature: What the project assumes of its functions
       [assume]
       acquires = ["my_lock(0)"]
       releases = ["my_unlock@wrap.c(0)"]
-      short_locks = ["my_lock(0)"]
+      short_locks = ["my_lock(0)", "uv_mutex_lock(0)"]
       """
     When I run cchecker in its folder with "--tools rules"
     Then the exit code is 0
     Given the file "cchecker.toml" holds:
       """
       [assume]
-      acquires = ["my_lock(0)", "my_lok(0)"]
+      acquires = ["my_lock(0)", "my_lok(0)", "my_lock(1)"]
       releases = ["my_unlock@other.c(0)"]
       short_locks = ["my_lock(0)", "mine(0)"]
       """
@@ -791,6 +790,10 @@ Feature: What the project assumes of its functions
     And the errors include:
       """
       my_lok(0) (assume.acquires)
+      """
+    And the errors include:
+      """
+      my_lock(1) (assume.acquires)
       """
     And the errors include:
       """
@@ -841,3 +844,110 @@ Feature: What the project assumes of its functions
       """
       "file":"use.c","line":3,
       """
+
+  Scenario Outline: A wrapper of acquires and releases is one lock whatever its declarations call the parameter (<case>)
+    Given the C file "lock.h" holds:
+      """
+      #include "pthread.h"
+      void my_lock(pthread_mutex_t *mutex);
+      void my_unlock(pthread_mutex_t *);
+      """
+    And the C file "def.c" holds:
+      """
+      #include "lock.h"
+      void my_lock(pthread_mutex_t *m) { pthread_mutex_lock(m); }
+      void my_unlock(pthread_mutex_t *m) { pthread_mutex_unlock(m); }
+      void inside(pthread_mutex_t *m) { my_lock(m); my_unlock(m); }
+      """
+    And the C file "use.c" holds:
+      """
+      #include "lock.h"
+      void work(pthread_mutex_t *m) { my_lock(m); my_unlock(m); }
+      void twice(pthread_mutex_t *m) { my_lock(m); my_unlock(m); my_unlock(m); }
+      void leak(pthread_mutex_t *m) { my_lock(m); }
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [assume]
+      acquires = ["<take>"]
+      releases = ["<give>"]
+      """
+    When I run cchecker in its folder with "--tools rules --json def.c use.c"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "CC-PATH-LOCK-NOT-HELD","tool":"rules","file":"use.c","line":3,
+      """
+    And the output includes:
+      """
+      "CC-PATH-LOCK-NOT-RELEASED","tool":"rules","file":"use.c","line":4,
+      """
+    And the output does not include:
+      """
+      "file":"use.c","line":2,
+      """
+    And the output does not include:
+      """
+      "file":"def.c"
+      """
+
+    Examples:
+      | case                | take                | give                  |
+      | by name             | my_lock(0)          | my_unlock(0)          |
+      | by the definition   | my_lock@def.c(0)    | my_unlock@def.c(0)    |
+      | by the prototype    | my_lock@lock.h(0)   | my_unlock@lock.h(0)   |
+
+  Scenario: A static wrapper is marked by the file of its definition
+    Given the C file "a.c" holds:
+      """
+      #include "pthread.h"
+      static void grab(pthread_mutex_t *m) { pthread_mutex_lock(m); }
+      void leak_a(pthread_mutex_t *m) { grab(m); }
+      """
+    And the C file "b.c" holds:
+      """
+      #include "pthread.h"
+      static void grab(pthread_mutex_t *m) { pthread_mutex_lock(m); }
+      void leak_b(pthread_mutex_t *m) { grab(m); }
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [assume]
+      acquires = ["grab@a.c(0)"]
+      """
+    When I run cchecker in its folder with "--tools rules --json a.c b.c"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "CC-PATH-LOCK-NOT-RELEASED","tool":"rules","file":"a.c","line":3,
+      """
+    And the output does not include:
+      """
+      "file":"b.c","line":3,
+      """
+
+  Scenario Outline: A wrapper of short_locks is matched by any declaration of the function (<list>)
+    Given the C file "uv.h" holds:
+      """
+      typedef struct { int fd; } uv_mutex_t;
+      void uv_mutex_lock(uv_mutex_t *handle);
+      void uv_mutex_unlock(uv_mutex_t *handle);
+      """
+    And the C file "short.c" holds:
+      """
+      #include "cchecker.h"
+      #include "uv.h"
+      CC_SHORT void tick(uv_mutex_t *m) { uv_mutex_lock(m); uv_mutex_unlock(m); }
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [assume]
+      short_locks = ["<list>"]
+      """
+    When I run cchecker in its folder with "--tools rules --json short.c -- -I../../../include"
+    Then the exit code is <exit>
+
+    Examples:
+      | list                      | exit |
+      | uv_mutex_lock@uv.h(0)     | 0    |
+      | uv_mutex_lock@other.h(0)  | 1    |
