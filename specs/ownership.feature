@@ -456,9 +456,8 @@ Feature: Ownership on every path
       """
 
   Scenario: A pointer of a block stays after the block while another pointer stands for it
-    An alias outside the block takes the state of the pointer it stands for, and the result of a realloc outside the
-    block keeps the pointer it moved: a use after a free, and the leak where the result of a realloc is null, are found
-    after the block ends.
+    An alias or the result of a realloc outside the block keeps the pointer it stands for: its use after a free, and
+    the leak where the result of a realloc is null, are found after the block ends.
 
     Given the C file "held.c" holds:
       """
@@ -511,7 +510,7 @@ Feature: Ownership on every path
     Then the exit code is 1
     And the output includes:
       """
-      "line":7,"column":6,"message":"outer_alias uses t after it freed it or handed it on","path":["12:5 frees s","14:7 uses t"]
+      "line":7,"column":6,"message":"outer_alias uses s after it freed it or handed it on","path":["12:5 frees s","14:7 uses s"]
       """
     And the output includes:
       """
@@ -526,11 +525,9 @@ Feature: Ownership on every path
       "line":37,
       """
 
-  Scenario: The pointers of a statement expression close at the end of the statement, and a loop hands a pointer on
+  Scenario: The pointers of a statement expression close at the end of the statement around it
     A pointer declared in `({ ...; p; })` stands for its value until the end of the statement around it: returned,
-    kept in a variable, or a leak there. A pointer of a block that an alias outside the block stands for passes its
-    state to that alias when the block ends, so a loop that keeps the pointer of the last round in a variable does not
-    overwrite it.
+    kept in a variable, or a leak there. A jump out of a statement expression closes the pointers of the statement too.
 
     Given the C file "expr.c" holds:
       """
@@ -539,6 +536,10 @@ Feature: Ownership on every path
 
       CC_OWNS char *make(void);
       void use(char *p);
+      void use2(char *p, int n);
+      char *stpcpy(char *dest, const char *src);
+      #define TAKE() ({ CC_OWNS char *t_ = make(); t_; })
+      #define XMAKE(n) ({ CC_OWNS char *x_ = malloc(n); x_; })
 
       char *give(void) {
         return ({ CC_OWNS char *p = make(); p; });
@@ -554,46 +555,40 @@ Feature: Ownership on every path
         free(b);
       }
 
-      void loop(int n) {
-        char *prev = NULL;
-        for (int i = 0; i < n; i++) {
-          CC_OWNS char *cur = make();
-          free(prev);
-          prev = cur;
-        }
-        free(prev);
+      CC_OWNS char *join(int n, const char *a) {
+        char *out = XMAKE(n), *cur = out;
+        cur = stpcpy(cur, a);
+        return out;
       }
 
-      void loop_leaks(int n) {
-        char *prev = NULL;
-        for (int i = 0; i < n; i++) {
-          CC_OWNS char *cur = make();
-          prev = cur;
-        }
-        free(prev);
+      void jump(int c) {
+        use2(TAKE(), ({ if (c) goto out; 0; }));
+        return;
+      out:
+        return;
       }
       """
     When I run cchecker with "--tools rules --json $DIR/expr.c -- -I../include"
     Then the exit code is 1
     And the output includes:
       """
-      "line":11,"column":6,"message":"temp does not free or hand on t on every path","path":["12:28 t = make","12:41 ends"]
+      "line":15,"column":6,"message":"temp does not free or hand on t on every path","path":["16:28 t = make","16:41 ends"]
       """
     And the output includes:
       """
-      "line":31,"column":6,"message":"loop_leaks does not free or hand on prev on every path"
+      "line":31,"column":6,"message":"jump does not free or hand on t_ on every path","path":["32:8 t_ = make","32:23 true","32:26 goto"]
       """
     And the output does not include:
       """
-      "line":7,
+      "line":11,
       """
     And the output does not include:
       """
-      "line":15,
+      "line":19,
       """
     And the output does not include:
       """
-      "line":21,
+      "line":25,
       """
 
   Scenario: An indirect goto leaves no block: it may go to a label inside one

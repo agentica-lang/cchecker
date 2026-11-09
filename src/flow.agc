@@ -1020,15 +1020,24 @@ def statement(b: Builder, node: Json, preds: List[Int]) -> Built
   end
 end
 
-# The end of a full statement (`node`): the pointers of its statement expressions close there (`pending`).
+# The end of a full statement (`node`): the pointers of its statement expressions close there (`pending`). One that a
+# variable still stands for stays, so they close again with the block around the statement, where that variable may
+# close with them.
 def flushed(b: Builder, node: Json, preds: List[Int]) -> Built
   if b.pending.empty?
     return Built(b: b, exits: preds)
   end
 
+  scopes = b.scopes
+  if not scopes.empty?
+    scope = scopes.last
+    added = b.pending.select do |name| not scope.declared.include?(name) end
+    scopes = scopes.set(scopes.size - 1, scope.with(declared: scope.declared.concat(added)))
+  end
+
   place = Ast.end_of(node)
   mark = Mark(word: "ends", line: place.line, column: place.column)
-  return closes_at(b.with(pending: []), b.pending, mark, preds)
+  return closes_at(b.with(pending: [], scopes: scopes), b.pending, mark, preds)
 end
 
 # `flushed` on both sides of a condition (`node`) of a statement.
@@ -1271,7 +1280,7 @@ def return_statement(b: Builder, node: Json, preds: List[Int]) -> Built
   mark = mark_at(node, "returns").with(failed: failed)
   left = leaving(value.b, 0, value.exits, some(mark))
   ended = add(left.b, Event.Exit(mark), left.exits)
-  return Built(b: ended.b, exits: [])
+  return Built(b: ended.b.with(pending: []), exits: [])
 end
 
 # The value of a return: a pointer that owns is handed on, also as the value of a statement expression.
@@ -1332,8 +1341,9 @@ def with_gotos(b: Builder) -> Builder
 end
 
 # The way out of the blocks from `depth` in: their cleanup calls, the innermost first, then one close of their pointers
-# and of the pending ones of the statement at `at` (none closes nothing), which lets the walks drop what they knew of
-# them. The block of the function never closes: the exit of the path reads its pointers.
+# and of the pending ones of the statements left (`pending`, and `outer` of a statement expression) at `at` (none
+# closes nothing), which lets the walks drop what they knew of them. The pending ones stay for the path that does not
+# jump. The block of the function never closes: the exit of the path reads its pointers.
 def leaving(b: Builder, depth: Int, preds: List[Int], at: Optional[Mark]) -> Built
   sites: List[Site] = []
   names: List[String] = []
@@ -1344,12 +1354,15 @@ def leaving(b: Builder, depth: Int, preds: List[Int], at: Optional[Mark]) -> Bui
       names = names.concat(b.scopes[i].declared)
     end
 
+    # A jump out of a statement expression leaves the statement around it too: its pending pointers close here.
+    names = names.concat(b.scopes[i].outer)
+
     i -= 1
   end
 
   called = calls(b, sites, preds)
   case at
-    some(mark) -> return closes_at(called.b.with(pending: []), b.pending.concat(names), mark, called.exits)
+    some(mark) -> return closes_at(called.b, b.pending.concat(names), mark, called.exits)
     none -> return called
   end
 end

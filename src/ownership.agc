@@ -264,12 +264,10 @@ def stepped(walker: Walker, event: Event, item: Item) -> Outcome
 end
 
 # A path leaves the blocks of the pointers of `closing`: nothing names them after. One that a pointer still in the
-# state stands for (an alias, or the result of a realloc of it, from outside the blocks or itself kept) stays, or hands
-# its state to the first alias outside the blocks when no realloc result stands for it; every other one leaves the
-# state, so two paths that differ only in them are one, and one that still owns leaks there.
+# state stands for (an alias, or the result of a realloc of it, from outside the blocks or itself kept) stays; every
+# other one leaves the state, so two paths that differ only in them are one, and one that still owns leaks there.
 def closed(body: Body, item: Item, closing: Closing) -> Outcome
   state = item.state
-  path = item.path
   names = Set.new(closing.names)
   held: Set[String] = Set.new([])
   grew = true
@@ -290,23 +288,13 @@ def closed(body: Body, item: Item, closing: Closing) -> Outcome
   breaches: List[Breach] = []
   for name in closing.names
     if held.include?(name)
-      holders = state.aliases.keys.sort.select do |alias|
-        state.aliases[alias] == name and not names.include?(alias)
-      end
-
-      if holders.empty? or state.links.values.include?(name)
-        next
-      end
-
-      state = handed_to(state, name, holders.first)
-      path = renamed(path, name, holders.first)
       next
     end
 
     if state.owns.get(name).map do |own| own == OWNED end.unwrap_or(false)
       message = "#{body.name} does not free or hand on #{plain(name)} on every path"
       breaches = breaches.push(
-        Breach(code: LEAK, name: name, message: message, path: from_last(path, name, true).push(step)),
+        Breach(code: LEAK, name: name, message: message, path: from_last(item.path, name, true).push(step)),
       )
     end
 
@@ -317,46 +305,7 @@ def closed(body: Body, item: Item, closing: Closing) -> Outcome
     )
   end
 
-  return Outcome(moved: Moved.Went(item.with(state: state, path: path)), breaches: breaches)
-end
-
-# The steps of a path about the pointer `name`, about `holder` instead, which took its place.
-def renamed(path: List[Step], name: String, holder: String) -> List[Step]
-  found: List[Step] = []
-  for step in path
-    if step.name == name
-      found = found.push(step.with(name: holder))
-    else
-      found = found.push(step)
-    end
-  end
-
-  return found
-end
-
-# The state after a pointer leaves it and an alias of it (`holder`) takes its place: the holder gets its state and the
-# result of a realloc it stands for, and the other aliases of it stand for the holder.
-def handed_to(state: State, name: String, holder: String) -> State
-  aliases = state.aliases.delete(holder).delete(name)
-  for alias in aliases.keys
-    if aliases[alias] == name
-      aliases = aliases.put(alias, holder)
-    end
-  end
-
-  owns = state.owns.delete(name)
-  case state.owns.get(name)
-    some(own) -> owns = owns.put(holder, own)
-    none -> owns = owns
-  end
-
-  links = state.links.delete(name)
-  case state.links.get(name)
-    some(source) -> links = links.put(holder, source)
-    none -> links = links
-  end
-
-  return state.with(owns: owns, aliases: aliases, links: links)
+  return Outcome(moved: Moved.Went(item.with(state: state)), breaches: breaches)
 end
 
 def went(item: Item) -> Outcome
