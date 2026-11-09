@@ -66,14 +66,15 @@ end
 ## Returns the entries with the repeats of a file left out, the first one kept: CMake lists a source file once for
 ## each library it goes in (static and shared), and each tool would check it as many times. Two entries are one when
 ## they run in the same folder on the same file with the same flags, leaving out those that only a shared library adds
-## (`UNFOLDED`, `-D<target>_EXPORTS`). Other defines or include paths may change what the tools find: such entries are
-## each kept.
-export def fold(entries: List[Entry]) -> Folded
+## (`UNFOLDED`, `-D<target>_EXPORTS`) and the defines named in `ignored` (`[database] fold_ignoring`), with any value.
+## Other defines or include paths may change what the tools find: such entries are each kept.
+export def fold(entries: List[Entry], ignored: List[String]) -> Folded
+  names = Set.new(ignored)
   seen: Set[String] = Set.new([])
   kept: List[Entry] = []
   for entry in entries
     path = Paths.absolute(entry.directory, entry.file).unwrap_or(entry.file)
-    flags = entry.args.select do |flag| not UNFOLDED.include?(flag) and not export_define?(flag) end
+    flags = folding_flags(entry.args, names)
     key = [entry.directory, path].concat(flags).join("\n")
     if not seen.include?(key)
       seen = seen.add(key)
@@ -179,6 +180,41 @@ def names?(word: String, source: String, directory: String) -> Bool
   end
 
   return Paths.absolute(directory, word).unwrap_or("") == source
+end
+
+# The flags of an entry that tell it from another for folding: without those of a shared library, and without the
+# defines of `ignored`, written `-DNAME`, `-DNAME=value` or as two words, `-D NAME`.
+def folding_flags(args: List[String], ignored: Set[String]) -> List[String]
+  flags: List[String] = []
+  skip = false
+  for i in 0...args.size
+    flag = args[i]
+    if skip
+      skip = false
+      next
+    end
+
+    if flag == "-D" and i + 1 < args.size and ignored.include?(define_name(args[i + 1]))
+      skip = true
+    elsif not UNFOLDED.include?(flag) and not export_define?(flag) and not ignored_define?(flag, ignored)
+      flags = flags.push(flag)
+    end
+  end
+
+  return flags
+end
+
+# Whether the flag is a define of a name in `ignored`.
+def ignored_define?(flag: String, ignored: Set[String]) -> Bool
+  return flag.start_with?("-D") and flag.length > 2 and ignored.include?(define_name(flag.slice(2, flag.length - 2)))
+end
+
+# The name of a define written `NAME` or `NAME=value`.
+def define_name(text: String) -> String
+  case text.index_of("=")
+    some(at) -> return text.slice(0, at)
+    none -> return text
+  end
 end
 
 # Whether the flag is the define that CMake adds to each file of a shared library, `-D<target>_EXPORTS`, which code

@@ -7,6 +7,7 @@
 ## unknown key or a value of the wrong type is an error, so that a typo cannot turn a check off.
 
 import Known from "known"
+import Regex from "std/regex"
 import Toml from "std/toml"
 
 ## The settings file that a project folder may hold for cchecker alone.
@@ -40,7 +41,8 @@ end
 ## `[assume] jumps`, those that always do and never return (as CC_JUMPS), `catches` is `[assume] catches`, those
 ## that catch the jumps of what they call (as CC_CATCHES), `jump_releases` is `[assume] jump_releases`, the lock
 ## helpers whose lock the catcher of a jump gives back (as CC_JUMP_RELEASES), and `stop_calls` is
-## `[assume] stop_calls`, the `caller>callee` pairs whose call no walk follows.
+## `[assume] stop_calls`, the `caller>callee` pairs whose call no walk follows. `fold_ignoring` is `[database]
+## fold_ignoring`, the defines that do not tell two entries of one file apart.
 export struct Config
   origin: String
   off: Set[String]
@@ -56,6 +58,7 @@ export struct Config
   catches: List[String] = []
   stop_calls: List[String] = []
   jump_releases: List[String] = []
+  fold_ignoring: List[String] = []
 end
 
 ## Returns the settings of a run in `folder`, the project folder: those of `explicit` (the file of -c) when given.
@@ -118,6 +121,17 @@ export def from_table(origin: String, prefix: String, table: Toml.Value, note: S
             "stop_calls" -> config = config.with(stop_calls: try pairs_of(origin, path, assume.get(name).unwrap!))
             "jump_releases" ->
               config = config.with(jump_releases: try names_of(origin, path, assume.get(name).unwrap!))
+            _ -> return error(unknown(origin, path, note))
+          end
+        end
+
+      "database" ->
+        database = try table_of(origin, "#{prefix}database", value)
+        for name in database.keys
+          path = "#{prefix}database.#{name}"
+          case name
+            "fold_ignoring" ->
+              config = config.with(fold_ignoring: try defines_of(origin, path, database.get(name).unwrap!))
             _ -> return error(unknown(origin, path, note))
           end
         end
@@ -232,6 +246,19 @@ def names_of(origin: String, path: String, value: Toml.Value) -> Result[List[Str
       return ok(names)
     _ -> return error("#{origin}: #{path} must be a list of function names")
   end
+end
+
+# The names of macros: letters, digits and underscores, not starting with a digit, as C names them. `-DA`, `A=1` and
+# `A,B` name none.
+def defines_of(origin: String, path: String, value: Toml.Value) -> Result[List[String]]
+  names = try names_of(origin, path, value)
+  for name in names
+    if not Regex.match(name, /\A[A-Za-z_][A-Za-z0-9_]*\z/).ok?
+      return error("#{origin}: #{path} must be a list of macro names (NAME, not -DNAME, NAME=1 or A,B)")
+    end
+  end
+
+  return ok(names)
 end
 
 def pairs_of(origin: String, path: String, value: Toml.Value) -> Result[List[String]]

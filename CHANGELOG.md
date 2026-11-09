@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `[database] fold_ignoring = ["NAME"]`: two entries of one file that differ only in those defines (any value) are
+  checked once, the first of the database, like the `-D<target>_EXPORTS` of a shared library (libuv's
+  `BUILDING_UV_SHARED`). A define that changes the C the rules read hides it from the entries left out.
 - `[assume] stop_calls = ["caller>callee"]` cuts the calls of `callee` in `caller` out of the call graph, for every rule
   that walks it (effects, the lock rules' system path, the inference of `may_jump_callers`); the callee stays reachable
   from its other callers, where `stop` removes it for all. Each side takes `name@path`, and a pair that matches no

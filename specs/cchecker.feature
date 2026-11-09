@@ -181,6 +181,44 @@ Feature: Running the analyzers on C files
       ran
       """
 
+  Scenario Outline: [database] fold_ignoring folds the entries of a file that differ only in the listed defines (<case>)
+    Given the C file "x.c" holds:
+      """
+      int f(void) { return 0; }
+      """
+    And the C file "compile_commands.json" holds:
+      """
+      [
+        {"directory": ".", "command": "cc -DLEVEL=1 -I. -o a.o -c x.c", "file": "x.c"},
+        {"directory": ".", "command": "cc -DLEVEL=1 <define> -I. -o b.o -c x.c", "file": "x.c"}
+      ]
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [database]
+      <setting>
+      """
+    When I run cchecker in its folder with "--json --tools gcc --gcc ../../fixtures/fake_gcc_count.sh -p ."
+    Then the exit code is 0
+    And the output includes:
+      """
+      "folded":<folded>
+      """
+    And the file "$DIR/runs.log" <twice>:
+      """
+      ran
+      ran
+      """
+
+    Examples:
+      | case                          | define                | setting                               | folded | twice            |
+      | listed                        | -DBUILDING_X_SHARED=1 | fold_ignoring = ["BUILDING_X_SHARED"] | 1      | does not include |
+      | listed, no value              | -DBUILDING_X_SHARED   | fold_ignoring = ["BUILDING_X_SHARED"] | 1      | does not include |
+      | listed, two words             | -D BUILDING_X_SHARED  | fold_ignoring = ["BUILDING_X_SHARED"] | 1      | does not include |
+      | another define                | -DBUILDING_X_SHARED=1 | fold_ignoring = ["LEVEL"]             | 0      | includes         |
+      | a name that starts the define | -DBUILDING_X_SHARED=1 | fold_ignoring = ["BUILDING_X"]        | 0      | includes         |
+      | empty                         | -DBUILDING_X_SHARED=1 | fold_ignoring = []                    | 0      | includes         |
+
   Scenario: The number of runs at once is bounded by --jobs
     When I run cchecker with "--tools gcc --gcc fixtures/fake_gcc_serial.sh -j 1 fixtures/clean.c fixtures/leak.c"
     Then the exit code is 0

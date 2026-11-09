@@ -72,7 +72,7 @@ export def run(options: Options) -> Result[Int]
   end
 
   loaded = try baseline_file(options)
-  gathered = Commands.fold(try gather(options))
+  gathered = Commands.fold(try gather(options), config.fold_ignoring)
   scratch = try scratch_path(cwd)
   plan = try plan_for(options, gathered.entries, cwd, scratch)
   if plan.jobs.empty?
@@ -222,7 +222,8 @@ end
 
 # A baseline written with a check off, or with fewer roots than the project names, would drop the accepted findings of
 # that check or root, as --checks would: --update-baseline is refused then, naming what causes it. Of the settings only
-# [roots] is compared: follow_cold and [assume] can also change the findings and are not checked.
+# [roots] is compared: follow_cold, [assume] and [database] fold_ignoring (which entries run) can also change the
+# findings and are not checked.
 def full_rules(options: Options, config: Config.Config, cwd: String) -> Result[Void]
   causes: List[String] = []
   if not options.infer
