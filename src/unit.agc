@@ -418,6 +418,16 @@ def owning_of(tables: Tables, nodes: List[Json]) -> Flow.Owning
     end
   end
 
+  # The records with a CC_OWNS field that is not in a union, by type name, with all their fields in the order of the
+  # items of an initializer.
+  records: Map[String, Flow.OwnedRecord] = {}
+  for name in tables.records.keys
+    record = tables.records[name]
+    if record.field_ids.any? do |id| fields.include?(id) and not unions.include?(id) end
+      records = records.put(name, Flow.OwnedRecord(ids: record.field_ids, names: record.fields))
+    end
+  end
+
   # A global by the ids of all its declarations, so that the mark of one holds in the others and a local of the same
   # name is not it.
   variables = nodes.select do |n| Ast.kind(n) == "VarDecl" end
@@ -431,6 +441,7 @@ def owning_of(tables: Tables, nodes: List[Json]) -> Flow.Owning
     fields: fields,
     globals: Set.new(globals),
     unions: unions,
+    records: records,
   )
 end
 

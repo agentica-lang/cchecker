@@ -466,10 +466,11 @@ def after_assign(body: Body, item: Item, assign: Assign) -> Outcome
   breaches: List[Breach] = []
   state = item.state
   owned = state.owns.get(assign.name).map do |own| own == OWNED end.unwrap_or(false)
-  # `old = *p; *p = v;` in a CC_FREES parameter: the locals that stood for the pointer keep its old value, in the state
-  # it had; the first one holds it and the others stand for it.
+  # `old = *p; *p = v;` in a CC_FREES parameter, or `old = p; p = NULL;`: the locals that stood for the pointer keep
+  # its old value, in the state it had; the first one holds it and the others stand for it.
   keepers = state.aliases.keys.sort.select do |alias| state.aliases[alias] == assign.name end
-  if assign.through and not keepers.empty?
+  handed = assign.through or assign.value == "null" or assign.value == "other"
+  if handed and not keepers.empty?
     holder = keepers.first
     aliases = state.aliases.delete(holder)
     for other in keepers.drop(1)

@@ -107,10 +107,12 @@ parameter or a global, or the same name in two blocks) are two variables: each
 pointer has its own state, and a condition on one is not a condition on the
 other. A local that stands for a pointer still stands for it after that pointer
 gets a new value, except through a `CC_FREES` parameter that points to the
-pointer: after `old = *p; *p = v;`, `old` holds the old value. `return p` hands
-`p` on even when the function has no `CC_OWNS` mark, and `p = realloc(p, n)` is
-trusted to work. A pointer put in a struct or a compound literal is not
-followed, and only one level of pointer is (`*p` of a `char **p`, not `**p`). A
+pointer, or when the new value owns nothing: after `old = *p; *p = v;` or `old =
+p; p = NULL;`, `old` holds the old value. `return p` hands `p` on even when the
+function has no `CC_OWNS` mark, and `p = realloc(p, n)` is trusted to work. A
+pointer stored in a field without `CC_OWNS` is not followed, one put in an
+initializer or a compound literal is handed on there, and only one level of
+pointer is (`*p` of a `char **p`, not `**p`). A
 pointer freed through its address (`free_and_null(&p)`, a cleanup function) is
 freed or null: it may be read and freed again (`free(NULL)`), and where a
 condition says it is not null it is freed. The rules assume that a helper that
@@ -119,11 +121,12 @@ double free or use unreported.
 
 The one struct the rules follow is a local one that the function reads and
 writes only field by field: its `CC_OWNS` fields are pointers of their own.
-After `struct pair p = {0}; p.left = make();`, `p.left` owns and is freed or
-handed on on every path, as a `CC_OWNS` local, and the findings name it
-`p.left`. A struct whose address is taken (`&p`, `&p.left`), or that is copied,
-passed, returned or named in any other way, is not followed, nor a static one or
-a union: a store into their `CC_OWNS` fields hands the pointer on.
+After `struct pair p = {0}; p.left = make();` or `struct pair p = { .left =
+make() };`, `p.left` owns and is freed or handed on on every path, as a
+`CC_OWNS` local, and the findings name it `p.left`. A struct whose address is
+taken (`&p`, `&p.left`), that is copied, passed, returned or named in any other
+way, or that has a `cleanup` function, is not followed, nor a static one or a
+union: a store into their `CC_OWNS` fields hands the pointer on.
 
 A filled pointer that the path never reads is not reported (`take(&b); return
 0;`): telling it from what a call that failed left would need a mark that says

@@ -701,8 +701,10 @@ Feature: Ownership on every path
 
   Scenario: The CC_OWNS fields of a local struct are pointers of their own while the struct does not escape
     A local struct that the function reads and writes only field by field (`p.left`) has a state for each CC_OWNS
-    field. A struct whose address is taken, or that is copied or passed by value, and a union are not followed: a store
-    into their CC_OWNS fields hands the pointer on.
+    field, and an initializer gives each its item. A struct whose address is taken, that is copied or passed by value,
+    or that has a cleanup function, and a union are not followed: a store into their CC_OWNS fields hands the pointer
+    on. A pointer put in an initializer or a compound literal is handed on, and `old = p; p = NULL;` leaves the
+    pointer to `old`.
 
     Given the C file "fields.c" holds:
       """
@@ -798,6 +800,57 @@ Feature: Ownership on every path
         e.text = make_buffer();
         free(e.bytes);
       }
+
+      void pair_done(struct pair *p);
+
+      void cleaned(void) {
+        struct pair p __attribute__((cleanup(pair_done))) = {0};
+        p.left = make_buffer();
+      }
+
+      char *take_ptr(void) {
+        struct pair p = {0};
+        p.left = make_buffer();
+        char *result = p.left;
+        p.left = NULL;
+        return result;
+      }
+
+      char *take_local(void) {
+        CC_OWNS char *buf = make_buffer();
+        char *result = buf;
+        buf = NULL;
+        return result;
+      }
+
+      void designated(void) {
+        struct pair p = { .left = make_buffer() };
+        free(p.left);
+      }
+
+      void designated_leaks(void) {
+        struct pair p = { .right = make_buffer() };
+        free(p.left);
+      }
+
+      struct pair give(void) {
+        struct pair p = {0};
+        p.left = make_buffer();
+        return (struct pair){ .left = p.left };
+      }
+
+      struct flagged { CC_OWNS char *buf; int on; };
+
+      void kept_fact(int n) {
+        struct flagged f = {0};
+        f.on = n;
+        if (f.on)
+          f.buf = make_buffer();
+        if (f.buf)
+          f.buf[0] = 'x';
+        if (f.on)
+          free(f.buf);
+      }
       """
     When I run cchecker with "--tools rules --json $DIR/fields.c -- -I../include"
     Then the exit code is 1
@@ -840,6 +893,34 @@ Feature: Ownership on every path
     And the output does not include:
       """
       "line":88,
+      """
+    And the output includes:
+      """
+      "line":121,"column":6,"message":"designated_leaks does not free or hand on p.right on every path","path":["122:30 p.right = make_buffer","124:1 ends"]
+      """
+    And the output does not include:
+      """
+      "line":96,
+      """
+    And the output does not include:
+      """
+      "line":101,
+      """
+    And the output does not include:
+      """
+      "line":109,
+      """
+    And the output does not include:
+      """
+      "line":116,
+      """
+    And the output does not include:
+      """
+      "line":126,
+      """
+    And the output does not include:
+      """
+      "line":134,
       """
 
   Scenario: A function with more paths than the rules follow is checked on those it went through and counted
