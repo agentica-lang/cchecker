@@ -527,7 +527,8 @@ Feature: Ownership on every path
 
   Scenario: The pointers of a statement expression close at the end of the statement around it
     A pointer declared in `({ ...; p; })` stands for its value until the end of the statement around it: returned,
-    kept in a variable, or a leak there. A jump out of a statement expression closes the pointers of the statement too.
+    kept in a variable, or a leak there; one that a variable stands for closes again with the block around the
+    statement. A jump out of a statement expression closes the pointers of the statement too.
 
     Given the C file "expr.c" holds:
       """
@@ -567,6 +568,13 @@ Feature: Ownership on every path
       out:
         return;
       }
+
+      void blk(void) {
+        {
+          char *q = ({ CC_OWNS char *t = make(); t; });
+          use(q);
+        }
+      }
       """
     When I run cchecker with "--tools rules --json $DIR/expr.c -- -I../include"
     Then the exit code is 1
@@ -577,6 +585,10 @@ Feature: Ownership on every path
     And the output includes:
       """
       "line":31,"column":6,"message":"jump does not free or hand on t_ on every path","path":["32:8 t_ = make","32:23 true","32:26 goto"]
+      """
+    And the output includes:
+      """
+      "line":38,"column":6,"message":"blk does not free or hand on t on every path","path":["40:36 t = make","40:44 q = t","42:3 ends"]
       """
     And the output does not include:
       """
