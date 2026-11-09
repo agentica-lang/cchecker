@@ -4,6 +4,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `[roots]` and `[assume]` (`short`, `stop`, `may_jump`) take `name@path`, the function of that name whose file ends
+  with `path`, so a name shared by static functions of several files no longer marks all of them.
+
 ### Changed
 
 - A file listed more than once with the same flags is checked once; flags that differ only by `-fPIC`, `-fPIE` and

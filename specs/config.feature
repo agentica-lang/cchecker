@@ -272,6 +272,51 @@ Feature: The settings of a project
       no [tool.cchecker] table
       """
 
+  Scenario: name@file in [roots] is the function of that file only
+    Given the C file "a.c" holds:
+      """
+      unsigned int sleep(unsigned int seconds);
+      static int tick(void) { return (int)sleep(1); }
+      int a(void) { return tick(); }
+      """
+    And the C file "b.c" holds:
+      """
+      unsigned int sleep(unsigned int seconds);
+      static int tick(void) { return (int)sleep(2); }
+      int b(void) { return tick(); }
+      """
+    And the file "compile_commands.json" holds:
+      """
+      [{"directory": ".", "file": "a.c", "arguments": ["cc", "-c", "a.c"]},
+       {"directory": ".", "file": "b.c", "arguments": ["cc", "-c", "b.c"]}]
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [roots]
+      short = ["tick@b.c"]
+      """
+    When I run cchecker in its folder with "--tools rules --json"
+    Then the exit code is 1
+    And the output includes:
+      """
+      {"code":"CC-EFFECT-SHORT-BLOCKS","tool":"rules","file":"b.c","line":2,
+      """
+    And the output does not include:
+      """
+      "file":"a.c"
+      """
+    Given the file "cchecker.toml" holds:
+      """
+      [roots]
+      short = ["tick@b.c", "tick@c.c"]
+      """
+    When I run cchecker in its folder with "--tools rules --json"
+    Then the exit code is 2
+    And the errors include:
+      """
+      tick@c.c
+      """
+
   Scenario: --update-baseline with -c is refused when the file leaves out a short root, even named as hot
     Given the C file "more.c" holds:
       """

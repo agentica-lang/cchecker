@@ -80,6 +80,18 @@ that checks nothing. Only a full run of a compile database can tell (a run of
 some files does not see the others), so only it checks the names; another run
 says on standard error that it did not.
 
+A name shared by static functions of several files marks all of them. To mark
+one, write `name@path`: the function of that name whose file ends with `path`,
+by whole parts of the path (`put@src/files.c`, or `put@files.c` when no other
+`files.c` has a `put`), as `short_locks` does for a static lock. The path is
+the end of the path of the file as it is, with no `..`; a leading `./` is
+ignored. In `[assume]` it may be the file of the definition or of any
+declaration of the function (`slow@slow.h` for a prototype in a header); in
+`[roots]` it is the file of the definition. It works in every list of `[roots]`
+and in `short`, `stop` and `may_jump` of `[assume]` (`stop_fields` and
+`short_locks` name fields and locks), and a `name@path` that matches no
+function is an error (exit 2) like a bare name that does.
+
 `[assume]` says what the project knows of its own functions and cchecker cannot
 see in the C, as `CC_ASSUME_SHORT` and `CC_STOP` do on a declaration. `short`
 names the functions that count as fine for `CC_SHORT`: the short rule does not
