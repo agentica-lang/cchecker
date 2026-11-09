@@ -523,7 +523,7 @@ static void set(buf *b, slice v) {
 static const char *const pruned[] = {
   "offset",       "tokLen",        "includedFrom",   "file",         "line",           "spellingLoc",
   "valueCategory", "typeAliasDeclId", "isMacroArgExpansion", "mangledName", "isUsed", "isReferenced",
-  "isImplicit",   "isPartOfExplicitCast", "canOverflow", "computeResultType", "computeLHSType", "tagUsed",
+  "isImplicit",   "isPartOfExplicitCast", "canOverflow", "computeResultType", "computeLHSType",
   "completeDefinition", "previousDecl",
 };
 

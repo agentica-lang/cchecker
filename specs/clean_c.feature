@@ -48,8 +48,8 @@ Feature: C that must stay clean
       | strdup                                          | CC_OWNS char *f(const char *s) { CC_OWNS char *c = strdup(s); if (!c) return NULL; if (work(c)) { free(c); return NULL; } return c; }                                                                          |
       | designated initializer of a plain struct parses | void f(int n) { struct conf c = { .name = "x", .n = n }; use(&c); }                                                                                                                                            |
 
-    # The CC_OWNS fields of a local struct. The rules follow them from #110 on: before it these rows pass because
-    # a store into such a field hands the pointer on, and their twins that leak come with #110.
+    # The CC_OWNS fields of a local struct (#110), and a local that keeps the old value of a pointer that gets a new
+    # one (the last round of a loop, TAKE_PTR of a CC_OWNS local: #107, #115).
     Examples:
       | case                                  | code                                                                                                                                                                                        |
       | cleanup on a struct                   | void f(int n) { __attribute__((cleanup(pair_done))) struct pair p = {0}; p.left = make(n); work(p.left); }                                                                                  |
@@ -57,20 +57,11 @@ Feature: C that must stay clean
       | goto cleanup of struct fields         | int f(int n) { int rc = -1; struct pair p = {0}; p.left = make(n); if (!p.left) goto out; p.right = make(n); if (!p.right) goto out; rc = 0; out: free(p.left); free(p.right); return rc; } |
       | field freed through a local           | void f(int n) { struct pair p = {0}; p.left = make(n); char *q = p.left; free(q); }                                                                                                         |
       | struct filled, then passed by pointer | void f(int n) { struct pair p = {0}; p.left = make(n); keep(&p); }                                                                                                                          |
+      | last round kept in a variable         | void f(int n) { char *prev = NULL; for (int i = 0; i < n; i++) { CC_OWNS char *cur = make(i); free(prev); prev = cur; } free(prev); }                                                     |
+      | TAKE_PTR returned                     | CC_OWNS char *f(int n) { CC_OWNS char *b = malloc(n); if (!b) return NULL; return TAKE_PTR(b); }                                                                                            |
+      | TAKE_PTR stored in a field            | void f(struct box *x, int n) { CC_OWNS char *b = malloc(n); if (!b) return; x->held = TAKE_PTR(b); }                                                                                        |
+      | TAKE_PTR handed out                   | int f(CC_OWNS_OUT char **out, int n) { CC_OWNS char *b = malloc(n); if (!b) return -1; *out = TAKE_PTR(b); return 0; }                                                                      |
 
-    # TAKE_PTR of a CC_OWNS local: `t_ = b; b = NULL` reads as a lost value (#115).
-    @pending @issue-115
-    Examples:
-      | case                       | code                                                                                                                   |
-      | TAKE_PTR returned          | CC_OWNS char *f(int n) { CC_OWNS char *b = malloc(n); if (!b) return NULL; return TAKE_PTR(b); }                       |
-      | TAKE_PTR stored in a field | void f(struct box *x, int n) { CC_OWNS char *b = malloc(n); if (!b) return; x->held = TAKE_PTR(b); }                   |
-      | TAKE_PTR handed out        | int f(CC_OWNS_OUT char **out, int n) { CC_OWNS char *b = malloc(n); if (!b) return -1; *out = TAKE_PTR(b); return 0; } |
-
-    # The state of a closing block's pointer goes to the alias that holds it (#107).
-    @pending @issue-107
-    Examples:
-      | case                          | code                                                                                                                                  |
-      | last round kept in a variable | void f(int n) { char *prev = NULL; for (int i = 0; i < n; i++) { CC_OWNS char *cur = make(i); free(prev); prev = cur; } free(prev); } |
 
   Scenario Outline: The same idiom with one change gives a finding (<case>: <change>)
     Given the C file "clean.c" holds:
@@ -111,3 +102,10 @@ Feature: C that must stay clean
       | realloc in a loop                            | no free when realloc fails     | CC_OWNS char *f(int n) { CC_OWNS char *b = NULL; for (int i = 1; i <= n; i++) { char *t = realloc(b, i); if (!t) { return NULL; } b = t; } return b; }                                                |
       | free in a loop with switch and continue      | no free in case 0              | void f(int n) { for (int i = 0; i < n; i++) { CC_OWNS char *b = malloc(n); if (!b) continue; switch (work(b)) { case 0: continue; case 1: free(b); break; default: free(b); return; } work(NULL); } } |
       | strdup                                       | no free when work fails        | CC_OWNS char *f(const char *s) { CC_OWNS char *c = strdup(s); if (!c) return NULL; if (work(c)) { return NULL; } return c; }                                                                          |
+      | cleanup on a struct                          | no cleanup                     | void f(int n) { struct pair p = {0}; p.left = make(n); work(p.left); } |
+      | TAKE_PTR by hand of a field                  | the taken value dropped        | CC_OWNS char *f(int n) { struct pair p = {0}; p.left = make(n); char *out = p.left; p.left = NULL; work(out); return NULL; } |
+      | goto cleanup of struct fields                | one free missing at the label  | int f(int n) { int rc = -1; struct pair p = {0}; p.left = make(n); if (!p.left) goto out; p.right = make(n); if (!p.right) goto out; rc = 0; out: free(p.left); return rc; } |
+      | field freed through a local                  | lent, not freed                | void f(int n) { struct pair p = {0}; p.left = make(n); char *q = p.left; work(q); } |
+      | last round kept in a variable                | the last round not freed       | void f(int n) { char *prev = NULL; for (int i = 0; i < n; i++) { CC_OWNS char *cur = make(i); free(prev); prev = cur; } } |
+      | TAKE_PTR returned                            | the taken value lent           | CC_OWNS char *f(int n) { CC_OWNS char *b = malloc(n); if (!b) return NULL; work(TAKE_PTR(b)); return NULL; } |
+      | TAKE_PTR handed out                          | the taken value not handed out | int f(CC_OWNS_OUT char **out, int n) { CC_OWNS char *b = malloc(n); if (!b) return -1; char *t = TAKE_PTR(b); work(t); *out = NULL; return 0; } |
