@@ -269,7 +269,7 @@ Feature: What the project assumes of its functions
       | stop = ["trace@b.c"]      | includes         | does not include |
       | short = ["trace@b.c"]     | includes         | does not include |
 
-  Scenario: A name@file of [assume] that no function has is an error, as a bare name is
+  Scenario: A name@file of [assume] that no function has is an error, as a bare name is (and likewise may_jump)
     Given the C file "a.c" holds:
       """
       static void put(void) {}
@@ -289,6 +289,7 @@ Feature: What the project assumes of its functions
       """
       [assume]
       stop = ["put@a.c", "put@b.c"]
+      may_jump = ["put@a.c"]
       """
     When I run cchecker in its folder with "--tools rules"
     Then the exit code is 0
@@ -296,6 +297,7 @@ Feature: What the project assumes of its functions
       """
       [assume]
       stop = ["put@a.c", "put@c.c", "run@b.c"]
+      may_jump = ["put@a.c", "put@d.c"]
       """
     When I run cchecker in its folder with "--tools rules"
     Then the exit code is 2
@@ -307,10 +309,50 @@ Feature: What the project assumes of its functions
       """
       run@b.c (assume.stop)
       """
+    And the errors include:
+      """
+      put@d.c (assume.may_jump)
+      """
     And the errors do not include:
       """
       put@a.c
       """
+
+  Scenario Outline: name@file of [assume] names the file of the definition or of any declaration (<path>)
+    Given the file "slow.h" holds:
+      """
+      void slow(int fd);
+      """
+    And the C file "slow.c" holds:
+      """
+      #include "slow.h"
+      #include "unistd.h"
+      void slow(int fd) { (void)write(fd, "x", 1); }
+      """
+    And the C file "tick.c" holds:
+      """
+      #include "slow.h"
+      #include "cchecker.h"
+      CC_SHORT void tick(int fd) { slow(fd); }
+      """
+    And the file "compile_commands.json" holds:
+      """
+      [{"directory": ".", "file": "slow.c", "arguments": ["cc", "-c", "slow.c", "-I../../../include"]},
+       {"directory": ".", "file": "tick.c", "arguments": ["cc", "-c", "tick.c", "-I../../../include"]}]
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [assume]
+      short = ["slow@<path>"]
+      """
+    When I run cchecker in its folder with "--tools rules"
+    Then the exit code is 0
+
+    Examples:
+      | path     |
+      | slow.h   |
+      | slow.c   |
+      | ./slow.c |
 
   Scenario: A name of [assume] that no function of the compile database has is an error
     Given the C file "tick.c" holds:

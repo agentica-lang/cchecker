@@ -60,6 +60,28 @@ struct Walk
   flags: Bool = false
 end
 
+# One entry of `[roots]` or `[assume]`: a bare name (every function of that name, a static one in any file), or
+# `name@file`, whose `tail` is the end of the path of the file. A `./` before the path is ignored. An entry with an
+# empty path (`name@`) is neither: it names nothing, so it is reported as missing.
+struct Entry
+  name: String
+  bare: Bool
+  tail: String
+end
+
+# The entries of a list, split once: the bare names, and the ends of the paths of `name@file` by name.
+struct Listing
+  bare: Set[String]
+  tails: Map[String, List[String]]
+end
+
+# The lists of `[assume] short`, `stop` and `may_jump`.
+struct Assumed
+  short: Listing
+  stop: Listing
+  jump: Listing
+end
+
 ## What the rules found: the findings, and the callbacks of libuv calls they could not follow to a function.
 ## `missing_roots` are the names of `[roots]` that no function of the units defines, and `missing_assumed` those of
 ## `[assume]` that no function of the units declares, each with its key (`trace (assume.stop)`).
@@ -94,6 +116,8 @@ export def check(units: List[Unit], config: Config, infer: Bool, all_paths: Bool
     flags: not config.off.include?(Known.NONBLOCKING_FLAG),
   )
 
+  short_roots = listing_of(config.short)
+  hot_roots = listing_of(config.hot)
   inferred = Inferred(roots: {}, unresolved: [])
   if infer and not config.off.include?(Known.CALLBACKS_FLAG)
     inferred = inferred_of(graph, units, cwd)
@@ -102,7 +126,7 @@ export def check(units: List[Unit], config: Config, infer: Bool, all_paths: Bool
   findings: List[Finding] = []
   for function in graph.functions.values
     if function.defined
-      if function.marks.include?("short") or listed?(config.short, function)
+      if function.marks.include?("short") or listed?(short_roots, function)
         findings = findings.concat(broken(graph, walk, function, Effect.Blocks))
       elsif inferred.roots.key?(function.key)
         # A marked or listed root needs no inference: the finding stays when the flag is off, so it names no flag.
@@ -114,7 +138,7 @@ export def check(units: List[Unit], config: Config, infer: Bool, all_paths: Bool
         )
       end
 
-      if function.marks.include?("hot") or listed?(config.hot, function)
+      if function.marks.include?("hot") or listed?(hot_roots, function)
         findings = findings.concat(broken(graph, walk, function, Effect.Allocates))
         findings = findings.concat(broken(graph, walk, function, Effect.System))
       end
@@ -125,7 +149,7 @@ export def check(units: List[Unit], config: Config, infer: Bool, all_paths: Bool
     findings: findings,
     unresolved: inferred.unresolved,
     missing_roots: missing_roots(graph, config),
-    missing_assumed: missing_assumed(graph, config).concat(missing_locks(units, graph, config)),
+    missing_assumed: missing_assumed(units, config).concat(missing_locks(units, graph, config)),
     unknown_targets: graph.unknown_targets,
   )
 end
@@ -139,9 +163,10 @@ export def assumed(units: List[Unit], config: Config) -> List[Unit]
   end
 
   cut = Set.new(config.stop_fields.map do |field| "#{FIELD_SLOT}#{field}" end)
+  lists = Assumed(short: listing_of(config.trusted), stop: listing_of(config.stops), jump: listing_of(config.jumps))
   return units.map do |unit|
     unit.with(
-      functions: unit.functions.map do |f| with_assumed(f, config) end,
+      functions: unit.functions.map do |f| with_assumed(f, lists) end,
       calls: unit.calls.select do |call| not cut_call?(cut, call) end,
     )
   end
@@ -329,20 +354,39 @@ def ends_with_path?(path: String, tail: String) -> Bool
   return path == tail or path.end_with?("/#{tail}")
 end
 
-# Whether an entry of `[roots]` or `[assume]` names the function: a bare name is every function of that name (a static
-# one in any file), and `name@file` the one whose file ends with `file`, as the classes of `short_locks` do.
-def names?(entry: String, function: Function) -> Bool
+def entry_of(entry: String) -> Entry
   case entry.index_of("@")
     some(at) ->
       tail = entry.slice(at + 1, entry.length - at - 1)
-      return entry.slice(0, at) == function.name and tail != "" and ends_with_path?(function.file, tail)
-    none -> return entry == function.name
+      if tail.start_with?("./")
+        tail = tail.slice(2, tail.length - 2)
+      end
+
+      return Entry(name: entry.slice(0, at), bare: false, tail: tail)
+    none -> return Entry(name: entry, bare: true, tail: "")
   end
 end
 
-# Whether the list names the function.
-def listed?(entries: List[String], function: Function) -> Bool
-  return entries.any? do |entry| names?(entry, function) end
+def listing_of(entries: List[String]) -> Listing
+  bare: List[String] = []
+  tails: Map[String, List[String]] = {}
+  for entry in entries.map(&entry_of)
+    if entry.bare
+      bare = bare.push(entry.name)
+    elsif entry.tail != ""
+      tails = tails.put(entry.name, tails.get(entry.name).unwrap_or([]).push(entry.tail))
+    end
+  end
+
+  return Listing(bare: Set.new(bare), tails: tails)
+end
+
+# Whether the list names the function: by its name, or by its name and the end of the path of its file.
+def listed?(listing: Listing, function: Function) -> Bool
+  return (
+    listing.bare.include?(function.name) or
+    listing.tails.get(function.name).unwrap_or([]).any? do |tail| ends_with_path?(function.file, tail) end
+  )
 end
 
 # A class without the file of a static global.
@@ -393,39 +437,62 @@ def name_of_key(functions: Map[String, Function], key: String) -> String
 end
 
 # A function with the marks of `[assume]` that name it.
-def with_assumed(function: Function, config: Config) -> Function
+def with_assumed(function: Function, lists: Assumed) -> Function
   marks = function.marks
-  if listed?(config.trusted, function)
+  if listed?(lists.short, function)
     marks = marks.push(ASSUME_SHORT)
   end
 
-  if listed?(config.stops, function)
+  if listed?(lists.stop, function)
     marks = marks.push(STOP)
   end
 
-  if listed?(config.jumps, function)
+  if listed?(lists.jump, function)
     marks = marks.push(MAY_JUMP)
   end
 
   return function.with(marks: marks.uniq)
 end
 
-# The names of `[assume]` that no function of the graph has, defined or declared, each with its key.
-def missing_assumed(graph: Graph, config: Config) -> List[String]
+# The entries of `[assume]` that no function of the units has, with their key. A `name@file` counts when the file
+# of any
+# declaration of the function, or of its definition, ends with the path: the same functions that `assumed` marks.
+def missing_assumed(units: List[Unit], config: Config) -> List[String]
   if config.trusted.empty? and config.stops.empty? and config.jumps.empty?
     return []
   end
 
-  functions = graph.functions.values
-  short = unmatched(config.trusted, functions).map do |name| "#{name} (assume.short)" end
-  stop = unmatched(config.stops, functions).map do |name| "#{name} (assume.stop)" end
-  jump = unmatched(config.jumps, functions).map do |name| "#{name} (assume.may_jump)" end
+  files = files_by_name(units.flat_map do |unit| unit.functions end)
+  short = unmatched(config.trusted, files).map do |name| "#{name} (assume.short)" end
+  stop = unmatched(config.stops, files).map do |name| "#{name} (assume.stop)" end
+  jump = unmatched(config.jumps, files).map do |name| "#{name} (assume.may_jump)" end
   return short.concat(stop).concat(jump)
 end
 
-# The entries that name none of the functions.
-def unmatched(entries: List[String], functions: List[Function]) -> List[String]
-  return entries.uniq.select do |entry| not functions.any? do |f| names?(entry, f) end end
+# The files of the functions, by name.
+def files_by_name(functions: List[Function]) -> Map[String, List[String]]
+  files: Map[String, List[String]] = {}
+  for function in functions
+    known = files.get(function.name).unwrap_or([])
+    if not known.include?(function.file)
+      files = files.put(function.name, known.push(function.file))
+    end
+  end
+
+  return files
+end
+
+# The entries that name none of the functions, whose files are `files` by name.
+def unmatched(entries: List[String], files: Map[String, List[String]]) -> List[String]
+  return entries.uniq.select do |text| not matches_any?(entry_of(text), files) end
+end
+
+def matches_any?(entry: Entry, files: Map[String, List[String]]) -> Bool
+  if entry.bare
+    return files.key?(entry.name)
+  end
+
+  return entry.tail != "" and files.get(entry.name).unwrap_or([]).any? do |file| ends_with_path?(file, entry.tail) end
 end
 
 def marked?(graph: Graph, key: String, mark: String) -> Bool
@@ -439,7 +506,7 @@ def missing_roots(graph: Graph, config: Config) -> List[String]
     return []
   end
 
-  return unmatched(names, graph.functions.values.select do |f| f.defined end)
+  return unmatched(names, files_by_name(graph.functions.values.select do |f| f.defined end))
 end
 
 # The source of a finding of an inferred root: the flag of the inference, and that of the family of the blocking call
