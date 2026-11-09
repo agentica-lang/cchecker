@@ -1,10 +1,10 @@
 Feature: Locks on every path
   The rules tool builds a control flow graph of each function that takes or drops a lock, and follows every path: a
-  lock the function takes is released on every path that returns, and a lock it releases is one it holds. A lock is
-  the expression the call names (`&q->mu` is `q->mu`). A path that ends in a call that does not return holds what it
-  holds; a call that may jump out (CC_MAY_JUMP) is a way out where the lock must be released too. A function that
-  takes a lock for its caller says so with CC_ACQUIRES, and one that drops it with CC_RELEASES. The finding is at the
-  function, and `path` is the path that breaks the rule.
+  lock the function takes is released on every path that returns, and a lock it releases is one it holds. A lock is the
+  expression the call names (`&q->mu` is `q->mu`). A path that ends in a call that does not return holds what it holds;
+  a call that may jump out (CC_MAY_JUMP) or always jumps (CC_JUMPS) is a way out where the lock must be released too. A
+  function that takes a lock for its caller says so with CC_ACQUIRES, and one that drops it with CC_RELEASES. The
+  finding is at the function, and `path` is the path that breaks the rule.
 
   Scenario Outline: A path that leaves a lock held is a finding at the function (<case>)
     Given the C file "pop.c" holds:
@@ -163,7 +163,11 @@ Feature: Locks on every path
       | cleanup       | CC_MAY_JUMP             |                           | pthread_mutex_t *held __attribute__((cleanup(drop))) = &q->mu; pthread_mutex_lock(held); q->n += check_size(n); return 0; | 1    | includes         | may jump in check_size"]                                  |
       | not marked    |                         |                           | pthread_mutex_lock(&q->mu); q->n += check_size(n); pthread_mutex_unlock(&q->mu); return 0;                                | 0    | does not include | may jump in check_size                                    |
       | checked first | CC_MAY_JUMP             |                           | int k = check_size(n); pthread_mutex_lock(&q->mu); q->n += k; pthread_mutex_unlock(&q->mu); return 0;                     | 0    | does not include | may jump in check_size                                    |
-      | never returns | CC_NORETURN CC_MAY_JUMP |                           | pthread_mutex_lock(&q->mu); q->n += check_size(n); pthread_mutex_unlock(&q->mu); return 0;                                | 0    | does not include | may jump in check_size                                    |
+      | jumps         | CC_JUMPS                |                           | pthread_mutex_lock(&q->mu); q->n += check_size(n); pthread_mutex_unlock(&q->mu); return 0;                                | 1    | includes         | "path":["7:36 takes q->mu","7:72 jumps in check_size"]    |
+      | listed jumps  |                         | jumps = ["check_size"]    | pthread_mutex_lock(&q->mu); q->n += check_size(n); pthread_mutex_unlock(&q->mu); return 0;                                | 1    | includes         | "path":["7:36 takes q->mu","7:72 jumps in check_size"]    |
+      | never returns | CC_NORETURN CC_MAY_JUMP |                           | pthread_mutex_lock(&q->mu); q->n += check_size(n); pthread_mutex_unlock(&q->mu); return 0;                                | 1    | includes         | "path":["7:36 takes q->mu","7:72 jumps in check_size"]    |
+      | noreturn only | CC_NORETURN             |                           | pthread_mutex_lock(&q->mu); q->n += check_size(n); pthread_mutex_unlock(&q->mu); return 0;                                | 0    | does not include | jumps in check_size                                       |
+      | released      | CC_JUMPS                |                           | pthread_mutex_lock(&q->mu); if (n < 0) { pthread_mutex_unlock(&q->mu); check_size(n); } q->n += n; pthread_mutex_unlock(&q->mu); return 0; | 0 | does not include | jumps in check_size                     |
 
   Scenario: The path of a finding goes from the lock to the return that leaves it held
     Given the C file "pop.c" holds:

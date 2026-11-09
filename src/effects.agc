@@ -18,6 +18,8 @@ export STOP = "stop"
 
 ## The mark of a function whose call may jump out of its caller (CC_MAY_JUMP, `[assume] may_jump`).
 export MAY_JUMP = "may_jump"
+## The mark of a function whose call always jumps out of its caller and never returns (CC_JUMPS, `[assume] jumps`).
+export JUMPS = "jumps"
 
 # The start of the slot of a field (`field:request.call`).
 FIELD_SLOT = "field:"
@@ -134,7 +136,13 @@ end
 ## the calls through the fields of `[assume] stop_fields`, which no walk follows. A call through a copy of such a field
 ## (a local that got it) is still followed.
 export def assumed(units: List[Unit], config: Config) -> List[Unit]
-  if config.trusted.empty? and config.stops.empty? and config.stop_fields.empty? and config.jumps.empty?
+  if (
+    config.trusted.empty? and
+    config.stops.empty? and
+    config.stop_fields.empty? and
+    config.may_jump.empty? and
+    config.jumps.empty?
+  )
     return units
   end
 
@@ -382,24 +390,37 @@ def with_assumed(function: Function, config: Config) -> Function
     marks = marks.push(STOP)
   end
 
-  if config.jumps.include?(function.name)
+  if config.may_jump.include?(function.name)
     marks = marks.push(MAY_JUMP)
   end
 
-  return function.with(marks: marks.uniq)
+  noreturn = function.noreturn
+  if config.jumps.include?(function.name)
+    marks = marks.push(JUMPS)
+    noreturn = true
+  end
+
+  return function.with(marks: marks.uniq, noreturn: noreturn)
 end
 
 # The names of `[assume]` that no function of the graph has, defined or declared, each with its key.
 def missing_assumed(graph: Graph, config: Config) -> List[String]
-  if config.trusted.empty? and config.stops.empty? and config.jumps.empty?
+  if config.trusted.empty? and config.stops.empty? and config.may_jump.empty? and config.jumps.empty?
     return []
   end
 
   known = Set.new(graph.functions.values.map do |f| f.name end)
-  short = config.trusted.uniq.select do |name| not known.include?(name) end.map do |name| "#{name} (assume.short)" end
-  stop = config.stops.uniq.select do |name| not known.include?(name) end.map do |name| "#{name} (assume.stop)" end
-  jump = config.jumps.uniq.select do |name| not known.include?(name) end.map do |name| "#{name} (assume.may_jump)" end
-  return short.concat(stop).concat(jump)
+  return (
+    unknown(config.trusted, known, "short")
+      .concat(unknown(config.stops, known, "stop"))
+      .concat(unknown(config.may_jump, known, "may_jump"))
+      .concat(unknown(config.jumps, known, "jumps"))
+  )
+end
+
+# The names of a key of `[assume]` that are not known, each with its key: `trace (assume.stop)`.
+def unknown(names: List[String], known: Set[String], key: String) -> List[String]
+  return names.uniq.select do |name| not known.include?(name) end.map do |name| "#{name} (assume.#{key})" end
 end
 
 def marked?(graph: Graph, key: String, mark: String) -> Bool

@@ -56,7 +56,7 @@ TRANSPARENT = Set.new(["ImplicitCastExpr", "CStyleCastExpr", "ParenExpr", "Compo
 ## A function of the project, as one translation unit declares it. `key` is its name, and `name@file` for a static
 ## function, which is another function in each file. `marks` are the annotations, as written after `cchecker:`
 ## (`short`, `blocking`, `hot`). The place is that of the declaration, of the definition when `defined`. `noreturn`
-## says that the declaration never returns (an attribute, its type, or CC_NORETURN), and `cold` that it is
+## says that the declaration never returns (an attribute, its type, CC_NORETURN or CC_JUMPS), and `cold` that it is
 ## `__attribute__((cold))`: either is an error exit.
 export struct Function
   key: String
@@ -804,7 +804,7 @@ def function_of(tables: Tables, node: Json) -> Function
     column: place.column,
     defined: Ast.children(node).any? do |child| Ast.kind(child) == "CompoundStmt" end,
     marks: marks,
-    noreturn: marks.include?("noreturn") or noreturn?(node),
+    noreturn: marks.include?("noreturn") or marks.include?("jumps") or noreturn?(node),
     cold: Ast.children(node).any? do |child| Ast.kind(child) == "ColdAttr" end,
   )
 end

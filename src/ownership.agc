@@ -1,6 +1,6 @@
 ## The ownership rules on the paths of each function: a pointer that owns is freed or handed on on every path that
-## returns or jumps out (at a call marked CC_MAY_JUMP), it is not freed twice, and it is not used after it was freed or
-## handed on.
+## returns or jumps out (at a call marked CC_MAY_JUMP or CC_JUMPS), it is not freed twice, and it is not used after it
+## was freed or handed on.
 ##
 ## A pointer owns when it is a parameter marked CC_OWNS or CC_FREES (from the entry), a local marked CC_OWNS that got
 ## a value that is not null, or a local that got the value of a call that returns owned memory (a function marked
@@ -212,16 +212,24 @@ def stepped(walker: Walker, event: Event, item: Item) -> Outcome
   case event
     Event.Join -> return went(item)
     Event.Call(site) ->
-      if Locking.stops?(site, walker.functions)
+      stops = Locking.stops?(site, walker.functions)
+      jumps = Locking.jumps?(site, walker.functions)
+      if stops and not jumps
         return Outcome(moved: Moved.Stopped, breaches: [])
       end
 
       outcome = after_call(walker.body, item, site)
-      if Locking.jumps?(site, walker.functions)
-        return jumped(walker.body, outcome, site)
+      if not jumps
+        return outcome
       end
 
-      return outcome
+      # A call that never comes back but jumps (CC_JUMPS) is a way out of the function, and the path ends there.
+      out = jumped(walker, outcome, site)
+      if stops
+        return out.with(moved: Moved.Stopped)
+      end
+
+      return out
     Event.Branch(fact) -> return after_branch(walker, item, fact)
     Event.Writes(names) ->
       facts = Locking.forgotten(item.state.facts, walker.roots, names)
@@ -311,11 +319,11 @@ end
 
 # A call that may jump out is a way out of the function too: each pointer that still owns after the call took its
 # arguments leaks on the jump. What the call frees or takes is its own from the call on, jump or not.
-def jumped(body: Body, outcome: Outcome, site: Site) -> Outcome
+def jumped(walker: Walker, outcome: Outcome, site: Site) -> Outcome
   case outcome.moved
     Moved.Went(after) ->
-      path = after.path.push(Step(text: Locking.jump_text(site)))
-      return outcome.with(breaches: outcome.breaches.concat(leaks(body, after.state, path)))
+      path = after.path.push(Step(text: Locking.jump_text(site, walker.functions)))
+      return outcome.with(breaches: outcome.breaches.concat(leaks(walker.body, after.state, path)))
     _ -> return outcome
   end
 end

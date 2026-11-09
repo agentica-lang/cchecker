@@ -8,4 +8,5 @@ CC_PAIR(mask_signals, restore_signals) int guarded(void);
 CC_NO_SYSCALL_UNDER(table_lock) int lookup(int key);
 CC_MAY_JUMP int check_type(int value);
 CC_NORETURN void fail(void);
+CC_JUMPS void raise_error(int code);
 CC_STOP void trace(int event);

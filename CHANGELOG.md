@@ -4,8 +4,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `CC_JUMPS` and `[assume] jumps`: a call of a function that always jumps out and never returns (an interpreter's raise
+  with `longjmp`) is a way out of its caller, where a pointer that still owns is `CC-OWN-LEAK` and a lock held is
+  `CC-PATH-LOCK-NOT-RELEASED`, and the path ends there.
+
 ### Changed
 
+- `CC_MAY_JUMP` or `[assume] may_jump` on a function that never returns (`_Noreturn`, `CC_NORETURN`) now means
+  `CC_JUMPS`: its calls are checked as a way out, where before they only ended the path and found nothing.
 - A file listed more than once with the same flags is checked once; flags that differ only by `-fPIC`, `-fPIE` and
   CMake's `-D<target>_EXPORTS` count as the same (a static and a shared library of CMake), any other define does not
   (libuv's `BUILDING_UV_SHARED` keeps both entries). `folded` of `--json` counts the repeated entries left out.

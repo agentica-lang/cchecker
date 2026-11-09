@@ -4,7 +4,8 @@ Feature: Ownership on every path
   or handed on on every path that returns: returned, stored in a CC_OWNS field, or passed to a CC_OWNS parameter.
   `free` frees, and so does a function on its CC_FREES parameter. A local variable that gets an owned value owns it
   too. A value is not freed twice, and not used after it was freed or handed on. A call that may jump out (CC_MAY_JUMP,
-  `[assume] may_jump`) is a way out too. The finding is at the function, and `path` is the path that breaks the rule.
+  `[assume] may_jump`) is a way out too, and one that always jumps (CC_JUMPS) is a way out where the path ends. The
+  finding is at the function, and `path` is the path that breaks the rule.
 
   Scenario Outline: An owned pointer that a path does not free or hand on is a finding at the function (<case>)
     Given the C file "own.c" holds:
@@ -487,7 +488,36 @@ Feature: Ownership on every path
       | handed on first    | CC_MAY_JUMP             |             |                        | CC_OWNS struct conf *c = malloc(sizeof *c); if (!c) return -1; c->path = strdup(path); keep(c); return as_mode(mode);                         | 0    | does not include |
       | taken by the call  |                         | CC_MAY_JUMP |                        | CC_OWNS struct conf *c = malloc(sizeof *c); if (!c) return -1; c->path = strdup(path); return adopt_mode(c, mode);                            | 0    | does not include |
       | result of the call | CC_MAY_JUMP             |             |                        | CC_OWNS char *p = dup_mode(mode); free(p); return 0;                                                                                          | 0    | does not include |
-      | never returns      | CC_NORETURN CC_MAY_JUMP |             |                        | CC_OWNS struct conf *c = malloc(sizeof *c); if (!c) return -1; c->path = strdup(path); c->mode = as_mode(mode); keep(c); return 0;            | 0    | does not include |
+      | jumps              | CC_JUMPS                |             |                        | CC_OWNS struct conf *c = malloc(sizeof *c); if (!c) return -1; c->path = strdup(path); c->mode = as_mode(mode); keep(c); return 0;            | 1    | includes         |
+      | listed as jumping  |                         |             | jumps = ["as_mode"]    | CC_OWNS struct conf *c = malloc(sizeof *c); if (!c) return -1; c->path = strdup(path); c->mode = as_mode(mode); keep(c); return 0;            | 1    | includes         |
+      | never returns      | CC_NORETURN CC_MAY_JUMP |             |                        | CC_OWNS struct conf *c = malloc(sizeof *c); if (!c) return -1; c->path = strdup(path); c->mode = as_mode(mode); keep(c); return 0;            | 1    | includes         |
+      | only never returns | CC_NORETURN             |             |                        | CC_OWNS struct conf *c = malloc(sizeof *c); if (!c) return -1; c->path = strdup(path); c->mode = as_mode(mode); keep(c); return 0;            | 0    | does not include |
+
+  Scenario Outline: No path goes on after a call that jumps out and never returns (<case>)
+    Given the C file "jump.c" holds:
+      """
+      #include "stdlib.h"
+      #include "cchecker.h"
+      <mark> void bad_signature(const char *what);
+      int build(int n) { CC_OWNS char *b = malloc(n); if (!b) return -1; if (n > 8) { free(b); bad_signature("size"); } free(b); return 0; }
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [assume]
+      <list>
+      """
+    When I run cchecker in its folder with "--tools rules --json jump.c -- -I../../../include"
+    Then the exit code is <exit>
+    And the output <found>:
+      """
+      "CC-OWN-DOUBLE-FREE"
+      """
+
+    Examples:
+      | case              | mark        | list                        | exit | found            |
+      | jumps             | CC_JUMPS    |                             | 0    | does not include |
+      | listed as jumping |             | jumps = ["bad_signature"]   | 0    | does not include |
+      | may jump          | CC_MAY_JUMP |                             | 1    | includes         |
 
   Scenario: A pointer that leaks on a jump and on a return is one finding
     Given the C file "jump.c" holds:
