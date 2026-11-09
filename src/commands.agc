@@ -3,9 +3,10 @@
 import Files from "files"
 import Paths from "paths"
 
-# Flags that a build system adds to the entry of a file for a shared library and not for the static one: position
-# independent code (its `__PIC__` and `__PIE__` macros pick assembly, not C). CMake adds `-D<target>_EXPORTS` too
-# (see `export_define?`).
+# Flags that a build system adds to the entry of a file for a shared library and not for the static one. They change
+# the code that the compiler makes (position independent), not the C that the tools read: their one trace in the C is
+# the `__PIC__` and `__PIE__` macros, which code reads to pick assembly. So two entries that differ only in them are
+# one. CMake adds `-D<target>_EXPORTS` too (see `export_define?`).
 UNFOLDED = Set.new(["-fPIC", "-fpic", "-fPIE", "-fpie"])
 
 # Flags of a build that mean nothing to an analysis and would write files or stop the tools: the object file, the

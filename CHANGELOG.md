@@ -6,8 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- A file that the compile database lists more than once with the same flags (CMake's static and shared library) is
-  checked once instead of once for each entry; `folded` of `--json` counts the entries left out.
+- A file listed more than once with the same flags is checked once; flags that differ only by `-fPIC`, `-fPIE` and
+  CMake's `-D<target>_EXPORTS` count as the same (a static and a shared library of CMake), any other define does not
+  (libuv's `BUILDING_UV_SHARED` keeps both entries). `folded` of `--json` counts the repeated entries left out.
 
 ### Fixed
 
