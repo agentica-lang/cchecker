@@ -11,7 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- The ownership rules keep a state for each variable, not for each name: a local that shadows a pointer that owns (or a parameter) is no longer taken for it, which gave a false CC-OWN-LEAK.
+- The path rules know each variable by its declaration, not by its name: a local that shadows another (a parameter, a global, a local of an outer block) has its own state and conditions, so it no longer gives false CC-OWN findings or hides real ones.
 
 ## [0.3.0] - 2026-11-09
 

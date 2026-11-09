@@ -257,9 +257,30 @@ def stepped(walker: Walker, event: Event, item: Item) -> Outcome
       end
 
       return went(item.with(state: state))
+    Event.Closes(names) -> return went(item.with(state: closed(item.state, names)))
     Event.Note(mark) -> return went(item.with(path: item.path.push(marked(mark))))
     Event.Exit(mark) -> return Outcome(moved: Moved.Ended(item.path.push(marked(mark))), breaches: [])
   end
+end
+
+# The state after a path leaves the block of the pointers `names`: nothing reads them again, so the state forgets
+# each one, and two paths that differ only in them are one. A pointer that still owns stays, so that the end of the
+# path reports its leak, and so does one that another pointer stands for (an alias, or the result of a realloc of it).
+def closed(state: State, names: List[String]) -> State
+  current = state
+  for name in names
+    owns = current.owns.get(name).map do |own| own == OWNED end.unwrap_or(false)
+    held = current.aliases.values.include?(name) or current.links.values.include?(name)
+    if not owns and not held
+      current = current.with(
+        owns: current.owns.delete(name),
+        aliases: current.aliases.delete(name),
+        links: current.links.delete(name),
+      )
+    end
+  end
+
+  return current
 end
 
 def went(item: Item) -> Outcome

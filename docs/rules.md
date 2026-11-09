@@ -215,8 +215,9 @@ be true and false, so `if (locked) lock(); ...; if (locked) unlock();` passes; a
 write to a variable of the condition, or a call given its address
 (`f(&locked)`), forgets its value; a call given `&q->mu`, or the address of any
 other field (`atomic_store(&q->ready, 0)`, `f(&q->count)`), does not change `q`:
-the values of the conditions are kept by variable, not by field, so a condition
-on `q->ready` keeps its value after `atomic_store(&q->ready, 0)`; copy the field
+the values of the conditions are kept by variable (a local that shadows another
+is a variable of its own), not by field, so a condition on `q->ready` keeps
+its value after `atomic_store(&q->ready, 0)`; copy the field
 to a local first and test the local (`int ready = q->ready; if (ready) ...`)
 when the call may change it. A condition leaves the state of a path after its
 last test before a write to one of its variables, so a function with many

@@ -301,8 +301,9 @@ Feature: Ownership on every path
       """
 
   Scenario: Two variables of one name in a function have a state each
-    A local that shadows another, or a parameter, is a pointer of its own, and so is the second of two blocks that
-    declare the same name.
+    A local that shadows another, a parameter or a global is a pointer of its own, and so is the second of two blocks
+    that declare the same name, or the variable of a `for`. A path that leaves a block forgets its pointers that own
+    nothing.
 
     Given the C file "shadow.c" holds:
       """
@@ -311,7 +312,9 @@ Feature: Ownership on every path
 
       CC_OWNS char *make(void);
       char *other(void);
+      char *next(char *p);
       void use(char *p);
+      char *g;
 
       void inner_not_owner(void) {
         CC_OWNS char *p = make();
@@ -342,11 +345,70 @@ Feature: Ownership on every path
       void sequential(void) {
         {
           CC_OWNS char *p = make();
-          free(p);
+          use(p);
         }
         {
           CC_OWNS char *p = make();
+          free(p);
+        }
+      }
+
+      void use_before_inner(void) {
+        CC_OWNS char *p = make();
+        {
           use(p);
+          free(p);
+          char *p = other();
+          use(p);
+        }
+      }
+
+      void freed_then_shadowed(void) {
+        CC_OWNS char *p = make();
+        free(p);
+        {
+          char *p = other();
+          use(p);
+        }
+        free(p);
+      }
+
+      void for_shadow(void) {
+        CC_OWNS char *p = make();
+        for (char *p = other(); p; p = next(p))
+          use(p);
+        free(p);
+      }
+
+      void moved_in(CC_OWNS char *p) {
+        CC_OWNS char *q = make();
+        {
+          CC_OWNS char *q = p;
+          free(q);
+        }
+        free(q);
+      }
+
+      void moved_in_leaks(CC_OWNS char *p) {
+        CC_OWNS char *q = make();
+        {
+          CC_OWNS char *q = p;
+          use(q);
+        }
+        free(q);
+      }
+
+      void global_first(void) {
+        int again = 1;
+        {
+        top:
+          use(g);
+          CC_OWNS char *g = make();
+          free(g);
+          if (again) {
+            again = 0;
+            goto top;
+          }
         }
       }
       """
@@ -354,19 +416,93 @@ Feature: Ownership on every path
     Then the exit code is 1
     And the output includes:
       """
-      "line":25,"column":6,"message":"inner_leaks does not free or hand on p on every path","path":["28:23 p = make","32:1 ends"]
+      "line":27,"column":6,"message":"inner_leaks does not free or hand on p on every path","path":["30:23 p = make","34:1 ends"]
       """
     And the output includes:
       """
-      "line":34,"column":6,"message":"sequential does not free or hand on p on every path","path":["40:23 p = make","43:1 ends"]
+      "line":36,"column":6,"message":"sequential does not free or hand on p on every path","path":["38:23 p = make","42:23 p = make","43:5 frees p","45:1 ends"]
+      """
+    And the output includes:
+      """
+      "line":57,"column":6,"message":"freed_then_shadowed frees p, which it already freed or handed on","path":["59:3 frees p","64:3 frees p"]
+      """
+    And the output includes:
+      """
+      "line":83,"column":6,"message":"moved_in_leaks does not free or hand on q on every path"
       """
     And the output does not include:
       """
-      "line":8,
+      "CC-OWN-USE-AFTER-FREE"
       """
     And the output does not include:
       """
-      "line":17,
+      "line":10,
+      """
+    And the output does not include:
+      """
+      "line":19,
+      """
+    And the output does not include:
+      """
+      "line":47,
+      """
+    And the output does not include:
+      """
+      "line":67,
+      """
+    And the output does not include:
+      """
+      "line":74,
+      """
+
+  Scenario: A condition on a local is not a condition on another variable of its name
+    A condition on a local that shadows a parameter does not tell the value of the parameter, and a write of the local
+    does not forget a condition on the parameter.
+
+    Given the C file "facts.c" holds:
+      """
+      #include <stdlib.h>
+      #include "cchecker.h"
+
+      CC_OWNS char *make(void);
+      int pick(void);
+      void use(char *p);
+      void count(int n);
+
+      void inner_fact(int a) {
+        CC_OWNS char *p = make();
+        {
+          int a = pick();
+          if (!a) {
+            free(p);
+            return;
+          }
+        }
+        if (a)
+          free(p);
+      }
+
+      void inner_write(int a) {
+        CC_OWNS char *p = NULL;
+        if (a)
+          p = make();
+        {
+          int a = 0;
+          count(a);
+        }
+        if (a)
+          free(p);
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/facts.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "line":9,"column":6,"message":"inner_fact does not free or hand on p on every path","path":["10:21 p = make","13:10 true","18:7 false","20:1 ends"]
+      """
+    And the output does not include:
+      """
+      "line":22,
       """
 
   Scenario: A function with more paths than the rules follow is checked on those it went through and counted

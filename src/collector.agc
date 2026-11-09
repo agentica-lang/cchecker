@@ -86,14 +86,19 @@ export def stores(
   all = Flow.descendants(bodies)
   decls = all.select do |n| Ast.kind(n) == "VarDecl" end
   static_locals = decls.select do |n| Ast.text(n, "storageClass") == "static" end
+  declared_params = Ast.children(node).select do |n| Ast.kind(n) == "ParmVarDecl" end
   locals = Set.new(
-    Ast.children(node)
-      .select do |n| Ast.kind(n) == "ParmVarDecl" end
-      .concat(decls.select do |n| Ast.text(n, "storageClass") != "static" end)
+    declared_params.concat(decls.select do |n| Ast.text(n, "storageClass") != "static" end)
       .map do |n| Ast.text(n, "name") end,
   )
 
-  written = Flow.writes_of(all, locals, {})
+  # The rule knows variables by name: the key of each one is its name.
+  named: Map[String, String] = {}
+  for n in declared_params.concat(decls)
+    named = named.put(Ast.text(n, "id"), Ast.text(n, "name"))
+  end
+
+  written = Flow.writes_of(all, locals, named)
   marked = decls.select(&Flow.marked_owner?).map do |n| Ast.text(n, "name") end
   start = Scope(
     marks: marks,
