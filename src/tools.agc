@@ -12,17 +12,20 @@ import UnitReader from "unit"
 import {Unit} from "unit"
 
 # Flags before the user's: a database made for gcc has flags that clang does not know, and it would stop with an error.
-# clang-tidy turns no warning into an error, whatever the .clang-tidy of the project says: a failed run is a
-# tool error.
+# clang-tidy turns no warning into an error and prints no colours, whatever the .clang-tidy of the project says: a
+# failed run is a tool error, and a coloured line is not read (see `Diagnostics.unparsed`).
 CLANG_FLAGS = [
   "--warnings-as-errors=-*",
+  "--use-color=false",
   "--extra-arg-before=-Wno-unknown-warning-option",
   "--extra-arg-before=-Wno-unknown-argument",
 ]
 
 # After the flags of the database: a `-Werror` there would make every warning of the build an error of the tool. The
-# analyzer warnings named with `-Werror=analyzer-...` stay errors, and cchecker reports them as findings.
-NO_ERROR = "-Wno-error"
+# analyzer warnings named with `-Werror=analyzer-...` stay errors, and cchecker reports them as findings. A
+# `-fdiagnostics-color=always` or `-fdiagnostics-urls=always` there would print escape sequences, and a line with one
+# is not read (see `Diagnostics.unparsed`).
+GCC_AFTER = ["-Wno-error", "-fdiagnostics-color=never", "-fdiagnostics-urls=never"]
 
 # What `timeout` gets to stop the whole process group after it sent the signal: gcc runs cc1 and as as its children,
 # and a
@@ -33,9 +36,10 @@ KILL_AFTER_S = 2
 TARGET_FLAGS = Set.new(["-m32", "-m64", "-mx32", "-m16"])
 TARGET_PAIRS = Set.new(["-target", "--target", "-arch"])
 
-# The flags of the AST dump for the rules, after those of the build: no warnings (the build may have -Werror), and the
-# annotations of cchecker.h as attributes whose JSON keeps their text (see cchecker.h).
-AST_FLAGS = ["-w", "-DCCHECKER_AST"]
+# The flags of the AST dump for the rules, after those of the build: no warnings (the build may have -Werror), no
+# colours (the build may have -fcolor-diagnostics), and the annotations of cchecker.h as attributes whose JSON keeps
+# their text (see cchecker.h).
+AST_FLAGS = ["-w", "-fno-color-diagnostics", "-DCCHECKER_AST"]
 
 # The JSON AST of a file is tens of MiB, more than `Process.output` holds: a shell writes it into a FIFO, which
 # `Scan.compact` copies to the dump file (see there).
@@ -44,6 +48,9 @@ DUMP_SCRIPT = "exec \"$0\" \"$@\" > \"$CCHECKER_FIFO\""
 # How gcc and clang end the message of an `#include` they did not find.
 GCC_MISSING = ": No such file or directory"
 CLANG_MISSING = "' file not found"
+
+# How much of a diagnostic line that cchecker cannot read its tool error shows, in characters.
+STRAY_SHOWN = 200
 
 # The time a wrapped run has beyond the timeout for the kill and the exit, so `timeout` ends the run before
 # cchecker does.
@@ -462,9 +469,10 @@ def arguments(job: Job) -> List[String]
   case job.tool
     Tool.Gcc ->
       return (
-        ["-fanalyzer", "-fdiagnostics-color=never", "-fdiagnostics-path-format=none", "-fno-diagnostics-show-caret"]
+        ["-fanalyzer", "-fdiagnostics-path-format=none", "-fno-diagnostics-show-caret"]
           .concat(entry.args)
-          .concat([NO_ERROR, "-c", entry.file, "-o", "/dev/null"])
+          .concat(GCC_AFTER)
+          .concat(["-c", entry.file, "-o", "/dev/null"])
       )
     Tool.ClangTidy ->
       return (
@@ -475,7 +483,7 @@ def arguments(job: Job) -> List[String]
       )
     Tool.Rules ->
       return (
-        ["-Xclang", "-ast-dump=json", "-fsyntax-only", "-fno-color-diagnostics", "-Wno-unknown-warning-option"]
+        ["-Xclang", "-ast-dump=json", "-fsyntax-only", "-Wno-unknown-warning-option"]
           .concat(entry.args)
           .concat(AST_FLAGS)
           .concat([entry.file])
@@ -513,6 +521,18 @@ def outcome(job: Job, text: String, code: Int) -> Outcome
   if code != 0 and not (code == 1 and (not errors.empty? or (promoted > 0 and treated_as_errors?(text))))
     message = failure(job.wrapped, job.options.timeout_s, text, code)
     errors = errors.push(ToolError(tool: tool, file: job.entry.file, message: message + hint(job.tool, code)))
+  end
+
+  # A diagnostic that cchecker cannot read may be a finding: the run must not look clean.
+  strays = Diagnostics.unparsed(text)
+  if not strays.empty?
+    first = strays.first
+    if first.length > STRAY_SHOWN
+      first = first.slice(0, STRAY_SHOWN) + "..."
+    end
+
+    message = "printed diagnostic lines that cchecker cannot read (#{strays.size}), the first: #{first}"
+    errors = errors.push(ToolError(tool: tool, file: job.entry.file, message: message))
   end
 
   return Outcome(findings: findings, errors: errors)

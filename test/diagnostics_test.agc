@@ -38,3 +38,32 @@ def test_brackets_inside_the_message_are_kept() -> Result[Void]
   found = Diagnostics.parse("a.c:2:3: warning: index x[5] is out of bounds [-Warray-bounds]")
   return Test.eq(found[0].message, "index x[5] is out of bounds")
 end
+
+def test_a_coloured_diagnostic_is_unparsed_without_its_colours() -> Result[Void]
+  esc = String.from_bytes(Bytes.from_list([27]).unwrap!).unwrap!
+  text = (
+    "a.c:1:2: warning: plain [x]\n#{esc}[1ma.c:2:3: #{esc}[0m#{esc}[0;1;35mwarning: #{esc}[0mcoloured [x]\n    2 | x;"
+  )
+
+  try Test.eq(Diagnostics.parse(text).size, 1)
+  return Test.eq(Diagnostics.unparsed(text), ["a.c:2:3: warning: coloured [x]"])
+end
+
+def test_a_linked_tag_is_unparsed_without_its_links() -> Result[Void]
+  esc = String.from_bytes(Bytes.from_list([27]).unwrap!).unwrap!
+  bel = String.from_bytes(Bytes.from_list([7]).unwrap!).unwrap!
+  text = "a.c:9:12: warning: leak [#{esc}]8;;https://gcc.gnu.org/x#{bel}-Wanalyzer-malloc-leak#{esc}]8;;#{bel}]"
+  try Test.eq(Diagnostics.parse(text).size, 0)
+  return Test.eq(Diagnostics.unparsed(text), ["a.c:9:12: warning: leak [-Wanalyzer-malloc-leak]"])
+end
+
+def test_plain_lines_are_never_unparsed() -> Result[Void]
+  text = <<~OUT
+    a.c: In function 'f':
+    a.c:5:7: warning: leak [-Wanalyzer-malloc-leak]
+        5 |   p = malloc(1);
+          |       ^~~~~~~~~
+    a.c:5:7: note: allocated here
+  OUT
+  return Test.eq(Diagnostics.unparsed(text), [])
+end
