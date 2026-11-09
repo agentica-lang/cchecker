@@ -38,3 +38,13 @@ def test_brackets_inside_the_message_are_kept() -> Result[Void]
   found = Diagnostics.parse("a.c:2:3: warning: index x[5] is out of bounds [-Warray-bounds]")
   return Test.eq(found[0].message, "index x[5] is out of bounds")
 end
+
+def test_a_coloured_diagnostic_is_unparsed_without_its_colours() -> Result[Void]
+  esc = String.from_bytes(Bytes.from_list([27]).unwrap!).unwrap!
+  text = (
+    "a.c:1:2: warning: plain [x]\n#{esc}[1ma.c:2:3: #{esc}[0m#{esc}[0;1;35mwarning: #{esc}[0mcoloured [x]\n    2 | x;"
+  )
+
+  try Test.eq(Diagnostics.parse(text).size, 1)
+  return Test.eq(Diagnostics.unparsed(text), ["a.c:2:3: warning: coloured [x]"])
+end

@@ -4,6 +4,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- A `.clang-tidy` with `UseColor: true`, or a `-fdiagnostics-color=always` in the flags, no longer drops every finding
+  of that tool without a word: cchecker turns the colours off after the project's settings, and a diagnostic line that
+  it cannot read is a tool error (exit 2).
+
 ## [0.2.0] - 2026-11-09
 
 ### Added
