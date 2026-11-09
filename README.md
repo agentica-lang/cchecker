@@ -19,7 +19,7 @@ memory from `malloc` or in a static.
 
 ## Install
 
-cchecker needs Agentica 0.26.1 or later, and `gcc` 10 or later, `clang` and
+cchecker needs Agentica 0.27.0 or later, and `gcc` 10 or later, `clang` and
 `clang-tidy` on PATH, and `sh`. The scan of clang's AST is a small native module
 in C (`native/`), which the first run (or `agentica compile`) builds with the
 system C compiler (`cc`); a module that cannot be built or loaded is a tool

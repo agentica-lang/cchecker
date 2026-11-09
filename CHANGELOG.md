@@ -39,6 +39,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- cchecker needs Agentica 0.27.0 or later: the C side of its native scan module is made by native-gen.
 - `uv_run` with a constant `UV_RUN_NOWAIT` is no longer a blocking call for `CC_SHORT` (`libc_nonblocking_flags`);
   `UV_RUN_ONCE`, `UV_RUN_DEFAULT` and a mode in a variable still are.
 - **Breaking:** `CC_MAY_JUMP` or `[assume] may_jump` on a function that never returns (`_Noreturn`, `CC_NORETURN`) now

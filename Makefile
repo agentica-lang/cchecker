@@ -3,7 +3,7 @@
 
 JOBS ?= 4
 
-.PHONY: check lint fmt-check test test-slow native deps
+.PHONY: check lint fmt-check test test-slow native deps header header-check
 
 # The Agentica files of the repository, named so that nothing else under the root is read.
 SOURCES = cchecker.agc src specs test
@@ -35,6 +35,15 @@ test-slow: deps native
 # The packages of agentica.lock (prop, for the property tests of specs/) into deps/. cchecker itself needs none.
 deps:
 	@agentica install > /dev/null
+
+# The C header of the native module (the wrappers, the argument checks and the tables), made from the `extern module`
+# block of src/scan.agc by native-gen (a dependency, in deps/). Make it again after each change to the block;
+# `header-check` fails when the committed one is stale.
+header: deps
+	@agentica deps/native-gen/cli.agc src/scan.agc --output native/cchecker_scan_native.h
+
+header-check: deps
+	@agentica deps/native-gen/cli.agc src/scan.agc --output native/cchecker_scan_native.h --check
 
 # One run of cchecker builds its native module (agentica.toml) into the build cache before the tests start many runs
 # at once: on an empty cache, two runs that build it together can fail to make the same folder.

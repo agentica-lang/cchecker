@@ -34,8 +34,8 @@ jobs:
       - name: Install the pinned Agentica release
         uses: agentica-lang/setup-agentica@v1
         with:
-          version: 0.26.1
-          sha256: 68c3e825cb14148e45c47b21b6ef66036c5ad17a2cdf36948f47e1415bae5524 # linux-x86_64
+          version: 0.27.0
+          sha256: 87319417a3ad3338af8117e0885cbabf63ae54c8e4539318829c221a342342f9 # linux-x86_64
 
       - name: Check
         run: |
@@ -44,6 +44,10 @@ jobs:
 
       - name: Format
         run: make fmt-check
+
+      # native/cchecker_scan_native.h is made from the extern module block of src/scan.agc by native-gen.
+      - name: Native header
+        run: make header-check
 
       # The features of specs/ run cchecker on the C fixtures; test/ has the unit tests of the parsers.
       - name: Test
@@ -73,8 +77,8 @@ jobs:
       - name: Install the pinned Agentica release
         uses: agentica-lang/setup-agentica@v1
         with:
-          version: 0.26.1
-          sha256: 68c3e825cb14148e45c47b21b6ef66036c5ad17a2cdf36948f47e1415bae5524 # linux-x86_64
+          version: 0.27.0
+          sha256: 87319417a3ad3338af8117e0885cbabf63ae54c8e4539318829c221a342342f9 # linux-x86_64
 
       - name: Slow tests
         run: make test-slow

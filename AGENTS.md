@@ -7,9 +7,10 @@ code of ours except the annotation header and the C fixtures of the tests.
 ## Map
 
 ```text
-agentica.toml     the package (name, [style], the native module, [dependencies]: prop for the property tests)
-agentica.lock     the locked commit and hash of prop; `make deps` installs it into deps/ (gitignored)
-native/           scan.c: the native module that scans clang's AST dump (src/scan.agc)
+agentica.toml     the package (name, [style], the native module, [dependencies]: prop for the property tests, native-gen)
+agentica.lock     the locked commits and hashes of prop and native-gen; `make deps` installs it into deps/ (gitignored)
+native/           scan.c: the native module that scans clang's AST dump (src/scan.agc), on cchecker_scan_native.h,
+                  the header that native-gen makes from its `extern module` block (`make header`, `make header-check`)
 cchecker.agc      main: the options, the run, the exit code
 src/              one module per topic (`ls src/`): the compile database, running the tools, parsing their
                   output, the findings, the baseline, the report; for the rules: scan (the project's declarations
