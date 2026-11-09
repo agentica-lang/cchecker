@@ -20,7 +20,7 @@ import Flow from "flow"
 import {Body, Event, Fact, Lock, Mark, Site} from "flow"
 import Held from "held"
 import Known from "known"
-import {Function, PAIR_MARK, Unit} from "unit"
+import {Function, PAIR_MARK, Section, Unit} from "unit"
 
 ## The code of a path that returns with a lock that the function took.
 export NOT_RELEASED = "CC-PATH-LOCK-NOT-RELEASED"
@@ -97,17 +97,23 @@ struct Walker
   caught: Set[String]
 end
 
-# What a walk found: the findings by code and lock key, and whether it went through every path.
+# What a walk found: the findings by code and lock key, the calls made while a lock is held (by class and place),
+# and whether it went through every path.
 struct Walk
   findings: Map[String, Finding]
   complete: Bool
+  sections: Map[String, Section] = {}
 end
 
 ## The findings of the lock rules, and how many functions had more paths than the walk follows (their findings are
-## those of the paths it went through).
+## those of the paths it went through). `sections` are the calls made while a lock is held, in every function that
+## takes or releases one, helpers included, and `partial` the classes of the locks of the functions whose paths the
+## walk did not all go through: their sections are not all known.
 export struct Checked
   findings: List[Finding]
   incomplete: List[IncompleteFunction]
+  sections: List[Section] = []
+  partial: List[String] = []
 end
 
 ## Returns the findings of the lock rules on the functions of the units. A function defined in several units (a static
@@ -123,13 +129,25 @@ export def check(units: List[Unit]) -> Checked
   done: Set[String] = Set.new([])
   findings: List[Finding] = []
   incomplete: List[IncompleteFunction] = []
+  sections: List[Section] = []
+  partial: Set[String] = Set.new([])
   for unit in units
     for body in unit.bodies
-      if not done.include?(body.key) and not helper?(functions.get(body.key)) and not locks_of(body).empty?
+      if not done.include?(body.key) and not locks_of(body).empty?
+        # The body of a helper is how its lock works, so its findings are not kept; what it calls after it takes the
+        # lock is still a section of that lock.
+        helper = helper?(functions.get(body.key))
         walk = checked(body, functions, rules)
-        findings = findings.concat(walk.findings.values)
+        sections = sections.concat(walk.sections.values)
         if not walk.complete
-          incomplete = incomplete.push(IncompleteFunction(file: body.file, line: body.line, function: body.name))
+          partial = partial.union(Set.new(locks_of(body).values.map do |lock| lock.class end))
+        end
+
+        if not helper
+          findings = findings.concat(walk.findings.values)
+          if not walk.complete
+            incomplete = incomplete.push(IncompleteFunction(file: body.file, line: body.line, function: body.name))
+          end
         end
       end
 
@@ -137,7 +155,7 @@ export def check(units: List[Unit]) -> Checked
     end
   end
 
-  return Checked(findings: findings, incomplete: incomplete)
+  return Checked(findings: findings, incomplete: incomplete, sections: sections, partial: partial.to_a)
 end
 
 ## Returns the conditions that the function tests in two places or more: only those can make a path impossible.
@@ -380,15 +398,17 @@ def walked(walker: Walker) -> Walk
   queue = [Item(node: 0, state: State(held: {}, facts: {}, clamped: Set.new([])), path: [])]
   visited: Set[String] = Set.new([])
   found: Map[String, Finding] = {}
+  sections: Map[String, Section] = {}
   i = 0
   while i < queue.size
     if i >= MAX_STATES
-      return Walk(findings: found, complete: false)
+      return Walk(findings: found, complete: false, sections: sections)
     end
 
     item = queue[i]
     i += 1
     node = body.nodes[item.node]
+    sections = with_sections(sections, walker, item, node.event)
     found = with_breaches(found, walker, item, node.event)
     found = with_jump(found, walker, item, node.event)
     case stepped(walker, node.event, item)
@@ -405,7 +425,37 @@ def walked(walker: Walker) -> Walk
     end
   end
 
-  return Walk(findings: found, complete: true)
+  return Walk(findings: found, complete: true, sections: sections)
+end
+
+# The sections of a call that the path makes while it holds locks: one for each class held, by class and place. The
+# set of a CC_PAIR is no lock. The take of the lock is not in its section; its release is, and does not block.
+def with_sections(sections: Map[String, Section], walker: Walker, item: Item, event: Event) -> Map[String, Section]
+  case event
+    Event.Call(site) ->
+      kept = sections
+      for key in item.state.held.keys
+        lock = walker.locks.get(key).unwrap_or(Lock(key: key, shown: key))
+        id = "#{lock.class}|#{site.line}:#{site.column}|#{site.name}"
+        if item.state.held[key] > 0 and lock.pair == "" and not kept.key?(id)
+          section = Section(
+            class: lock.class,
+            caller: walker.body.key,
+            callee: site.key,
+            pointer: site.pointer,
+            line: site.line,
+            column: site.column,
+            takes: site.takes.select do |taken| taken.pair == "" end.map do |taken| taken.class end,
+            tried: site.tried,
+          )
+
+          kept = kept.put(id, section)
+        end
+      end
+
+      return kept
+    _ -> return sections
+  end
 end
 
 # A call that may jump out is a way out of the function too, with the locks the path holds before the call: one that

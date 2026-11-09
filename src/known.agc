@@ -65,6 +65,10 @@ export BLOCKING = LIBC_BLOCKING.union(PTHREAD_BLOCKING).union(LIBUV_BLOCKING).un
 ## out too (`Effects.with_jumps`).
 export JUMP_CALLERS_FLAG = "may_jump_callers"
 
+## The `[library]` flag of the short locks inferred from their critical sections: a lock that no call made while it is
+## held reaches a blocking call is short (`Effects.check`).
+export SECTIONS_FLAG = "short_lock_sections"
+
 ## The `[library]` flag of the roots inferred from `LOOP_CALLBACKS`.
 export CALLBACKS_FLAG = "libuv_callbacks_short"
 

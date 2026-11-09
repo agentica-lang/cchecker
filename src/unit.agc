@@ -93,6 +93,21 @@ export struct Call
   named: Bool = false
 end
 
+## A call that a function makes while it holds a lock of `class` ("" when the rules cannot tell): a critical section
+## of that class (`Locking.check` finds them). `callee` is the key of the function it calls; a call through a pointer
+## (`pointer`) has none, and its place (`line`, `column`) finds the functions stored in it. `takes` are the classes of
+## the locks the call itself takes ("" for one the rules cannot tell), and `tried` says it is a trylock.
+export struct Section
+  class: String
+  caller: String
+  callee: String
+  pointer: Bool = false
+  line: Int = 0
+  column: Int = 0
+  takes: List[String] = []
+  tried: Bool = false
+end
+
 ## What a slot gets: a function, by key, or every function of another slot (a copy of a pointer).
 export enum Source
   Function(String)

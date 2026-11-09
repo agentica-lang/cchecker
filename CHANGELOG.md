@@ -22,6 +22,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `CC_JUMP_RELEASES` and `[assume] jump_releases` on a `CC_ACQUIRES` or `CC_RELEASES` helper whose lock the catcher
   of a jump gives back: a jump with that lock held or released is no lock finding when the function takes and
   releases it only through such helpers; a return still is.
+- A lock whose critical sections, in the files of the run, reach no blocking call is short for `CC_SHORT`, as with
+  `[assume] short_locks`; `inferred_short_locks` of `--json` lists them, and `[library] short_lock_sections = false`
+  turns it off.
 
 ### Changed
 

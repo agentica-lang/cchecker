@@ -48,6 +48,7 @@ struct Collected
   missing_assumed: List[String] = []
   unknown_targets: List[String] = []
   unchecked: List[UncheckedFile] = []
+  short_locks: List[String] = []
 end
 
 # The jobs of a run, the files that were left out because they are outside the working directory, and the entries of
@@ -191,6 +192,7 @@ export def run(options: Options) -> Result[Int]
             suppressed: applied.suppressed,
             config: config.origin,
             unresolved_callbacks: collected.unresolved,
+            inferred_short_locks: collected.short_locks,
             unchecked_files: collected.unchecked,
             folded: gathered.folded,
           ),
@@ -211,6 +213,7 @@ export def run(options: Options) -> Result[Int]
             suppressed: applied.suppressed,
             config: config.origin,
             unresolved_callbacks: collected.unresolved,
+            inferred_short_locks: collected.short_locks,
             unchecked_files: collected.unchecked,
             folded: gathered.folded,
           ),
@@ -632,8 +635,13 @@ def collect(options: Options, config: Config.Config, jobs: List[Tools.Job], cwd:
     units = Profile.measure("jumps") do Effects.with_jumps(units, cwd) end
   end
 
-  checked = Profile.measure("effects") do Effects.check(units, config, options.infer, options.all_paths, cwd) end
+  # The lock walk goes first: the effect rules infer short locks from the sections it finds.
   locked = Profile.measure("locking") do Locking.check(units) end
+  sections = Effects.Sections(calls: locked.sections, partial: locked.partial)
+  checked = Profile.measure("effects") do
+    Effects.check(units, config, options.infer, options.all_paths, cwd, sections)
+  end
+
   owned = Profile.measure("ownership") do Ownership.check(units) end
   return Collected(
     findings: (
@@ -651,6 +659,7 @@ def collect(options: Options, config: Config.Config, jobs: List[Tools.Job], cwd:
     missing_roots: checked.missing_roots,
     missing_assumed: checked.missing_assumed.concat(cut_missing),
     unknown_targets: checked.unknown_targets,
+    short_locks: checked.short_locks,
     unchecked: unchecked.group_by do |u| "#{u.file}\n#{u.missing}" end
       .values
       .map do |same| same.first end

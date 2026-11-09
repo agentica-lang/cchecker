@@ -29,7 +29,8 @@ agents:
   [Baseline](suppressions.md#versions-of-the-tools));
 - `folded`: the repeated entries left out (see [Options](#options));
 - from the rules, `incomplete_functions` and `skipped_declarations` (see
-  [Rules](rules.md)).
+  [Rules](rules.md)), and `inferred_short_locks`: the classes of the locks
+  found short by their critical sections (see [Settings](settings.md)).
 
 A file that was not checked is skipped with a warning on standard error and does
 not change the exit code.

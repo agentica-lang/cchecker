@@ -134,6 +134,9 @@ Feature: What the project assumes of its functions
       """
     And the file "cchecker.toml" holds:
       """
+      [library]
+      short_lock_sections = false
+
       [assume]
       <list>
       """
@@ -162,6 +165,11 @@ Feature: What the project assumes of its functions
       void take_big(struct queue *q) { pthread_mutex_lock(&q->big); pthread_mutex_unlock(&q->big); }
       void lock_it(pthread_mutex_t *m) { pthread_mutex_lock(m); pthread_mutex_unlock(m); }
       <code>
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [library]
+      short_lock_sections = false
       """
     When I run cchecker in its folder with "--tools rules --json rest.c -- -I../../../include"
     Then the exit code is 1

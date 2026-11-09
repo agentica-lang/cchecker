@@ -133,6 +133,7 @@ export def flags() -> List[String]
       .push(Known.LIBGC_ALLOC_FLAG)
       .push(Known.NONBLOCKING_FLAG)
       .push(Known.JUMP_CALLERS_FLAG)
+      .push(Known.SECTIONS_FLAG)
   )
 end
 

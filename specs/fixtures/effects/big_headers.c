@@ -22,4 +22,11 @@ static int locked_count(int *count) {
   return n;
 }
 
+/* The lock is held across a sleep here, so it is not short and taking it blocks. */
+void wait_count(int *count) {
+  pthread_mutex_lock(&table_lock);
+  sleep((unsigned int)*count);
+  pthread_mutex_unlock(&table_lock);
+}
+
 CC_SHORT int current_count(int *count) { return locked_count(count); }

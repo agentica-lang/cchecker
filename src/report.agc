@@ -16,6 +16,7 @@ import {Suppressed} from "suppressions"
 ## off, so the entries of the rules did not fail it and an update needs every check of the rules on. `version_changes`
 ## are the tools that ran with another version than the one that made the baseline. `folded` counts the entries of
 ## the compile database that were not run because they repeat a file with the same flags (see `Commands.fold`).
+## `inferred_short_locks` are the classes of the locks that the rules found short by their critical sections.
 export struct Report
   findings: List[Finding]
   baselined: Int
@@ -33,6 +34,7 @@ export struct Report
   rules_off: Bool = false
   version_changes: List[VersionChange] = []
   folded: Int = 0
+  inferred_short_locks: List[String] = []
 end
 
 # The JSON form of a report, which says in `clean` whether the run is clean.
@@ -52,6 +54,7 @@ struct Encoded
   unchecked_files: List[UncheckedFile]
   version_changes: List[VersionChange]
   folded: Int
+  inferred_short_locks: List[String]
 end
 
 ## Returns the report for people: one line for each finding, a summary line, then one line for each stale entry of
@@ -99,6 +102,7 @@ export def json(report: Report) -> String
       unchecked_files: report.unchecked_files,
       version_changes: report.version_changes,
       folded: report.folded,
+      inferred_short_locks: report.inferred_short_locks,
     ),
   )
 end
