@@ -2,3 +2,5 @@
 *.feature text eol=lf
 *.c text eol=lf
 *.h text eol=lf
+# Open PRs all add lines under [Unreleased]: keep both sides when merging.
+CHANGELOG.md merge=union

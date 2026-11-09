@@ -42,6 +42,7 @@ fold_ignoring = ["BUILDING_UV_SHARED"]
 short = ["run_or_queue"]
 stop = ["trace_emit"]
 short_locks = ["queue.mu"]
+owned_locks = ["conn.lk"]
 stop_fields = ["request.call"]
 stop_calls = ["on_exit>close_handles"]
 may_jump = ["raise_type_error"]
@@ -120,10 +121,11 @@ In `[assume]` it may be the file of the definition or of any declaration of the
 function (`slow@slow.h` for a prototype in a header); in `[roots]` it is the
 file of the definition. It works in every list of `[roots]` and in `short`,
 `stop`, `may_jump`, `jumps`, `catches`, `jump_releases` and `nonblocking` of
-`[assume]`, and on each side of a `stop_calls` pair (`stop_fields` and
-`short_locks` name fields and locks), and a `name@path` that matches no function
-is an error (exit 2) like a bare name that does. `acquires`, `releases` and the
-wrappers of `short_locks` add the place of the parameter: `name@path(0)`.
+`[assume]`, and on each side of a `stop_calls` pair (`stop_fields`,
+`short_locks` and `owned_locks` name fields and locks), and a `name@path` that
+matches no function is an error (exit 2) like a bare name that does. `acquires`,
+`releases` and the wrappers of `short_locks` add the place of the parameter:
+`name@path(0)`.
 
 `[assume]` says what the project knows of its own functions and cchecker cannot
 see in the C, as `CC_ASSUME_SHORT` and `CC_STOP` do on a declaration. `short`
@@ -270,24 +272,37 @@ lock walk follows. A lock that the rules cannot name (taken through a parameter,
 `pthread_mutex_lock(m)`) or that a pointer field, global or array of pointers
 reaches (`c->lk` of `pthread_mutex_t *lk`, which may be another class's mutex)
 may be any class: when one of its sections blocks, or is not all seen, no class
-is inferred. A take of a lock that names no object (`&current()->mu`,
-`&locks[hash(k)]`) is not seen at all, so no class is inferred either. A call
-through a pointer that the run stores no function in counts as blocking, in a
-section or in a function it reaches. A call through a field of `[assume]
-stop_fields` made in a section counts as blocking too; in a function that the
-section reaches it reaches nothing, as for the short rule. An inferred class is
-matched as it is: inferring the global `lock` does not make a static `lock` of
-another file short. `inferred_short_locks` of `--json` lists the classes found
-so (the key is there only with the inference on), and the text report says how
-many on standard error. A lock that a helper marked `CC_JUMP_RELEASES` takes
-gives no finding at a jump, so the code of the catcher that runs before it gives
-the lock back is in no section. The inference does not stop `--update-baseline`
-or `--strict-baseline` when it is off. It changes findings both ways: a root
-that only took short locks before its blocking call reports that call, not the
-take, which is another baseline key, and a run that does not infer (a run of
-some files, or the inference off) reports the takes of the inferred locks as new
-against a baseline of a run that did. An inferred short lock is short for
-`CC_SHORT` only: the rule of `CC_NO_SYSCALL_UNDER` does not apply to it.
+is inferred. `[assume] owned_locks` names the pointer fields and globals that
+point to a mutex of their own, which no other field or global points to
+(`lock.mutex` of `struct lock { void *mutex; }`, set to a mutex that the lock
+allocates): a lock reached through one has the class of the pointer, so its
+sections make only that class long or short. It has an effect only with
+`short_lock_sections` on. cchecker trusts the list and does not check the stores
+into the pointer: a pointer named there that shares its mutex with another class
+may let the inference call that mutex short while a section of it blocks, which
+hides a `CC-EFFECT-SHORT-BLOCKS`. Its names are classes, as in `short_locks` (a
+bare name of a static global names the one of every file; `name@path` names
+one); a name in both lists is short by the setting, and its sections do not stop
+the inference of the others. A name that no lock through a pointer has (a typo,
+or a mutex that is not behind a pointer) is an error (exit 2). A take of a lock
+that names no object (`&current()->mu`, `&locks[hash(k)]`) is not seen at all,
+so no class is inferred either. A call through a pointer that the run stores no
+function in counts as blocking, in a section or in a function it reaches. A call
+through a field of `[assume] stop_fields` made in a section counts as blocking
+too; in a function that the section reaches it reaches nothing, as for the short
+rule. An inferred class is matched as it is: inferring the global `lock` does
+not make a static `lock` of another file short. `inferred_short_locks` of
+`--json` lists the classes found so (the key is there only with the inference
+on), and the text report says how many on standard error. A lock that a helper
+marked `CC_JUMP_RELEASES` takes gives no finding at a jump, so the code of the
+catcher that runs before it gives the lock back is in no section. The inference
+does not stop `--update-baseline` or `--strict-baseline` when it is off. It
+changes findings both ways: a root that only took short locks before its
+blocking call reports that call, not the take, which is another baseline key,
+and a run that does not infer (a run of some files, or the inference off)
+reports the takes of the inferred locks as new against a baseline of a run that
+did. An inferred short lock is short for `CC_SHORT` only: the rule of
+`CC_NO_SYSCALL_UNDER` does not apply to it.
 
 `stop_fields` names the function-pointer fields that no walk follows, by struct
 and field (`request.call` for the field `call` of `struct request`, also when

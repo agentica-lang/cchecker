@@ -57,8 +57,9 @@ end
 ## is `[assume] stop_calls`, the `caller>callee` pairs whose call no walk follows. `fold_ignoring` is `[database]
 ## fold_ignoring`, the defines that do not tell two entries of one file apart, `acquires` and `releases` are `[assume]
 ## acquires` and `releases`, the lock wrappers that take and release the lock of a parameter (as CC_ACQUIRES and
-## CC_RELEASES), and `nonblocking` is `[assume] nonblocking`, the functions whose descriptors are non-blocking: their
-## calls of `Known.FD_CALLS` return at once.
+## CC_RELEASES), `nonblocking` is `[assume] nonblocking`, the functions whose descriptors are non-blocking: their
+## calls of `Known.FD_CALLS` return at once, and `owned_locks` is `[assume] owned_locks`, the pointer fields and globals
+## that point to a mutex of their own, which no other field or global points to.
 export struct Config
   origin: String
   off: Set[String]
@@ -78,6 +79,7 @@ export struct Config
   acquires: List[String] = []
   releases: List[String] = []
   nonblocking: List[String] = []
+  owned_locks: List[String] = []
 end
 
 ## Returns the settings of a run in `folder`, the project folder: those of `explicit` (the file of -c) when given.
@@ -143,6 +145,7 @@ export def from_table(origin: String, prefix: String, table: Toml.Value, note: S
             "jump_releases" ->
               config = config.with(jump_releases: try names_of(origin, path, assume.get(name).unwrap!))
             "nonblocking" -> config = config.with(nonblocking: try names_of(origin, path, assume.get(name).unwrap!))
+            "owned_locks" -> config = config.with(owned_locks: try classes_of(origin, path, assume.get(name).unwrap!))
             _ -> return error(unknown(origin, path, note))
           end
         end
@@ -186,7 +189,8 @@ export def assumes_any?(config: Config) -> Bool
     config.jump_releases.empty? and
     config.acquires.empty? and
     config.releases.empty? and
-    config.nonblocking.empty?
+    config.nonblocking.empty? and
+    config.owned_locks.empty?
   )
 end
 
@@ -408,6 +412,24 @@ def locks_of(origin: String, path: String, value: Toml.Value) -> Result[List[Str
   end
 
   return ok(names)
+end
+
+# The lock classes of `owned_locks`: `struct.field`, a global, or `name@path` for a static global; never a wrapper.
+def classes_of(origin: String, path: String, value: Toml.Value) -> Result[List[String]]
+  wrong = "#{origin}: #{path} must be a list of lock classes (struct.field, the name of a global, or name@path)"
+  case value
+    Toml.Value.Array(items) ->
+      names: List[String] = []
+      for item in items
+        case item
+          Toml.Value.Str(name) if name != "" and not name.include?("(") -> names = names.push(name)
+          _ -> return error(wrong)
+        end
+      end
+
+      return ok(names)
+    _ -> return error(wrong)
+  end
 end
 
 def pairs_of(origin: String, path: String, value: Toml.Value) -> Result[List[String]]
