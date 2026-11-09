@@ -46,6 +46,7 @@ Feature: Ownership on every path
       | elvis                  | 6      | void f(char *q, int n) { char *p = q ?: make(n); work(p); }                                              |
       | old value never freed  | 6      | void f(CC_FREES char **p, char *v) { char *old = *p; *p = v; }                                            |
       | local named as a global | 23    | CC_OWNS char *g; void f(int n) { CC_OWNS char *b = malloc(n); char *g[1]; g[0] = b; } |
+      | returned on one side of ?: | 15  | CC_OWNS char *f(int n) { CC_OWNS char *p = make(n); return n ? p : NULL; }                               |
 
   Scenario Outline: An owned pointer freed or handed on on every path passes (<case>)
     Given the C file "own.c" holds:
@@ -111,6 +112,12 @@ Feature: Ownership on every path
       | freed statement expr   | void f(int n) { free(({ CC_OWNS char *t = make(n); t; })); }                                                                            |
       | taken statement expr   | void f(int n) { adopt(({ CC_OWNS char *t = make(n); t; })); }                                                                           |
       | statement expr in ?:   | CC_OWNS char *f(int n) { return n ? ({ CC_OWNS char *p = make(n); p; }) : NULL; }                                                       |
+      | returned by b ? b : NULL | CC_OWNS char *f(int n) { CC_OWNS char *b = malloc(n); return b ? b : NULL; }                                                        |
+      | returned by p ?: q     | CC_OWNS char *f(int n, char *q) { CC_OWNS char *p = malloc(n); return p ?: q; }                                                          |
+      | address in a statement expr | void f(int n) { CC_OWNS char *b = malloc(n); zap(({ &b; })); free(b); }                                                       |
+      | label in an argument   | void f(int n) { CC_OWNS char *u = make(n); free(({ if (work(u)) goto done; work(u); done: u; })); }                                     |
+      | label in an assignment | void f(int n) { CC_OWNS char *u = make(n); char *p = ({ if (work(u)) goto done; work(u); done: u; }); free(p); }                        |
+      | label in a return      | CC_OWNS char *f(int n) { CC_OWNS char *u = make(n); return ({ if (work(u)) goto done; work(u); done: u; }); }                          |
       | atomic pointer freed   | static void release(CC_FREES _Atomic(char *) *p) { if (*p) free(*p); }                                                                   |
       | elvis                  | void f(char *q, int n) { char *p = q ?: make(n); free(p); }                                                                               |
       | field of a local struct | void f(int n) { struct local { CC_OWNS char *held; } x; CC_OWNS char *b = malloc(n); x.held = b; work(x.held); }                        |
@@ -245,6 +252,7 @@ Feature: Ownership on every path
       | item stored by ?:           | CC_OWNS char **f(int n) { CC_OWNS char **v = calloc(2, sizeof *v); if (!v) return NULL; CC_OWNS char *p = malloc(n); v[0] = n ? p : NULL; if (!n) free(p); return v; } |
       | stored by x ?: y            | void f(struct box *x, char *q) { CC_OWNS char *p = malloc(8); x->held = p ?: q; }                                        |
       | stored by a statement expr  | void f(struct box *x) { x->held = ({ CC_OWNS char *p = malloc(8); p; }); }                                               |
+      | filled by a statement expr  | void f(void) { CC_OWNS char *p = malloc(8); free(p); take(({ &p; })); work(p); free(p); }                                 |
 
   Scenario: The path of a leak of a filled pointer starts at the call that set it
     Given the C file "out.c" holds:
@@ -578,6 +586,15 @@ Feature: Ownership on every path
           use(q);
         }
       }
+
+      void adopt2(CC_OWNS char *p, int n);
+
+      void jump2(int c) {
+        adopt2(TAKE(), ({ if (c) goto out; 0; }));
+        return;
+      out:
+        return;
+      }
       """
     When I run cchecker with "--tools rules --json $DIR/expr.c -- -I../include"
     Then the exit code is 1
@@ -592,6 +609,10 @@ Feature: Ownership on every path
     And the output includes:
       """
       "line":38,"column":6,"message":"blk does not free or hand on t on every path","path":["40:36 t = make","40:44 q = t","42:3 ends"]
+      """
+    And the output includes:
+      """
+      "line":47,"column":6,"message":"jump2 does not free or hand on t_ on every path","path":["48:10 t_ = make","48:25 true","48:28 goto"]
       """
     And the output does not include:
       """

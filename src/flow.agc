@@ -318,6 +318,14 @@ struct Built
   exits: List[Int]
 end
 
+# A statement expression up to its value (`valued_expression`): the nodes after its other statements, and the
+# expression of its last one, or "" for a last statement that is not an expression.
+struct Valued
+  b: Builder
+  exits: List[Int]
+  value: Json
+end
+
 # A condition: the nodes after it when it is true, and when it is false.
 struct Split
   b: Builder
@@ -834,10 +842,20 @@ def values_of(node: Json) -> List[Json]
   end
 
   if Ast.kind(bare) == "StmtExpr"
-    return values_of(last_child(last_child(bare)))
+    return values_of(unlabelled(last_child(last_child(bare))))
   end
 
   return [node]
+end
+
+# A statement under its labels and attributes (`done: p;` is `p;`).
+def unlabelled(node: Json) -> Json
+  bare = node
+  while Ast.kind(bare) == "LabelStmt" or Ast.kind(bare) == "AttributedStmt"
+    bare = last_child(bare)
+  end
+
+  return bare
 end
 
 # The key of each variable that a function declares (its parameters, then its locals in the order of the source), by
@@ -1005,9 +1023,8 @@ def statement(b: Builder, node: Json, preds: List[Int]) -> Built
     "GotoStmt" -> return goto_statement(b, node, Ast.text(node, "targetLabelDeclId"), preds)
     "IndirectGotoStmt" -> return goto_statement(b, node, "", preds)
     "LabelStmt" ->
-      label = add(b, Event.Join, preds)
-      labelled = label.b.with(labels: label.b.labels.put(Ast.text(node, "declId"), label.exits.first))
-      return statement(labelled, last_child(node), label.exits)
+      label = labelled(b, node, preds)
+      return statement(label.b, last_child(node), label.exits)
     "AttributedStmt" -> return statement(b, last_child(node), preds)
     "DeclStmt" ->
       declared = declarations(b, node, preds)
@@ -1018,6 +1035,15 @@ def statement(b: Builder, node: Json, preds: List[Int]) -> Built
       done = expression(b, node, preds)
       return flushed(done.b, node, done.exits)
   end
+end
+
+# The label of a `LabelStmt`: the paths join there, and a `goto` finds it.
+def labelled(b: Builder, node: Json, preds: List[Int]) -> Built
+  label = add(b, Event.Join, preds)
+  return Built(
+    b: label.b.with(labels: label.b.labels.put(Ast.text(node, "declId"), label.exits.first)),
+    exits: label.exits,
+  )
 end
 
 # The end of a full statement (`node`): the pointers of its statement expressions close there (`pending`). One that a
@@ -1060,6 +1086,35 @@ end
 def opened_expression(b: Builder, node: Json) -> Builder
   scope = Scope(id: Ast.text(last_child(see_through(node)), "id"), cleanups: [], outer: b.pending)
   return b.with(scopes: b.scopes.push(scope), pending: [])
+end
+
+# A statement expression (`node`, with statements) up to its value: its scope opened, and its statements run but the
+# expression of the last one, under the labels on it (`done: p;`). A last statement that is not an expression runs
+# too, and gives no value.
+def valued_expression(b: Builder, node: Json, preds: List[Int]) -> Valued
+  statements = Ast.children(last_child(node))
+  opened = opened_expression(b, node)
+  built = in_order_statements(opened, statements.take(statements.size - 1), preds)
+  return last_value(built.b, statements.last, built.exits)
+end
+
+def last_value(b: Builder, node: Json, preds: List[Int]) -> Valued
+  kind = Ast.kind(node)
+  if kind == "LabelStmt"
+    label = labelled(b, node, preds)
+    return last_value(label.b, last_child(node), label.exits)
+  end
+
+  if kind == "AttributedStmt"
+    return last_value(b, last_child(node), preds)
+  end
+
+  if kind.end_with?("Stmt")
+    built = statement(b, node, preds)
+    return Valued(b: built.b, exits: built.exits, value: JSON.from(""))
+  end
+
+  return Valued(b: b, exits: preds, value: node)
 end
 
 # The end of the block of a statement expression: the cleanups of its variables run, and its pointers close at the end
@@ -1273,7 +1328,7 @@ end
 def return_statement(b: Builder, node: Json, preds: List[Int]) -> Built
   value = Built(b: b, exits: preds)
   for child in Ast.children(node)
-    value = handed_value(value.b, "", child, value.exits)
+    value = handed_value(value.b, none, child, value.exits)
   end
 
   failed = Ast.children(node).any?(&error_value?)
@@ -1548,7 +1603,7 @@ def assignment(b: Builder, node: Json, preds: List[Int]) -> Built
     handing = place_owns?(b.ctx, parts[0]) or handed_place?(b.owners.places, parts[0])
     if handing and values_of(parts[1]).any? do |value| owner_named(b, value) != "" end
       target = expression(b, parts[0], preds)
-      gave = handed_value(target.b, text_of(b, parts[0], false), parts[1], target.exits)
+      gave = handed_value(target.b, some(text_of(b, parts[0], false)), parts[1], target.exits)
       return add(gave.b, Event.Writes([target_root(b.owners.places.keys, parts[0])]), gave.exits)
     end
 
@@ -1562,16 +1617,16 @@ def assignment(b: Builder, node: Json, preds: List[Int]) -> Built
   return add(value.b, Event.Writes([target_root(b.owners.places.keys, parts.first)]), value.exits)
 end
 
-# A value handed on: returned (`shown` is "") or stored in a place that hands it on (`shown`). A pointer that owns is
+# A value handed on: returned (`into` is none) or stored in a place that hands it on (`into`). A pointer that owns is
 # handed on there, on its side of a `?:` (`x->held = n ? p : NULL`, `return n ? p : NULL`, `x->held = p ?: q`) or as
 # the last expression of a statement expression, the same values as `values_of`.
-def handed_value(b: Builder, shown: String, value: Json, preds: List[Int]) -> Built
+def handed_value(b: Builder, into: Optional[String], value: Json, preds: List[Int]) -> Built
   bare = see_through(value)
   if Ast.kind(bare) == "ConditionalOperator"
     parts = Ast.children(bare)
     split = condition(b, parts[0], preds)
-    chosen = handed_value(split.b, shown, parts[1], split.yes)
-    other = handed_value(chosen.b, shown, parts[2], split.no)
+    chosen = handed_value(split.b, into, parts[1], split.yes)
+    other = handed_value(chosen.b, into, parts[2], split.no)
     return Built(b: other.b, exits: chosen.exits.concat(other.exits))
   end
 
@@ -1581,38 +1636,35 @@ def handed_value(b: Builder, shown: String, value: Json, preds: List[Int]) -> Bu
     split = condition(b, parts.first, preds)
     chosen = Built(b: split.b, exits: split.yes)
     if owner_named(b, parts.first) != ""
-      chosen = handed_on(split.b, shown, parts.first, split.yes)
+      chosen = handed_on(split.b, into, parts.first, split.yes)
     end
 
-    other = handed_value(chosen.b, shown, parts.last, split.no)
+    other = handed_value(chosen.b, into, parts.last, split.no)
     return Built(b: other.b, exits: chosen.exits.concat(other.exits))
   end
 
-  if Ast.kind(bare) == "StmtExpr"
-    statements = Ast.children(last_child(bare))
-    if not statements.empty?
-      opened = opened_expression(b, bare)
-      built = in_order_statements(opened, statements.take(statements.size - 1), preds)
-      last = handed_value(built.b, shown, statements.last, built.exits)
-      return closed_expression(last.b, last.exits)
+  if Ast.kind(bare) == "StmtExpr" and not Ast.children(last_child(bare)).empty?
+    inner = valued_expression(b, bare, preds)
+    last = Built(b: inner.b, exits: inner.exits)
+    if Ast.kind(inner.value) != ""
+      last = handed_value(inner.b, into, inner.value, inner.exits)
     end
+
+    return closed_expression(last.b, last.exits)
   end
 
   if owner_named(b, value) == ""
     return expression(b, value, preds)
   end
 
-  return handed_on(b, shown, value, preds)
+  return handed_on(b, into, value, preds)
 end
 
-# A pointer that owns, `value`, handed on by a return (`shown` is "") or to the place `shown` by a store.
-def handed_on(b: Builder, shown: String, value: Json, preds: List[Int]) -> Built
+# A pointer that owns, `value`, handed on by a return (`into` is none) or to the place `into` by a store.
+def handed_on(b: Builder, into: Optional[String], value: Json, preds: List[Int]) -> Built
   given = owner_named(b, value)
   place = Ast.start_of(value)
-  word = "stores #{plain(given)} in #{shown}"
-  if shown == ""
-    word = "returns"
-  end
+  word = into.map do |shown| "stores #{plain(given)} in #{shown}" end.unwrap_or("returns")
 
   return add(b, Event.Gives(Give(name: given, word: word, line: place.line, column: place.column)), preds)
 end
@@ -1639,15 +1691,15 @@ def owner_assigned(b: Builder, name: String, value: Json, preds: List[Int]) -> B
     return Built(b: other.b, exits: chosen.exits.concat(other.exits))
   end
 
-  if Ast.kind(bare) == "StmtExpr"
+  if Ast.kind(bare) == "StmtExpr" and not Ast.children(last_child(bare)).empty?
     # `({ char *q = make(n); ...; q; })`: its statements, then the value of the last one.
-    statements = Ast.children(last_child(bare))
-    if not statements.empty?
-      opened = opened_expression(b, bare)
-      built = in_order_statements(opened, statements.take(statements.size - 1), preds)
-      last = owner_assigned(built.b, name, statements.last, built.exits)
-      return closed_expression(last.b, last.exits)
+    inner = valued_expression(b, bare, preds)
+    last = Built(b: inner.b, exits: inner.exits)
+    if Ast.kind(inner.value) != ""
+      last = owner_assigned(inner.b, name, inner.value, inner.exits)
     end
+
+    return closed_expression(last.b, last.exits)
   end
 
   assign = assigned(b, name, value)
@@ -1734,12 +1786,7 @@ end
 # The pointer that owns an argument names: `p`, `&p` (a cleanup function, or a function that frees through a pointer
 # to it) or `*p`, also as the last expression of a statement expression; "" for none, or for a `?:`.
 def owner_of(b: Builder, node: Json) -> String
-  values = values_of(node)
-  if values.size != 1
-    return ""
-  end
-
-  bare = see_through(values.first)
+  bare = see_through(single_value(node))
   if address?(bare)
     return owner_named(b, Ast.children(bare).first)
   end
@@ -1750,6 +1797,17 @@ def owner_of(b: Builder, node: Json) -> String
   end
 
   return owner_named(b, bare)
+end
+
+# The one value of an expression (`values_of`): the last expression of a statement expression, or the expression
+# itself, also when it may have several (`?:`).
+def single_value(node: Json) -> Json
+  values = values_of(node)
+  if values.size == 1
+    return values.first
+  end
+
+  return node
 end
 
 # Whether an expression takes the address of something: `&x`.
@@ -1863,11 +1921,13 @@ end
 # then its last expression is the argument (`free(({ ...; p; }))` frees `p`).
 def argument(b: Builder, arg: Json, taking: Bool, filling: Bool, preds: List[Int]) -> Built
   bare = see_through(arg)
-  statements = Ast.children(last_child(bare))
-  if Ast.kind(bare) == "StmtExpr" and not statements.empty?
-    opened = opened_expression(b, bare)
-    built = in_order_statements(opened, statements.take(statements.size - 1), preds)
-    last = argument(built.b, statements.last, taking, filling, built.exits)
+  if Ast.kind(bare) == "StmtExpr" and not Ast.children(last_child(bare)).empty?
+    inner = valued_expression(b, bare, preds)
+    last = Built(b: inner.b, exits: inner.exits)
+    if Ast.kind(inner.value) != ""
+      last = argument(inner.b, inner.value, taking, filling, inner.exits)
+    end
+
     return closed_expression(last.b, last.exits)
   end
 
@@ -1987,7 +2047,7 @@ def arg_of(b: Builder, node: Json) -> Arg
     text: text_of(b, node, true),
     class: class_of(b, node),
     owner: owner_of(b, node),
-    address: address?(node),
+    address: address?(single_value(node)),
     through: aliased_through?(b, node, 0),
   )
 end
