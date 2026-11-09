@@ -26,7 +26,7 @@ def test_a_file_listed_again_for_a_shared_library_is_folded() -> Result[Void]
     Commands.Entry(directory: "/p", file: "x.c", args: ["-DA", "-Iother"]),
   ]
 
-  folded = Commands.fold(entries)
+  folded = Commands.fold(entries, [])
   try Test.eq(folded.folded, 1)
   return Test.eq(folded.entries.map do |e| e.args end, [["-DA", "-I."], ["-DA", "-Iother"]])
 end
@@ -43,5 +43,22 @@ def test_entries_that_may_find_other_things_are_not_folded() -> Result[Void]
     Commands.Entry(directory: "/p", file: "/p/x.c", args: ["-DA", "B"]),
   ]
 
-  return Test.eq(Commands.fold(entries).folded, 0)
+  return Test.eq(Commands.fold(entries, []).folded, 0)
+end
+
+def test_the_defines_named_in_the_setting_do_not_tell_entries_apart() -> Result[Void]
+  entries = [
+    Commands.Entry(directory: "/p", file: "x.c", args: ["-DA", "-I."]),
+    Commands.Entry(directory: "/p", file: "x.c", args: ["-DA", "-DSHARED=1", "-I."]),
+    Commands.Entry(directory: "/p", file: "x.c", args: ["-DSHARED", "-DA", "-I."]),
+    Commands.Entry(directory: "/p", file: "x.c", args: ["-D", "SHARED=2", "-DA", "-I."]),
+    # Another define, or a name that only starts with the listed one, still tells the entry apart.
+    Commands.Entry(directory: "/p", file: "x.c", args: ["-DA", "-DB", "-DSHARED", "-I."]),
+    Commands.Entry(directory: "/p", file: "x.c", args: ["-DA", "-DSHARED_MORE", "-I."]),
+    Commands.Entry(directory: "/p", file: "x.c", args: ["-D", "OTHER", "-DA", "-I."]),
+  ]
+
+  folded = Commands.fold(entries, ["SHARED"])
+  try Test.eq(folded.folded, 3)
+  return Test.eq(folded.entries.size, 4)
 end

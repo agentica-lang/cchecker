@@ -35,6 +35,9 @@ hot = ["dispatch"]
 [effects]
 follow_cold = false
 
+[database]
+fold_ignoring = ["BUILDING_UV_SHARED"]
+
 [assume]
 short = ["run_or_queue"]
 stop = ["trace_emit"]
@@ -76,6 +79,16 @@ system call whatever the flags.
 is not a `[library]` flag, which is a fact of a library. `follow_cold = true`
 makes the walk go into a function that never returns or is cold (see
 [Rules](rules.md#effects)); by default it does not.
+
+`[database]` holds how the compile database is read. A file listed more than
+once is checked once when the entries have the same flags (`-fPIC`, `-fPIE` and
+CMake's `-D<target>_EXPORTS` do not count). `fold_ignoring` names more defines
+that do not count, when a build adds them to a second library (libuv's
+`BUILDING_UV_SHARED`, Neovim's `UNIT_TESTING`): two entries of one file that
+differ only in those defines, with any value (`-DNAME`, `-DNAME=1`, `-D NAME`),
+are one, and `folded` of `--json` counts the entry left out. A define in the
+list hides a different `#ifdef` from the second entry, so list only those that
+do not change the C the rules read. A name is `NAME`, not `-DNAME` or `NAME=1`.
 
 `[roots]` names the functions that are `CC_SHORT` (`short`) or `CC_HOT` (`hot`)
 without a mark in the C, by their name (a static function of that name in any

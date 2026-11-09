@@ -72,7 +72,7 @@ export def run(options: Options) -> Result[Int]
   end
 
   loaded = try baseline_file(options)
-  gathered = Commands.fold(try gather(options))
+  gathered = Commands.fold(try gather(options), config.fold_ignoring)
   scratch = try scratch_path(cwd)
   plan = try plan_for(options, gathered.entries, cwd, scratch)
   if plan.jobs.empty?
