@@ -494,6 +494,71 @@ Feature: Ownership on every path
       | jumps in a ?:      | CC_JUMPS                |             |                        | CC_OWNS struct conf *c = malloc(sizeof *c); if (!c) return -1; c->path = strdup(path); c->mode = mode ? as_mode(mode) : 0; keep(c); return 0; | 1    | includes         |
       | only never returns | CC_NORETURN             |             |                        | CC_OWNS struct conf *c = malloc(sizeof *c); if (!c) return -1; c->path = strdup(path); c->mode = as_mode(mode); keep(c); return 0;            | 0    | does not include |
 
+  Scenario Outline: A function that calls a function that may jump out may jump out too (<case>)
+    Given the C file "chain.c" holds:
+      """
+      #include "stdlib.h"
+      #include "setjmp.h"
+      #include "cchecker.h"
+      jmp_buf env;
+      <raiser> void wrong_tag(int v);
+      <helper> int as_string(int v) { <check> return v; }
+      int path_of(int v) { return as_string(v) + 1; }
+      void keep(CC_OWNS char *p);
+      int start(int v) { CC_OWNS char *b = malloc(8); if (!b) return -1; b[0] = (char)path_of(v); keep(b); return 0; }
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [assume]
+      <list>
+      """
+    When I run cchecker in its folder with "--tools rules --json chain.c -- -I../../../include"
+    Then the exit code is <exit>
+    And the output <found>:
+      """
+      "CC-OWN-LEAK"
+      """
+    And the output <found>:
+      """
+      may jump in path_of (as_string, wrong_tag)"]
+      """
+
+    Examples:
+      | case               | raiser      | helper     | check                                              | list                     | exit | found            |
+      | jumps              | CC_JUMPS    |            | if (v < 0) wrong_tag(v);                           |                          | 1    | includes         |
+      | may jump           | CC_MAY_JUMP |            | wrong_tag(v);                                      |                          | 1    | includes         |
+      | listed             |             |            | if (v < 0) wrong_tag(v);                           | jumps = ["wrong_tag"]    | 1    | includes         |
+      | not marked         |             |            | if (v < 0) wrong_tag(v);                           |                          | 0    | does not include |
+      | caught             | CC_JUMPS    |            | if (setjmp(env)) return -1; if (v < 0) wrong_tag(v); |                        | 0    | does not include |
+      | marked as catching | CC_JUMPS    | CC_CATCHES | if (v < 0) wrong_tag(v);                           |                          | 0    | does not include |
+      | listed as catching | CC_JUMPS    |            | if (v < 0) wrong_tag(v);                           | catches = ["as_string"]  | 0    | does not include |
+      | not walked         | CC_JUMPS    | CC_STOP    | if (v < 0) wrong_tag(v);                           |                          | 0    | does not include |
+
+  Scenario Outline: A function that never returns and calls a function that jumps out jumps out too (<case>)
+    Given the C file "raise.c" holds:
+      """
+      #include "stdlib.h"
+      #include "cchecker.h"
+      <mark> void fail(const char *what);
+      _Noreturn void bad_signature(int n) { fail("signature"); }
+      int build(int n) { CC_OWNS char *b = malloc(n); if (!b) return -1; if (n > 8) { free(b); bad_signature(n); } if (n > 4) bad_signature(n); free(b); return 0; }
+      """
+    When I run cchecker in its folder with "--tools rules --json raise.c -- -I../../../include"
+    Then the exit code is <exit>
+    And the output <found>:
+      """
+      jumps in bad_signature (fail)"]
+      """
+    And the output does not include:
+      """
+      "CC-OWN-DOUBLE-FREE"
+      """
+
+    Examples:
+      | case       | mark     | exit | found            |
+      | jumps      | CC_JUMPS | 1    | includes         |
+      | not marked |          | 0    | does not include |
+
   Scenario Outline: No path goes on after a call that jumps out and never returns (<case>)
     Given the C file "jump.c" holds:
       """

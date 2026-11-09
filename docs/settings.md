@@ -41,6 +41,7 @@ short_locks = ["queue.mu"]
 stop_fields = ["request.call"]
 may_jump = ["raise_type_error"]
 jumps = ["raise_error"]
+catches = ["run_protected"]
 ```
 
 `[library]` turns each family of library knowledge on or off. All are on by
@@ -89,9 +90,9 @@ the end of the path of the file as it is, with no `..`; a leading `./` is
 ignored. In `[assume]` it may be the file of the definition or of any
 declaration of the function (`slow@slow.h` for a prototype in a header); in
 `[roots]` it is the file of the definition. It works in every list of `[roots]`
-and in `short`, `stop`, `may_jump` and `jumps` of `[assume]` (`stop_fields` and
-`short_locks` name fields and locks), and a `name@path` that matches no
-function is an error (exit 2) like a bare name that does.
+and in `short`, `stop`, `may_jump`, `jumps` and `catches` of `[assume]`
+(`stop_fields` and `short_locks` name fields and locks), and a `name@path` that
+matches no function is an error (exit 2) like a bare name that does.
 
 `[assume]` says what the project knows of its own functions and cchecker cannot
 see in the C, as `CC_ASSUME_SHORT` and `CC_STOP` do on a declaration. `short`
@@ -134,6 +135,13 @@ the path ends there, as at a call that never returns. Such a function is an
 error exit for the walk of the effect rules, as a `_Noreturn` one is. A name
 that no function of the compile database declares is an error (exit 2)
 (`raise_error (assume.jumps)`).
+
+`catches` names the functions that catch the jumps of the functions they call,
+as `CC_CATCHES` does on a declaration: a function that calls one that may jump
+out may jump out too, and the inference stops at a function that catches
+([Locks](rules.md#locks-on-every-path)). A function that calls `setjmp` or
+`sigsetjmp` catches without a mark. A name that no function of the compile
+database declares is an error (exit 2) (`run_protected (assume.catches)`).
 
 A short lock is one held for a few instructions: a lock whose field or global is
 marked `CC_NO_SYSCALL_UNDER()`, or whose class `[assume] short_locks` names:

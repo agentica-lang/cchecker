@@ -224,7 +224,7 @@ def stepped(walker: Walker, event: Event, item: Item) -> Outcome
       end
 
       # A call that never comes back but jumps (CC_JUMPS) is a way out of the function, and the path ends there.
-      out = jumped(walker.body, outcome, site, stops)
+      out = jumped(walker, outcome, site, stops)
       if stops
         return out.with(moved: Moved.Stopped)
       end
@@ -319,11 +319,11 @@ end
 
 # A call that may jump out is a way out of the function too: each pointer that still owns after the call took its
 # arguments leaks on the jump. What the call frees or takes is its own from the call on, jump or not.
-def jumped(body: Body, outcome: Outcome, site: Site, stops: Bool) -> Outcome
+def jumped(walker: Walker, outcome: Outcome, site: Site, stops: Bool) -> Outcome
   case outcome.moved
     Moved.Went(after) ->
-      path = after.path.push(Step(text: Locking.jump_text(site, stops)))
-      return outcome.with(breaches: outcome.breaches.concat(leaks(body, after.state, path)))
+      path = after.path.push(Step(text: Locking.jump_text(site, stops, walker.functions)))
+      return outcome.with(breaches: outcome.breaches.concat(leaks(walker.body, after.state, path)))
     _ -> return outcome
   end
 end

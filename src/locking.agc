@@ -210,13 +210,20 @@ export def jumps?(site: Site, functions: Map[String, Function]) -> Bool
 end
 
 ## Returns the step that ends a path at a call that jumps out of the caller: `jumps in` for a call that never comes
-## back (`stops`), `may jump in` for one that may also return.
-export def jump_text(site: Site, stops: Bool) -> String
-  if stops
-    return "#{site.line}:#{site.column} jumps in #{site.name}"
+## back (`stops`), `may jump in` for one that may also return, with the chain of calls of an inferred jump
+## (`may jump in path_of (as_string, wrong_tag)`).
+export def jump_text(site: Site, stops: Bool, functions: Map[String, Function]) -> String
+  via = functions.get(site.key).map do |f| f.via end.unwrap_or([])
+  chain = ""
+  if not via.empty?
+    chain = " (#{via.join(", ")})"
   end
 
-  return "#{site.line}:#{site.column} may jump in #{site.name}"
+  if stops
+    return "#{site.line}:#{site.column} jumps in #{site.name}#{chain}"
+  end
+
+  return "#{site.line}:#{site.column} may jump in #{site.name}#{chain}"
 end
 
 ## Returns the word of the value of a condition on a step of a path.
@@ -353,7 +360,7 @@ def with_jump(found: Map[String, Finding], walker: Walker, item: Item, event: Ev
         return found
       end
 
-      step = Step(text: jump_text(site, stops?(site, walker.functions)))
+      step = Step(text: jump_text(site, stops?(site, walker.functions), walker.functions))
       return with_exit(found, walker, item.state, item.path.push(step), true)
     _ -> return found
   end

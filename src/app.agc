@@ -140,7 +140,8 @@ export def run(options: Options) -> Result[Int]
     config.short_locks.empty? and
     config.stop_fields.empty? and
     config.may_jump.empty? and
-    config.jumps.empty?
+    config.jumps.empty? and
+    config.catches.empty?
   )
 
   if options.tools.include?(Tool.Rules) and assumes
@@ -626,6 +627,7 @@ def collect(options: Options, config: Config.Config, jobs: List[Tools.Job], cwd:
   # `[assume]` holds for every rule, as the marks it stands for.
   cut_missing = Effects.missing_fields(units, config)
   units = Effects.assumed(units, config)
+  units = Profile.measure("jumps") do Effects.with_jumps(units) end
   checked = Profile.measure("effects") do Effects.check(units, config, options.infer, options.all_paths, cwd) end
   locked = Profile.measure("locking") do Locking.check(units) end
   owned = Profile.measure("ownership") do Ownership.check(units) end

@@ -195,6 +195,10 @@ export WAITS = Set.new([
   "uv_cond_timedwait", "SleepConditionVariableCS", "SleepConditionVariableSRW",
 ])
 
+## The calls that catch a jump: a `longjmp` lands in the function that called one. glibc's `setjmp` and `sigsetjmp`
+## are macros of `_setjmp` and `__sigsetjmp`.
+export SETJMP = Set.new(["setjmp", "_setjmp", "__setjmp", "sigsetjmp", "__sigsetjmp", "__builtin_setjmp"])
+
 ## The calls that never come back, besides those whose type says `noreturn`.
 export NORETURN = Set.new([
   "abort", "exit", "_exit", "_Exit", "quick_exit", "longjmp", "siglongjmp", "_longjmp", "pthread_exit", "thrd_exit",

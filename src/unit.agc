@@ -57,7 +57,8 @@ TRANSPARENT = Set.new(["ImplicitCastExpr", "CStyleCastExpr", "ParenExpr", "Compo
 ## function, which is another function in each file. `marks` are the annotations, as written after `cchecker:`
 ## (`short`, `blocking`, `hot`). The place is that of the declaration, of the definition when `defined`. `noreturn`
 ## says that the declaration never returns (an attribute, its type, CC_NORETURN or CC_JUMPS), and `cold` that it is
-## `__attribute__((cold))`: either is an error exit.
+## `__attribute__((cold))`: either is an error exit. `via` is the chain of calls by which a function may jump out when
+## that is inferred (`Effects.with_jumps`): the functions it calls down to the one that is marked.
 export struct Function
   key: String
   name: String
@@ -68,6 +69,7 @@ export struct Function
   marks: List[String]
   noreturn: Bool = false
   cold: Bool = false
+  via: List[String] = []
 end
 
 ## Where a call goes: a function, by key, or a slot.
