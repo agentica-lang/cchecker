@@ -177,9 +177,10 @@ Feature: Locks on every path
       #include "cchecker.h"
 
       struct queue { pthread_mutex_t mu; int n; };
-      CC_MAY_JUMP int check_size(int n);
+      CC_MAY_JUMP int check_size(int n); CC_JUMPS void fail(int n); static int sized(int n) { return check_size(n); }
       <mark> CC_ACQUIRES(q->mu) void take(struct queue *q);
       <mark> CC_RELEASES(q->mu) void give(struct queue *q);
+      CC_PAIR(mask, unmask) CC_JUMP_RELEASES void mask(void); CC_JUMP_RELEASES void unmask(void);
 
       int push(struct queue *q, int n) { <body> }
       """
@@ -200,14 +201,22 @@ Feature: Locks on every path
       """
 
     Examples:
-      | case                | mark             | list                              | body                                                                                         | exit | code                      | found            | last                       |
-      | marked              | CC_JUMP_RELEASES |                                   | take(q); q->n += check_size(n); give(q); return 0;                                           | 0    | CC-PATH-LOCK-NOT-RELEASED | does not include | may jump in check_size     |
-      | listed              |                  | jump_releases = ["take", "give"]  | take(q); q->n += check_size(n); give(q); return 0;                                           | 0    | CC-PATH-LOCK-NOT-RELEASED | does not include | may jump in check_size     |
-      | not marked          |                  |                                   | take(q); q->n += check_size(n); give(q); return 0;                                           | 1    | CC-PATH-LOCK-NOT-RELEASED | includes         | may jump in check_size"]   |
-      | held at a return    | CC_JUMP_RELEASES |                                   | take(q); q->n += check_size(n); if (n < 0) return -1; give(q); return 0;                     | 1    | CC-PATH-LOCK-NOT-RELEASED | includes         | returns"]                  |
-      | released            | CC_JUMP_RELEASES |                                   | give(q); q->n += check_size(n); take(q); return 0;                                           | 0    | CC-PATH-LOCK-NOT-HELD     | does not include | may jump in check_size     |
-      | released, not marked |                 |                                   | give(q); q->n += check_size(n); take(q); return 0;                                           | 1    | CC-PATH-LOCK-NOT-HELD     | includes         | may jump in check_size"]   |
-      | taken another way   | CC_JUMP_RELEASES |                                   | if (n) take(q); else pthread_mutex_lock(&q->mu); q->n += check_size(n); give(q); return 0;  | 1    | CC-PATH-LOCK-NOT-RELEASED | includes         | may jump in check_size"]   |
+      | case                 | mark             | list                                               | body                                                                                                             | exit | code                      | found            | last                                                          |
+      | marked               | CC_JUMP_RELEASES |                                                    | take(q); q->n += check_size(n); give(q); return 0;                                                               | 0    | CC-PATH-LOCK-NOT-RELEASED | does not include | may jump in check_size                                        |
+      | listed               |                  | jump_releases = ["take", "give"]                   | take(q); q->n += check_size(n); give(q); return 0;                                                               | 0    | CC-PATH-LOCK-NOT-RELEASED | does not include | may jump in check_size                                        |
+      | listed by file       |                  | jump_releases = ["take@caught.c", "give@caught.c"] | take(q); q->n += check_size(n); give(q); return 0;                                                               | 0    | CC-PATH-LOCK-NOT-RELEASED | does not include | may jump in check_size                                        |
+      | not marked           |                  |                                                    | take(q); q->n += check_size(n); give(q); return 0;                                                               | 1    | CC-PATH-LOCK-NOT-RELEASED | includes         | may jump in check_size"]                                      |
+      | one listed           |                  | jump_releases = ["take"]                           | take(q); q->n += check_size(n); give(q); return 0;                                                               | 1    | CC-PATH-LOCK-NOT-RELEASED | includes         | may jump in check_size"]                                      |
+      | jumps                | CC_JUMP_RELEASES |                                                    | take(q); if (n < 0) fail(n); give(q); return 0;                                                                  | 0    | CC-PATH-LOCK-NOT-RELEASED | does not include | jumps in fail                                                 |
+      | jumps, not marked    |                  |                                                    | take(q); if (n < 0) fail(n); give(q); return 0;                                                                  | 1    | CC-PATH-LOCK-NOT-RELEASED | includes         | jumps in fail"]                                               |
+      | inferred             | CC_JUMP_RELEASES |                                                    | take(q); q->n += sized(n); give(q); return 0;                                                                    | 0    | CC-PATH-LOCK-NOT-RELEASED | does not include | may jump in sized                                             |
+      | inferred, not marked |                  |                                                    | take(q); q->n += sized(n); give(q); return 0;                                                                    | 1    | CC-PATH-LOCK-NOT-RELEASED | includes         | may jump in sized (check_size)"]                              |
+      | held at a return     | CC_JUMP_RELEASES |                                                    | take(q); q->n += check_size(n); if (n < 0) return -1; give(q); return 0;                                         | 1    | CC-PATH-LOCK-NOT-RELEASED | includes         | returns"]                                                     |
+      | released             | CC_JUMP_RELEASES |                                                    | give(q); q->n += check_size(n); take(q); return 0;                                                               | 0    | CC-PATH-LOCK-NOT-HELD     | does not include | may jump in check_size                                        |
+      | released, not marked |                  |                                                    | give(q); q->n += check_size(n); take(q); return 0;                                                               | 1    | CC-PATH-LOCK-NOT-HELD     | includes         | may jump in check_size"]                                      |
+      | taken another way    | CC_JUMP_RELEASES |                                                    | if (n) take(q); else pthread_mutex_lock(&q->mu); q->n += check_size(n); give(q); return 0;                       | 1    | CC-PATH-LOCK-NOT-RELEASED | includes         | may jump in check_size"]                                      |
+      | same class           | CC_JUMP_RELEASES |                                                    | take(q); pthread_mutex_lock(&q[1].mu); q->n += check_size(n); pthread_mutex_unlock(&q[1].mu); give(q); return 0; | 1    | CC-PATH-LOCK-NOT-RELEASED | includes         | "path":["10:45 takes q[1].mu","10:83 may jump in check_size"] |
+      | pair                 | CC_JUMP_RELEASES |                                                    | mask(); q->n += check_size(n); unmask(); return 0;                                                               | 1    | CC-PATH-PAIR-NOT-RESTORED | includes         | may jump in check_size"]                                      |
 
   Scenario Outline: A lock held at a call of a function that reaches a jump is not released on that way out (<case>)
     Given the C file "chain.c" holds:

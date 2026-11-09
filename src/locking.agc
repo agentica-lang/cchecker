@@ -329,7 +329,11 @@ end
 
 # The keys of the locks that the catcher of a jump gives back: those that the body takes or releases only through calls
 # of functions marked CC_JUMP_RELEASES (or `[assume] jump_releases`). A lock that one call takes another way, such as
-# `pthread_mutex_lock`, is not one the catcher knows, so the jumps still check it.
+# `pthread_mutex_lock`, is not one the catcher knows, so the jumps still check it. The set of a CC_PAIR is never
+# caught: the mark is about locks. A wait (`pthread_cond_wait`) gives the lock back and takes it again before it
+# returns, so it does not change who holds the lock at a jump. Keys are texts: a lock spelled two ways (`&p->mu` for a
+# local `p = q`) is two keys, and each must go through the marked helpers alone to be caught; a return that takes one
+# and releases the other is a finding on both, as without the mark.
 def caught_of(body: Body, functions: Map[String, Function]) -> Set[String]
   caught: Set[String] = Set.new([])
   other: Set[String] = Set.new([])
@@ -338,7 +342,7 @@ def caught_of(body: Body, functions: Map[String, Function]) -> Set[String]
       Event.Call(site) ->
         marks = functions.get(site.key).map do |f| f.marks end.unwrap_or([])
         for lock in site.takes.concat(site.drops)
-          if marks.include?(Effects.JUMP_RELEASES)
+          if marks.include?(Effects.JUMP_RELEASES) and lock.pair == ""
             caught = caught.add(lock.key)
           else
             other = other.add(lock.key)

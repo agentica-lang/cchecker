@@ -155,8 +155,9 @@ database declares is an error (exit 2) (`run_protected (assume.catches)`).
 record their lock for the code that catches a jump, which gives it back, as
 `CC_JUMP_RELEASES` does on a declaration: a lock that a function takes and
 releases only through such helpers is no lock finding at a jump, and is still
-checked on every return ([Locks](rules.md#locks-on-every-path)). A name that no
-function of the compile database declares is an error (exit 2)
+checked on every return ([Locks](rules.md#locks-on-every-path)). A function
+that takes or releases no lock for its caller is accepted and changes nothing. A
+name that no function of the compile database declares is an error (exit 2)
 (`take_recorded (assume.jump_releases)`).
 
 A short lock is one held for a few instructions: a lock whose field or global is

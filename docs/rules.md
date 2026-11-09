@@ -168,17 +168,20 @@ catching stops only what its callers see. A finding at an inferred jump has
 `may_jump_callers` in `source` of `--json`, and `[library] may_jump_callers =
 false` turns the inference off (see [Settings](settings.md)).
 
-A helper may record the lock it takes for the code that catches a jump, which
-gives it back (a count of nested takes, the lock held now). Mark such a
-`CC_ACQUIRES` or `CC_RELEASES` helper `CC_JUMP_RELEASES`, or name it in
-`[assume] jump_releases`: a lock that a function takes and releases only through
-such helpers is no finding at a jump, held (`NOT-RELEASED`) or released before
-it (`NOT-HELD`), and is still checked on every return. A lock that the function
-also takes or releases another way (`pthread_mutex_lock`, a helper without the
-mark) is checked at the jumps as before, since the catcher does not know that
-take. The mark is on the helper, not on the class of the lock, as two locks of
-one class (`lock.mutex`) may be taken one through a recording helper and the
-other not. A suppression of the code on the function (`CC_IGNORE` or `cchecker:
+A lock helper may write down the lock it takes (for example how many times it
+took it, or which lock it holds), so that the code that catches a jump can
+release it. Mark such a `CC_ACQUIRES` or `CC_RELEASES` helper
+`CC_JUMP_RELEASES`, or name it in `[assume] jump_releases`; for a helper that
+takes or releases two locks, the mark holds for both. A lock that a function
+takes and releases only through such helpers is no finding at a jump, held
+(`NOT-RELEASED`) or released before it (`NOT-HELD`), and is still checked on
+every return. A lock that the function also takes or releases another way
+(`pthread_mutex_lock`, a helper without the mark) is checked at the jumps as
+before, since the catcher does not know that take. The mark is on the helper,
+not on the class of the lock, as two locks of one class (`lock.mutex`) may be
+taken one through a recording helper and the other not. It is about locks: the
+set of a `CC_PAIR` with the mark is still `CC-PATH-PAIR-NOT-RESTORED` at a
+jump. A suppression of the code on the function (`CC_IGNORE` or `cchecker:
 ignore`) hides the findings of a jump too, and those of its returns with them.
 
 | Code | |
