@@ -73,6 +73,7 @@ export LOOP_CALLBACKS: Map[String, List[Int]] = {
   "uv_poll_start": [2],
   "uv_async_init": [2],
   "uv_close": [1],
+  "uv_walk": [1],
   "uv_read_start": [1, 2],
   "uv_write": [4],
   "uv_write2": [5],
@@ -131,6 +132,14 @@ export LOOP_CALLBACKS: Map[String, List[Int]] = {
   "uv_fs_unlink": [3],
   "uv_fs_utime": [5],
   "uv_fs_write": [6],
+}
+
+## The function pointer fields (slots, `field:Struct.field`) that libuv calls on the loop thread, with the name that
+## the root shows. The struct is named by its tag (`uv_process_options_s`) and by its typedef, as a project may use
+## either. `exit_cb` is called when the process that `uv_spawn` starts with these options ends.
+export LOOP_CALLBACK_FIELDS: Map[String, String] = {
+  "field:uv_process_options_s.exit_cb": "uv_process_options_t.exit_cb",
+  "field:uv_process_options_t.exit_cb": "uv_process_options_t.exit_cb",
 }
 
 ## The calls that take or give back memory of the heap.

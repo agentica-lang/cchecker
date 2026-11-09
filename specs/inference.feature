@@ -91,6 +91,36 @@ Feature: Roots inferred from libuv callbacks
       | uv_fs_unlink            | h, h, h, slow          |
       | uv_fs_utime             | h, h, h, h, h, slow    |
       | uv_fs_write             | h, h, h, h, h, h, slow |
+      | uv_walk                 | h, slow, h             |
+
+  Scenario Outline: A function stored in the exit_cb of uv_process_options_t is a CC_SHORT root (<case>)
+    Given the C file "spawn.c" holds:
+      """
+      unsigned int sleep(unsigned int seconds);
+      typedef struct uv_process_options_s {
+        void (*exit_cb)(void *process, long status, int signal);
+        const char *file;
+      } uv_process_options_t;
+      int uv_spawn(void *loop, void *process, const uv_process_options_t *options);
+      static void quick(void *process, long status, int signal) {}
+      static void slow(void *process, long status, int signal) { sleep(1); }
+
+      <setup>
+      """
+    When I run cchecker in its folder with "--tools rules --json spawn.c"
+    Then the exit code is <exit>
+    And the output includes:
+      """
+      <output>
+      """
+
+    Examples:
+      | case               | setup                                                                                            | exit | output                                                                                                                        |
+      | assignment         | void start(void *l, void *p) { uv_process_options_t o; o.exit_cb = slow; uv_spawn(l, p, &o); }   | 1    | "path":["slow","sleep"],"source":"libuv_callbacks_short+libc_blocking","root":"callback of uv_process_options_t.exit_cb at spawn.c:10"} |
+      | initializer        | void start(void *l, void *p) { uv_process_options_t o = {.exit_cb = slow}; uv_spawn(l, p, &o); } | 1    | "path":["slow","sleep"],"source":"libuv_callbacks_short+libc_blocking","root":"callback of uv_process_options_t.exit_cb at spawn.c:10"} |
+      | global initializer | static uv_process_options_t o = {slow, "x"};                                                     | 1    | "path":["slow","sleep"],"source":"libuv_callbacks_short+libc_blocking","root":"callback of uv_process_options_t.exit_cb at spawn.c:10"} |
+      | a quick function   | void start(void *l, void *p) { uv_process_options_t o = {.exit_cb = quick}; uv_spawn(l, p, &o); } | 0    | "unresolved_callbacks":[]                                                                                                     |
+      | another struct     | typedef struct { void (*exit_cb)(void *p, long s, int g); } other_t; static other_t o = {slow};   | 0    | "unresolved_callbacks":[]                                                                                                     |
 
   Scenario Outline: A function libuv runs off the loop or at no callback place, or of a library, is no root
     Given the C file "loop.c" holds:

@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `[roots]` and `[assume]` (`short`, `stop`, `may_jump`, `jumps`) take `name@path`, the function of that name whose file ends
   with `path`, so a name shared by static functions of several files no longer marks all of them.
+- `uv_walk`: its callback, and a function stored in the `exit_cb` of `uv_process_options_t`, are `CC_SHORT` roots like the
+  other callbacks of libuv that run on the loop (`libuv_callbacks_short`).
 - `CC_JUMPS` and `[assume] jumps`: a call of a function that always jumps out and never returns (an interpreter's raise
   with `longjmp`) is a way out of its caller, where a pointer that still owns is `CC-OWN-LEAK` and a lock held is
   `CC-PATH-LOCK-NOT-RELEASED`, and the path ends there.

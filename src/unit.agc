@@ -235,7 +235,7 @@ export def read(decls: Json) -> Result[Unit]
       "VarDecl" ->
         slot = "var:#{variable_key(tables, Ast.text(node, "name"))}"
         for value in values(node)
-          found = with_stores(found, stored(tables, file_scope(), slot, value))
+          found = with_field_stores(found, node, stored(tables, file_scope(), slot, value))
         end
 
       _ -> next
@@ -842,7 +842,11 @@ def walk(tables: Tables, scope: Scope, node: Json, found: Found) -> Found
     "BinaryOperator" -> with_assignment(tables, scope, node, found)
     "CleanupAttr" -> with_cleanup(tables, scope, node, found)
     "VarDecl" ->
-      with_stores(found, values(node).flat_map do |value| stored(tables, scope, local_slot(scope, node), value) end)
+      with_field_stores(
+        found,
+        node,
+        values(node).flat_map do |value| stored(tables, scope, local_slot(scope, node), value) end,
+      )
     _ -> found
   end
 
@@ -933,6 +937,21 @@ def with_callbacks(found: Found, callbacks: List[Callback]) -> Found
   return found.with(callbacks: found.callbacks.concat(callbacks))
 end
 
+# Records the stores of a node (a variable with an initializer, an assignment). A store in a field that libuv calls on
+# the loop (`Known.LOOP_CALLBACK_FIELDS`) is also a callback, placed at the node, with the field in `call` and -1 as
+# its argument place: a later call (`uv_spawn`) reads the field, so no argument of the node holds it.
+def with_field_stores(found: Found, node: Json, stores: List[Store]) -> Found
+  place = Ast.start_of(node)
+  callbacks = stores.flat_map do |store|
+    case Known.LOOP_CALLBACK_FIELDS.get(store.slot)
+      some(field) -> [Callback(call: field, argument: -1, file: place.file, line: place.line, sources: [store.source])]
+      none -> []
+    end
+  end
+
+  return with_callbacks(with_stores(found, stores), callbacks)
+end
+
 # The value of an integer constant written with literals, `|` and `+` (`O_RDONLY | O_NONBLOCK` once the macros are
 # expanded), or -1 for any other expression.
 def constant(node: Json) -> Int
@@ -1018,7 +1037,7 @@ def with_assignment(tables: Tables, scope: Scope, node: Json, found: Found) -> F
   end
 
   case slot_of(tables, scope, parts[0])
-    some(slot) -> return with_stores(found, stored(tables, scope, slot, parts[1]))
+    some(slot) -> return with_field_stores(found, node, stored(tables, scope, slot, parts[1]))
     none -> return found
   end
 end
