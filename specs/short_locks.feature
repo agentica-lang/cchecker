@@ -172,3 +172,37 @@ Feature: Short locks inferred from their critical sections
       """
     When I run cchecker in its folder with "--tools rules --baseline base.json --strict-baseline"
     Then the exit code is 1
+
+  Scenario Outline: A section that takes a lock through a wrapper of short_locks does not block (<list>)
+    Given the C file "sections.c" holds:
+      """
+      #include "pthread.h" /* found in the system folders */
+      #include "cchecker.h"
+
+      typedef struct { int x; } uv_mutex_t;
+      void uv_mutex_lock(uv_mutex_t *h);
+      void uv_mutex_unlock(uv_mutex_t *h);
+      struct loop { pthread_mutex_t mutex; int n; };
+      void push(struct loop *l, uv_mutex_t *u) {
+        pthread_mutex_lock(&l->mutex); uv_mutex_lock(u); uv_mutex_unlock(u); pthread_mutex_unlock(&l->mutex);
+      }
+      CC_SHORT void tick(struct loop *l) { pthread_mutex_lock(&l->mutex); l->n++; pthread_mutex_unlock(&l->mutex); }
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [library]
+      short_lock_sections = true
+
+      [assume]
+      <list>
+      """
+    When I run cchecker in its folder with "--tools rules --json"
+    Then the output includes:
+      """
+      "inferred_short_locks":<inferred>
+      """
+
+    Examples:
+      | list                                 | inferred       |
+      | short_locks = ["uv_mutex_lock(0)"]   | ["loop.mutex"] |
+      | short_locks = ["uv_mutex_unlock(0)"] | []             |

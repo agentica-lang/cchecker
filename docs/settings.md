@@ -48,6 +48,8 @@ may_jump = ["raise_type_error"]
 jumps = ["raise_error"]
 catches = ["run_protected"]
 jump_releases = ["take_recorded"]
+acquires = ["my_lock(0)"]
+releases = ["my_unlock(0)"]
 ```
 
 `[library]` turns each family of library knowledge on or off. All are on by
@@ -119,7 +121,8 @@ declaration of the function (`slow@slow.h` for a prototype in a header); in
 and in `short`, `stop`, `may_jump`, `jumps`, `catches` and `jump_releases` of
 `[assume]`, and on each side of a `stop_calls` pair (`stop_fields` and
 `short_locks` name fields and locks), and a `name@path` that matches no function
-is an error (exit 2) like a bare name that does.
+is an error (exit 2) like a bare name that does. `acquires`, `releases` and the
+wrappers of `short_locks` add the place of the parameter: `name@path(0)`.
 
 `[assume]` says what the project knows of its own functions and cchecker cannot
 see in the C, as `CC_ASSUME_SHORT` and `CC_STOP` do on a declaration. `short`
@@ -184,6 +187,29 @@ that takes or releases no lock for its caller is accepted and changes nothing. A
 name that no function of the compile database declares is an error (exit 2)
 (`take_recorded (assume.jump_releases)`).
 
+`acquires` and `releases` name lock wrappers in code that cannot be edited (a
+vendored library), as `CC_ACQUIRES` and `CC_RELEASES` do on a declaration. An
+entry is `name(N)` or `name@path(N)`, `N` the place of the parameter (from 0)
+that holds the lock: `my_lock(0)` takes the lock it is given and returns with it
+held, `my_unlock(0)` releases it. The body of the wrapper is then no
+`CC-PATH-LOCK-NOT-RELEASED` or `CC-PATH-LOCK-NOT-HELD`, and a call of it is a
+lock for its callers, as the mark's (the lock is the argument at that place). A
+known lock call (`pthread_mutex_lock`, `uv_mutex_lock`, `uv_mutex_unlock`, ...)
+already takes or releases its lock, so naming one is an error. The function has
+one such lock whatever its declarations call the parameter (or call nothing),
+and it keeps the one a `CC_ACQUIRES` already gives it. `N` has to be a named
+parameter of a declaration (not one past the end or in the `...`), and a
+function is in only one of the two lists. The path tells the static functions of
+one name apart (`grab@a.c(0)`, by the file of the definition, which a prototype
+in a header does not change); a function with external linkage is one in the
+whole project, so its path is only checked against a declaration of it
+(`slow@slow.h`, the definition or a prototype) and does not tell two such
+functions apart: `lock@a.c(0)` in `acquires` and `lock@b.c(0)` in `releases` name
+one external `lock` both ways, and `grab@a.c(0)` for a static `grab` of `a.c`
+also marks an external `grab` of another file. A wrapper that no declaration
+matches, or whose `N` no declaration reaches, is an error (exit 2)
+(`my_lock(0) (assume.acquires)`).
+
 A short lock is one held for a few instructions: a lock whose field or global is
 marked `CC_NO_SYSCALL_UNDER()`, or whose class `[assume] short_locks` names:
 `queue.mu` for the field `mu` of `struct queue`, the name of a global, and for a
@@ -197,6 +223,18 @@ parameter, or through a local that points to it (`pthread_mutex_t *m = &q->mu;
 pthread_mutex_lock(m)`). A lock wrapper is assumed short with `CC_ASSUME_SHORT`
 or `[assume] short`. A class of `short_locks` that no lock of the compile
 database has (none taken, none marked) is an error, as for the names.
+
+A lock that reaches a wrapper as a parameter has no class to name. An entry
+`name(N)` of `short_locks` (`uv_mutex_lock(0)`, `my_lock(0)`) says that every
+lock taken through that wrapper is short: a call of a known take such as
+`uv_mutex_lock`, and the takes inside a function of the project of that name, are
+not blocking for `CC_SHORT`, whatever the lock. Listing a take of a library
+therefore makes every call of it in the project short, including the locks
+that are not. `N` only has to be a number; the rules do not check that the
+parameter is the lock. `name@path` matches any declaration of the function. A
+wrapper that no function of the compile database declares is an error (exit 2),
+except a known take such as `uv_mutex_lock`, which a project may use from an
+installed library.
 
 Experimental, and off by default: with `[library] short_lock_sections = true`, a
 lock is short without a mark or a setting when no critical section of its class
