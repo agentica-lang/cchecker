@@ -161,6 +161,7 @@ Feature: The settings of a project
       | [assume]  | stop = "tick"         | assume.stop           |
       | [assume]  | short_locks = [1]     | assume.short_locks    |
       | [assume]  | stop_fields = "a.b"   | assume.stop_fields    |
+      | [assume]  | jump_releases = "a"   | assume.jump_releases  |
 
   Scenario Outline: Each family of library knowledge can be turned off
     Given the C file "family.c" holds:

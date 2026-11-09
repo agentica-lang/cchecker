@@ -43,6 +43,10 @@ Feature: The annotation header
       """
     And the output includes:
       """
+      "cchecker:jump_releases"
+      """
+    And the output includes:
+      """
       "cchecker:noreturn"
       """
     And the output includes:

@@ -43,6 +43,7 @@ stop_fields = ["request.call"]
 may_jump = ["raise_type_error"]
 jumps = ["raise_error"]
 catches = ["run_protected"]
+jump_releases = ["take_recorded"]
 ```
 
 `[library]` turns each family of library knowledge on or off. All are on by
@@ -92,9 +93,10 @@ the end of the path of the file as it is, with no `..`; a leading `./` is
 ignored. In `[assume]` it may be the file of the definition or of any
 declaration of the function (`slow@slow.h` for a prototype in a header); in
 `[roots]` it is the file of the definition. It works in every list of `[roots]`
-and in `short`, `stop`, `may_jump`, `jumps` and `catches` of `[assume]`
-(`stop_fields` and `short_locks` name fields and locks), and a `name@path` that
-matches no function is an error (exit 2) like a bare name that does.
+and in `short`, `stop`, `may_jump`, `jumps`, `catches` and `jump_releases` of
+`[assume]` (`stop_fields` and `short_locks` name fields and locks), and a
+`name@path` that matches no function is an error (exit 2) like a bare name that
+does.
 
 `[assume]` says what the project knows of its own functions and cchecker cannot
 see in the C, as `CC_ASSUME_SHORT` and `CC_STOP` do on a declaration. `short`
@@ -148,6 +150,15 @@ out may jump out too, and the inference stops at a function that catches
 ([Locks](rules.md#locks-on-every-path)). A function that calls `setjmp` or
 `sigsetjmp` catches without a mark. A name that no function of the compile
 database declares is an error (exit 2) (`run_protected (assume.catches)`).
+
+`jump_releases` names the lock helpers (`CC_ACQUIRES`, `CC_RELEASES`) that
+record their lock for the code that catches a jump, which gives it back, as
+`CC_JUMP_RELEASES` does on a declaration: a lock that a function takes and
+releases only through such helpers is no lock finding at a jump, and is still
+checked on every return ([Locks](rules.md#locks-on-every-path)). A function
+that takes or releases no lock for its caller is accepted and changes nothing. A
+name that no function of the compile database declares is an error (exit 2)
+(`take_recorded (assume.jump_releases)`).
 
 A short lock is one held for a few instructions: a lock whose field or global is
 marked `CC_NO_SYSCALL_UNDER()`, or whose class `[assume] short_locks` names:
