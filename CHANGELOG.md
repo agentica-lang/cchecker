@@ -4,6 +4,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-10
+
 ### Changed
 
 - **Breaking:** needs Agentica 0.29.0 or later: the sources use its `Process.Options` and its formatted syntax (implicit returns, guards, one-line defs). CI tests with Agentica 0.29.0.
@@ -235,7 +237,8 @@ The first release.
   take 17.9 s and 411 MB at `-j 2`, and a chain of 3000 else-if 4 s and 170 MB. `-j` defaults to the number of cores,
   and the jobs of the largest files start first.
 
-[Unreleased]: https://github.com/agentica-lang/cchecker/compare/0.5.0...HEAD
+[Unreleased]: https://github.com/agentica-lang/cchecker/compare/0.6.0...HEAD
+[0.6.0]: https://github.com/agentica-lang/cchecker/compare/0.5.0...0.6.0
 [0.5.0]: https://github.com/agentica-lang/cchecker/compare/0.4.0...0.5.0
 [0.4.0]: https://github.com/agentica-lang/cchecker/compare/0.3.0...0.4.0
 [0.3.0]: https://github.com/agentica-lang/cchecker/compare/0.2.0...0.3.0
