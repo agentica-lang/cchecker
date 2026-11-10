@@ -230,12 +230,15 @@ export OWNED = Set.new([
 ## The calls that free the memory of their first argument.
 export FREES = Set.new(["free"])
 
-## The calls that move the memory of their first argument to the pointer they return; when that pointer is null, the
-## first argument still owns it.
 ## The calls that fill memory with a byte (`memset(&p, 0, sizeof p)`), as the builtins of a fortified build name them
 ## too.
 export FILLS = Set.new(["memset", "__builtin_memset", "__builtin___memset_chk"])
 
+## The builtins that read only the type of their argument, as `sizeof` does: the argument is not evaluated.
+export UNEVALUATED = Set.new(["__builtin_object_size", "__builtin_dynamic_object_size"])
+
+## The calls that move the memory of their first argument to the pointer they return; when that pointer is null, the
+## first argument still owns it.
 export RESIZES = Set.new(["realloc", "reallocarray"])
 
 ## The `[library]` flag of the allocators of the Boehm collector (`LIBGC_ALLOC`) in the collector rule.

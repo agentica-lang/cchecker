@@ -1711,7 +1711,7 @@ end
 
 # The initializer of a followed struct: each CC_OWNS field (`fields`) gets its item, and null when it has none; the
 # other items are read in order.
-def initializer(b: Builder, fields: List[String], init: Json, preds: List[Int]) -> Built
+def initializer(b: Builder, fields: List[String], init: Json, preds: List[Int], held: Map[Int, String] = {}) -> Built
   items = Ast.children(init)
   at: Map[Int, String] = {}
   for place in fields
@@ -1724,6 +1724,7 @@ def initializer(b: Builder, fields: List[String], init: Json, preds: List[Int]) 
   built = Built(b: b, exits: preds)
   for i in 0...items.size
     case at.get(i)
+      some(place) if held.key?(i) -> built = moved_field(built.b, place, held[i], items[i], built.exits)
       some(place) if Ast.kind(items[i]) != "ImplicitValueInitExpr" ->
         built = owner_assigned(built.b, place, items[i], built.exits)
       some(place) -> built = nulled_field(built.b, place, init, built.exits)
@@ -1738,6 +1739,14 @@ def initializer(b: Builder, fields: List[String], init: Json, preds: List[Int]) 
   end
 
   return built
+end
+
+# A field that takes the value an item of a compound literal held before the store (`held`).
+def moved_field(b: Builder, place: String, temp: String, item: Json, preds: List[Int]) -> Built
+  at = Ast.start_of(item)
+  assign = Assign(name: place, value: "moved", from: temp, shown: plain(temp), line: at.line, column: at.column)
+  written = add(b, Event.Writes([place]), preds)
+  return add(written.b, Event.Assigns(assign), written.exits)
 end
 
 # A CC_OWNS field that an initializer leaves out: it is null.
@@ -2124,8 +2133,74 @@ def reset_by_literal(b: Builder, target: Json, value: Json, preds: List[Int]) ->
     return none
   end
 
-  reset = add(b, Event.Resets(fields), preds)
-  return some(initializer(reset.b, fields, init, reset.exits))
+  # C evaluates the whole literal before it stores the struct: an item that names a field of the struct (`.left =
+  # p.right`) is moved to a place of its own first, which the field then takes.
+  items = Ast.children(init)
+  built = Built(b: b, exits: preds)
+  held: Map[Int, String] = {}
+  for i in 0...items.size
+    source = owner_named(built.b, items[i])
+    if fields.include?(source)
+      place = Ast.start_of(items[i])
+      temp = "#{source}#{KEY_MARK}9#{i}"
+      assign = Assign(
+        name: temp,
+        value: "moved",
+        from: source,
+        shown: plain(source),
+        line: place.line,
+        column: place.column,
+      )
+
+      built = add(built.b, Event.Assigns(assign), built.exits)
+      held = held.put(i, temp)
+    end
+  end
+
+  reset = add(built.b, Event.Resets(fields), built.exits)
+  stored = initializer(reset.b, fields, init, reset.exits, held)
+  if held.empty?
+    return some(stored)
+  end
+
+  closing = Closing(names: held.values, mark: mark_at(init, "ends"))
+  return some(add(stored.b, Event.Closes(closing), stored.exits))
+end
+
+# Whether a fill byte is zero: `0` or `'\0'`.
+def zero_byte?(node: Json) -> Bool
+  bare = see_through(node)
+  return zero?(bare) or (Ast.kind(bare) == "CharacterLiteral" and Ast.number(bare, "value") == 0)
+end
+
+# Whether the size of a `memset` of `&p` is that of the whole struct: `sizeof p`, `sizeof(struct pair)` or the size of
+# a typedef of it. A smaller size clears some of the fields only, and stays an escape.
+def whole_size?(target: Json, size: Json) -> Bool
+  bare = see_through(size)
+  if Ast.kind(bare) != "UnaryExprOrTypeTraitExpr" or Ast.text(bare, "name") != "sizeof" or not address?(target)
+    return false
+  end
+
+  pointed = see_through(Ast.children(see_through(target)).first)
+  measured = Ast.children(bare)
+  if not measured.empty?
+    inner = see_through(measured.first)
+    return Ast.kind(inner) == "DeclRefExpr" and Ast.referenced_id(inner) == Ast.referenced_id(pointed)
+  end
+
+  type = JSON.get(bare, "argType").unwrap_or(JSON.from(""))
+  name = record_name(pointed)
+  return [Ast.text(type, "qualType"), Ast.text(type, "desugaredQualType")].any? do |text| type_name(text) == name end
+end
+
+# A type as `record_name` reads it: without `struct` and the qualifiers.
+def type_name(text: String) -> String
+  name = text
+  for word in ["const ", "volatile ", "struct "]
+    name = name.replace(word, "")
+  end
+
+  return name.strip
 end
 
 # The followed CC_OWNS fields of the local struct that an expression names whole (`p`), or none.
@@ -2286,13 +2361,17 @@ def call(b: Builder, node: Json, preds: List[Int], tried: Bool) -> Built
   # A pointer that the call frees or takes is not read by it, nor one whose address it gets to hand an owned pointer
   # out through.
   name = Ast.referenced_name(callee)
+  if Known.UNEVALUATED.include?(name)
+    return Built(b: b, exits: preds)
+  end
+
   taking = taken(b.ctx, name, key_of_function(b.ctx, name))
   filling = out_params(b.ctx, name)
   # `pair_free(&p)` at a CC_FREES parameter frees the fields of a followed struct, and `memset(&p, 0, sizeof p)` clears
   # them: neither is an escape of the struct.
   frees_fields = b.ctx.owning.frees.get(key_of_function(b.ctx, name), [])
   clearing: List[String] = []
-  if Known.FILLS.include?(name) and args.size > 1 and zero?(args[1])
+  if Known.FILLS.include?(name) and args.size > 2 and zero_byte?(args[1]) and whole_size?(args[0], args[2])
     clearing = struct_address(b, args[0])
   end
 
@@ -2301,7 +2380,9 @@ def call(b: Builder, node: Json, preds: List[Int], tried: Bool) -> Built
   for i in 0...args.size
     fields = struct_address(built.b, args[i])
     if frees_fields.include?(i) and not fields.empty?
+      # As for `free_and_null(&p)`, the helper is taken to null what it frees: a condition on a field is forgotten.
       struct_freed = struct_freed.concat(fields)
+      built = add(built.b, Event.Writes(fields), built.exits)
     elsif i == 0 and not clearing.empty?
       next
     else
@@ -2327,7 +2408,7 @@ def call(b: Builder, node: Json, preds: List[Int], tried: Bool) -> Built
     site = site.with(lost: true)
   end
 
-  site = site.with(frees: site.frees.concat(struct_freed))
+  site = site.with(frees: site.frees.concat(struct_freed), clears: site.clears.concat(struct_freed))
   called = add(built.b, Event.Call(site), built.exits)
   if site.stops
     return Built(b: called.b, exits: [])

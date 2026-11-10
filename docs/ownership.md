@@ -145,21 +145,28 @@ afterwards is not found. `sizeof p` and a field that does not own (`p.n`) are no
 escape; a `CC_OWNS` field in an operand of `asm` (`"r"(p.left)`) is only read,
 so the field still owns after it.
 
-Some uses of the whole struct are no escape. A `cleanup` function on the struct,
-and a call that passes `&p` to a `CC_FREES` parameter (`pair_free(&p)`), free
-every field: a field freed before is freed twice there.
-`memset(&p, 0, sizeof p)` (with 0) and a compound literal
-(`p = (struct pair){0}`, `p = (struct pair){ .left = q }`) clear the struct:
-each field gets null or its item, also after an escape, so the struct is
-followed again, and a field that still owns leaks there. `&p.left` of a
-`CC_OWNS` field is the address of that pointer, as `&b` of a local:
-`free_and_null(&p.left)` at a `CC_FREES` parameter frees and clears it,
-`take(&p.left)` at a `CC_OWNS_OUT` parameter fills it, and any other call is
-lent it. In the function itself, a `CC_FREES` parameter that points to a struct
-is one pointer that the function frees, as before: a function that frees only
-the fields (`pair_done`) is checked as one that leaks the struct, so leave such
-a function unmarked and give it as a `cleanup` function, or call it on a struct
-that then escapes.
+Some uses of the whole struct are no escape. A `cleanup` function on the struct
+frees every field at the end of its block: its body is not read, so a cleanup
+function that frees only some fields can give a false CC-OWN-DOUBLE-FREE after
+an explicit free of another one, and the leak of the fields it skips is not
+found. A call that passes `&p` to a `CC_FREES` parameter (`pair_free(&p)`) frees
+every field and, as `free_and_null(&p)` of a pointer, is taken to set them to
+null. This caller rule is for a helper that the rules do not read, defined in
+another unit: in its own function a `CC_FREES` parameter that points to a struct
+is still one pointer to free, so a helper that frees only the fields
+(`pair_done`) is checked as one that leaks the struct; leave such a helper
+unmarked and give it as a `cleanup` function, or call it on a struct that then
+escapes. `memset(&p, 0, sizeof p)` (the fill `0` or `'\0'`, the size `sizeof p`,
+`sizeof(struct pair)` or the size of a typedef of it; any other size is an
+escape) and a compound literal (`p = (struct pair){0}`,
+`p = (struct pair){ .left = q }`) clear the struct: each field gets null or its
+item, also after an escape, so the struct is followed again, and a field that
+still owns leaks there. The items of the literal are read before the store, as C
+does, so `p = (struct pair){ .left = p.right, .right = p.left }` swaps the
+fields. `&p.left` of a `CC_OWNS` field is the address of that pointer, as `&b`
+of a local: `free_and_null(&p.left)` at a `CC_FREES` parameter frees and clears
+it, `take(&p.left)` at a `CC_OWNS_OUT` parameter fills it, and any other call is
+lent it.
 
 A struct whose field that does not own has its address taken (`&p.n`, which may
 reach the whole struct) is not followed, nor a static one, a union, or one whose

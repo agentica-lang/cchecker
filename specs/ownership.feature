@@ -1188,11 +1188,11 @@ Feature: Ownership on every path
       """
 
   Scenario: A cleanup function, a CC_FREES struct pointer, a clear and the address of a field
-    A cleanup function on a local struct, and a call that passes `&p` at a `CC_FREES` parameter, free each CC_OWNS
-    field. `memset(&p, 0, sizeof p)` and `p = (struct pair){...}` clear the struct: its fields are followed again (also
-    after an escape), and one that still owns leaks there. `&p.left` of a CC_OWNS field is the address of that pointer:
-    a CC_FREES parameter frees and clears it, a CC_OWNS_OUT parameter fills it. The address of a field that does not
-    own (`&x.link`) stops following the struct.
+    A cleanup function on a local struct frees each CC_OWNS field, and a call that passes `&p` at a `CC_FREES`
+    parameter frees and clears each field. `memset(&p, 0, sizeof p)` (or `'\0'`, `sizeof(struct pair)`) and `p =
+    (struct pair){...}` clear the struct: its fields are followed again (also after an escape), and one that still owns
+    leaks there. `&p.left` of a CC_OWNS field is the address of that pointer: a CC_FREES parameter frees and clears it,
+    a CC_OWNS_OUT parameter fills it. The address of a field that does not own (`&x.link`) stops following the struct.
 
     Given the C file "clears.c" holds:
       """
@@ -1322,16 +1322,19 @@ Feature: Ownership on every path
         x.buf = make_buffer();
         attach(&x.link);
       }
+
+      void cleared_byte(void) {
+        struct pair p;
+        memset(&p, '\0', sizeof(struct pair));
+        p.left = make_buffer();
+        free(p.left);
+      }
       """
     When I run cchecker with "--tools rules --json $DIR/clears.c -- -I../include"
     Then the exit code is 1
     And the output includes:
       """
       {"code":"CC-OWN-DOUBLE-FREE","tool":"rules","file":"$DIR/clears.c","line":24,
-      """
-    And the output includes:
-      """
-      {"code":"CC-OWN-DOUBLE-FREE","tool":"rules","file":"$DIR/clears.c","line":37,
       """
     And the output includes:
       """
@@ -1384,6 +1387,14 @@ Feature: Ownership on every path
     And the output does not include:
       """
       "line":122,
+      """
+    And the output does not include:
+      """
+      "line":37,
+      """
+    And the output does not include:
+      """
+      "line":128,
       """
 
   Scenario: A function with more paths than the rules follow is checked on those it went through and counted
