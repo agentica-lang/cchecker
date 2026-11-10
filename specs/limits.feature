@@ -313,6 +313,33 @@ Feature: Time and memory on large generated inputs
       "incomplete_functions":[]
       """
 
+  Scenario: Nested structs of 20 CC_OWNS fields in 24 blocks of a loop stay in their bounds
+    The struct has three levels: a member escapes on one side of each test and a nested field is freed on the other.
+    At the end of its block every field leaves the state.
+
+    Given the C file "nested.c" holds, with ITEMS as 24 times " { struct top p = {0}; p.x.a.f0 = make(); p.y.b.f4 = make(); if (pick()) keep(&p.x); else free(p.x.a.f0); free(p.y.b.f4); memset(&p.y, 0, sizeof p.y); }":
+      """
+      #include <stdlib.h>
+      #include <string.h>
+      #include "cchecker.h"
+      struct leaf { CC_OWNS char *f0; CC_OWNS char *f1; CC_OWNS char *f2; CC_OWNS char *f3; CC_OWNS char *f4; };
+      struct mid { struct leaf a; struct leaf b; };
+      struct top { struct mid x; struct mid y; };
+      CC_OWNS char *make(void);
+      int pick(void);
+      void keep(struct mid *p);
+      void many(int n) {
+        for (int i = 0; i < n; i++) {ITEMS
+        }
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/nested.c -- -I../include" in at most 1500 MiB and 20 seconds
+    Then the exit code is 0
+    And the output includes:
+      """
+      "incomplete_functions":[]
+      """
+
   Scenario: A lock held in a function with more paths than the walk follows is not inferred short
     Given the file "compile_commands.json" holds:
       """

@@ -1444,6 +1444,52 @@ Feature: Ownership on every path
       {"code":"CC-OWN-DOUBLE-FREE","tool":"rules","file":"$DIR/clears.c","line":149,
       """
 
+  Scenario Outline: A struct in a local struct, and an unnamed member, are followed (<case>)
+    A struct in a local struct by value has the CC_OWNS fields of its own record as pointers of their own, at any
+    depth (`p.inner.left`), and so has an unnamed struct member (`c.buf`). The escapes, clears and frees of the whole
+    struct work on the struct in it too (`keep(&p.inner)`, `p.inner = q`, `memset(&p.inner, 0, sizeof p.inner)`,
+    `pair_free(&p.inner)`), on its fields only, and a nested initializer gives each nested field its item.
+
+    Given the C file "nested.c" holds:
+      """
+      #include <stdlib.h>
+      #include <string.h>
+      #include "cchecker.h"
+      struct pair { CC_OWNS char *left; CC_OWNS char *right; };
+      struct outer { int n; struct pair inner; };
+      struct deep { struct outer o; };
+      struct two { struct pair a; struct pair b; };
+      struct conn { int fd; struct { CC_OWNS char *buf; }; };
+      CC_OWNS char *make(int n); void keep(void *p); void lend(char **q); void pair_free(CC_FREES struct pair *p);
+      void outer_done(struct outer *p);
+
+      <code>
+      """
+    When I run cchecker with "--tools rules --json $DIR/nested.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      {"code":"CC-OWN-<kind>","tool":"rules","file":"$DIR/nested.c","line":12,"column":6,"message":"<message>"
+      """
+
+    Examples:
+      | case                                        | kind        | message                                                   | code                                                                                                                       |
+      | a nested field leaks                        | LEAK        | f does not free or hand on p.inner.left on every path     | void f(int n) { struct outer p = {0}; p.inner.left = make(n); if (n) return; free(p.inner.left); }                         |
+      | a leak before the whole struct is lent      | LEAK        | f does not free or hand on p.inner.left on every path     | void f(int n) { struct outer p = {0}; p.inner.left = make(n); if (n) return; keep(&p); }                                   |
+      | a leak before the struct in it is lent      | LEAK        | f does not free or hand on p.inner.left on every path     | void f(int n) { struct outer p = {0}; p.inner.left = make(n); if (n) return; keep(&p.inner); }                             |
+      | one nested pointer lent, the other leaks    | LEAK        | f does not free or hand on p.inner.right on every path    | void f(int n) { struct outer p = {0}; p.inner.left = make(n); p.inner.right = make(n); lend(&p.inner.left); }              |
+      | a new value of the struct in it             | LEAK        | f does not free or hand on p.inner.left on every path     | void f(int n, struct pair q) { struct outer p = {0}; p.inner.left = make(n); p.inner = q; keep(&p.inner); }                |
+      | a reset of the whole struct                 | LEAK        | f does not free or hand on p.inner.left on every path     | void f(int n) { struct outer p = {0}; p.inner.left = make(n); p = (struct outer){0}; }                                     |
+      | a clear of the whole struct                 | LEAK        | f does not free or hand on p.inner.left on every path     | void f(int n) { struct outer p = {0}; p.inner.left = make(n); memset(&p, 0, sizeof p); }                                   |
+      | a clear of the struct in it                 | LEAK        | f does not free or hand on p.inner.left on every path     | void f(int n) { struct outer p = {0}; p.inner.left = make(n); memset(&p.inner, 0, sizeof p.inner); }                       |
+      | a nested initializer from a local           | LEAK        | f does not free or hand on b on every path                | void f(int n) { CC_OWNS char *b = make(n); struct outer p = { 1, { b } }; if (n) return; free(p.inner.left); }             |
+      | two levels deep                             | LEAK        | f does not free or hand on d.o.inner.right on every path  | void f(int n) { struct deep d = {0}; d.o.inner.right = make(n); if (n) return; free(d.o.inner.right); }                    |
+      | one record in two fields                    | LEAK        | f does not free or hand on t.b.left on every path         | void f(int n) { struct two t = {0}; t.a.left = make(n); t.b.left = make(n); free(t.a.left); }                              |
+      | a field of an unnamed member                | LEAK        | f does not free or hand on c.buf on every path            | void f(int n) { struct conn c = {0}; c.buf = make(n); if (n) return; free(c.buf); }                                        |
+      | a nested field set from a local, both freed | DOUBLE-FREE | f frees b, which it already freed or handed on            | void f(int n) { CC_OWNS char *b = make(n); struct outer p = {0}; p.inner.left = b; free(b); free(p.inner.left); }          |
+      | a test after the struct in it is freed      | DOUBLE-FREE | f frees p.inner.left, which it already freed or handed on | void f(int n) { struct outer p = {0}; p.inner.left = make(n); pair_free(&p.inner); if (p.inner.left) free(p.inner.left); } |
+      | a nested field freed before the cleanup     | DOUBLE-FREE | f frees p.inner.left, which it already freed or handed on | void f(int n) { __attribute__((cleanup(outer_done))) struct outer p = {0}; p.inner.left = make(n); free(p.inner.left); }   |
+
   Scenario: A function with more paths than the rules follow is checked on those it went through and counted
     Given the C file "many.c" holds:
       """

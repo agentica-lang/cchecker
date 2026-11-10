@@ -194,14 +194,15 @@ struct Wrappers
   releases: List[Config.Wrapper]
 end
 
-# A struct or union: its name (a typedef name for an anonymous one), the ids and names of its fields, and their types
-# as written and without their typedefs ("" for a type with none).
+# A struct or union: its name (a typedef name for an anonymous one), the ids and names of its fields, their types
+# as written and without their typedefs ("" for a type with none), and whether it is a union.
 struct Record
   name: String
   field_ids: List[String]
   fields: List[String]
   types: List[String] = []
   desugared: List[String] = []
+  union: Bool = false
 end
 
 # The functions of a CC_PAIR(set, restore), by name.
@@ -440,20 +441,41 @@ def owning_of(tables: Tables, nodes: List[Json]) -> Flow.Owning
     end
   end
 
-  # The records with a CC_OWNS field that is not in a union, by the id of their declaration, with all their fields in
-  # the order of the items of an initializer, and the record that the type of each local variable, initializer and
-  # `sizeof` of a function body names.
+  # The structs with a CC_OWNS field that is not in a union, or with a field of such a struct (`struct outer { struct
+  # pair inner; }`), by the id of their declaration, with all their fields in the order of the items of an
+  # initializer, and the record that the type of each local variable, field, initializer and `sizeof` of a type names.
   all_records = records_of(nodes.concat(inner))
-  records: Map[String, Flow.OwnedRecord] = {}
-  for id in all_records.keys
-    record = all_records[id]
-    if record.field_ids.any? do |field| fields.include?(field) and not unions.include?(field) end
-      records = records.put(id, Flow.OwnedRecord(ids: record.field_ids, names: record.fields))
+  found = typed_of(nodes, bodies, all_records)
+  owning = Set.new(
+    all_records.keys.select do |id|
+      all_records[id].field_ids.any? do |field| fields.include?(field) and not unions.include?(field) end
+    end,
+  )
+
+  grew = true
+  while grew
+    grew = false
+    for id in all_records.keys
+      record = all_records[id]
+      if (
+        not owning.include?(id) and
+        not record.union and
+        record.field_ids.any? do |f| owning.include?(found.get(f, "")) end
+      )
+        owning = owning.add(id)
+        grew = true
+      end
     end
   end
 
+  records: Map[String, Flow.OwnedRecord] = {}
+  for id in owning.to_a
+    record = all_records[id]
+    nested = record.field_ids.map do |f| found.get(f, "") end.map do |r| owning_or_none(owning, r) end
+    records = records.put(id, Flow.OwnedRecord(ids: record.field_ids, names: record.fields, nested: nested))
+  end
+
   typed: Map[String, String] = {}
-  found = typed_of(nodes, bodies, all_records)
   for id in found.keys
     if records.key?(found[id])
       typed = typed.put(id, found[id])
@@ -990,12 +1012,22 @@ def records_of(nodes: List[Json]) -> Map[String, Record]
           fields: fields.map do |f| Ast.text(f, "name") end,
           types: fields.map do |f| Ast.text(JSON.get(f, "type").unwrap_or(JSON.from("")), "qualType") end,
           desugared: fields.map do |f| Ast.text(JSON.get(f, "type").unwrap_or(JSON.from("")), "desugaredQualType") end,
+          union: Ast.text(node, "tagUsed") == "union",
         ),
       )
     end
   end
 
   return records
+end
+
+# `id` when it is one of the records in `owning`, else "".
+def owning_or_none(owning: Set[String], id: String) -> String
+  if owning.include?(id)
+    return id
+  end
+
+  return ""
 end
 
 # The records at the top level and those declared in them, each with its name (see Nested). The fields of
@@ -1067,6 +1099,10 @@ def typed_of(nodes: List[Json], bodies: List[Json], records: Map[String, Record]
   end
 
   t = Typing(tags: [tags], typedefs: [typedefs], members: members, records: records, unfit: Set.new([]))
+  for nested in record_decls(nodes, "")
+    t = typed_fields(t, nested.node)
+  end
+
   for body in bodies
     t = typed_in(t, body, "")
   end
@@ -1141,6 +1177,10 @@ def typed_in(t: Typing, node: Json, given: String) -> Typing
         case Ast.kind(child)
           "RecordDecl" ->
             walked = declared_tags(walked, child)
+            for nested in record_decls([child], "")
+              walked = typed_fields(walked, nested.node)
+            end
+
             if Ast.text(child, "name") == ""
               unnamed = Ast.text(child, "id")
             end
@@ -1201,6 +1241,21 @@ def typed_in(t: Typing, node: Json, given: String) -> Typing
       return typed_children(walked, node)
     _ -> return typed_children(t, node)
   end
+end
+
+# `t` with the record of each field of a record declaration that is a struct or a union by value (`struct pair
+# inner;`, or an unnamed member), as C finds its type where the field is declared.
+def typed_fields(t: Typing, node: Json) -> Typing
+  found = t.found
+  fields = Ast.children(node).select do |child| Ast.kind(child) == "FieldDecl" end
+  for field in fields
+    id = record_named(t, JSON.get(field, "type").unwrap_or(JSON.from("")), t.members.get(Ast.text(field, "id"), ""))
+    if id != ""
+      found = found.put(Ast.text(field, "id"), id)
+    end
+  end
+
+  return t.with(found: found)
 end
 
 def typed_children(t: Typing, node: Json) -> Typing
