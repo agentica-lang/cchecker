@@ -14,6 +14,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`free_and_null(&p.left)`, `take(&p.left)`), is followed too; the cleanup function, `pair_free(&p)` at a `CC_FREES`
   parameter, `memset(&p, 0, sizeof p)` and `p = (struct pair){...}` free or clear its fields. A field freed twice, or
   one that still owns at a clear, is a finding. Run `--update-baseline` once after upgrading.
+- **Breaking:** the ownership rules find the struct of a local variable, an initializer and a compound literal by its
+  declaration, as C finds a tag or a typedef, not by its name: a struct declared in a function body, an unnamed one and
+  one that shadows another of the same name are followed, and an initializer of a union or of an unnamed member hands
+  its pointer on. Run `--update-baseline` once after upgrading.
+- **Breaking:** a `CC_OWNS` field of a local struct set from a local (`p.left = b`, `{ .left = b }`) stands for the
+  local: freeing both is a CC-OWN-DOUBLE-FREE, a local already freed is a CC-OWN-USE-AFTER-FREE, and when the struct
+  escapes the local goes with it (`find(&key); free(name);` is clean).
+- The items of `p = (struct pair){...}` that read a field of `p` (`p.left ? p.left : make(n)`) are read before the
+  store, and a `case` or `default` label inside a block of a `switch` keeps the pointers of that block, as a `goto`
+  into it does.
 
 ## [0.4.0] - 2026-11-09
 

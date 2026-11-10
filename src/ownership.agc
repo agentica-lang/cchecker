@@ -6,7 +6,8 @@
 ## a value that is not null, or a local that got the value of a call that returns owned memory (a function marked
 ## CC_OWNS). `free` and a parameter marked CC_FREES free it; a parameter marked CC_OWNS, a return, and a store in a
 ## CC_OWNS field or global hand it on. A local that is not marked and gets a pointer that owns is an alias of it: it
-## stands for that pointer. A condition that tells that a pointer is null (`if (!p)`) leaves it owning nothing on that
+## stands for that pointer, as does a followed CC_OWNS field of a local struct that gets a local (`p.left = b`); an
+## alias of a pointer already freed or handed on is a use after free. A condition that tells that a pointer is null (`if (!p)`) leaves it owning nothing on that
 ## side, and a pointer lent to a call (`fill(&p)`) owns what the call left in it, which the rules do not know. A
 ## CC_OWNS_OUT parameter hands an owned pointer out to the caller (`*out = p`), and the pointer whose address a call
 ## passes there owns what the call left in it once the path reads it. A store into an item of a pointer that owns an
@@ -271,8 +272,15 @@ def stepped(walker: Walker, event: Event, item: Item) -> Outcome
 
       return went(item.with(state: state))
     Event.Escapes(names) ->
+      # A field that stands for a local (`p.left = b`) takes it along: the pointer is whoever got the struct's, and
+      # the local owns nothing more.
       state = item.state
       for name in names
+        case state.aliases.get(name)
+          some(root) if not names.include?(root) -> state = state.with(owns: state.owns.delete(root))
+          _ -> state = state
+        end
+
         state = state.with(owns: state.owns.put(name, ESCAPED), aliases: state.aliases.delete(name))
       end
 
@@ -568,8 +576,12 @@ def after_assign(body: Body, item: Item, assign: Assign) -> Outcome
 
     "alias" ->
       source = owner(state, assign.from)
-      if source != assign.name
-        state = state.with(aliases: state.aliases.put(assign.name, source))
+      case state.owns.get(source)
+        some(from) if from == FREED or from == MOVED -> breaches = breaches.push(used_after(body, item, source, step))
+        _ ->
+          if source != assign.name
+            state = state.with(aliases: state.aliases.put(assign.name, source))
+          end
       end
 
     _ -> state = state

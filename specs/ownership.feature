@@ -168,6 +168,9 @@ Feature: Ownership on every path
       | old value freed       | void f(CC_FREES char **p) { char *old = *p; free(*p); *p = NULL; free(old); } |
       | goto into a block     | void f(void) { char *keep = NULL; int once = 0; { CC_OWNS char *t = make(1); keep = t; again: free(t); } keep = NULL; if (!once) { once = 1; goto again; } } |
       | two locals of the old value | void f(CC_FREES char **p, char *v) { char *a = *p; char *c = *p; *p = v; free(a); free(c); } |
+      | a field that stands for a local | void f(int n) { struct s { CC_OWNS char *a; } p = {0}; CC_OWNS char *b = make(n); p.a = b; free(b); free(p.a); } |
+      | two fields of one local | void f(int n) { struct s { CC_OWNS char *a; CC_OWNS char *c; } p = {0}; CC_OWNS char *b = make(n); p.a = b; p.c = b; free(p.a); free(p.c); } |
+      | case label in a block of a switch | void f(int st) { char *keep; for (;;) { switch (st) { case 0: { CC_OWNS char *t = make(1); keep = t; case 1: free(t); } } keep = NULL; } } |
 
   Scenario Outline: A pointer used after a path freed it or handed it on is a finding at the function (<case>)
     Given the C file "own.c" holds:
@@ -195,6 +198,8 @@ Feature: Ownership on every path
       | returned           | 15     | CC_OWNS char *f(int n) { CC_OWNS char *b = malloc(n); free(b); return b; } |
       | stored through *p  | 6      | void f(CC_FREES char **p) { CC_OWNS char *n = malloc(8); free(*p); *p = n; work(n); } |
       | through a pointer  | 6      | void f(CC_FREES char *p) { free(p); *p = 0; }                              |
+      | stored in a field  | 6      | void f(int n) { struct s { CC_OWNS char *a; } p = {0}; CC_OWNS char *b = malloc(n); free(b); p.a = b; free(p.a); } |
+      | in an initializer  | 6      | void f(int n) { CC_OWNS char *b = malloc(n); adopt(b); struct s { CC_OWNS char *a; } p = { b }; free(p.a); } |
 
   Scenario Outline: A pointer handed on through an out-parameter or into an item of an owned array is followed (<case>)
     Given the C file "out.c" holds:
