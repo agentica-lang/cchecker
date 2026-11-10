@@ -19,8 +19,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   one that shadows another of the same name are followed, and an initializer of a union or of an unnamed member hands
   its pointer on. Run `--update-baseline` once after upgrading.
 - **Breaking:** a `CC_OWNS` field of a local struct set from a local (`p.left = b`, `{ .left = b }`) stands for the
-  local: freeing both is a CC-OWN-DOUBLE-FREE, a local already freed is a CC-OWN-USE-AFTER-FREE, and when the struct
-  escapes the local goes with it (`find(&key); free(name);` is clean).
+  local: freeing both is a CC-OWN-DOUBLE-FREE, and when the struct escapes the local is lent with it
+  (`find(&key); free(name);` is clean). A field or a local that gets a pointer already freed or handed on
+  (`free(b); char *c = b;`) is a CC-OWN-USE-AFTER-FREE, and a call that clears only an alias (`zap(&c)`,
+  `zap(&p.left)`) frees the pointer it stands for. Run `--update-baseline` once after upgrading.
 - The items of `p = (struct pair){...}` that read a field of `p` (`p.left ? p.left : make(n)`) are read before the
   store, and a `case` or `default` label inside a block of a `switch` keeps the pointers of that block, as a `goto`
   into it does.

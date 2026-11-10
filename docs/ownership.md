@@ -112,7 +112,10 @@ function pointer, or out through a parameter without `CC_OWNS_OUT`
 variables of the same name in one function (a local that shadows another, a
 parameter or a global, or the same name in two blocks) are two variables: each
 pointer has its own state, and a condition on one is not a condition on the
-other. A local that stands for a pointer holds the old value when the pointer
+other. A local that gets a pointer already freed or handed on (`free(b); char
+*c = b;`) is a CC-OWN-USE-AFTER-FREE there, and a call that clears only the
+local (`zap(&c)` at a `CC_FREES` parameter) frees the pointer it stands for. A
+local that stands for a pointer holds the old value when the pointer
 gets a new one (`old = p; p = make();`, `take(&p)` at a `CC_OWNS_OUT`
 parameter, `old = *p; *p = v;` through a `CC_FREES` parameter), except after
 `p = realloc(p, n)`, which is trusted to work. `return p` hands `p` on even when
@@ -146,15 +149,18 @@ escape; a `CC_OWNS` field in an operand of `asm` (`"r"(p.left)`) is only read,
 so the field still owns after it.
 
 The struct of a variable is the one its type names where the variable is
-declared, as C finds a tag or a typedef: one of a block that shadows another of
-the same name is its own struct, and so is an unnamed one. A field set from a
+declared, as C finds a tag or a typedef in the blocks around it (a `for`, `if`,
+`while` or `switch` is a block too): one of a block that shadows another of the
+same name is its own struct, and so is an unnamed one. A field set from a
 local (`p.left = b`, `struct pair p = { .left = b }`) stands for that local, as
 an unmarked local does: a free of either frees the one pointer (a free of both is
 a CC-OWN-DOUBLE-FREE), a leak names the local, and a local already freed or
-handed on is a CC-OWN-USE-AFTER-FREE there. When the struct escapes, the local
-goes with the field and owns nothing more, so a lookup key on the stack
-(`struct entry key = { .name = name }; find(&key); free(name);`) is clean, and
-so is `keep(&p);` with no free of `b`.
+handed on is a CC-OWN-USE-AFTER-FREE there. A clear of the field alone
+(`zap(&p.left)`, `pair_free(&p)`) frees the local. When the struct escapes, the
+local is lent with it, as by `lend(&b)`: whoever got the struct may have freed
+or kept it, so a lookup key on the stack (`struct entry key = { .name = name };
+find(&key); free(name);`) is clean, and so is `keep(&p);` with no free of `b`,
+while a second free of `b` or a use after its free is found.
 
 Some uses of the whole struct are no escape. A `cleanup` function on the struct
 frees every field at the end of its block: its body is not read, so a cleanup
@@ -188,7 +194,8 @@ lent it.
 
 A struct whose field that does not own has its address taken (`&p.n`, which may
 reach the whole struct) is not followed, nor a static one, a union, or one whose
-struct is not known (an unnamed struct through `__typeof__`) or does not fit how
+struct is not known (an unnamed struct through `__typeof__`, a tag defined
+inside a `sizeof` or a cast in a function body) or does not fit how
 the function uses it (a field it reads or an item of its initializer that the
 struct does not have: clang's AST has no node for a tag declared in a parameter
 list, `void f(struct pair { int k; } x)`, so its name finds the struct of the

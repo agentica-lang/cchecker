@@ -2,16 +2,16 @@
 ## returns or jumps out (at a call marked CC_MAY_JUMP or CC_JUMPS), it is not freed twice, and it is not used after it
 ## was freed or handed on.
 ##
-## A pointer owns when it is a parameter marked CC_OWNS or CC_FREES (from the entry), a local marked CC_OWNS that got
-## a value that is not null, or a local that got the value of a call that returns owned memory (a function marked
+## A pointer owns when it is a parameter marked CC_OWNS or CC_FREES (from the entry), a local marked CC_OWNS that got a
+## value that is not null, or a local that got the value of a call that returns owned memory (a function marked
 ## CC_OWNS). `free` and a parameter marked CC_FREES free it; a parameter marked CC_OWNS, a return, and a store in a
 ## CC_OWNS field or global hand it on. A local that is not marked and gets a pointer that owns is an alias of it: it
 ## stands for that pointer, as does a followed CC_OWNS field of a local struct that gets a local (`p.left = b`); an
-## alias of a pointer already freed or handed on is a use after free. A condition that tells that a pointer is null (`if (!p)`) leaves it owning nothing on that
-## side, and a pointer lent to a call (`fill(&p)`) owns what the call left in it, which the rules do not know. A
-## CC_OWNS_OUT parameter hands an owned pointer out to the caller (`*out = p`), and the pointer whose address a call
-## passes there owns what the call left in it once the path reads it. A store into an item of a pointer that owns an
-## array (`argv[i] = p`) hands the pointer on to the array.
+## alias of a pointer already freed or handed on is a use after free. A condition that tells that a pointer is null
+## (`if (!p)`) leaves it owning nothing on that side, and a pointer lent to a call (`fill(&p)`) owns what the call left
+## in it, which the rules do not know. A CC_OWNS_OUT parameter hands an owned pointer out to the caller (`*out = p`),
+## and the pointer whose address a call passes there owns what the call left in it once the path reads it. A store into
+## an item of a pointer that owns an array (`argv[i] = p`) hands the pointer on to the array.
 ##
 ## The walk follows the graph of `Flow` in breadth, as the lock rules do, with the state of each pointer on the path
 ## and the conditions that the function tests twice.
@@ -272,12 +272,13 @@ def stepped(walker: Walker, event: Event, item: Item) -> Outcome
 
       return went(item.with(state: state))
     Event.Escapes(names) ->
-      # A field that stands for a local (`p.left = b`) takes it along: the pointer is whoever got the struct's, and
-      # the local owns nothing more.
+      # A field that stands for a local (`p.left = b`) lends the local with the struct: whoever got the struct may
+      # have freed or kept it, as after `lend(&b)`.
       state = item.state
       for name in names
         case state.aliases.get(name)
-          some(root) if not names.include?(root) -> state = state.with(owns: state.owns.delete(root))
+          some(root) if not names.include?(root) and state.owns.key?(root) ->
+            state = state.with(owns: state.owns.put(root, UNKNOWN))
           _ -> state = state
         end
 
@@ -399,7 +400,12 @@ def after_call(body: Body, item: Item, site: Site) -> Outcome
           Breach(code: DOUBLE_FREE, name: root, message: message, path: ended_path(current, root, step)),
         )
       some(state) if state == CLEARED or state == ESCAPED -> next
-      some(_) if site.clears.include?(name) -> current = ended(current, root, CLEARED, step)
+      some(_) if site.clears.include?(name) and root == name -> current = ended(current, root, CLEARED, step)
+      some(_) if site.clears.include?(name) ->
+        # The call set only the alias to null (`zap(&p.left)`, `pair_free(&p)`): the pointer it stood for is freed.
+        freed = ended(current, root, FREED, step)
+        state = freed.state.with(owns: freed.state.owns.put(name, CLEARED), aliases: freed.state.aliases.delete(name))
+        current = freed.with(state: state)
       some(_) -> current = ended(current, root, FREED, step)
       none -> next
     end

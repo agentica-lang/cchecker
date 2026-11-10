@@ -48,6 +48,9 @@ TYPE_QUALIFIERS = Set.new([
   "_Null_unspecified", "struct", "union",
 ])
 
+# The statements that open a scope of tags and typedef names: a block, and the selection and iteration statements.
+SCOPES = Set.new(["CompoundStmt", "ForStmt", "WhileStmt", "DoStmt", "IfStmt", "SwitchStmt"])
+
 # The letters and digits of a C identifier, with `_`.
 IDENTIFIER_CHARS = Set.new("abcdefghijklmnopqrstuvwxyz0123456789".split(""))
 
@@ -1099,14 +1102,18 @@ end
 
 # The walk of `typed_of` through a node. `given` is the record that the node around it says an unnamed type is.
 def typed_in(t: Typing, node: Json, given: String) -> Typing
-  case Ast.kind(node)
-    "CompoundStmt" ->
-      inner = t.with(tags: t.tags.push({}), typedefs: t.typedefs.push({}))
-      for child in Ast.children(node)
-        inner = typed_in(inner, child, "")
-      end
+  if SCOPES.include?(Ast.kind(node))
+    # A block, and a selection or iteration statement, which C makes a block too: a tag declared in the clauses of a
+    # `for` is not seen after it.
+    inner = t.with(tags: t.tags.push({}), typedefs: t.typedefs.push({}))
+    for child in Ast.children(node)
+      inner = typed_in(inner, child, "")
+    end
 
-      return inner.with(tags: t.tags, typedefs: t.typedefs)
+    return inner.with(tags: t.tags, typedefs: t.typedefs)
+  end
+
+  case Ast.kind(node)
     "DeclStmt" ->
       walked = t
       unnamed = ""
