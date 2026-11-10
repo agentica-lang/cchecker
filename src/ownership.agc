@@ -542,7 +542,7 @@ def after_assign(body: Body, item: Item, assign: Assign) -> Outcome
     state = state.with(kept: state.kept.delete(assign.name))
   end
 
-  escaped = state.owns.get(assign.name).map do |own| own == ESCAPED end.unwrap_or(false)
+  was_escaped = state.owns.get(assign.name).map do |own| own == ESCAPED end.unwrap_or(false)
   state = state.with(owns: state.owns.delete(assign.name))
   case assign.value
     "owned" -> state = state.with(owns: state.owns.put(assign.name, OWNED))
@@ -565,7 +565,7 @@ def after_assign(body: Body, item: Item, assign: Assign) -> Outcome
   end
 
   # A field of a struct that escaped hands on what it gets: the struct is someone else's now.
-  if escaped
+  if was_escaped
     state = state.with(owns: state.owns.put(assign.name, ESCAPED), aliases: state.aliases.delete(assign.name))
   end
 

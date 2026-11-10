@@ -428,6 +428,31 @@ def owning_of(tables: Tables, nodes: List[Json]) -> Flow.Owning
     end
   end
 
+  # The type names of two definitions: a tag of a function body that shadows another tag, or a typedef named like
+  # the tag of another struct. `records` holds one record per name, which may be the wrong one for such a type.
+  defined: Map[String, String] = {}
+  ambiguous: Set[String] = Set.new([])
+  for nested in record_decls(nodes, "").concat(record_decls(inner, ""))
+    name = Ast.text(nested.node, "name")
+    id = Ast.text(nested.node, "id")
+    if name != "" and has_fields?(nested.node)
+      if defined.get(name).map do |other| other != id end.unwrap_or(false)
+        ambiguous = ambiguous.add(name)
+      end
+
+      defined = defined.put(name, id)
+    end
+  end
+
+  typedefs = nodes.concat(inner).select do |n| Ast.kind(n) == "TypedefDecl" end
+  for node in typedefs
+    name = Ast.text(node, "name")
+    id = record_id_of(node)
+    if tables.record_ids.key?(id) and defined.get(name).map do |other| other != id end.unwrap_or(false)
+      ambiguous = ambiguous.add(name)
+    end
+  end
+
   # A global by the ids of all its declarations, so that the mark of one holds in the others and a local of the same
   # name is not it.
   variables = nodes.select do |n| Ast.kind(n) == "VarDecl" end
@@ -442,6 +467,7 @@ def owning_of(tables: Tables, nodes: List[Json]) -> Flow.Owning
     globals: Set.new(globals),
     unions: unions,
     records: records,
+    ambiguous: ambiguous,
   )
 end
 
