@@ -139,8 +139,9 @@ export struct Mark
   failed: Bool = false
 end
 
-## What happens at a node. `Writes` names the variables a node writes, by key (see `variable_key`), and `Closes` the
-## pointers of the blocks that a path leaves (`Closing`).
+## What happens at a node. `Writes` names the variables a node writes, by key (see `variable_key`), `Escapes` the
+## followed CC_OWNS fields of a local struct that escapes there (`&p`, a copy, a by-value argument, `return p`), and
+## `Closes` the pointers of the blocks that a path leaves (`Closing`).
 export enum Event
   Join
   Call(Site)
@@ -152,6 +153,7 @@ export enum Event
   Assigns(Assign)
   Gives(Give)
   Lends(List[String])
+  Escapes(List[String])
   Closes(Closing)
 end
 
@@ -971,11 +973,11 @@ def keys_of(node: Json, all: List[Json]) -> Map[String, String]
   return keys
 end
 
-# The CC_OWNS fields of the local structs that a function reads and writes only field by field (`p.left`): the key
-# of each is the key of the struct (`keys`), a dot and the name of the field. A struct that the function
-# copies, passes,
-# returns or names in any other way, whose address or the address of a field it takes, one with a cleanup function, a
-# static one and a union are not followed: a store into their CC_OWNS fields hands the pointer on.
+# The CC_OWNS fields of the local structs of a function (`p.left`): the key of each is the key of the struct (`keys`),
+# a dot and the name of the field. The fields are followed up to where the struct escapes (`used`): its address, a
+# copy, a by-value argument, a return, or a new value of the whole struct. A struct whose field has its address taken
+# (`&p.left`), one with a cleanup function, a static one and a union are not followed: a store into their CC_OWNS
+# fields hands the pointer on.
 def owned_fields(ctx: Context, all: List[Json], keys: Map[String, String]) -> Followed
   found = Followed(members: {}, of: {}, items: {})
   if ctx.owning.fields.empty?
@@ -983,8 +985,6 @@ def owned_fields(ctx: Context, all: List[Json], keys: Map[String, String]) -> Fo
   end
 
   structs: Map[String, Json] = {}
-  refs: Map[String, Int] = {}
-  members: Map[String, Int] = {}
   escaped: Set[String] = Set.new([])
   for n in all
     kind = Ast.kind(n)
@@ -997,19 +997,12 @@ def owned_fields(ctx: Context, all: List[Json], keys: Map[String, String]) -> Fo
       if Ast.children(n).any? do |child| Ast.kind(child) == "CleanupAttr" end
         escaped = escaped.add(Ast.text(n, "id"))
       end
-    elsif kind == "DeclRefExpr"
-      refs = refs.put(Ast.referenced_id(n), refs.get(Ast.referenced_id(n), 0) + 1)
-    elsif kind == "MemberExpr"
-      base = struct_of(n)
-      members = members.put(base, members.get(base, 0) + 1)
     elsif kind == "UnaryOperator" and Ast.text(n, "opcode") == "&"
       escaped = escaped.add(struct_of(see_through(Ast.children(n).first)))
     end
   end
 
-  followed = Set.new(
-    structs.keys.select do |id| not escaped.include?(id) and refs.get(id, 0) == members.get(id, 0) end,
-  )
+  followed = Set.new(structs.keys.select do |id| not escaped.include?(id) end)
 
   # Each CC_OWNS field of the record of a followed struct, with its item, so an initializer gives it its value.
   for id in followed.to_a.sort
@@ -1743,6 +1736,11 @@ def expression(b: Builder, node: Json, preds: List[Int]) -> Built
         return used(b, node, preds)
       end
 
+      # `p.n` of a local struct reads a field, which is no escape of the struct.
+      if struct_of(node) != ""
+        return Built(b: b, exits: preds)
+      end
+
       return in_order(b, Ast.children(node), preds)
     "BinaryOperator" ->
       opcode = Ast.text(node, "opcode")
@@ -1891,7 +1889,9 @@ def assignment(b: Builder, node: Json, preds: List[Int]) -> Built
     end
 
     if name != ""
-      value = expression(b, parts[1], preds)
+      # A new value of a whole local struct: what its followed fields held is not known after it.
+      value = escaped(b, parts[0], preds)
+      value = expression(value.b, parts[1], value.exits)
       return add(value.b, Event.Writes([name]), value.exits)
     end
   end
@@ -2045,15 +2045,31 @@ def assigned(b: Builder, name: String, value: Json) -> Assign
   return start.with(shown: text_of(b, bare, false))
 end
 
-# A read of a variable: an event when it is a pointer that owns, or may stand for one.
+# A read of a variable: an event when it is a pointer that owns, or may stand for one, or a local struct whose CC_OWNS
+# fields the rules follow, which escapes there (a field of it is no read of the struct: see `expression`).
 def used(b: Builder, node: Json, preds: List[Int]) -> Built
   name = owner_named(b, node)
   if name == ""
-    return Built(b: b, exits: preds)
+    return escaped(b, node, preds)
   end
 
   place = Ast.start_of(node)
   return add(b, Event.Uses(Use(name: name, line: place.line, column: place.column)), preds)
+end
+
+# The followed CC_OWNS fields of a local struct that an expression names whole, which escape there; nothing for any
+# other expression.
+def escaped(b: Builder, node: Json, preds: List[Int]) -> Built
+  if Ast.kind(see_through(node)) != "DeclRefExpr"
+    return Built(b: b, exits: preds)
+  end
+
+  fields = b.owners.places.fields.get(variable_key(b.owners.places.keys, node), [])
+  if fields.empty?
+    return Built(b: b, exits: preds)
+  end
+
+  return add(b, Event.Escapes(fields), preds)
 end
 
 # The pointer that owns, or may stand for one, that an expression is, through casts and parentheses; "".

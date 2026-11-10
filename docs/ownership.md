@@ -126,14 +126,20 @@ condition says it is not null it is freed. The rules assume that a helper that
 frees through `&p` sets the pointer to null; one that only frees leaves a later
 double free or use unreported.
 
-The one struct the rules follow is a local one that the function reads and
-writes only field by field: its `CC_OWNS` fields are pointers of their own.
-After `struct pair p = {0}; p.left = make();` or `struct pair p = { .left =
-make() };`, `p.left` owns and is freed or handed on on every path, as a
-`CC_OWNS` local, and the findings name it `p.left`. A struct whose address is
-taken (`&p`, `&p.left`), that is copied, passed, returned or named in any other
-way, or that has a `cleanup` function, is not followed, nor a static one or a
-union: a store into their `CC_OWNS` fields hands the pointer on. A known gap: an
+The one struct the rules follow is a local one: its `CC_OWNS` fields are
+pointers of their own. After `struct pair p = {0}; p.left = make();` or
+`struct pair p = { .left = make() };`, `p.left` owns and is freed or handed on
+on every path, as a `CC_OWNS` local, and the findings name it `p.left`. The
+fields are followed up to where the struct escapes: its address passed or
+stored (`keep(&p)`), a copy (`q = p`, `struct pair q = p`), a by-value argument
+(`take(p)`), `return p`, or a new value of the whole struct (`p = q`). There
+every field is handed on, so a leak before the escape is found and the escape
+is clean. After it the fields belong to whoever got the struct: a free of one
+is no finding, and a store into one hands the pointer on. `sizeof p` and a field
+that does not own (`p.n`) are no escape. A struct whose field has its address
+taken (`&p.left`), or that has a `cleanup` function, is not followed, nor a
+static one or a union: a store into their `CC_OWNS` fields hands the pointer
+on. A known gap: an
 initializer of a union (`union u v = { .p = b };`) does not hand the pointer on
 yet, which gives a false leak
 ([#111](https://github.com/agentica-lang/cchecker/issues/111)).

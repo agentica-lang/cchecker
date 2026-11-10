@@ -242,6 +242,30 @@ Feature: Time and memory on large generated inputs
       "incomplete_functions":[]
       """
 
+  Scenario: Local structs that escape in 24 blocks of a loop stay in their bounds
+    A struct escapes on one side of each test and frees its field on the other: at the end of its block both leave
+    the state, so the blocks do not multiply the states.
+
+    Given the C file "escapes.c" holds, with ITEMS as 24 times " { struct pair p = {0}; p.left = make(); if (pick()) keep(&p); else free(p.left); }":
+      """
+      #include <stdlib.h>
+      #include "cchecker.h"
+      struct pair { CC_OWNS char *left; CC_OWNS char *right; };
+      CC_OWNS char *make(void);
+      int pick(void);
+      void keep(struct pair *p);
+      void many(int n) {
+        for (int i = 0; i < n; i++) {ITEMS
+        }
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/escapes.c -- -I../include" in at most 1500 MiB and 20 seconds
+    Then the exit code is 0
+    And the output includes:
+      """
+      "incomplete_functions":[]
+      """
+
   Scenario: A lock held in a function with more paths than the walk follows is not inferred short
     Given the file "compile_commands.json" holds:
       """
