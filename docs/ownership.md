@@ -130,25 +130,61 @@ double free or use unreported.
 The one struct the rules follow is a local one: its `CC_OWNS` fields are
 pointers of their own. After `struct pair p = {0}; p.left = make();` or
 `struct pair p = { .left = make() };`, `p.left` owns and is freed or handed on
-on every path, as a `CC_OWNS` local, and the findings name it `p.left`. The fields are
-followed up to where the struct escapes, which is any read of the whole struct:
-its address passed or stored (`keep(&p)`, `init(&p)`, `memset(&p, 0, sizeof p)`,
+on every path, as a `CC_OWNS` local, and the findings name it `p.left`. The
+fields are followed up to where the struct escapes, which is any read of the
+whole struct: its address passed or stored (`keep(&p)`, `init(&p)`,
 `memcmp(&p, &q, sizeof p)`), a copy (`q = p`, `struct pair q = p`, a snapshot),
-a by-value argument (`take(p)`), `return p`, `(void)p`, an operand of `asm`, or
-a new value of the whole struct (`p = q`). There every field is handed on, so a
-leak before the escape is found and the escape is clean; a new value of the
-whole struct first loses what a field still owns (a leak, as for a `CC_OWNS`
-pointer). After the escape the fields belong to whoever got the struct, and the
-rules check nothing more about them in the function: a double free, a use after
-free, or a leak of a pointer stored into a field afterwards is not found.
-`sizeof p` and a field that does not own (`p.n`) are no escape. A struct whose
-field has its address taken (`&p.left`), or that has a `cleanup` function, is
-not followed, nor a static one, a union, or one whose type name stands for two
-structs (a tag in a function body that shadows another, a typedef named like the
-tag of another struct): a store into their `CC_OWNS` fields hands the pointer
-on. A known gap: an initializer of a union (`union u v = { .p = b };`) does not
-hand the pointer on yet, which gives a false leak
-([#111](https://github.com/agentica-lang/cchecker/issues/111)).
+a by-value argument (`take(p)`), `return p`, `(void)p`, an operand of `asm` that
+names the struct, or a new value of the whole struct (`p = q`). There every
+field is handed on, so a leak before the escape is found and the escape is
+clean; a new value of the whole struct first loses what a field still owns (a
+leak, as for a `CC_OWNS` pointer). After the escape the fields belong to whoever
+got the struct, and the rules check nothing more about them in the function: a
+double free, a use after free, or a leak of a pointer stored into a field
+afterwards is not found. `sizeof p` and a field that does not own (`p.n`) are no
+escape; a `CC_OWNS` field in an operand of `asm` (`"r"(p.left)`) is only read,
+so the field still owns after it.
+
+Some uses of the whole struct are no escape. A `cleanup` function on the struct
+frees every field at the end of its block: its body is not read, so a cleanup
+function that frees only some fields can give a false CC-OWN-DOUBLE-FREE after
+an explicit free of another one, and the leak of the fields it skips is not
+found. A call that passes `&p` to a `CC_FREES` parameter (`pair_free(&p)`) frees
+every field and, as `free_and_null(&p)` of a pointer, is taken to set them to
+null: a following `free(p.left)`, a use of `p.left` or a second `pair_free(&p)`
+is not reported, which a helper that only frees would make a double free or a
+use after free. This caller rule is for a helper that the rules do not read,
+defined in another unit: in its own function a `CC_FREES` parameter that points
+to a struct is still one pointer to free, so a helper that frees only the fields
+(`pair_done`) is checked as one that leaks the struct; leave such a helper
+unmarked and give it as a `cleanup` function, or call it on a struct that then
+escapes. `memset(&p, 0, sizeof p)` (the fill `0` or `'\0'`, the size `sizeof p`,
+`sizeof` of the type the variable is declared with, as `sizeof(struct pair)` for
+`struct pair p` and `sizeof(pair_t)` for `pair_t p`, or for `struct pair p`
+`sizeof` of a typedef of `struct pair`; any other size, such as
+`sizeof(struct pair)` for `pair_t p`, is an escape) and a compound literal
+(`p = (struct pair){0}`, `p = (struct pair){ .left = q }`) clear the struct:
+each field gets null or its item, also after an escape, so the struct is
+followed again, and a field that still owns leaks there. An item that is a field
+of the same struct, also through a cast or parentheses, is read before the
+store, as C does, so `p = (struct pair){ .left = p.right, .right = p.left }`
+swaps the fields; one that reads a field in any other way
+(`p.left ? p.left : q`, `steal(p.left)`) is still read field by field, which can
+give a false leak
+([#111](https://github.com/agentica-lang/cchecker/issues/111)). `&p.left` of a
+`CC_OWNS` field is the address of that pointer, as `&b` of a local:
+`free_and_null(&p.left)` at a `CC_FREES` parameter frees and clears it,
+`take(&p.left)` at a `CC_OWNS_OUT` parameter fills it, and any other call is
+lent it.
+
+A struct whose field that does not own has its address taken (`&p.n`, which may
+reach the whole struct) is not followed, nor a static one, a union, or one whose
+type name stands for two structs (a tag in a function body that shadows another,
+a typedef at the top level or in a body that names another record than the tag
+or an earlier typedef of the same name): a store into their `CC_OWNS` fields
+hands the pointer on. A known gap: an initializer of a union
+(`union u v = { .p = b };`) does not hand the pointer on yet, which gives a
+false leak ([#111](https://github.com/agentica-lang/cchecker/issues/111)).
 
 A filled pointer that the path never reads is not reported (`take(&b); return
 0;`): telling it from what a call that failed left would need a mark that says

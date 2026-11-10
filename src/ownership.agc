@@ -39,7 +39,8 @@ export USE_AFTER_FREE = "CC-OWN-USE-AFTER-FREE"
 # exit leaks it, nor a new value: a call that failed may have left nothing there. A CC_OWNS field of a local struct is
 # `escaped` after the struct escaped (`&p`, a copy, a by-value argument, a return): what it holds belongs to whoever
 # got the struct, so it is never a leak, and it stays so on the path: a free of it is no finding, and a pointer stored
-# in it is handed on, as a store into the field of a struct that is not followed.
+# in it is handed on, as a store into the field of a struct that is not followed. A clear of the whole struct
+# (`memset(&p, 0, sizeof p)`, `p = (struct pair){0}`) makes the field the function's again.
 OWNED = "owned"
 FREED = "freed"
 MOVED = "moved"
@@ -273,6 +274,16 @@ def stepped(walker: Walker, event: Event, item: Item) -> Outcome
       state = item.state
       for name in names
         state = state.with(owns: state.owns.put(name, ESCAPED), aliases: state.aliases.delete(name))
+      end
+
+      return went(item.with(state: state))
+    Event.Resets(names) ->
+      # A clear of the whole struct: the fields are its own again, null until the clear's own values come.
+      state = item.state
+      for name in names
+        if state.owns.get(name).map do |own| own == ESCAPED end.unwrap_or(false)
+          state = state.with(owns: state.owns.delete(name))
+        end
       end
 
       return went(item.with(state: state))

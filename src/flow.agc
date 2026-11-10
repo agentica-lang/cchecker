@@ -141,7 +141,8 @@ end
 
 ## What happens at a node. `Writes` names the variables a node writes, by key (see `variable_key`), `Escapes` the
 ## followed CC_OWNS fields of a local struct that escapes there (`&p`, a copy, a by-value argument, `return p`,
-## `p = q`), and `Closes` the pointers of the blocks that a path leaves (`Closing`).
+## `p = q`), `Resets` those that a clear of the whole struct follows again (`memset(&p, 0, sizeof p)`,
+## `p = (struct pair){0}`), and `Closes` the pointers of the blocks that a path leaves (`Closing`).
 export enum Event
   Join
   Call(Site)
@@ -154,6 +155,7 @@ export enum Event
   Gives(Give)
   Lends(List[String])
   Escapes(List[String])
+  Resets(List[String])
   Closes(Closing)
 end
 
@@ -211,8 +213,9 @@ end
 ## those that hand an owned pointer out to the caller (`outs`, CC_OWNS_OUT), and the fields (by id) and the globals
 ## (by the ids of their declarations) that own what is stored in them. `unions` are those of the fields that belong
 ## to a union, and `records` the structs with a CC_OWNS field, by type name. `ambiguous` are the type names that
-## stand for two records (a tag of a function body that shadows a top-level one, a typedef named like another
-## struct's tag): a local struct of such a type is not followed, as its record may be the wrong one.
+## stand for two records (a tag of a function body that shadows a top-level one, a typedef at the top level or in a
+## body that names another record than the tag or an earlier typedef of its name): a local struct of such a type is
+## not followed, as its record may be the wrong one.
 export struct Owning
   returns: Set[String]
   takes: Map[String, List[Int]]
@@ -978,9 +981,10 @@ end
 
 # The CC_OWNS fields of the local structs of a function (`p.left`): the key of each is the key of the struct (`keys`),
 # a dot and the name of the field. The fields are followed up to where the struct escapes (`used`): its address, a
-# copy, a by-value argument, a return, or a new value of the whole struct. A struct whose field has its address taken
-# (`&p.left`), one with a cleanup function, a static one, a union and one of an ambiguous type name are not followed:
-# a store into their CC_OWNS fields hands the pointer on.
+# copy, a by-value argument, a return, or a new value of the whole struct. `&p.left` of a CC_OWNS field is the
+# address of that pointer. A struct whose other field has its address taken (`&p.n`, which may reach the whole
+# struct), a static one, a union and one of an ambiguous type name are not followed: a store into their CC_OWNS fields
+# hands the pointer on.
 def owned_fields(ctx: Context, all: List[Json], keys: Map[String, String]) -> Followed
   found = Followed(members: {}, of: {}, items: {})
   if ctx.owning.fields.empty?
@@ -995,13 +999,12 @@ def owned_fields(ctx: Context, all: List[Json], keys: Map[String, String]) -> Fo
       if Ast.text(n, "storageClass") == "" and not ctx.owning.ambiguous.include?(record_name(n))
         structs = structs.put(Ast.text(n, "id"), n)
       end
-
-      # A cleanup function gets the address of the struct, which the attribute does not show as a reference.
-      if Ast.children(n).any? do |child| Ast.kind(child) == "CleanupAttr" end
-        unfollowed = unfollowed.add(Ast.text(n, "id"))
-      end
     elsif kind == "UnaryOperator" and Ast.text(n, "opcode") == "&"
-      unfollowed = unfollowed.add(struct_of(see_through(Ast.children(n).first)))
+      member = see_through(Ast.children(n).first)
+      owned = ctx.owning.fields.include?(Ast.text(member, "referencedMemberDecl"))
+      if not owned or ctx.owning.unions.include?(Ast.text(member, "referencedMemberDecl"))
+        unfollowed = unfollowed.add(struct_of(member))
+      end
     end
   end
 
@@ -1698,7 +1701,9 @@ def declaration(b: Builder, node: Json, preds: List[Int]) -> Built
     address: true,
   )
 
+  # A cleanup function of a followed struct frees each of its CC_OWNS fields at the end of the block.
   site = site_of(written.b, function, [var], place, false)
+  site = site.with(frees: site.frees.concat(written.b.owners.places.fields.get(key, [])))
   scope = written.b.scopes.last
   scopes = written.b.scopes.set(written.b.scopes.size - 1, scope.with(cleanups: scope.cleanups.push(site)))
   return Built(b: written.b.with(scopes: scopes), exits: written.exits)
@@ -1706,7 +1711,7 @@ end
 
 # The initializer of a followed struct: each CC_OWNS field (`fields`) gets its item, and null when it has none; the
 # other items are read in order.
-def initializer(b: Builder, fields: List[String], init: Json, preds: List[Int]) -> Built
+def initializer(b: Builder, fields: List[String], init: Json, preds: List[Int], held: Map[Int, String] = {}) -> Built
   items = Ast.children(init)
   at: Map[Int, String] = {}
   for place in fields
@@ -1719,6 +1724,7 @@ def initializer(b: Builder, fields: List[String], init: Json, preds: List[Int]) 
   built = Built(b: b, exits: preds)
   for i in 0...items.size
     case at.get(i)
+      some(place) if held.key?(i) -> built = moved_field(built.b, place, held[i], items[i], built.exits)
       some(place) if Ast.kind(items[i]) != "ImplicitValueInitExpr" ->
         built = owner_assigned(built.b, place, items[i], built.exits)
       some(place) -> built = nulled_field(built.b, place, init, built.exits)
@@ -1733,6 +1739,14 @@ def initializer(b: Builder, fields: List[String], init: Json, preds: List[Int]) 
   end
 
   return built
+end
+
+# A field that takes the value an item of a compound literal held before the store (`held`).
+def moved_field(b: Builder, place: String, temp: String, item: Json, preds: List[Int]) -> Built
+  at = Ast.start_of(item)
+  assign = Assign(name: place, value: "moved", from: temp, shown: plain(temp), line: at.line, column: at.column)
+  written = add(b, Event.Writes([place]), preds)
+  return add(written.b, Event.Assigns(assign), written.exits)
 end
 
 # A CC_OWNS field that an initializer leaves out: it is null.
@@ -1906,8 +1920,11 @@ def assignment(b: Builder, node: Json, preds: List[Int]) -> Built
     end
 
     if name != ""
-      value = expression(b, parts[1], preds)
-      value = struct_assigned(value.b, parts[0], parts[1], value.exits)
+      value = case reset_by_literal(b, parts[0], parts[1], preds)
+        some(reset) -> reset
+        none -> struct_assigned_after(b, parts[0], parts[1], preds)
+      end
+
       return add(value.b, Event.Writes([name]), value.exits)
     end
   end
@@ -2096,6 +2113,129 @@ def struct_assigned(b: Builder, target: Json, value: Json, preds: List[Int]) -> 
   return add(built.b, Event.Escapes(fields), built.exits)
 end
 
+# The value of a variable that is not a pointer that owns, then what it does to a whole local struct (`p = q`).
+def struct_assigned_after(b: Builder, target: Json, value: Json, preds: List[Int]) -> Built
+  read = expression(b, value, preds)
+  return struct_assigned(read.b, target, value, read.exits)
+end
+
+# `p = (struct pair){ ... }` of a followed struct: the fields are followed again, and each gets its item as from an
+# initializer (null when it has none), so one that still owned leaks there; none for any other assignment.
+def reset_by_literal(b: Builder, target: Json, value: Json, preds: List[Int]) -> Optional[Built]
+  fields = followed_struct(b, target)
+  bare = see_through(value)
+  if fields.empty? or Ast.kind(bare) != "CompoundLiteralExpr"
+    return none
+  end
+
+  init = see_through(Ast.children(bare).first)
+  if Ast.kind(init) != "InitListExpr"
+    return none
+  end
+
+  # C evaluates the whole literal before it stores the struct: an item that names a field of the struct (`.left =
+  # p.right`) is moved to a place of its own first, which the field then takes.
+  items = Ast.children(init)
+  built = Built(b: b, exits: preds)
+  held: Map[Int, String] = {}
+  for i in 0...items.size
+    source = owner_named(built.b, items[i])
+    if fields.include?(source)
+      place = Ast.start_of(items[i])
+      temp = "#{source}#{KEY_MARK}9#{i}"
+      assign = Assign(
+        name: temp,
+        value: "moved",
+        from: source,
+        shown: plain(source),
+        line: place.line,
+        column: place.column,
+      )
+
+      built = add(built.b, Event.Assigns(assign), built.exits)
+      held = held.put(i, temp)
+    end
+  end
+
+  reset = add(built.b, Event.Resets(fields), built.exits)
+  stored = initializer(reset.b, fields, init, reset.exits, held)
+  if held.empty?
+    return some(stored)
+  end
+
+  closing = Closing(names: held.values, mark: mark_at(init, "ends"))
+  return some(add(stored.b, Event.Closes(closing), stored.exits))
+end
+
+# Whether a fill byte is zero: `0` or `'\0'`.
+def zero_byte?(node: Json) -> Bool
+  bare = see_through(node)
+  return zero?(bare) or (Ast.kind(bare) == "CharacterLiteral" and Ast.number(bare, "value") == 0)
+end
+
+# Whether the size of a `memset` of `&p` is that of the whole struct: `sizeof p`, `sizeof(struct pair)` or the size of
+# a typedef of it. A smaller size clears some of the fields only, and stays an escape.
+def whole_size?(target: Json, size: Json) -> Bool
+  bare = see_through(size)
+  if Ast.kind(bare) != "UnaryExprOrTypeTraitExpr" or Ast.text(bare, "name") != "sizeof" or not address?(target)
+    return false
+  end
+
+  pointed = see_through(Ast.children(see_through(target)).first)
+  measured = Ast.children(bare)
+  if not measured.empty?
+    inner = see_through(measured.first)
+    return Ast.kind(inner) == "DeclRefExpr" and Ast.referenced_id(inner) == Ast.referenced_id(pointed)
+  end
+
+  type = JSON.get(bare, "argType").unwrap_or(JSON.from(""))
+  name = record_name(pointed)
+  return [Ast.text(type, "qualType"), Ast.text(type, "desugaredQualType")].any? do |text| type_name(text) == name end
+end
+
+# A type as `record_name` reads it: without `struct` and the qualifiers.
+def type_name(text: String) -> String
+  name = text
+  for word in ["const ", "volatile ", "struct "]
+    name = name.replace(word, "")
+  end
+
+  return name.strip
+end
+
+# The followed CC_OWNS fields of the local struct that an expression names whole (`p`), or none.
+def followed_struct(b: Builder, node: Json) -> List[String]
+  if Ast.kind(see_through(node)) != "DeclRefExpr"
+    return []
+  end
+
+  return b.owners.places.fields.get(variable_key(b.owners.places.keys, node), [])
+end
+
+# The followed CC_OWNS fields of the local struct whose address an expression is (`&p`), or none.
+def struct_address(b: Builder, node: Json) -> List[String]
+  bare = see_through(node)
+  if not address?(bare)
+    return []
+  end
+
+  return followed_struct(b, Ast.children(bare).first)
+end
+
+# `memset(&p, 0, sizeof p)` of a followed struct: its fields are followed again, null, so one that still owned leaks
+# there.
+def cleared(b: Builder, fields: List[String], node: Json, preds: List[Int]) -> Built
+  at = Ast.start_of(node)
+  built = add(b, Event.Resets(fields), preds)
+  for field in fields
+    assign = Assign(name: field, value: "null", from: "", shown: "NULL", line: at.line, column: at.column)
+    written = add(built.b, Event.Writes([field]), built.exits)
+    built = add(written.b, Event.Assigns(assign), written.exits)
+  end
+
+  return built
+end
+
 # The followed CC_OWNS fields of a local struct that an expression names whole, which escape there; nothing for any
 # other expression.
 def escaped(b: Builder, node: Json, preds: List[Int]) -> Built
@@ -2221,11 +2361,33 @@ def call(b: Builder, node: Json, preds: List[Int], tried: Bool) -> Built
   # A pointer that the call frees or takes is not read by it, nor one whose address it gets to hand an owned pointer
   # out through.
   name = Ast.referenced_name(callee)
+  if Known.UNEVALUATED.include?(name)
+    return Built(b: b, exits: preds)
+  end
+
   taking = taken(b.ctx, name, key_of_function(b.ctx, name))
   filling = out_params(b.ctx, name)
+  # `pair_free(&p)` at a CC_FREES parameter frees the fields of a followed struct, and `memset(&p, 0, sizeof p)` clears
+  # them: neither is an escape of the struct.
+  frees_fields = b.ctx.owning.frees.get(key_of_function(b.ctx, name), [])
+  clearing: List[String] = []
+  if Known.FILLS.include?(name) and args.size > 2 and zero_byte?(args[1]) and whole_size?(args[0], args[2])
+    clearing = struct_address(b, args[0])
+  end
+
+  struct_freed: List[String] = []
   built = Built(b: b, exits: preds)
   for i in 0...args.size
-    built = argument(built.b, args[i], taking.include?(i), filling.include?(i), built.exits)
+    fields = struct_address(built.b, args[i])
+    if frees_fields.include?(i) and not fields.empty?
+      # As for `free_and_null(&p)`, the helper is taken to null what it frees: a condition on a field is forgotten.
+      struct_freed = struct_freed.concat(fields)
+      built = add(built.b, Event.Writes(fields), built.exits)
+    elsif i == 0 and not clearing.empty?
+      next
+    else
+      built = argument(built.b, args[i], taking.include?(i), filling.include?(i), built.exits)
+    end
   end
 
   # The type of the declaration: the reference to a builtin such as `__builtin_abort` has no type of its own.
@@ -2246,9 +2408,14 @@ def call(b: Builder, node: Json, preds: List[Int], tried: Bool) -> Built
     site = site.with(lost: true)
   end
 
+  site = site.with(frees: site.frees.concat(struct_freed), clears: site.clears.concat(struct_freed))
   called = add(built.b, Event.Call(site), built.exits)
   if site.stops
     return Built(b: called.b, exits: [])
+  end
+
+  if not clearing.empty?
+    return cleared(called.b, clearing, node, called.exits)
   end
 
   return called

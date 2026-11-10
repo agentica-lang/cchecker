@@ -266,6 +266,29 @@ Feature: Time and memory on large generated inputs
       "incomplete_functions":[]
       """
 
+  Scenario: Local structs cleared, freed and cleaned up in 24 blocks of a loop stay in their bounds
+    Given the C file "clears.c" holds, with ITEMS as 24 times " { struct pair p __attribute__((cleanup(pair_done))); memset(&p, 0, sizeof p); p.left = make(); if (pick()) zap(&p.left); else { free(p.left); p = (struct pair){0}; } }":
+      """
+      #include <stdlib.h>
+      #include <string.h>
+      #include "cchecker.h"
+      struct pair { CC_OWNS char *left; CC_OWNS char *right; };
+      CC_OWNS char *make(void);
+      int pick(void);
+      void zap(CC_FREES char **p);
+      void pair_done(struct pair *p);
+      void many(int n) {
+        for (int i = 0; i < n; i++) {ITEMS
+        }
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/clears.c -- -I../include" in at most 1500 MiB and 20 seconds
+    Then the exit code is 0
+    And the output includes:
+      """
+      "incomplete_functions":[]
+      """
+
   Scenario: A lock held in a function with more paths than the walk follows is not inferred short
     Given the file "compile_commands.json" holds:
       """
