@@ -1232,9 +1232,15 @@ def statement(b: Builder, node: Json, preds: List[Int]) -> Built
       return flushed(declared.b, node, declared.exits)
     "NullStmt" -> return Built(b: b, exits: preds)
     "GCCAsmStmt" ->
-      # An operand of `asm` may read or write a whole local struct (`"r"(&p)`): an escape of it.
+      # An operand of `asm` may read or write a whole local struct (`"r"(&p)`): an escape of it. A field of it
+      # (`p.n`) is no read of the struct.
       built = Built(b: b, exits: preds)
-      refs = descendants(Ast.children(node)).select do |n| Ast.kind(n) == "DeclRefExpr" end
+      inside = descendants(Ast.children(node))
+      bases = Set.new(
+        inside.select do |n| struct_of(n) != "" end.map do |n| Ast.text(see_through(Ast.children(n).first), "id") end,
+      )
+
+      refs = inside.select do |n| Ast.kind(n) == "DeclRefExpr" and not bases.include?(Ast.text(n, "id")) end
       for ref in refs
         built = escaped(built.b, ref, built.exits)
       end
