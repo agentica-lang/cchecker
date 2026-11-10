@@ -2895,6 +2895,10 @@ def call(b: Builder, node: Json, preds: List[Int], tried: Bool) -> Built
       # As for `free_and_null(&p)`, the helper is taken to null what it frees: a condition on a field is forgotten.
       struct_freed = struct_freed.concat(fields)
       built = add(built.b, Event.Writes(fields), built.exits)
+      later = later_items(built.b, args[i])
+      if not later.empty?
+        built = add(built.b, Event.Escapes(later), built.exits)
+      end
     elsif handing.include?(i) and record_type?(args[i]) and not followed_struct(built.b, args[i]).empty?
       struct_handed = struct_handed.concat(followed_struct(built.b, args[i]))
     elsif i == 0 and not clearing.empty?
@@ -2938,6 +2942,24 @@ def call(b: Builder, node: Json, preds: List[Int], tried: Bool) -> Built
   end
 
   return called
+end
+
+# The followed CC_OWNS fields of the items after the one whose address an argument is (`&a[0]` of `a[2]`): a CC_FREES
+# parameter that gets it may free them too (`pairs_free(&a[0], n)`), so they escape there; none for any other.
+def later_items(b: Builder, arg: Json) -> List[String]
+  item = see_through(Ast.children(see_through(arg)).first)
+  if Ast.kind(item) != "ArraySubscriptExpr"
+    return []
+  end
+
+  items = b.owners.places.parts.get(whole_key(b, Ast.children(item).first), [])
+  place = whole_key(b, item)
+  at = (0...items.size).to_a.select do |i| items[i] == place end
+  if at.empty?
+    return []
+  end
+
+  return items.drop(at.first + 1).flat_map do |later| b.owners.places.fields.get(later, []) end
 end
 
 # An argument of a call, before the call. A pointer that owns at a parameter that frees or takes it (`taking`), or

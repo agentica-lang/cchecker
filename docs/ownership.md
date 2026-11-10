@@ -244,7 +244,9 @@ all. Nor is an array over the bound followed, or one of a variable length
 (`p.items[0]`), or a static one: a store into their `CC_OWNS` fields hands the
 pointer on. An item named whole (`take(a[0])`, `a[0] = a[1]`, `a[0] = (struct
 pair){0}`, `pair_free(&a[0])`, `memset(&a[0], 0, sizeof a[0])`) works as a
-struct in a struct does, on that item only. `memset(a, 0, sizeof a)` clears
+struct in a struct does, on that item only, but `&a[k]` at a `CC_FREES`
+parameter may free the items after it too (`pairs_free(&a[0], n)`): those
+escape there. `memset(a, 0, sizeof a)` clears
 every item, `sizeof a` is no escape, an initializer gives each item its list
 (`{ { b }, { c } }`, `{ [1] = { .left = b } }`, with the rule of a field set
 from a local), and a `cleanup` function on the array frees every item.
