@@ -313,6 +313,68 @@ Feature: Time and memory on large generated inputs
       "incomplete_functions":[]
       """
 
+  Scenario: Nested structs of 16 CC_OWNS fields, the bound, in 24 blocks of a loop stay in their bounds
+    The struct has three levels: a member escapes on one side of each test and a nested field is freed on the other.
+    At the end of its block every field leaves the state.
+
+    Given the C file "nested.c" holds, with ITEMS as 24 times " { struct top p = {0}; p.x.a.f0 = make(); p.y.b.f3 = make(); if (pick()) keep(&p.x); else free(p.x.a.f0); free(p.y.b.f3); memset(&p.y, 0, sizeof p.y); }":
+      """
+      #include <stdlib.h>
+      #include <string.h>
+      #include "cchecker.h"
+      struct leaf { CC_OWNS char *f0; CC_OWNS char *f1; CC_OWNS char *f2; CC_OWNS char *f3; };
+      struct mid { struct leaf a; struct leaf b; };
+      struct top { struct mid x; struct mid y; };
+      CC_OWNS char *make(void);
+      int pick(void);
+      void keep(struct mid *p);
+      void many(int n) {
+        for (int i = 0; i < n; i++) {ITEMS
+        }
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/nested.c -- -I../include" in at most 1500 MiB and 20 seconds
+    Then the exit code is 0
+    And the output includes:
+      """
+      "incomplete_functions":[]
+      """
+
+  Scenario: A struct of 512 nested CC_OWNS fields, over the bound, is not followed and stays in its bounds
+    Each test lends one struct in it of one of two variables, so a followed struct would keep a state for each choice
+    of every test. Over the bound of 16 fields the struct is not followed.
+
+    Given the C file "wide.c" holds:
+      """
+      #include <stdlib.h>
+      #include "cchecker.h"
+      struct leaf { CC_OWNS char *f0; CC_OWNS char *f1; CC_OWNS char *f2; CC_OWNS char *f3; CC_OWNS char *f4; CC_OWNS char *f5; CC_OWNS char *f6; CC_OWNS char *f7; };
+      struct mid { struct leaf l0; struct leaf l1; struct leaf l2; struct leaf l3; struct leaf l4; struct leaf l5; struct leaf l6; struct leaf l7; };
+      struct top { struct mid m0; struct mid m1; struct mid m2; struct mid m3; struct mid m4; struct mid m5; struct mid m6; struct mid m7; };
+      CC_OWNS char *make(void);
+      int pick(void);
+      void keep(struct mid *m);
+      void many(int n) {
+        struct top p = {0}, q = {0};
+        for (int i = 0; i < n; i++) {
+          if (pick()) keep(&p.m0); else keep(&q.m0);
+          if (pick()) keep(&p.m1); else keep(&q.m1);
+          if (pick()) keep(&p.m2); else keep(&q.m2);
+          if (pick()) keep(&p.m3); else keep(&q.m3);
+          if (pick()) keep(&p.m4); else keep(&q.m4);
+          if (pick()) keep(&p.m5); else keep(&q.m5);
+          if (pick()) keep(&p.m6); else keep(&q.m6);
+          if (pick()) keep(&p.m7); else keep(&q.m7);
+        }
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/wide.c -- -I../include" in at most 1500 MiB and 20 seconds
+    Then the exit code is 0
+    And the output includes:
+      """
+      "incomplete_functions":[]
+      """
+
   Scenario: A lock held in a function with more paths than the walk follows is not inferred short
     Given the file "compile_commands.json" holds:
       """

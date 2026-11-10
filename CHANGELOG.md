@@ -23,6 +23,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`find(&key); free(name);` is clean). A field or a local that gets a pointer already freed or handed on
   (`free(b); char *c = b;`) is a CC-OWN-USE-AFTER-FREE, and a call that clears only an alias (`zap(&c)`,
   `zap(&p.left)`) frees the pointer it stands for. Run `--update-baseline` once after upgrading.
+- **Breaking:** a struct in a local struct by value (`p.inner.left`, up to 8 levels and 16 `CC_OWNS` fields in all;
+  over that only its own fields) and a field of an unnamed struct member (`c.buf`) are followed as the fields of the
+  struct are: `keep(&p.inner)`, `p.inner = q`, `memset(&p.inner, 0, sizeof p.inner)` and `pair_free(&p.inner)` work on
+  the fields of that member, and a nested initializer (`{ .inner = { .left = b } }`) gives each its item. Run
+  `--update-baseline` once after upgrading.
 - The items of `p = (struct pair){...}` that read a field of `p` (`p.left ? p.left : make(n)`) are read before the
   store, and a `case` or `default` label inside a block of a `switch` keeps the pointers of that block, as a `goto`
   into it does.
