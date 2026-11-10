@@ -50,7 +50,9 @@ Feature: C that must stay clean
       | designated initializer of a plain struct parses | void f(int n) { struct conf c = { .name = "x", .n = n }; use(&c); }                                                                                                                                            |
 
     # Initializers that the rules read by the name of a top-level struct (#111): a struct of a function body, an
-    # anonymous member, a union, and a key on the stack whose field takes the pointer while the function frees it.
+    # anonymous member, a union, a key on the stack whose field takes the pointer while the function frees it, and a tag
+    # of a parameter list. Items of a compound literal that read a field of the struct other than directly (in a `?:`,
+    # through a call), which the reset of the struct does not read before the store yet.
     @pending @issue-111
     Examples:
       | case                                          | code                                                                                                                                                                                    |
@@ -59,6 +61,8 @@ Feature: C that must stay clean
       | union initializer                             | union u { CC_OWNS char *p; long l; }; void sink(union u *v); void f(int n) { CC_OWNS char *b = make(n); union u v = { .p = b }; sink(&v); }                                             |
       | lookup key on the stack                       | struct entry { CC_OWNS char *name; }; struct entry *find(struct entry *k); void f(int n) { CC_OWNS char *name = make(n); struct entry key = { .name = name }; find(&key); free(name); } |
       | tag of a parameter list that shadows a struct | void g(void *p); void f(struct pair { int k; } x) { struct pair p = { x.k }; if (x.k < 0) return; g(&p); }                                                                              |
+      | literal item that reads a field in a ?:       | void f(int n) { struct pair p = {0}; p.left = make(n); p = (struct pair){ .left = p.left ? p.left : make(n) }; free(p.left); }                                                          |
+      | literal item that passes a field to a call    | char *steal(char *p); void f(int n) { struct pair p = {0}; p.left = make(n); p = (struct pair){ .left = NULL, .right = steal(p.left) }; free(p.right); }                                |
 
     # The CC_OWNS fields of a local struct (#110), and a local that keeps the old value of a pointer that gets a new
     # one (the last round of a loop, TAKE_PTR of a CC_OWNS local: #107, #115).

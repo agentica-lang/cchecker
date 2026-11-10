@@ -1232,7 +1232,7 @@ Feature: Ownership on every path
         pair_free(&p);
       }
 
-      void freed_twice(void) {
+      void freed_then_nulled(void) {
         struct pair p = {0};
         p.left = make_buffer();
         pair_free(&p);
@@ -1329,6 +1329,28 @@ Feature: Ownership on every path
         p.left = make_buffer();
         free(p.left);
       }
+
+      void cleared_byte_leaks(void) {
+        struct pair p = {0};
+        p.left = make_buffer();
+        memset(&p, '\0', sizeof(struct pair));
+      }
+
+      void kept_one_dropped(void) {
+        struct pair p = {0};
+        p.left = make_buffer();
+        p.right = make_buffer();
+        p = (struct pair){ .right = p.left };
+        free(p.right);
+      }
+
+      void freed_then_tested(void) {
+        struct pair p = {0};
+        p.left = make_buffer();
+        pair_free(&p);
+        if (p.left)
+          free(p.left);
+      }
       """
     When I run cchecker with "--tools rules --json $DIR/clears.c -- -I../include"
     Then the exit code is 1
@@ -1395,6 +1417,18 @@ Feature: Ownership on every path
     And the output does not include:
       """
       "line":128,
+      """
+    And the output includes:
+      """
+      {"code":"CC-OWN-LEAK","tool":"rules","file":"$DIR/clears.c","line":135,
+      """
+    And the output includes:
+      """
+      {"code":"CC-OWN-LEAK","tool":"rules","file":"$DIR/clears.c","line":141,
+      """
+    And the output includes:
+      """
+      {"code":"CC-OWN-DOUBLE-FREE","tool":"rules","file":"$DIR/clears.c","line":149,
       """
 
   Scenario: A function with more paths than the rules follow is checked on those it went through and counted

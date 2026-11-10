@@ -151,21 +151,30 @@ function that frees only some fields can give a false CC-OWN-DOUBLE-FREE after
 an explicit free of another one, and the leak of the fields it skips is not
 found. A call that passes `&p` to a `CC_FREES` parameter (`pair_free(&p)`) frees
 every field and, as `free_and_null(&p)` of a pointer, is taken to set them to
-null. This caller rule is for a helper that the rules do not read, defined in
-another unit: in its own function a `CC_FREES` parameter that points to a struct
-is still one pointer to free, so a helper that frees only the fields
+null: a following `free(p.left)`, a use of `p.left` or a second `pair_free(&p)`
+is not reported, which a helper that only frees would make a double free or a
+use after free. This caller rule is for a helper that the rules do not read,
+defined in another unit: in its own function a `CC_FREES` parameter that points
+to a struct is still one pointer to free, so a helper that frees only the fields
 (`pair_done`) is checked as one that leaks the struct; leave such a helper
 unmarked and give it as a `cleanup` function, or call it on a struct that then
 escapes. `memset(&p, 0, sizeof p)` (the fill `0` or `'\0'`, the size `sizeof p`,
-`sizeof(struct pair)` or the size of a typedef of it; any other size is an
-escape) and a compound literal (`p = (struct pair){0}`,
-`p = (struct pair){ .left = q }`) clear the struct: each field gets null or its
-item, also after an escape, so the struct is followed again, and a field that
-still owns leaks there. The items of the literal are read before the store, as C
-does, so `p = (struct pair){ .left = p.right, .right = p.left }` swaps the
-fields. `&p.left` of a `CC_OWNS` field is the address of that pointer, as `&b`
-of a local: `free_and_null(&p.left)` at a `CC_FREES` parameter frees and clears
-it, `take(&p.left)` at a `CC_OWNS_OUT` parameter fills it, and any other call is
+`sizeof` of the type the variable is declared with, as `sizeof(struct pair)` for
+`struct pair p` and `sizeof(pair_t)` for `pair_t p`, or for `struct pair p`
+`sizeof` of a typedef of `struct pair`; any other size, such as
+`sizeof(struct pair)` for `pair_t p`, is an escape) and a compound literal
+(`p = (struct pair){0}`, `p = (struct pair){ .left = q }`) clear the struct:
+each field gets null or its item, also after an escape, so the struct is
+followed again, and a field that still owns leaks there. An item that is a field
+of the same struct, also through a cast or parentheses, is read before the
+store, as C does, so `p = (struct pair){ .left = p.right, .right = p.left }`
+swaps the fields; one that reads a field in any other way
+(`p.left ? p.left : q`, `steal(p.left)`) is still read field by field, which can
+give a false leak
+([#111](https://github.com/agentica-lang/cchecker/issues/111)). `&p.left` of a
+`CC_OWNS` field is the address of that pointer, as `&b` of a local:
+`free_and_null(&p.left)` at a `CC_FREES` parameter frees and clears it,
+`take(&p.left)` at a `CC_OWNS_OUT` parameter fills it, and any other call is
 lent it.
 
 A struct whose field that does not own has its address taken (`&p.n`, which may
