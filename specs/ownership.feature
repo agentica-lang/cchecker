@@ -1459,7 +1459,7 @@ Feature: Ownership on every path
       struct outer { int n; struct pair inner; };
       struct deep { struct outer o; };
       struct two { struct pair a; struct pair b; };
-      struct conn { int fd; struct { CC_OWNS char *buf; }; }; struct tagged { CC_OWNS char *top; struct pair inner; };
+      struct conn { int fd; struct { CC_OWNS char *buf; }; }; struct tagged { CC_OWNS char *top; struct pair inner; }; struct big { CC_OWNS char *f0; CC_OWNS char *f1; CC_OWNS char *f2; CC_OWNS char *f3; CC_OWNS char *f4; CC_OWNS char *f5; CC_OWNS char *f6; CC_OWNS char *f7; CC_OWNS char *f8; CC_OWNS char *f9; CC_OWNS char *f10; CC_OWNS char *f11; CC_OWNS char *f12; CC_OWNS char *f13; CC_OWNS char *f14; CC_OWNS char *f15; CC_OWNS char *f16; struct pair inner; };
       CC_OWNS char *make(int n); void keep(void *p); void lend(char **q); void pair_free(CC_FREES struct pair *p);
       void outer_done(struct outer *p);
 
@@ -1491,6 +1491,7 @@ Feature: Ownership on every path
       | a nested field freed before the cleanup           | DOUBLE-FREE | f frees p.inner.left, which it already freed or handed on | void f(int n) { __attribute__((cleanup(outer_done))) struct outer p = {0}; p.inner.left = make(n); free(p.inner.left); }   |
       | a struct in it freed, then the local of its field | DOUBLE-FREE | f frees b, which it already freed or handed on            | void f(int n) { CC_OWNS char *b = make(n); struct outer p = {0}; p.inner.left = b; pair_free(&p.inner); free(b); }         |
       | a field next to a struct in it that is lent       | LEAK        | f does not free or hand on p.top on every path            | void f(int n) { struct tagged p = {0}; p.top = make(n); keep(&p.inner); }                                                  |
+      | an own field of a struct over the bound           | LEAK        | f does not free or hand on p.f0 on every path             | void f(int n) { struct big p = {0}; p.f0 = make(n); if (n) return; free(p.f0); }                                           |
 
   Scenario: A function with more paths than the rules follow is checked on those it went through and counted
     Given the C file "many.c" holds:

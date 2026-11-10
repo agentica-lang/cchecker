@@ -135,32 +135,35 @@ pointers of their own. After `struct pair p = {0}; p.left = make();` or `struct
 pair p = { .left = make() };`, `p.left` owns and is freed or handed on on every
 path, as a `CC_OWNS` local, and the findings name it `p.left`. A struct in it by
 value is followed the same way, up to 8 levels of structs in it and 16 `CC_OWNS`
-fields in all (a struct deeper or larger than that is not followed: each field
-is a pointer of the walk, and a path that lends the structs in it one by one
-keeps a state for each choice): with `struct outer { int n; struct pair inner;
-};`, `p.inner.left` is a pointer of its own, and `t.a.left` and `t.b.left` are
-two, when `a` and `b` are both a `struct pair`. So is a field of an unnamed
-struct member (`c.buf` in `struct conn { int fd; struct { CC_OWNS char *buf; };
-}`). A struct reached through a pointer (`p.ptr->left`) or in a union is not: a
-store into its `CC_OWNS` fields hands the pointer on. The fields are followed up
-to where the struct escapes, which is any read of the whole struct: its address
-passed or stored (`keep(&p)`, `init(&p)`, `memcmp(&p, &q, sizeof p)`), a copy
-(`q = p`, `struct pair q = p`, a snapshot), a by-value argument (`take(p)`),
-`return p`, `(void)p`, an operand of `asm` that names the struct, or a new value
-of the whole struct (`p = q`). There every field is handed on, so a leak before
-the escape is found and the escape is clean; a new value of the whole struct
-first loses what a field still owns (a leak, as for a `CC_OWNS` pointer). A
-struct in it escapes alone, with the same forms: `keep(&p.inner)`, `q =
-p.inner`, `take(p.inner)` or `p.inner = q` hand on the fields of `p.inner` only,
-while `keep(&p.inner.left)` lends one pointer. The address of a struct in it
-(`&p.inner`) is taken to reach only that struct: a callee that goes back to the
-outer struct (`container_of`) is not seen, while the address of a field that
-does not own (`&p.n`, `&p.inner.n`) stops following the whole struct. After the
-escape the fields belong to whoever got the struct, and the rules check nothing
-more about them in the function: a double free, a use after free, or a leak of a
-pointer stored into a field afterwards is not found. `sizeof p` and a field that
-does not own (`p.n`) are no escape; a `CC_OWNS` field in an operand of `asm`
-(`"r"(p.left)`) is only read, so the field still owns after it.
+fields in all (each field is a pointer of the walk, and a path that lends the
+structs in it one by one keeps a state for each choice). Over either bound only
+the struct's own `CC_OWNS` fields are followed, and a struct in it is a field
+that does not own: a store into its fields hands the pointer on, and `&p.inner`
+stops following the whole struct. Within the bounds: with `struct outer { int n;
+struct pair inner; };`, `p.inner.left` is a pointer of its own, and `t.a.left`
+and `t.b.left` are two, when `a` and `b` are both a `struct pair`. So is a field
+of an unnamed struct member (`c.buf` in `struct conn { int fd; struct { CC_OWNS
+char *buf; }; }`). A struct reached through a pointer (`p.ptr->left`) or in a
+union is not: a store into its `CC_OWNS` fields hands the pointer on. The fields
+are followed up to where the struct escapes, which is any read of the whole
+struct: its address passed or stored (`keep(&p)`, `init(&p)`, `memcmp(&p, &q,
+sizeof p)`), a copy (`q = p`, `struct pair q = p`, a snapshot), a by-value
+argument (`take(p)`), `return p`, `(void)p`, an operand of `asm` that names the
+struct, or a new value of the whole struct (`p = q`). There every field is
+handed on, so a leak before the escape is found and the escape is clean; a new
+value of the whole struct first loses what a field still owns (a leak, as for a
+`CC_OWNS` pointer). A struct in it escapes alone, with the same forms:
+`keep(&p.inner)`, `q = p.inner`, `take(p.inner)` or `p.inner = q` hand on the
+fields of `p.inner` only, while `keep(&p.inner.left)` lends one pointer. The
+address of a struct in it (`&p.inner`) is taken to reach only that struct: a
+callee that goes back to the outer struct (`container_of`) is not seen, while
+the address of a field that does not own (`&p.n`, `&p.inner.n`) stops following
+the whole struct. After the escape the fields belong to whoever got the struct,
+and the rules check nothing more about them in the function: a double free, a
+use after free, or a leak of a pointer stored into a field afterwards is not
+found. `sizeof p` and a field that does not own (`p.n`) are no escape; a
+`CC_OWNS` field in an operand of `asm` (`"r"(p.left)`) is only read, so the
+field still owns after it.
 
 The struct of a variable is the one its type names where the variable is
 declared, as C finds a tag or a typedef in the blocks around it (a tag declared

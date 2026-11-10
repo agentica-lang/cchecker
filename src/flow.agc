@@ -42,8 +42,9 @@ VARIABLES = Set.new(["VarDecl", "ParmVarDecl"])
 # such character, so a key is its name when nothing else of the function has that name.
 KEY_MARK = "#"
 
-# A local struct with a struct in it is followed only up to these bounds: the levels of structs in it, and its CC_OWNS
-# fields in all. Each field is a pointer of the walk, and a path that lends the structs in it one by one keeps a state
+# The structs in a local struct are followed only up to these bounds: the levels of structs in it, and its CC_OWNS
+# fields in all; over them only its own fields are. Each field is a pointer of the walk, and a path that lends the
+# structs in it one by one keeps a state
 # for each choice (see `specs/limits.feature`).
 MAX_NESTED_DEPTH = 8
 MAX_NESTED_FIELDS = 16
@@ -1021,9 +1022,10 @@ def owned_fields(ctx: Context, all: List[Json], keys: Map[String, String]) -> Fo
   for id in structs.keys.sort
     case record_of(ctx, structs[id])
       some(record) ->
-        if record.nested.all? do |inner| inner == "" end or nested_fields(ctx, record, 0) <= MAX_NESTED_FIELDS
-          found = with_parts(ctx, found, keys.get(id, ""), keys.get(id, ""), record, 0)
-        end
+        # Over the bounds only the struct's own CC_OWNS fields are followed: a struct in it is then a field that does
+        # not own (a store into its fields hands the pointer on, and `&p.inner` stops following the whole struct).
+        nest = record.nested.all? do |inner| inner == "" end or nested_fields(ctx, record, 0) <= MAX_NESTED_FIELDS
+        found = with_parts(ctx, found, keys.get(id, ""), keys.get(id, ""), record, 0, nest)
 
       none -> next
     end
@@ -1102,8 +1104,17 @@ end
 
 # `found` with the parts of the struct `key` of the record `record`: each CC_OWNS field outside a union, and each
 # struct in it by value with its own parts. `prefix` is what the keys of its fields start with, the key of the struct
-# but for an unnamed member, which adds no name. `nested_fields` bounds the depth and the size before.
-def with_parts(ctx: Context, found: Followed, key: String, prefix: String, record: OwnedRecord, depth: Int) -> Followed
+# but for an unnamed member, which adds no name. `nested_fields` bounds the depth and the size before: without
+# `nest`, the structs in it are left out.
+def with_parts(
+  ctx: Context,
+  found: Followed,
+  key: String,
+  prefix: String,
+  record: OwnedRecord,
+  depth: Int,
+  nest: Bool,
+) -> Followed
   grown = found.with(of: found.of.put(key, found.of.get(key, [])), parts: found.parts.put(key, []))
   if depth > MAX_NESTED_DEPTH
     return grown
@@ -1120,7 +1131,7 @@ def with_parts(ctx: Context, found: Followed, key: String, prefix: String, recor
     if ctx.owning.fields.include?(field) and not ctx.owning.unions.include?(field)
       place = "#{prefix}.#{record.names[i]}"
       grown = with_field(grown, key, place)
-    elsif nested != ""
+    elsif nested != "" and nest
       case ctx.owning.records.get(nested)
         some(inner) ->
           sub_prefix = "#{prefix}.#{record.names[i]}"
@@ -1130,7 +1141,7 @@ def with_parts(ctx: Context, found: Followed, key: String, prefix: String, recor
             place = "#{key}.#{KEY_MARK}a#{i}"
           end
 
-          grown = with_parts(ctx, grown, place, sub_prefix, inner, depth + 1)
+          grown = with_parts(ctx, grown, place, sub_prefix, inner, depth + 1, true)
           for leaf in grown.of.get(place, [])
             grown = with_field(grown, key, leaf)
           end
