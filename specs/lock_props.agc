@@ -77,7 +77,9 @@ end
 ## The generator of functions: up to 24 tokens of the body and 3 of the cleanup (lock, unlock, work, or a `return` or
 ## a `goto out` under a condition).
 export def programs() -> Prop.Gen[Program]
-  tokens = Prop.pair(Prop.list(Prop.one_of(DRAWN), 24), Prop.list(Prop.one_of([LOCK, UNLOCK, WORK, RETURN, GOTO]), 3))
+  drawn = Prop.list(Prop.one_of(DRAWN), 24)
+  tail = Prop.list(Prop.one_of([LOCK, UNLOCK, WORK, RETURN, GOTO]), 3)
+  tokens = Prop.pair(drawn, tail)
   return Prop.map(tokens, &program_of)
 end
 

@@ -35,9 +35,13 @@ end
 
 ## The generator of tables, with up to 6 fillers.
 export def tables() -> Prop.Gen[Table]
-  kind = Prop.pair(Prop.pair(Prop.int(0, 4), Prop.int(0, 5)), Prop.int(0, 1))
-  items = Prop.pair(Prop.list(Prop.int(0, 4), 6), Prop.pair(Prop.int(0, 6), Prop.int(0, 3)))
-  return Prop.map(Prop.pair(kind, items), &table_of)
+  sizes = Prop.pair(Prop.int(0, 4), Prop.int(0, 5))
+  kind = Prop.pair(sizes, Prop.int(0, 1))
+  ranges = Prop.pair(Prop.int(0, 6), Prop.int(0, 3))
+  fillers = Prop.list(Prop.int(0, 4), 6)
+  items = Prop.pair(fillers, ranges)
+  pair = Prop.pair(kind, items)
+  return Prop.map(pair, &table_of)
 end
 
 ## Checks `runs` tables, from `seed` when it is given: cchecker (the bytecode `program`, run in specs/) reports that
@@ -69,7 +73,7 @@ end
 ## One run of cchecker (the bytecode `program`) in specs/ with the options `options`.
 export def run_with(program: String, options: List[String]) -> Result[Output]
   args = ["run", "--", program].concat(options)
-  process = try Process.spawn_captured("agentica", args, "specs", RUN_MS, {})
+  process = try Process.spawn_captured("agentica", args, Process.Options(timeout_ms: RUN_MS, chdir: "specs"))
   output = try Process.output(process, RUN_MS)
   code = try Process.wait(process, RUN_MS)
   Process.close(process)

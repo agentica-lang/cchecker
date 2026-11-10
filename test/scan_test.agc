@@ -396,7 +396,7 @@ def clang_dump(source: String, path: String) -> Result[Void]
     "-c", script, "clang", "-w", "-DCCHECKER_AST", "-Iinclude", "-fsyntax-only", "-Xclang", "-ast-dump=json", source,
   ]
 
-  process = try Process.spawn_captured("sh", args, ".", 30_000, {"CCHECKER_DUMP": path})
+  process = try Process.spawn_captured("sh", args, Process.Options(timeout_ms: 30_000, env: {"CCHECKER_DUMP": path}))
   code = try Process.wait(process, 30_000)
   Process.close(process)
   return Test.eq(code, 0)

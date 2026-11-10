@@ -992,7 +992,8 @@ def values_of(node: Json) -> List[Json]
   end
 
   if Ast.kind(bare) == "StmtExpr"
-    return values_of(unlabelled(last_child(last_child(bare))))
+    body = last_child(last_child(bare))
+    return values_of(unlabelled(body))
   end
 
   return [node]
@@ -1672,7 +1673,8 @@ end
 
 # The block of a statement expression `({ ...; v; })` opens as a scope for the cleanups of its variables.
 def opened_expression(b: Builder, node: Json) -> Builder
-  scope = Scope(id: Ast.text(last_child(see_through(node)), "id"), cleanups: [], outer: b.pending)
+  inner = last_child(see_through(node))
+  scope = Scope(id: Ast.text(inner, "id"), cleanups: [], outer: b.pending)
   return b.with(scopes: b.scopes.push(scope), pending: [])
 end
 
