@@ -753,12 +753,11 @@ Feature: Ownership on every path
       "line":22,
       """
 
-  Scenario: The CC_OWNS fields of a local struct are pointers of their own while the struct does not escape
-    A local struct that the function reads and writes only field by field (`p.left`) has a state for each CC_OWNS
-    field, and an initializer gives each its item. A struct whose address is taken, that is copied or passed by value,
-    or that has a cleanup function, and a union are not followed: a store into their CC_OWNS fields hands the pointer
-    on. A pointer that an initializer or a compound literal puts in a CC_OWNS field is handed on, and `old = p;
-    p = NULL;` leaves the pointer to `old`.
+  Scenario: The CC_OWNS fields of a local struct are pointers of their own
+    A local struct has a state for each CC_OWNS field (`p.left`), and an initializer gives each its item. Where the
+    struct escapes (its address passed, a copy) the fields are handed on. A struct with a cleanup function, and a
+    union, are not followed: a store into their CC_OWNS fields hands the pointer on. A pointer that an initializer or
+    a compound literal puts in a CC_OWNS field is handed on, and `old = p; p = NULL;` leaves the pointer to `old`.
 
     Given the C file "fields.c" holds:
       """
@@ -975,6 +974,217 @@ Feature: Ownership on every path
     And the output does not include:
       """
       "line":134,
+      """
+
+  Scenario: A local struct is followed up to where it escapes, and its CC_OWNS fields are handed on there
+    Every CC_OWNS field of a local struct is a pointer of its own up to where the struct escapes: its address passed or
+    stored, a copy, a by-value argument, a return, a new value of the whole struct, or an operand of `asm`. A leak
+    before the escape is found, on a return, a jump or the side of a test that does not escape. A new value of the
+    whole struct loses what a field still owns. After the escape the fields belong to whoever got the struct: a free of
+    one, or a store into one (also after a test that says it is null), is no finding, so a move (`q = p; p = (struct
+    pair){0};`) and a swap are clean. `sizeof p` and a field that does not own (`f.on`) are no escape.
+
+    Given the C file "escape.c" holds:
+      """
+      #include <stdlib.h>
+      #include "cchecker.h"
+
+      struct pair {
+        CC_OWNS char *left;
+        CC_OWNS char *right;
+      };
+
+      struct flagged { CC_OWNS char *buf; int on; };
+
+      CC_OWNS char *make_buffer(void);
+      void keep(struct pair *p);
+      void take(struct pair p);
+      void size(unsigned long n);
+      CC_JUMPS void fail(void);
+
+      void lent_leaks(int n) {
+        struct pair p = {0};
+        p.left = make_buffer();
+        if (n)
+          return;
+        keep(&p);
+      }
+
+      void passed_leaks(int n) {
+        struct pair p = {0};
+        p.left = make_buffer();
+        if (n)
+          fail();
+        take(p);
+      }
+
+      struct pair returned(int n) {
+        struct pair p = {0};
+        struct pair none = {0};
+        p.left = make_buffer();
+        if (n)
+          return none;
+        return p;
+      }
+
+      void copied(void) {
+        struct pair p = {0};
+        p.left = make_buffer();
+        struct pair q = p;
+        keep(&q);
+      }
+
+      void assigned(void) {
+        struct pair p = {0}, q = {0};
+        p.left = make_buffer();
+        q = p;
+        keep(&q);
+      }
+
+      void overwritten(struct pair other) {
+        struct pair p = {0};
+        p.left = make_buffer();
+        free(p.left);
+        p = other;
+        keep(&p);
+      }
+
+      void stored_after(void) {
+        struct pair p = {0};
+        keep(&p);
+        p.left = make_buffer();
+      }
+
+      void freed_after(void) {
+        struct pair p = {0};
+        keep(&p);
+        free(p.left);
+        free(p.right);
+      }
+
+      void sized(void) {
+        struct pair p = {0};
+        p.left = make_buffer();
+        size(sizeof p);
+      }
+
+      void other_field(int n) {
+        struct flagged f = {0};
+        f.buf = make_buffer();
+        f.on = n;
+      }
+
+      void refilled(void) {
+        struct pair p = {0};
+        keep(&p);
+        if (!p.left)
+          p.left = make_buffer();
+      }
+
+      void overwritten_leaks(struct pair other) {
+        struct pair p = {0};
+        p.left = make_buffer();
+        p = other;
+        keep(&p);
+      }
+
+      void moved(void) {
+        struct pair p = {0}, q = {0};
+        p.left = make_buffer();
+        q = p;
+        p = (struct pair){0};
+        keep(&q);
+      }
+
+      void swapped(void) {
+        struct pair p = {0}, q = {0}, t;
+        p.left = make_buffer();
+        q.left = make_buffer();
+        t = p;
+        p = q;
+        q = t;
+        keep(&p);
+        keep(&q);
+      }
+
+      void one_branch(int n) {
+        struct pair p = {0};
+        p.left = make_buffer();
+        if (n)
+          keep(&p);
+      }
+
+      void in_asm(void) {
+        struct pair p = {0};
+        p.left = make_buffer();
+        __asm__ volatile("" : : "r"(&p) : "memory");
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/escape.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      {"code":"CC-OWN-LEAK","tool":"rules","file":"$DIR/escape.c","line":17,
+      """
+    And the output includes:
+      """
+      {"code":"CC-OWN-LEAK","tool":"rules","file":"$DIR/escape.c","line":25,
+      """
+    And the output includes:
+      """
+      {"code":"CC-OWN-LEAK","tool":"rules","file":"$DIR/escape.c","line":33,
+      """
+    And the output includes:
+      """
+      {"code":"CC-OWN-LEAK","tool":"rules","file":"$DIR/escape.c","line":77,
+      """
+    And the output includes:
+      """
+      {"code":"CC-OWN-LEAK","tool":"rules","file":"$DIR/escape.c","line":83,
+      """
+    And the output includes:
+      """
+      {"code":"CC-OWN-LEAK","tool":"rules","file":"$DIR/escape.c","line":96,
+      """
+    And the output includes:
+      """
+      {"code":"CC-OWN-LEAK","tool":"rules","file":"$DIR/escape.c","line":122,
+      """
+    And the output does not include:
+      """
+      "line":42,
+      """
+    And the output does not include:
+      """
+      "line":49,
+      """
+    And the output does not include:
+      """
+      "line":56,
+      """
+    And the output does not include:
+      """
+      "line":64,
+      """
+    And the output does not include:
+      """
+      "line":70,
+      """
+    And the output does not include:
+      """
+      "line":89,
+      """
+    And the output does not include:
+      """
+      "line":103,
+      """
+    And the output does not include:
+      """
+      "line":111,
+      """
+    And the output does not include:
+      """
+      "line":129,
       """
 
   Scenario: A function with more paths than the rules follow is checked on those it went through and counted

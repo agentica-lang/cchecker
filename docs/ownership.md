@@ -106,8 +106,9 @@ src/conf.c:9:5 CC-OWN-LEAK start does not free or hand on c on every path: 10:28
 A `malloc` into a local without a mark is not checked: `gcc -fanalyzer` reports
 those leaks, and the mark makes the contract part of the code. The rules do not
 follow a pointer into a struct or an array (a store into a `CC_OWNS` field is
-where they stop), through a function pointer, or out through a parameter without
-`CC_OWNS_OUT` (`int open_buf(char **out)`: the caller lends `&p` to be set). Two
+where they stop, but for the fields of a local struct, below), through a
+function pointer, or out through a parameter without `CC_OWNS_OUT`
+(`int open_buf(char **out)`: the caller lends `&p` to be set). Two
 variables of the same name in one function (a local that shadows another, a
 parameter or a global, or the same name in two blocks) are two variables: each
 pointer has its own state, and a condition on one is not a condition on the
@@ -126,16 +127,27 @@ condition says it is not null it is freed. The rules assume that a helper that
 frees through `&p` sets the pointer to null; one that only frees leaves a later
 double free or use unreported.
 
-The one struct the rules follow is a local one that the function reads and
-writes only field by field: its `CC_OWNS` fields are pointers of their own.
-After `struct pair p = {0}; p.left = make();` or `struct pair p = { .left =
-make() };`, `p.left` owns and is freed or handed on on every path, as a
-`CC_OWNS` local, and the findings name it `p.left`. A struct whose address is
-taken (`&p`, `&p.left`), that is copied, passed, returned or named in any other
-way, or that has a `cleanup` function, is not followed, nor a static one or a
-union: a store into their `CC_OWNS` fields hands the pointer on. A known gap: an
-initializer of a union (`union u v = { .p = b };`) does not hand the pointer on
-yet, which gives a false leak
+The one struct the rules follow is a local one: its `CC_OWNS` fields are
+pointers of their own. After `struct pair p = {0}; p.left = make();` or
+`struct pair p = { .left = make() };`, `p.left` owns and is freed or handed on
+on every path, as a `CC_OWNS` local, and the findings name it `p.left`. The fields are
+followed up to where the struct escapes, which is any read of the whole struct:
+its address passed or stored (`keep(&p)`, `init(&p)`, `memset(&p, 0, sizeof p)`,
+`memcmp(&p, &q, sizeof p)`), a copy (`q = p`, `struct pair q = p`, a snapshot),
+a by-value argument (`take(p)`), `return p`, `(void)p`, an operand of `asm`, or
+a new value of the whole struct (`p = q`). There every field is handed on, so a
+leak before the escape is found and the escape is clean; a new value of the
+whole struct first loses what a field still owns (a leak, as for a `CC_OWNS`
+pointer). After the escape the fields belong to whoever got the struct, and the
+rules check nothing more about them in the function: a double free, a use after
+free, or a leak of a pointer stored into a field afterwards is not found.
+`sizeof p` and a field that does not own (`p.n`) are no escape. A struct whose
+field has its address taken (`&p.left`), or that has a `cleanup` function, is
+not followed, nor a static one, a union, or one whose type name stands for two
+structs (a tag in a function body that shadows another, a typedef named like the
+tag of another struct): a store into their `CC_OWNS` fields hands the pointer
+on. A known gap: an initializer of a union (`union u v = { .p = b };`) does not
+hand the pointer on yet, which gives a false leak
 ([#111](https://github.com/agentica-lang/cchecker/issues/111)).
 
 A filled pointer that the path never reads is not reported (`take(&b); return

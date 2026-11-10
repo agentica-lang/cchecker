@@ -4,6 +4,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** the ownership rules follow the `CC_OWNS` fields of a local struct up to where the struct escapes (its
+  address passed, a copy, a by-value argument, a return, `p = q`), and hand them on there: a leak before the escape,
+  or a field that still owns when the whole struct gets a new value, is a CC-OWN-LEAK. Run `--update-baseline` once
+  after upgrading.
+
 ## [0.4.0] - 2026-11-09
 
 ### Added

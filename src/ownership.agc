@@ -36,13 +36,17 @@ export USE_AFTER_FREE = "CC-OWN-USE-AFTER-FREE"
 # freed again, and a condition that says it is not null makes it freed. A pointer is `filled` after a call handed an
 # owned pointer out to it through a CC_OWNS_OUT parameter (`take(&p)`). Unlike `unknown`, the rules know it may own:
 # it is freed and handed on as one that owns, and reading it (lending it, testing it) makes it `owned`. Until then no
-# exit leaks it, nor a new value: a call that failed may have left nothing there.
+# exit leaks it, nor a new value: a call that failed may have left nothing there. A CC_OWNS field of a local struct is
+# `escaped` after the struct escaped (`&p`, a copy, a by-value argument, a return): what it holds belongs to whoever
+# got the struct, so it is never a leak, and it stays so on the path: a free of it is no finding, and a pointer stored
+# in it is handed on, as a store into the field of a struct that is not followed.
 OWNED = "owned"
 FREED = "freed"
 MOVED = "moved"
 UNKNOWN = "unknown"
 CLEARED = "cleared"
 FILLED = "filled"
+ESCAPED = "escaped"
 
 # The states the walk of one function may visit, with the conditions and then without them.
 MAX_STATES = 200_000
@@ -265,6 +269,13 @@ def stepped(walker: Walker, event: Event, item: Item) -> Outcome
       end
 
       return went(item.with(state: state))
+    Event.Escapes(names) ->
+      state = item.state
+      for name in names
+        state = state.with(owns: state.owns.put(name, ESCAPED), aliases: state.aliases.delete(name))
+      end
+
+      return went(item.with(state: state))
     Event.Closes(closing) -> return closed(walker.body, item, closing)
     Event.Note(mark) -> return went(item.with(path: item.path.push(marked(mark))))
     Event.Exit(mark) -> return Outcome(moved: Moved.Ended(item.path.push(marked(mark))), breaches: [])
@@ -368,7 +379,7 @@ def after_call(body: Body, item: Item, site: Site) -> Outcome
         breaches = breaches.push(
           Breach(code: DOUBLE_FREE, name: root, message: message, path: ended_path(current, root, step)),
         )
-      some(state) if state == CLEARED -> next
+      some(state) if state == CLEARED or state == ESCAPED -> next
       some(_) if site.clears.include?(name) -> current = ended(current, root, CLEARED, step)
       some(_) -> current = ended(current, root, FREED, step)
       none -> next
@@ -381,7 +392,7 @@ def after_call(body: Body, item: Item, site: Site) -> Outcome
     case current.state.owns.get(root)
       some(state) if state == FREED or state == MOVED ->
         breaches = breaches.push(used_after(body, current, root, step))
-      some(state) if state == CLEARED -> next
+      some(state) if state == CLEARED or state == ESCAPED -> next
       some(_) -> current = ended(current, root, MOVED, step)
       none -> next
     end
@@ -459,8 +470,13 @@ def after_branch(walker: Walker, item: Item, fact: Fact) -> Outcome
   return went(item.with(state: state, path: item.path.push(step)))
 end
 
-# A pointer that is null owns nothing; when it is the result of a realloc, the pointer it moved owns again.
+# A pointer that is null owns nothing; when it is the result of a realloc, the pointer it moved owns again. A field
+# of a struct that escaped stays so: a value stored in it after the test is handed on too.
 def nulled(state: State, name: String) -> State
+  if state.owns.get(name).map do |own| own == ESCAPED end.unwrap_or(false)
+    return state
+  end
+
   cleared = state.with(owns: state.owns.delete(name))
   case state.links.get(name)
     some(source) ->
@@ -497,7 +513,7 @@ def after_give(body: Body, item: Item, give: Give) -> Outcome
   case item.state.owns.get(root)
     some(state) if state == FREED or state == MOVED ->
       return Outcome(moved: Moved.Went(item), breaches: [used_after(body, item, root, step)])
-    some(state) if state == CLEARED -> return went(item)
+    some(state) if state == CLEARED or state == ESCAPED -> return went(item)
     some(_) -> return went(ended(item, root, MOVED, step))
     none -> return went(item)
   end
@@ -526,6 +542,7 @@ def after_assign(body: Body, item: Item, assign: Assign) -> Outcome
     state = state.with(kept: state.kept.delete(assign.name))
   end
 
+  was_escaped = state.owns.get(assign.name).map do |own| own == ESCAPED end.unwrap_or(false)
   state = state.with(owns: state.owns.delete(assign.name))
   case assign.value
     "owned" -> state = state.with(owns: state.owns.put(assign.name, OWNED))
@@ -545,6 +562,11 @@ def after_assign(body: Body, item: Item, assign: Assign) -> Outcome
       end
 
     _ -> state = state
+  end
+
+  # A field of a struct that escaped hands on what it gets: the struct is someone else's now.
+  if was_escaped
+    state = state.with(owns: state.owns.put(assign.name, ESCAPED), aliases: state.aliases.delete(assign.name))
   end
 
   return Outcome(moved: Moved.Went(item.with(state: state, path: item.path.push(step))), breaches: breaches)

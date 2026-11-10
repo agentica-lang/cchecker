@@ -428,6 +428,30 @@ def owning_of(tables: Tables, nodes: List[Json]) -> Flow.Owning
     end
   end
 
+  # The type names of two definitions: a tag of a function body that shadows another tag, or a typedef that names
+  # another record than the tag or the typedef of the same name. `records` holds one record per
+  # name, which may be the wrong one for such a type. `typedef struct pair pair;` names one record.
+  defined: Map[String, String] = {}
+  ambiguous: Set[String] = Set.new([])
+  for nested in record_decls(nodes, "").concat(record_decls(inner, ""))
+    name = Ast.text(nested.node, "name")
+    if name != "" and has_fields?(nested.node)
+      ambiguous = with_name(ambiguous, defined, name, Ast.text(nested.node, "id"))
+      defined = defined.put(name, Ast.text(nested.node, "id"))
+    end
+  end
+
+  typedefs = nodes.concat(inner).select do |n| Ast.kind(n) == "TypedefDecl" end
+  named: Map[String, String] = {}
+  for node in typedefs
+    name = Ast.text(node, "name")
+    id = record_id_of(node)
+    if id != ""
+      ambiguous = with_name(with_name(ambiguous, defined, name, id), named, name, id)
+      named = named.put(name, id)
+    end
+  end
+
   # A global by the ids of all its declarations, so that the mark of one holds in the others and a local of the same
   # name is not it.
   variables = nodes.select do |n| Ast.kind(n) == "VarDecl" end
@@ -442,6 +466,7 @@ def owning_of(tables: Tables, nodes: List[Json]) -> Flow.Owning
     globals: Set.new(globals),
     unions: unions,
     records: records,
+    ambiguous: ambiguous,
   )
 end
 
@@ -909,6 +934,15 @@ def tables_of(nodes: List[Json]) -> Tables
     records: by_type,
     record_ids: records,
   )
+end
+
+# `ambiguous` with `name` when `seen` gives it another record than `id`.
+def with_name(ambiguous: Set[String], seen: Map[String, String], name: String, id: String) -> Set[String]
+  if name != "" and seen.get(name).map do |other| other != id end.unwrap_or(false)
+    return ambiguous.add(name)
+  end
+
+  return ambiguous
 end
 
 # The keys of the static functions by name. A static function is keyed by the file of its definition, its own file: a
