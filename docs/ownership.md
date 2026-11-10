@@ -149,9 +149,10 @@ escape; a `CC_OWNS` field in an operand of `asm` (`"r"(p.left)`) is only read,
 so the field still owns after it.
 
 The struct of a variable is the one its type names where the variable is
-declared, as C finds a tag or a typedef in the blocks around it (a `for`, `if`,
-`while` or `switch` is a block too): one of a block that shadows another of the
-same name is its own struct, and so is an unnamed one. A field set from a
+declared, as C finds a tag or a typedef in the blocks around it (a tag declared
+in the clauses of a `for`, or in the condition of an `if`, `while`, `do` or
+`switch`, is seen only inside that statement): one of a block that shadows
+another of the same name is its own struct, and so is an unnamed one. A field set from a
 local (`p.left = b`, `struct pair p = { .left = b }`) stands for that local, as
 an unmarked local does: a free of either frees the one pointer (a free of both is
 a CC-OWN-DOUBLE-FREE), a leak names the local, and a local already freed or

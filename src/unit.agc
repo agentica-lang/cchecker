@@ -48,8 +48,8 @@ TYPE_QUALIFIERS = Set.new([
   "_Null_unspecified", "struct", "union",
 ])
 
-# The statements that open a scope of tags and typedef names: a block, and the selection and iteration statements.
-SCOPES = Set.new(["CompoundStmt", "ForStmt", "WhileStmt", "DoStmt", "IfStmt", "SwitchStmt"])
+# The selection and iteration statements with a condition, other than `for`.
+CONDITIONED = Set.new(["WhileStmt", "DoStmt", "IfStmt", "SwitchStmt"])
 
 # The letters and digits of a C identifier, with `_`.
 IDENTIFIER_CHARS = Set.new("abcdefghijklmnopqrstuvwxyz0123456789".split(""))
@@ -1100,11 +1100,31 @@ def unnamed_members(members: Map[String, String], node: Json) -> Map[String, Str
   return found
 end
 
+# Whether a statement opens a scope of tags and typedef names: a block, a `for` (a tag declared in its clauses is
+# not seen after it), and a selection or iteration statement whose condition declares a tag (`if (sizeof(struct q {
+# int k; }))`), which C makes a block too. Any other such statement declares nothing of its own: a body that is not a
+# block cannot be a declaration.
+def opens_scope?(node: Json) -> Bool
+  kind = Ast.kind(node)
+  if kind == "CompoundStmt" or kind == "ForStmt"
+    return true
+  end
+
+  if not CONDITIONED.include?(kind) or Ast.children(node).empty?
+    return false
+  end
+
+  condition = Ast.children(node).first
+  if kind == "DoStmt"
+    condition = Ast.children(node).last
+  end
+
+  return Flow.descendants([condition]).any? do |n| Ast.kind(n) == "RecordDecl" end
+end
+
 # The walk of `typed_of` through a node. `given` is the record that the node around it says an unnamed type is.
 def typed_in(t: Typing, node: Json, given: String) -> Typing
-  if SCOPES.include?(Ast.kind(node))
-    # A block, and a selection or iteration statement, which C makes a block too: a tag declared in the clauses of a
-    # `for` is not seen after it.
+  if opens_scope?(node)
     inner = t.with(tags: t.tags.push({}), typedefs: t.typedefs.push({}))
     for child in Ast.children(node)
       inner = typed_in(inner, child, "")
@@ -1306,10 +1326,11 @@ def record_named(t: Typing, type: Json, unnamed: String) -> String
     return ""
   end
 
-  for i in (0...t.typedefs.size).to_a.reverse
+  i = t.typedefs.size - 1
+  while i >= 0
     case t.typedefs[i].get(text)
       some(id) -> return id
-      none -> next
+      none -> i -= 1
     end
   end
 
@@ -1318,10 +1339,11 @@ end
 
 # The record of a tag in the blocks around, then at the top level; "" when there is none.
 def tag_of(t: Typing, name: String) -> String
-  for i in (0...t.tags.size).to_a.reverse
+  i = t.tags.size - 1
+  while i >= 0
     case t.tags[i].get(name)
       some(id) -> return id
-      none -> next
+      none -> i -= 1
     end
   end
 
