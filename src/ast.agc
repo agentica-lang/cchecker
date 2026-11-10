@@ -28,6 +28,11 @@ export def children(node: Json) -> List[Json]
   end
 end
 
+## Returns the items of an initializer list, in order, without the filler that `children` gives first for an array.
+export def items(node: Json) -> List[Json]
+  return list_at(node, "inner").concat(list_at(node, "array_filler").drop(1))
+end
+
 ## Returns a string of a node, or "".
 export def text(node: Json, key: String) -> String
   case JSON.get(node, key)

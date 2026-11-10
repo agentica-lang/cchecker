@@ -1493,6 +1493,53 @@ Feature: Ownership on every path
       | a field next to a struct in it that is lent       | LEAK        | f does not free or hand on p.top on every path            | void f(int n) { struct tagged p = {0}; p.top = make(n); keep(&p.inner); }                                                  |
       | an own field of a struct over the bound           | LEAK        | f does not free or hand on p.f0 on every path             | void f(int n) { struct big p = {0}; p.f0 = make(n); if (n) return; free(p.f0); }                                           |
 
+  Scenario Outline: An array of structs, and a struct parameter that owns, are followed (<case>)
+    Each item of a local array of structs is a struct of its own, by a constant index (`a[0].left`), up to 16 CC_OWNS
+    fields in all. A struct passed by value to a CC_OWNS parameter is followed in the callee, and its fields own from
+    the entry; in the caller, the call hands its fields on.
+
+    Given the C file "items.c" holds:
+      """
+      #include <stdlib.h>
+      #include <string.h>
+      #include "cchecker.h"
+      struct pair { CC_OWNS char *left; CC_OWNS char *right; };
+      struct outer { int n; struct pair inner; };
+      CC_OWNS char *make(int n); void keep(void *p); void lend(char **q); void take_pair(CC_OWNS struct pair p);
+      void pairs_done(struct pair (*a)[2]);
+      <code>
+      """
+    When I run cchecker with "--tools rules --json $DIR/items.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      {"code":"CC-OWN-<kind>","tool":"rules","file":"$DIR/items.c","line":8,"column":6,"message":"<message>"
+      """
+
+    Examples:
+      | case                                                     | kind        | message                                                  | code                                                                                                                                            |
+      | an item of an array leaks                                | LEAK        | f does not free or hand on a[0].left on every path       | void f(int n) { struct pair a[2] = {0}; a[0].left = make(n); if (n) return; free(a[0].left); }                                                  |
+      | a leak before the whole array is lent                    | LEAK        | f does not free or hand on a[0].left on every path       | void f(int n) { struct pair a[2] = {0}; a[0].left = make(n); if (n) return; keep(a); }                                                          |
+      | a leak before the address of an item is lent             | LEAK        | f does not free or hand on a[1].left on every path       | void f(int n) { struct pair a[2] = {0}; a[1].left = make(n); if (n) return; keep(&a[0]); }                                                      |
+      | one pointer of an item lent, the other leaks             | LEAK        | f does not free or hand on a[0].left on every path       | void f(int n) { struct pair a[2] = {0}; a[1].left = make(n); a[0].left = make(n); lend(&a[1].left); }                                           |
+      | a new value of an item                                   | LEAK        | f does not free or hand on a[0].left on every path       | void f(int n) { struct pair a[2] = {0}; a[0].left = make(n); a[0] = a[1]; keep(a); }                                                            |
+      | a reset of an item                                       | LEAK        | f does not free or hand on a[0].left on every path       | void f(int n) { struct pair a[2] = {0}; a[0].left = make(n); a[0] = (struct pair){0}; }                                                         |
+      | a clear of the whole array                               | LEAK        | f does not free or hand on a[0].left on every path       | void f(int n) { struct pair a[2] = {0}; a[0].left = make(n); memset(a, 0, sizeof a); }                                                          |
+      | an item initialized from a local                         | LEAK        | f does not free or hand on c on every path               | void f(int n) { CC_OWNS char *b = make(n); CC_OWNS char *c = make(n); struct pair a[2] = { { b }, { c } }; free(b); }                           |
+      | an item initialized from a local, both freed             | DOUBLE-FREE | f frees b, which it already freed or handed on           | void f(int n) { CC_OWNS char *b = make(n); CC_OWNS char *c = make(n); struct pair a[2] = { { b }, { c } }; free(b); free(a[0].left); free(c); } |
+      | a struct in an item                                      | LEAK        | f does not free or hand on a[1].inner.left on every path | void f(int n) { struct outer a[2] = {0}; a[1].inner.left = make(n); if (n) return; free(a[1].inner.left); }                                     |
+      | an index of a constant expression                        | LEAK        | f does not free or hand on a[1].left on every path       | void f(int n) { struct pair a[2] = {0}; a[2 - 1].left = make(n); if (n) return; free(a[1].left); }                                              |
+      | an array at the bound of 16 fields                       | LEAK        | f does not free or hand on a[7].left on every path       | void f(int n) { struct pair a[8] = {0}; a[7].left = make(n); }                                                                                  |
+      | an item freed before the cleanup                         | DOUBLE-FREE | f frees a[0].left, which it already freed or handed on   | void f(int n) { __attribute__((cleanup(pairs_done))) struct pair a[2] = {0}; a[0].left = make(n); free(a[0].left); }                            |
+      | an item handed on, then freed                            | DOUBLE-FREE | f frees a[0].left, which it already freed or handed on   | void f(int n) { struct pair a[2] = {0}; a[0].left = make(n); take_pair(a[0]); free(a[0].left); }                                                |
+      | a CC_OWNS struct parameter, one field not freed          | LEAK        | f does not free or hand on p.right on every path         | void f(CC_OWNS struct pair p) { free(p.left); }                                                                                                 |
+      | a field of a CC_OWNS struct parameter set again          | LEAK        | f does not free or hand on p.left on every path          | void f(CC_OWNS struct pair p) { p.left = make(1); free(p.left); free(p.right); }                                                                |
+      | a CC_OWNS struct parameter cleared after one free        | LEAK        | f does not free or hand on p.right on every path         | void f(CC_OWNS struct pair p) { free(p.left); memset(&p, 0, sizeof p); }                                                                        |
+      | a CC_OWNS struct parameter with a struct in it           | LEAK        | f does not free or hand on p.inner.right on every path   | void f(CC_OWNS struct outer p) { free(p.inner.left); }                                                                                          |
+      | a CC_OWNS struct parameter handed on, then freed         | DOUBLE-FREE | f frees p.left, which it already freed or handed on      | void f(CC_OWNS struct pair p) { take_pair(p); free(p.left); }                                                                                   |
+      | a struct handed to a CC_OWNS parameter, then freed       | DOUBLE-FREE | f frees q.left, which it already freed or handed on      | void f(int n) { struct pair q = {0}; q.left = make(n); take_pair(q); free(q.left); }                                                            |
+      | a field set from a local handed on, then the local freed | DOUBLE-FREE | f frees b, which it already freed or handed on           | void f(int n) { CC_OWNS char *b = make(n); struct pair q = {0}; q.left = b; take_pair(q); free(b); }                                            |
+
   Scenario: A function with more paths than the rules follow is checked on those it went through and counted
     Given the C file "many.c" holds:
       """

@@ -28,6 +28,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   struct are: `keep(&p.inner)`, `p.inner = q`, `memset(&p.inner, 0, sizeof p.inner)` and `pair_free(&p.inner)` work on
   the fields of that member, and a nested initializer (`{ .inner = { .left = b } }`) gives each its item. Run
   `--update-baseline` once after upgrading.
+- **Breaking:** a local array of structs of a constant size (`struct pair a[2]`, up to 16 `CC_OWNS` fields in all) is
+  followed item by item by a constant index (`a[0].left`); an index that is not a constant, the array read whole
+  (`keep(a)`, `a + 1`) or `&a[0]` hands every item on, and `memset(a, 0, sizeof a)` clears it. Run
+  `--update-baseline` once after upgrading.
+- **Breaking:** `CC_OWNS` on a struct parameter passed by value (`void f(CC_OWNS struct pair p)`) says that the
+  function owns its `CC_OWNS` fields from the entry (`p.left`), not the struct as one pointer; a caller that passes a
+  struct there hands its fields on. Run `--update-baseline` once after upgrading.
 - The items of `p = (struct pair){...}` that read a field of `p` (`p.left ? p.left : make(n)`) are read before the
   store, and a `case` or `default` label inside a block of a `switch` keeps the pointers of that block, as a `goto`
   into it does.

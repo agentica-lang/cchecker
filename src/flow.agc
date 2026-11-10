@@ -44,8 +44,8 @@ KEY_MARK = "#"
 
 # The structs in a local struct are followed only up to these bounds: the levels of structs in it, and its CC_OWNS
 # fields in all; over them only its own fields are. Each field is a pointer of the walk, and a path that lends the
-# structs in it one by one keeps a state
-# for each choice (see `specs/limits.feature`).
+# structs in it one by one keeps a state for each choice (see `specs/limits.feature`). A local array of structs is
+# followed only when its items times the CC_OWNS fields of each are at most `MAX_NESTED_FIELDS`.
 MAX_NESTED_DEPTH = 8
 MAX_NESTED_FIELDS = 16
 
@@ -179,10 +179,11 @@ export struct Node
 end
 
 ## The graph of one function, at the place of its definition. `owned` are its parameters that own what the caller
-## passes, and `owns` says whether the ownership rules read the function: it has a pointer that owns, or calls a
-## function that returns one. `releases` are the keys of the locks of its CC_RELEASES in the names of its parameters,
-## in the order of its marks ("" for the restore of a pair), and `acquires` those of its CC_ACQUIRES ("" for the set
-## of a pair). `enters` says that a `goto`, or a `case` or `default` label, goes into a block from outside it.
+## passes (for a CC_OWNS struct passed by value, its CC_OWNS fields: `p.left`), and `owns` says whether the ownership
+## rules read the function: it has a pointer that owns, or calls a function that returns one. `releases` are the keys
+## of the locks of its CC_RELEASES in the names of its parameters, in the order of its marks ("" for the restore of a
+## pair), and `acquires` those of its CC_ACQUIRES ("" for the set of a pair). `enters` says that a `goto`, or a `case`
+## or `default` label, goes into a block from outside it.
 export struct Body
   key: String
   name: String
@@ -221,7 +222,8 @@ end
 ## (by the ids of their declarations) that own what is stored in them. `unions` are those of the fields that belong
 ## to a union, `records` the structs with a CC_OWNS field or a field of such a struct, by the id of their
 ## declaration, and `typed` the record of the type of each local variable, initializer and `sizeof` of a type of the
-## function bodies, and of each field, that names one of them, by the id of the node.
+## function bodies, and of each field, that names one of them, by the id of the node. `lengths` are the number of
+## items of each local array of such structs (`struct pair a[2]`, whose `typed` is the record of its items).
 export struct Owning
   returns: Set[String]
   takes: Map[String, List[Int]]
@@ -232,6 +234,7 @@ export struct Owning
   unions: Set[String]
   records: Map[String, OwnedRecord]
   typed: Map[String, String]
+  lengths: Map[String, Int] = {}
 end
 
 ## A struct with a CC_OWNS field, or with a field of such a struct: the ids and names of all its fields, in the order
@@ -745,10 +748,21 @@ def owners_of(ctx: Context, key: String, node: Json) -> Owners
   )
 
   declared = keys_of(node, all)
-  followed = owned_fields(ctx, all, declared)
+  followed = owned_fields(ctx, all, declared, taken_structs(ctx, key, node))
   keys = declared
   for id in followed.members.keys
     keys = keys.put(id, followed.members[id])
+  end
+
+  # A struct passed by value to a CC_OWNS parameter is no pointer: its followed fields own from the entry instead, and
+  # one that is not followed owns nothing.
+  structs = Ast.children(node)
+    .select do |child| Ast.kind(child) == "ParmVarDecl" and not pointer_type?(child) and record_type?(child) end
+    .map do |child| declared_key(declared, child) end
+
+  params = params.select do |name| not structs.include?(name) end
+  for name in structs
+    params = params.concat(followed.of.get(name, []))
   end
 
   decls = all.select do |n| Ast.kind(n) == "VarDecl" end
@@ -801,6 +815,29 @@ def owners_of(ctx: Context, key: String, node: Json) -> Owners
     kept: kept_calls(ctx, all, places),
     calls: all.any? do |n| owning_call?(ctx, n) end,
   )
+end
+
+# The parameters of a function, whose key is `key`, that a caller passes a struct to by value and that take it
+# (CC_OWNS): their fields own from the entry.
+def taken_structs(ctx: Context, key: String, node: Json) -> List[Json]
+  params = Ast.children(node).select do |child| Ast.kind(child) == "ParmVarDecl" end
+  takes = ctx.owning.takes.get(key, [])
+  return (0...params.size).to_a.select do |i| takes.include?(i) end.map do |i| params[i] end
+end
+
+# Whether the type of a declaration or an expression is a struct or a union itself, as written or behind a typedef.
+def record_type?(node: Json) -> Bool
+  type = JSON.get(node, "type").unwrap_or(JSON.from(""))
+  return [Ast.text(type, "qualType"), Ast.text(type, "desugaredQualType")].any? do |text|
+    bare = unqualified(text)
+    for word in ["const ", "volatile "]
+      if bare.start_with?(word)
+        bare = bare.slice(word.length, bare.length - word.length)
+      end
+    end
+
+    (bare.start_with?("struct ") or bare.start_with?("union ")) and not bare.end_with?("*") and not bare.end_with?("]")
+  end
 end
 
 # Whether an expression is a call of an allocator (`malloc`, `calloc`, ...), through casts and parentheses.
@@ -1003,16 +1040,18 @@ end
 # of the whole struct. `&p.left` of a CC_OWNS field is the address of that pointer, and `&p.inner` that of the struct
 # in it. A struct whose other field has its address taken (`&p.n`, which may reach the whole struct), a static one, a
 # union and one whose record is not known (`Owning.typed`) are not followed: a store into their CC_OWNS fields hands
-# the pointer on.
-def owned_fields(ctx: Context, all: List[Json], keys: Map[String, String]) -> Followed
+# the pointer on. A struct passed by value to a CC_OWNS parameter (`params`) is followed as a local one. Each item of
+# a local array of structs is a struct of its own (`a[0].left`), within the bound of `MAX_NESTED_FIELDS` in all.
+def owned_fields(ctx: Context, all: List[Json], keys: Map[String, String], params: List[Json] = []) -> Followed
   found = Followed(members: {}, of: {}, items: {})
   if ctx.owning.fields.empty?
     return found
   end
 
   structs: Map[String, Json] = {}
-  for n in all
-    if Ast.kind(n) == "VarDecl" and Ast.text(n, "storageClass") == "" and ctx.owning.typed.key?(Ast.text(n, "id"))
+  for n in params.concat(all)
+    local = Ast.kind(n) == "ParmVarDecl" or (Ast.kind(n) == "VarDecl" and Ast.text(n, "storageClass") == "")
+    if local and ctx.owning.typed.key?(Ast.text(n, "id"))
       structs = structs.put(Ast.text(n, "id"), n)
     end
   end
@@ -1025,7 +1064,14 @@ def owned_fields(ctx: Context, all: List[Json], keys: Map[String, String]) -> Fo
         # Over the bounds only the struct's own CC_OWNS fields are followed: a struct in it is then a field that does
         # not own (a store into its fields hands the pointer on, and `&p.inner` stops following the whole struct).
         nest = record.nested.all? do |inner| inner == "" end or nested_fields(ctx, record, 0) <= MAX_NESTED_FIELDS
-        found = with_parts(ctx, found, keys.get(id, ""), keys.get(id, ""), record, 0, nest)
+        case ctx.owning.lengths.get(id)
+          some(length) ->
+            if length * nested_fields(ctx, record, 0) <= MAX_NESTED_FIELDS
+              found = with_items(ctx, found, keys.get(id, ""), record, length)
+            end
+
+          none -> found = with_parts(ctx, found, keys.get(id, ""), keys.get(id, ""), record, 0, nest)
+        end
 
       none -> next
     end
@@ -1034,7 +1080,7 @@ def owned_fields(ctx: Context, all: List[Json], keys: Map[String, String]) -> Fo
   # The key of each `p.f` and `p.inner` of a struct, and the structs whose other fields have their address taken.
   unfollowed: Set[String] = Set.new([])
   for n in all
-    if Ast.kind(n) == "MemberExpr"
+    if Ast.kind(n) == "MemberExpr" or Ast.kind(n) == "ArraySubscriptExpr"
       place = part_of(found, keys, n)
       if found.of.key?(place)
         found = found.with(wholes: found.wholes.put(Ast.text(n, "id"), place))
@@ -1065,9 +1111,9 @@ def owned_fields(ctx: Context, all: List[Json], keys: Map[String, String]) -> Fo
   )
 end
 
-# The key of the struct of `roots` that a place is in (`p` for `p.inner.left`).
+# The key of the struct of `roots` that a place is in (`p` for `p.inner.left`, `a` for `a[0].left`).
 def root_of(place: String, roots: Set[String]) -> String
-  name = place.split(".").first
+  name = place.split(".").first.split("[").first
   if roots.include?(name)
     return name
   end
@@ -1162,17 +1208,49 @@ def with_parts(
   return grown
 end
 
+# `found` with the items of the local array `key` of structs of the record `record`: each is a struct of its own
+# (`a[0]`), with its parts.
+def with_items(ctx: Context, found: Followed, key: String, record: OwnedRecord, length: Int) -> Followed
+  grown = found.with(of: found.of.put(key, []), parts: found.parts.put(key, []))
+  for i in 0...length
+    place = "#{key}[#{i}]"
+    grown = with_parts(ctx, grown, place, place, record, 0, true)
+    for leaf in grown.of.get(place, [])
+      grown = with_field(grown, key, leaf)
+    end
+
+    grown = grown.with(
+      parts: grown.parts.put(key, grown.parts.get(key, []).push(place)),
+      items: grown.items.put(place, i),
+      slots: grown.slots.put("#{key}|[#{i}]", place),
+    )
+  end
+
+  return grown
+end
+
 # The key of the part that a member expression names (`p.left`, `p.inner`, `p.inner.left`, `c.buf` through an unnamed
-# member), when its struct is followed; "" for any other.
+# member, `a[0]` and `a[0].left` of an array by a constant index), when its struct is followed; "" for any other.
 def part_of(found: Followed, keys: Map[String, String], node: Json) -> String
   bare = see_through(node)
-  if Ast.kind(bare) == "DeclRefExpr" and Ast.referenced_kind(bare) == "VarDecl"
+  if Ast.kind(bare) == "DeclRefExpr" and VARIABLES.include?(Ast.referenced_kind(bare))
     key = keys.get(Ast.referenced_id(bare), "")
     if found.parts.key?(key)
       return key
     end
 
     return ""
+  end
+
+  if Ast.kind(bare) == "ArraySubscriptExpr"
+    parts = Ast.children(bare)
+    base = part_of(found, keys, parts.first)
+    index = constant_of(parts.last)
+    if base == "" or index < 0
+      return ""
+    end
+
+    return found.slots.get("#{base}|[#{index}]", "")
   end
 
   if Ast.kind(bare) != "MemberExpr" or Ast.flag?(bare, "isArrow")
@@ -1185,6 +1263,38 @@ def part_of(found: Followed, keys: Map[String, String], node: Json) -> String
   end
 
   return found.slots.get("#{base}|#{Ast.text(bare, "referencedMemberDecl")}", "")
+end
+
+# The value of an index that is an integer constant: a number, also through a cast, parentheses and the operators `+`,
+# `-` and `*` of such numbers (`N - 1` of a macro); -1 for any other (a variable, an enum constant, a negative value).
+def constant_of(node: Json) -> Int
+  bare = see_through(node)
+  if Ast.kind(bare) == "IntegerLiteral"
+    return Ast.text(bare, "value").to_i.unwrap_or(-1)
+  end
+
+  parts = Ast.children(bare)
+  if Ast.kind(bare) != "BinaryOperator" or parts.size != 2
+    return -1
+  end
+
+  left = constant_of(parts.first)
+  right = constant_of(parts.last)
+  if left < 0 or right < 0
+    return -1
+  end
+
+  case Ast.text(bare, "opcode")
+    "+" -> return left + right
+    "-" ->
+      if left < right
+        return -1
+      end
+
+      return left - right
+    "*" -> return left * right
+    _ -> return -1
+  end
 end
 
 # `found` with the field `place` of the struct `key`.
@@ -1245,7 +1355,17 @@ def struct_of(node: Json) -> String
     return struct_of(base)
   end
 
-  if Ast.kind(base) != "DeclRefExpr" or Ast.referenced_kind(base) != "VarDecl"
+  # An item of a local array (`a[i].left`), not of one through a pointer.
+  if Ast.kind(base) == "ArraySubscriptExpr"
+    decayed = Ast.children(base).first
+    if Ast.text(decayed, "castKind") != "ArrayToPointerDecay"
+      return ""
+    end
+
+    base = see_through(decayed)
+  end
+
+  if Ast.kind(base) != "DeclRefExpr" or not VARIABLES.include?(Ast.referenced_kind(base))
     return ""
   end
 
@@ -1879,7 +1999,7 @@ end
 # order. A struct in it that gets another value (`{ .inner = q }`) holds what `q` held: its fields are someone else's,
 # as after an escape. `held` are the items that a compound literal read before the store (see `reset_by_literal`).
 def initializer(b: Builder, key: String, init: Json, preds: List[Int], held: Map[Int, String] = {}) -> Built
-  items = Ast.children(init)
+  items = Ast.items(init)
   at: Map[Int, String] = {}
   for place in b.owners.places.parts.get(key, [])
     case b.owners.places.items.get(place)
@@ -1966,14 +2086,20 @@ def expression(b: Builder, node: Json, preds: List[Int]) -> Built
       end
 
       # `p.inner` of a followed struct names a struct in it whole, which escapes there; `p.n` reads a field, which
-      # is no
-      # escape of the struct.
+      # is no escape of the struct, but for `a[i].n` of an array by an index that is not a constant: see `item_read`.
       if whole_key(b, node) != ""
         return escaped(b, node, preds)
       end
 
       if struct_of(node) != ""
-        return Built(b: b, exits: preds)
+        return item_read(b, node, preds)
+      end
+
+      return in_order(b, Ast.children(node), preds)
+    "ArraySubscriptExpr" ->
+      # `a[0]` of a followed array names an item whole, which escapes there.
+      if whole_key(b, node) != ""
+        return escaped(b, node, preds)
       end
 
       return in_order(b, Ast.children(node), preds)
@@ -2000,7 +2126,15 @@ def expression(b: Builder, node: Json, preds: List[Int]) -> Built
         return add(written.b, Event.Lends([lent]), written.exits)
       end
 
-      inner = expression(b, operand, preds)
+      # The address of an item of a followed array (`&a[0]`) may reach every item: the whole array escapes.
+      item = see_through(operand)
+      inner = Built(b: b, exits: preds)
+      if opcode == "&" and Ast.kind(item) == "ArraySubscriptExpr" and whole_key(b, Ast.children(item).first) != ""
+        inner = in_order(b, Ast.children(item), preds)
+      else
+        inner = expression(b, operand, preds)
+      end
+
       if opcode == "++" or opcode == "--"
         return add(inner.b, Event.Writes([target_root(b.owners.places.keys, operand)]), inner.exits)
       end
@@ -2047,6 +2181,22 @@ def expression(b: Builder, node: Json, preds: List[Int]) -> Built
     "UnaryExprOrTypeTraitExpr" -> return Built(b: b, exits: preds)
     _ -> return in_order(b, Ast.children(node), preds)
   end
+end
+
+# A field of a local struct that the rules do not follow as a pointer (`p.n`, `a[0].n`): no read of the struct. An
+# item of a followed array by an index that is not a constant (`a[i].left`) may be any item: the whole array escapes
+# there, after the index is read.
+def item_read(b: Builder, node: Json, preds: List[Int]) -> Built
+  base = see_through(Ast.children(node).first)
+  while Ast.kind(base) == "MemberExpr"
+    base = see_through(Ast.children(base).first)
+  end
+
+  if Ast.kind(base) != "ArraySubscriptExpr" or whole_key(b, base) != ""
+    return Built(b: b, exits: preds)
+  end
+
+  return in_order(b, Ast.children(base), preds)
 end
 
 def in_order(b: Builder, nodes: List[Json], preds: List[Int]) -> Built
@@ -2404,18 +2554,27 @@ def zero_byte?(node: Json) -> Bool
 end
 
 # Whether the size of a `memset` of `&p` (or `&p.inner`) is that of the whole struct: `sizeof p`, `sizeof(struct pair)`
-# or the size of a typedef of it. A smaller size clears some of the fields only, and stays an escape.
+# or the size of a typedef of it. A smaller size clears some of the fields only, and stays an escape. A followed array
+# (`memset(a, 0, sizeof a)`) is cleared by `sizeof a` only.
 def whole_size?(b: Builder, target: Json, size: Json) -> Bool
   bare = see_through(size)
-  if Ast.kind(bare) != "UnaryExprOrTypeTraitExpr" or Ast.text(bare, "name") != "sizeof" or not address?(target)
+  if Ast.kind(bare) != "UnaryExprOrTypeTraitExpr" or Ast.text(bare, "name") != "sizeof"
     return false
   end
 
-  pointed = see_through(Ast.children(see_through(target)).first)
+  pointed = see_through(target)
+  if address?(target)
+    pointed = see_through(Ast.children(pointed).first)
+  end
+
   whole = whole_key(b, pointed)
   measured = Ast.children(bare)
   if not measured.empty?
     return whole != "" and whole_key(b, measured.first) == whole
+  end
+
+  if not address?(target) or b.ctx.owning.lengths.key?(Ast.referenced_id(pointed))
+    return false
   end
 
   # The record of a variable by its declaration, of a struct in it by its field.
@@ -2448,10 +2607,11 @@ def followed_struct(b: Builder, node: Json) -> List[String]
   return b.owners.places.fields.get(whole_key(b, node), [])
 end
 
-# The key of the followed local struct (`p`), or of the struct in it (`p.inner`), that an expression names whole; "".
+# The key of the followed local struct (`p`), of the struct in it (`p.inner`), of a followed array (`a`) or of an item
+# of it (`a[0]`), that an expression names whole; "".
 def whole_key(b: Builder, node: Json) -> String
   bare = see_through(node)
-  if Ast.kind(bare) == "MemberExpr"
+  if Ast.kind(bare) == "MemberExpr" or Ast.kind(bare) == "ArraySubscriptExpr"
     return b.owners.places.wholes.get(Ast.text(bare, "id"), "")
   end
 
@@ -2475,6 +2635,17 @@ def struct_address(b: Builder, node: Json) -> List[String]
   end
 
   return followed_struct(b, Ast.children(bare).first)
+end
+
+# The followed CC_OWNS fields of what a `memset` clears: the struct whose address it gets (`&p`), or a followed array
+# that it gets whole (`a`).
+def cleared_struct(b: Builder, node: Json) -> List[String]
+  bare = see_through(node)
+  if Ast.kind(bare) == "DeclRefExpr"
+    return followed_struct(b, bare)
+  end
+
+  return struct_address(b, bare)
 end
 
 # `memset(&p, 0, sizeof p)` of a followed struct: its fields are followed again, null, so one that still owned leaks
@@ -2623,10 +2794,13 @@ def call(b: Builder, node: Json, preds: List[Int], tried: Bool) -> Built
   frees_fields = b.ctx.owning.frees.get(key_of_function(b.ctx, name), [])
   clearing: List[String] = []
   if Known.FILLS.include?(name) and args.size > 2 and zero_byte?(args[1]) and whole_size?(b, args[0], args[2])
-    clearing = struct_address(b, args[0])
+    clearing = cleared_struct(b, args[0])
   end
 
+  # A followed struct passed by value to a CC_OWNS parameter hands its fields on to the callee.
+  handing = b.ctx.owning.takes.get(key_of_function(b.ctx, name), [])
   struct_freed: List[String] = []
+  struct_handed: List[String] = []
   built = Built(b: b, exits: preds)
   for i in 0...args.size
     fields = struct_address(built.b, args[i])
@@ -2634,6 +2808,8 @@ def call(b: Builder, node: Json, preds: List[Int], tried: Bool) -> Built
       # As for `free_and_null(&p)`, the helper is taken to null what it frees: a condition on a field is forgotten.
       struct_freed = struct_freed.concat(fields)
       built = add(built.b, Event.Writes(fields), built.exits)
+    elsif handing.include?(i) and record_type?(args[i]) and not followed_struct(built.b, args[i]).empty?
+      struct_handed = struct_handed.concat(followed_struct(built.b, args[i]))
     elsif i == 0 and not clearing.empty?
       next
     else
@@ -2659,7 +2835,12 @@ def call(b: Builder, node: Json, preds: List[Int], tried: Bool) -> Built
     site = site.with(lost: true)
   end
 
-  site = site.with(frees: site.frees.concat(struct_freed), clears: site.clears.concat(struct_freed))
+  site = site.with(
+    frees: site.frees.concat(struct_freed),
+    clears: site.clears.concat(struct_freed),
+    hands: site.hands.concat(struct_handed),
+  )
+
   called = add(built.b, Event.Call(site), built.exits)
   if site.stops
     return Built(b: called.b, exits: [])

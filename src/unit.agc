@@ -229,6 +229,14 @@ struct Typing
   records: Map[String, Record]
   found: Map[String, String] = {}
   unfit: Set[String]
+  lengths: Map[String, Int] = {}
+end
+
+# The records that `typed_of` found by the id of each node, and the number of items of each local array of structs
+# (`struct pair a[2]`) by the id of its declaration.
+struct Typed
+  found: Map[String, String]
+  lengths: Map[String, Int]
 end
 
 # What the walk of the functions needs from the whole unit: the keys of its static functions and variables by name,
@@ -445,7 +453,8 @@ def owning_of(tables: Tables, nodes: List[Json]) -> Flow.Owning
   # pair inner; }`), by the id of their declaration, with all their fields in the order of the items of an
   # initializer, and the record that the type of each local variable, field, initializer and `sizeof` of a type names.
   all_records = records_of(nodes.concat(inner))
-  found = typed_of(nodes, bodies, all_records)
+  typed_nodes = typed_of(nodes, declarations, all_records)
+  found = typed_nodes.found
   owning = Set.new(
     all_records.keys.select do |id|
       all_records[id].field_ids.any? do |field| fields.include?(field) and not unions.include?(field) end
@@ -497,6 +506,7 @@ def owning_of(tables: Tables, nodes: List[Json]) -> Flow.Owning
     unions: unions,
     records: records,
     typed: typed,
+    lengths: typed_nodes.lengths.select do |id, _| typed.key?(id) end,
   )
 end
 
@@ -1076,8 +1086,10 @@ end
 # unnamed struct is the one declared with the variable (`struct { ... } p`), or the unnamed member that the item of an
 # initializer gives. A variable is left out when a field it reads (`p.f`) or an item of its initializer does not fit
 # the record: clang's AST has no node for a tag declared in a parameter list (`void f(struct pair { int k; } x)`), so
-# its name finds the top-level tag instead.
-def typed_of(nodes: List[Json], bodies: List[Json], records: Map[String, Record]) -> Map[String, String]
+# its name finds the top-level tag instead. The parameters of a function are walked before its body, in the scope of
+# the file. A local array of structs of a constant size (`struct pair a[2]`) is typed by the record of its items.
+def typed_of(nodes: List[Json], functions: List[Json], records: Map[String, Record]) -> Typed
+  bodies = functions.flat_map do |n| Ast.children(n).select do |child| Ast.kind(child) == "CompoundStmt" end end
   tags: Map[String, String] = {}
   for nested in record_decls(nodes, "")
     name = Ast.text(nested.node, "name")
@@ -1103,8 +1115,17 @@ def typed_of(nodes: List[Json], bodies: List[Json], records: Map[String, Record]
     t = typed_fields(t, nested.node)
   end
 
-  for body in bodies
-    t = typed_in(t, body, "")
+  for function in functions
+    parts = Ast.children(function)
+    if parts.any? do |child| Ast.kind(child) == "CompoundStmt" end
+      for child in parts
+        if Ast.kind(child) == "ParmVarDecl"
+          t = typed_variable(t, child, "")
+        elsif Ast.kind(child) == "CompoundStmt"
+          t = typed_in(t, child, "")
+        end
+      end
+    end
   end
 
   typed: Map[String, String] = {}
@@ -1114,7 +1135,7 @@ def typed_of(nodes: List[Json], bodies: List[Json], records: Map[String, Record]
     end
   end
 
-  return typed
+  return Typed(found: typed, lengths: t.lengths)
 end
 
 # `members` with each field of a record whose type is the unnamed record declared just before it, by the id of the
@@ -1216,6 +1237,10 @@ def typed_in(t: Typing, node: Json, given: String) -> Typing
     "MemberExpr" ->
       # A field the record of the variable does not have: the variable is of another record.
       base = Flow.see_through(Ast.children(node).first)
+      if Ast.kind(base) == "ArraySubscriptExpr"
+        base = Flow.see_through(Ast.children(base).first)
+      end
+
       walked = t
       if not Ast.flag?(node, "isArrow") and Ast.kind(base) == "DeclRefExpr"
         var = Ast.referenced_id(base)
@@ -1267,23 +1292,70 @@ def typed_children(t: Typing, node: Json) -> Typing
   return walked
 end
 
-# A local variable and its initializer. A variable whose initializer has an item that does not fit the field it gives a
-# value to is of another record.
+# A local variable or a parameter and its initializer. A variable whose initializer has an item that does not fit the
+# field it gives a value to is of another record. An array of structs of a constant size is typed by the record of
+# its items, and each item of its initializer that is a list must fit that record.
 def typed_variable(t: Typing, node: Json, unnamed: String) -> Typing
-  id = record_named(t, JSON.get(node, "type").unwrap_or(JSON.from("")), unnamed)
+  type = JSON.get(node, "type").unwrap_or(JSON.from(""))
+  length = array_length(Ast.text(type, "qualType"))
+  if length < 0
+    length = array_length(Ast.text(type, "desugaredQualType"))
+  end
+
+  id = ""
+  if length > 0
+    # A typedef of an array (`typedef struct pair two[2]`) shows the array without its typedefs only.
+    written = Ast.text(type, "qualType")
+    if array_length(written) < 0
+      written = Ast.text(type, "desugaredQualType")
+    end
+
+    id = record_of_text(t, item_type(written), item_type(Ast.text(type, "desugaredQualType")), unnamed)
+  elsif length < 0
+    id = record_named(t, type, unnamed)
+  end
+
   walked = t
   if id != ""
     walked = walked.with(found: walked.found.put(Ast.text(node, "id"), id))
+    if length > 0
+      walked = walked.with(lengths: walked.lengths.put(Ast.text(node, "id"), length))
+    end
   end
 
   for child in Ast.children(node)
     walked = typed_in(walked, child, id)
-    if Ast.kind(child) == "InitListExpr" and not fits?(walked, id, child)
+    lists = [child]
+    if length > 0
+      lists = Ast.children(child).select do |item| Ast.kind(item) == "InitListExpr" end
+    end
+
+    if Ast.kind(child) == "InitListExpr" and not lists.all? do |list| fits?(walked, id, list) end
       walked = walked.with(unfit: walked.unfit.add(Ast.text(node, "id")))
     end
   end
 
   return walked
+end
+
+# The number of items of an array type of one constant size (`struct pair[2]`): -1 for a type that is no array, 0 for
+# any other array (a size that is not a number, `struct pair[n]`, or one of arrays, `struct pair[2][3]`).
+def array_length(text: String) -> Int
+  if not text.end_with?("]")
+    return -1
+  end
+
+  open = text.split("[")
+  if open.size != 2
+    return 0
+  end
+
+  return open[1].slice(0, open[1].length - 1).to_i.unwrap_or(0)
+end
+
+# The type of the items of an array type (`struct pair` for `struct pair[2]`), or the type itself.
+def item_type(text: String) -> String
+  return text.split("[").first.strip
 end
 
 # Whether each item of an initializer has the type of the field it gives a value to. A union's names its field.
@@ -1357,9 +1429,14 @@ end
 # The record that a type names, as `typed_of` finds it; `unnamed` for an unnamed struct, "" for any other type (a
 # pointer, an array, a number).
 def record_named(t: Typing, type: Json, unnamed: String) -> String
-  text = without_qualifiers(Ast.text(type, "qualType"))
+  return record_of_text(t, Ast.text(type, "qualType"), Ast.text(type, "desugaredQualType"), unnamed)
+end
+
+# `record_named` of a type as clang writes it, and without its typedefs (`desugared`).
+def record_of_text(t: Typing, written: String, desugared: String, unnamed: String) -> String
+  text = without_qualifiers(written)
   if text.start_with?("typeof") or text.start_with?("__typeof")
-    text = without_qualifiers(Ast.text(type, "desugaredQualType"))
+    text = without_qualifiers(desugared)
   end
 
   for word in ["struct ", "union "]
