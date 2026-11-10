@@ -375,6 +375,63 @@ Feature: Time and memory on large generated inputs
       "incomplete_functions":[]
       """
 
+  Scenario: Arrays of structs of 16 CC_OWNS fields, the bound, in 24 blocks of a loop stay in their bounds
+    Each item of the array is a struct of its own: one is passed by value on one side of each test and its field is
+    freed on the other, and the array is cleared at the end. At the end of its block every field leaves the state.
+
+    Given the C file "items.c" holds, with ITEMS as 24 times " { struct pair a[8] = {0}; a[0].left = make(); a[7].right = make(); if (pick()) lend(a[0]); else free(a[0].left); free(a[7].right); memset(a, 0, sizeof a); }":
+      """
+      #include <stdlib.h>
+      #include <string.h>
+      #include "cchecker.h"
+      struct pair { CC_OWNS char *left; CC_OWNS char *right; };
+      CC_OWNS char *make(void);
+      int pick(void);
+      void lend(struct pair p);
+      void many(int n) {
+        for (int i = 0; i < n; i++) {ITEMS
+        }
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/items.c -- -I../include" in at most 1500 MiB and 20 seconds
+    Then the exit code is 0
+    And the output includes:
+      """
+      "incomplete_functions":[]
+      """
+
+  Scenario: Arrays of structs over the bound of 16 CC_OWNS fields are not followed and stay in their bounds
+    Each test lends one pointer of an item of one of two arrays, so a followed array would keep a state for each
+    choice of every test. Over the bound of 16 fields (9 items of 2) the arrays are not followed.
+
+    Given the C file "wide.c" holds:
+      """
+      #include <stdlib.h>
+      #include "cchecker.h"
+      struct pair { CC_OWNS char *left; CC_OWNS char *right; };
+      void keep(char **m);
+      int pick(void);
+      void many(int n) {
+        struct pair p[9] = {0}, q[9] = {0};
+        for (int i = 0; i < n; i++) {
+          if (pick()) keep(&p[0].left); else keep(&q[0].left);
+          if (pick()) keep(&p[1].right); else keep(&q[1].right);
+          if (pick()) keep(&p[2].left); else keep(&q[2].left);
+          if (pick()) keep(&p[3].right); else keep(&q[3].right);
+          if (pick()) keep(&p[4].left); else keep(&q[4].left);
+          if (pick()) keep(&p[5].right); else keep(&q[5].right);
+          if (pick()) keep(&p[6].left); else keep(&q[6].left);
+          if (pick()) keep(&p[7].right); else keep(&q[7].right);
+        }
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/wide.c -- -I../include" in at most 1500 MiB and 20 seconds
+    Then the exit code is 0
+    And the output includes:
+      """
+      "incomplete_functions":[]
+      """
+
   Scenario: A lock held in a function with more paths than the walk follows is not inferred short
     Given the file "compile_commands.json" holds:
       """

@@ -106,7 +106,8 @@ src/conf.c:9:5 CC-OWN-LEAK start does not free or hand on c on every path: 10:28
 A `malloc` into a local without a mark is not checked: `gcc -fanalyzer` reports
 those leaks, and the mark makes the contract part of the code. The rules do not
 follow a pointer into a struct or an array (a store into a `CC_OWNS` field is
-where they stop, but for the fields of a local struct, below), through a
+where they stop, but for the fields of a local struct or array of structs, or
+of a `CC_OWNS` struct parameter, below), through a
 function pointer, or out through a parameter without `CC_OWNS_OUT`
 (`int open_buf(char **out)`: the caller lends `&p` to be set). Two
 variables of the same name in one function (a local that shadows another, a
@@ -223,6 +224,46 @@ struct does not have: clang's AST has no node for a tag declared in a parameter
 list, `void f(struct pair { int k; } x)`, so its name finds the struct of the
 file): a store into their `CC_OWNS` fields hands the pointer on, as an
 initializer does, also of a union (`union u v = { .p = b };`).
+
+A local array of structs of a constant size (`struct pair a[2]`) is followed
+item by item when the function names its items by constant indexes only: each
+item is a struct of its own, `a[0].left` is a pointer of its own, and the
+findings name it so. The bound counts every item: the items times the
+`CC_OWNS` fields of each (with those of the structs in it) are at most 16. An
+index is a constant when it is a number, or `+`, `-` or `*` of numbers
+(`a[N - 1]` of a macro), up to 1048576; an enum constant or a `const` variable
+is not, and an index out of range names no item. An array that the function
+also reads in another way is not followed in the whole function: by an index
+that is not a constant (`a[i]`), whole (`keep(a)`, `a + 1`, `q = a`), or by the
+address of an item (`&a[0]`, which reaches the others), anywhere but in a
+`sizeof`, as the array that `memset` gets, or as an item at a `CC_FREES`
+parameter. Such a read may reach any item, and the walk also takes the path on
+which a loop does not run, where a loop that frees every item would leak them
+all. Nor is an array over the bound followed, or one of a variable length
+(`struct pair a[n]`), of two dimensions (`a[2][2]`), in a struct
+(`p.items[0]`), or a static one: a store into their `CC_OWNS` fields hands the
+pointer on. An item named whole (`take(a[0])`, `a[0] = a[1]`, `a[0] = (struct
+pair){0}`, `pair_free(&a[0])`, `memset(&a[0], 0, sizeof a[0])`) works as a
+struct in a struct does, on that item only, but `&a[k]` at a `CC_FREES`
+parameter may free the items after it too (`pairs_free(&a[0], n)`): those
+escape there. `memset(a, 0, sizeof a)` clears
+every item, `sizeof a` is no escape, an initializer gives each item its list
+(`{ { b }, { c } }`, `{ [1] = { .left = b } }`, with the rule of a field set
+from a local), and a `cleanup` function on the array frees every item.
+
+`CC_OWNS` on a struct parameter passed by value (`void f(CC_OWNS struct pair
+p)`) says that the function owns its `CC_OWNS` fields: the parameter is
+followed as a local struct is, and each field owns from the entry, so it is
+freed or handed on on every path, or the struct escapes (`keep(&p)`, `return
+p`). Without the mark the parameter is not followed, as before, and the mark on
+a struct with no `CC_OWNS` field, or whose struct the rules do not know (a tag
+declared in the parameter list), owns nothing. A caller that passes a followed
+struct there (`take_pair(q)`, or an item, `take_pair(a[0])`) hands its fields
+on: a later `free(q.left)` is a CC-OWN-DOUBLE-FREE, no leak of `q.left` is
+reported, and a field that stands for a local hands the local on. A struct
+passed through a function pointer or to the `...` of a variadic function is a
+by-value argument, an escape. As for every parameter, the mark on any
+declaration of the function holds in its definition and its callers.
 
 A filled pointer that the path never reads is not reported (`take(&b); return
 0;`): telling it from what a call that failed left would need a mark that says
