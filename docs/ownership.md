@@ -226,25 +226,28 @@ file): a store into their `CC_OWNS` fields hands the pointer on, as an
 initializer does, also of a union (`union u v = { .p = b };`).
 
 A local array of structs of a constant size (`struct pair a[2]`) is followed
-item by item: each item is a struct of its own, `a[0].left` is a pointer of its
-own, and the findings name it so. The bound counts every item: the items times
-the `CC_OWNS` fields of each (with those of the structs in it) are at most 16.
-Over it the array is not followed, nor is an array of a variable length
+item by item when the function names its items by constant indexes only: each
+item is a struct of its own, `a[0].left` is a pointer of its own, and the
+findings name it so. The bound counts every item: the items times the
+`CC_OWNS` fields of each (with those of the structs in it) are at most 16. An
+index is a constant when it is a number, or `+`, `-` or `*` of numbers
+(`a[N - 1]` of a macro), up to 1048576; an enum constant or a `const` variable
+is not, and an index out of range names no item. An array that the function
+also reads in another way is not followed in the whole function: by an index
+that is not a constant (`a[i]`), whole (`keep(a)`, `a + 1`, `q = a`), or by the
+address of an item (`&a[0]`, which reaches the others), anywhere but in a
+`sizeof`, as the array that `memset` gets, or as an item at a `CC_FREES`
+parameter. Such a read may reach any item, and the walk also takes the path on
+which a loop does not run, where a loop that frees every item would leak them
+all. Nor is an array over the bound followed, or one of a variable length
 (`struct pair a[n]`), of two dimensions (`a[2][2]`), in a struct
 (`p.items[0]`), or a static one: a store into their `CC_OWNS` fields hands the
-pointer on. An index is a constant when it is a number, or `+`, `-` or `*` of
-numbers (`a[N - 1]` of a macro); an enum constant or a `const` variable is not,
-and an index out of range names no item. An index that is not a constant
-(`a[i]`), the array read whole (`keep(a)`, `a + 1`, `q = a`) and the address
-of an item (`&a[0]`, which reaches the others) are an escape of the whole
-array: the loop that fills the items and the loop that frees them are clean,
-and a leak is found only before the first such escape. An item named whole
-(`take(a[0])`, `a[0] = a[1]`, `a[0] = (struct pair){0}`, `pair_free(&a[0])`,
-`memset(&a[0], 0, sizeof a[0])`) works as a struct in a struct does, on that
-item only. `memset(a, 0, sizeof a)` clears every item, `sizeof a` is no escape,
-an initializer gives each item its list (`{ { b }, { c } }`, `{ [1] = { .left
-= b } }`, with the rule of a field set from a local), and a `cleanup` function
-on the array frees every item.
+pointer on. An item named whole (`take(a[0])`, `a[0] = a[1]`, `a[0] = (struct
+pair){0}`, `pair_free(&a[0])`, `memset(&a[0], 0, sizeof a[0])`) works as a
+struct in a struct does, on that item only. `memset(a, 0, sizeof a)` clears
+every item, `sizeof a` is no escape, an initializer gives each item its list
+(`{ { b }, { c } }`, `{ [1] = { .left = b } }`, with the rule of a field set
+from a local), and a `cleanup` function on the array frees every item.
 
 `CC_OWNS` on a struct parameter passed by value (`void f(CC_OWNS struct pair
 p)`) says that the function owns its `CC_OWNS` fields: the parameter is

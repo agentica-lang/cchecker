@@ -1495,8 +1495,9 @@ Feature: Ownership on every path
 
   Scenario Outline: An array of structs, and a struct parameter that owns, are followed (<case>)
     Each item of a local array of structs is a struct of its own, by a constant index (`a[0].left`), up to 16 CC_OWNS
-    fields in all. A struct passed by value to a CC_OWNS parameter is followed in the callee, and its fields own from
-    the entry; in the caller, the call hands its fields on.
+    fields in all, when the function names its items by constant indexes only. A struct passed by value to a CC_OWNS
+    parameter is followed in the callee, and its fields own from the entry; in the caller, the call hands its fields
+    on.
 
     Given the C file "items.c" holds:
       """
@@ -1519,10 +1520,8 @@ Feature: Ownership on every path
     Examples:
       | case                                                     | kind        | message                                                  | code                                                                                                                                            |
       | an item of an array leaks                                | LEAK        | f does not free or hand on a[0].left on every path       | void f(int n) { struct pair a[2] = {0}; a[0].left = make(n); if (n) return; free(a[0].left); }                                                  |
-      | a leak before the whole array is lent                    | LEAK        | f does not free or hand on a[0].left on every path       | void f(int n) { struct pair a[2] = {0}; a[0].left = make(n); if (n) return; keep(a); }                                                          |
-      | a leak before the address of an item is lent             | LEAK        | f does not free or hand on a[1].left on every path       | void f(int n) { struct pair a[2] = {0}; a[1].left = make(n); if (n) return; keep(&a[0]); }                                                      |
       | one pointer of an item lent, the other leaks             | LEAK        | f does not free or hand on a[0].left on every path       | void f(int n) { struct pair a[2] = {0}; a[1].left = make(n); a[0].left = make(n); lend(&a[1].left); }                                           |
-      | a new value of an item                                   | LEAK        | f does not free or hand on a[0].left on every path       | void f(int n) { struct pair a[2] = {0}; a[0].left = make(n); a[0] = a[1]; keep(a); }                                                            |
+      | a new value of an item                                   | LEAK        | f does not free or hand on a[0].left on every path       | void f(int n) { struct pair a[2] = {0}; a[0].left = make(n); a[0] = a[1]; }                                                                     |
       | a reset of an item                                       | LEAK        | f does not free or hand on a[0].left on every path       | void f(int n) { struct pair a[2] = {0}; a[0].left = make(n); a[0] = (struct pair){0}; }                                                         |
       | a clear of the whole array                               | LEAK        | f does not free or hand on a[0].left on every path       | void f(int n) { struct pair a[2] = {0}; a[0].left = make(n); memset(a, 0, sizeof a); }                                                          |
       | an item initialized from a local                         | LEAK        | f does not free or hand on c on every path               | void f(int n) { CC_OWNS char *b = make(n); CC_OWNS char *c = make(n); struct pair a[2] = { { b }, { c } }; free(b); }                           |

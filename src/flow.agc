@@ -49,6 +49,10 @@ KEY_MARK = "#"
 MAX_NESTED_DEPTH = 8
 MAX_NESTED_FIELDS = 16
 
+# The largest index that `constant_of` folds: no array of structs over `MAX_NESTED_FIELDS` items is followed, and a
+# larger value cannot pass the size of an Int when two of them are added or multiplied.
+MAX_INDEX = 1048576
+
 # The digits of the number in a key.
 DIGITS = Set.new(["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"])
 
@@ -1078,7 +1082,7 @@ def owned_fields(ctx: Context, all: List[Json], keys: Map[String, String], param
   end
 
   # The key of each `p.f` and `p.inner` of a struct, and the structs whose other fields have their address taken.
-  unfollowed: Set[String] = Set.new([])
+  unfollowed = unfollowed_arrays(ctx, found, all, keys)
   for n in all
     if Ast.kind(n) == "MemberExpr" or Ast.kind(n) == "ArraySubscriptExpr"
       place = part_of(found, keys, n)
@@ -1109,6 +1113,68 @@ def owned_fields(ctx: Context, all: List[Json], keys: Map[String, String], param
     wholes: found.wholes.select do |_, place| not dropped.include?(place) end,
     slots: {},
   )
+end
+
+# The followed arrays of structs that a function reads other than item by item by a constant index (`a[0].left`), in
+# any place but a `sizeof`: an index that is not a constant (`a[i]`), the array whole (`keep(a)`, `q = a`, `a + 1`) or
+# the address of an item (`&a[0]`), but for the array that `memset` clears and an item that a CC_FREES parameter gets.
+# Such a read may reach any item, and in a loop the walk also takes the path that does not run it (a loop that frees
+# every item would leak them all there): such an array is not followed in the function.
+def unfollowed_arrays(ctx: Context, found: Followed, all: List[Json], keys: Map[String, String]) -> Set[String]
+  arrays = Set.new(found.parts.keys.select do |key| found.slots.key?("#{key}|[0]") end)
+  unfollowed: Set[String] = Set.new([])
+  if arrays.empty?
+    return unfollowed
+  end
+
+  measured: Set[String] = Set.new([])
+  allowed: Set[String] = Set.new([])
+  for n in all
+    id = Ast.text(n, "id")
+    parts = Ast.children(n)
+    if measured.include?(id) or Ast.kind(n) == "UnaryExprOrTypeTraitExpr"
+      measured = measured.union(Set.new(parts.map do |child| Ast.text(child, "id") end))
+      next
+    end
+
+    case Ast.kind(n)
+      "CallExpr" ->
+        name = callee_name(n)
+        given = ctx.owning.frees.get(key_of_function(ctx, name), []).map do |i| i + 1 end
+        if Known.FILLS.include?(name)
+          given = given.push(1)
+        end
+
+        for i in given
+          if i < parts.size
+            allowed = allowed.add(Ast.text(see_through(parts[i]), "id"))
+          end
+        end
+
+      "UnaryOperator" ->
+        item = see_through(parts.first)
+        if Ast.text(n, "opcode") == "&" and allowed.include?(id)
+          allowed = allowed.add(Ast.text(item, "id"))
+        elsif Ast.text(n, "opcode") == "&" and Ast.kind(item) == "ArraySubscriptExpr"
+          unfollowed = unfollowed.add(keys.get(Ast.referenced_id(see_through(Ast.children(item).first)), ""))
+        end
+
+      "ArraySubscriptExpr" ->
+        if constant_of(parts.last) >= 0
+          allowed = allowed.add(Ast.text(see_through(parts.first), "id"))
+        end
+
+      "DeclRefExpr" ->
+        key = keys.get(Ast.referenced_id(n), "")
+        if arrays.include?(key) and not allowed.include?(id)
+          unfollowed = unfollowed.add(key)
+        end
+
+      _ -> next
+    end
+  end
+
+  return unfollowed
 end
 
 # The key of the struct of `roots` that a place is in (`p` for `p.inner.left`, `a` for `a[0].left`).
@@ -1270,7 +1336,12 @@ end
 def constant_of(node: Json) -> Int
   bare = see_through(node)
   if Ast.kind(bare) == "IntegerLiteral"
-    return Ast.text(bare, "value").to_i.unwrap_or(-1)
+    value = Ast.text(bare, "value").to_i.unwrap_or(-1)
+    if value > MAX_INDEX
+      return -1
+    end
+
+    return value
   end
 
   parts = Ast.children(bare)
@@ -1285,14 +1356,24 @@ def constant_of(node: Json) -> Int
   end
 
   case Ast.text(bare, "opcode")
-    "+" -> return left + right
+    "+" ->
+      if left + right > MAX_INDEX
+        return -1
+      end
+
+      return left + right
     "-" ->
       if left < right
         return -1
       end
 
       return left - right
-    "*" -> return left * right
+    "*" ->
+      if left > 0 and right > MAX_INDEX / left
+        return -1
+      end
+
+      return left * right
     _ -> return -1
   end
 end
@@ -1519,8 +1600,14 @@ def statement(b: Builder, node: Json, preds: List[Int]) -> Built
       # field of it (`p.n`) is no read of the struct.
       built = Built(b: b, exits: preds)
       inside = descendants(Ast.children(node))
+      # The item of an array that a field is in (`a[0].left`) and the array under it are no read of the array either.
       bases = Set.new(
-        inside.select do |n| struct_of(n) != "" end.map do |n| Ast.text(see_through(Ast.children(n).first), "id") end,
+        inside.select do |n| struct_of(n) != "" end
+          .map do |n| see_through(Ast.children(n).first) end
+          .flat_map do |base|
+            [base].concat(Ast.children(base).take(1).flat_map do |under| [under, see_through(under)] end)
+          end
+          .map do |base| Ast.text(base, "id") end,
       )
 
       refs = inside.select do |n|
@@ -2086,7 +2173,7 @@ def expression(b: Builder, node: Json, preds: List[Int]) -> Built
       end
 
       # `p.inner` of a followed struct names a struct in it whole, which escapes there; `p.n` reads a field, which
-      # is no escape of the struct, but for `a[i].n` of an array by an index that is not a constant: see `item_read`.
+      # is no escape of the struct (see `item_read`).
       if whole_key(b, node) != ""
         return escaped(b, node, preds)
       end
@@ -2126,7 +2213,8 @@ def expression(b: Builder, node: Json, preds: List[Int]) -> Built
         return add(written.b, Event.Lends([lent]), written.exits)
       end
 
-      # The address of an item of a followed array (`&a[0]`) may reach every item: the whole array escapes.
+      # The address of an item of a followed array (`&a[0]`, which `unfollowed_arrays` allows only at a `memset` or a
+      # CC_FREES parameter) may reach every item: the whole array escapes.
       item = see_through(operand)
       inner = Built(b: b, exits: preds)
       if opcode == "&" and Ast.kind(item) == "ArraySubscriptExpr" and whole_key(b, Ast.children(item).first) != ""
@@ -2184,8 +2272,7 @@ def expression(b: Builder, node: Json, preds: List[Int]) -> Built
 end
 
 # A field of a local struct that the rules do not follow as a pointer (`p.n`, `a[0].n`): no read of the struct. An
-# item of a followed array by an index that is not a constant (`a[i].left`) may be any item: the whole array escapes
-# there, after the index is read.
+# index that is not a constant (`a[i].n`, of an array that is then not followed) is read.
 def item_read(b: Builder, node: Json, preds: List[Int]) -> Built
   base = see_through(Ast.children(node).first)
   while Ast.kind(base) == "MemberExpr"
