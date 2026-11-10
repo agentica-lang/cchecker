@@ -218,7 +218,7 @@ def run_program(
   env: Map[String, String] = {},
   folder: String = SPECS,
 ) -> BDD.Context
-  process = Process.spawn_captured(program, args, folder, RUN_MS, env).unwrap!
+  process = Process.spawn_captured(program, args, Process.Options(timeout_ms: RUN_MS, chdir: folder, env: env)).unwrap!
   output = Process.output(process, RUN_MS).unwrap!
   code = Process.wait(process, RUN_MS).unwrap!
   Process.close(process)

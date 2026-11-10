@@ -121,7 +121,7 @@ end
 
 ## Returns whether `timeout` of coreutils is installed. Without it a timeout stops the tool but not its children.
 export def timeout_available?() -> Bool
-  case Process.spawn_captured("timeout", ["--version"], ".", 5_000)
+  case Process.spawn_captured("timeout", ["--version"], Process.Options(timeout_ms: 5_000))
     ok(process) ->
       code = Process.wait(process, 5_000).unwrap_or(1)
       Process.close(process)
@@ -134,7 +134,7 @@ end
 ## the target; "" when `clang` does not say.
 export def target_of(clang: String, entry: Commands.Entry) -> String
   args = ["-print-target-triple"].concat(target_flags(entry.args))
-  case Process.spawn_captured(clang, args, entry.directory, 5_000)
+  case Process.spawn_captured(clang, args, Process.Options(timeout_ms: 5_000, chdir: entry.directory))
     ok(process) ->
       line = Process.read_line(process, 5_000).unwrap_or("")
       code = Process.wait(process, 5_000).unwrap_or(1)
@@ -346,7 +346,7 @@ end
 # machine to the next. The timeout of `spawn_captured` is not documented as a kill, so `close` ends a program that
 # is still running, and the waits are short: the first line is out by then.
 def version_line(program: String) -> String
-  case Process.spawn_captured(program, ["--version"], ".", 5_000, {"LC_ALL": "C"})
+  case Process.spawn_captured(program, ["--version"], Process.Options(timeout_ms: 5_000, env: {"LC_ALL": "C"}))
     ok(process) ->
       line = Process.read_line(process, 5_000).unwrap_or("")
       code = Process.wait(process, 1_000).unwrap_or(1)
@@ -460,7 +460,7 @@ def start(
   program: String,
   env: Map[String, String],
 ) -> Result[Process]
-  case Process.spawn_captured(command, args, directory, timeout_ms, env)
+  case Process.spawn_captured(command, args, Process.Options(timeout_ms: timeout_ms, chdir: directory, env: env))
     ok(process) -> return ok(process)
     error(message) -> return error("cannot run #{program}: #{message}")
   end

@@ -157,7 +157,7 @@ end
 
 # The number of cores that are online, as `getconf` says it on Linux and macOS, or 4 when it cannot tell.
 def cores() -> Int
-  case Process.spawn_captured("getconf", ["_NPROCESSORS_ONLN"], ".", 5_000)
+  case Process.spawn_captured("getconf", ["_NPROCESSORS_ONLN"], Process.Options(timeout_ms: 5_000))
     ok(process) ->
       text = Process.read_line(process, 5_000).unwrap_or("")
       _ = Process.wait(process, 5_000)

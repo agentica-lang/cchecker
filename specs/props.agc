@@ -69,7 +69,7 @@ end
 ## One run of cchecker (the bytecode `program`) in specs/ with the options `options`.
 export def run_with(program: String, options: List[String]) -> Result[Output]
   args = ["run", "--", program].concat(options)
-  process = try Process.spawn_captured("agentica", args, "specs", RUN_MS, {})
+  process = try Process.spawn_captured("agentica", args, Process.Options(timeout_ms: RUN_MS, chdir: "specs"))
   output = try Process.output(process, RUN_MS)
   code = try Process.wait(process, RUN_MS)
   Process.close(process)
