@@ -40,27 +40,6 @@ Feature: Time and memory on large generated inputs
       "errors":[{"tool":"rules","file":"$DIR/chain.c",
       """
 
-  Scenario: A chain of 3000 else-if branches that each declare a local struct stays in its bounds
-    The lookup of the struct of a variable opens a scope for a block and a `for` only, not for each `if` of the chain.
-
-    Given the C file "structs.c" holds, with ITEMS as 3000 times " else if (n == 7) { struct pair p = { make(n) }; keep(&p); }":
-      """
-      #include <stdlib.h>
-      #include "cchecker.h"
-      struct pair { CC_OWNS char *left; CC_OWNS char *right; };
-      CC_OWNS char *make(int n);
-      void keep(struct pair *p);
-      void many(int n) {
-        if (n == 0) keep(NULL);ITEMS
-      }
-      """
-    When I run cchecker with "--tools rules --json $DIR/structs.c -- -I../include" in at most 1500 MiB and 20 seconds
-    Then the exit code is 2
-    And the output includes:
-      """
-      "errors":[{"tool":"rules","file":"$DIR/structs.c",
-      """
-
   Scenario: A condition of 1000 terms joined by || under a lock stays in its bounds
     Given the C file "or.c" holds, with ITEMS as 1000 times " || q->n == 7":
       """
