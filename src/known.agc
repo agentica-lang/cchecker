@@ -232,6 +232,10 @@ export FREES = Set.new(["free"])
 
 ## The calls that move the memory of their first argument to the pointer they return; when that pointer is null, the
 ## first argument still owns it.
+## The calls that fill memory with a byte (`memset(&p, 0, sizeof p)`), as the builtins of a fortified build name them
+## too.
+export FILLS = Set.new(["memset", "__builtin_memset", "__builtin___memset_chk"])
+
 export RESIZES = Set.new(["realloc", "reallocarray"])
 
 ## The `[library]` flag of the allocators of the Boehm collector (`LIBGC_ALLOC`) in the collector rule.

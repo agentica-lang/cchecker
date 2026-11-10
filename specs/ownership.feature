@@ -755,8 +755,8 @@ Feature: Ownership on every path
 
   Scenario: The CC_OWNS fields of a local struct are pointers of their own
     A local struct has a state for each CC_OWNS field (`p.left`), and an initializer gives each its item. Where the
-    struct escapes (its address passed, a copy) the fields are handed on. A struct with a cleanup function, and a
-    union, are not followed: a store into their CC_OWNS fields hands the pointer on. A pointer that an initializer or
+    struct escapes (its address passed, a copy) the fields are handed on. A cleanup function on the struct frees its
+    fields. A union is not followed: a store into its CC_OWNS fields hands the pointer on. A pointer that an initializer or
     a compound literal puts in a CC_OWNS field is handed on, and `old = p; p = NULL;` leaves the pointer to `old`.
 
     Given the C file "fields.c" holds:
@@ -1185,6 +1185,205 @@ Feature: Ownership on every path
     And the output does not include:
       """
       "line":129,
+      """
+
+  Scenario: A cleanup function, a CC_FREES struct pointer, a clear and the address of a field
+    A cleanup function on a local struct, and a call that passes `&p` at a `CC_FREES` parameter, free each CC_OWNS
+    field. `memset(&p, 0, sizeof p)` and `p = (struct pair){...}` clear the struct: its fields are followed again (also
+    after an escape), and one that still owns leaks there. `&p.left` of a CC_OWNS field is the address of that pointer:
+    a CC_FREES parameter frees and clears it, a CC_OWNS_OUT parameter fills it. The address of a field that does not
+    own (`&x.link`) stops following the struct.
+
+    Given the C file "clears.c" holds:
+      """
+      #include <stdlib.h>
+      #include <string.h>
+      #include "cchecker.h"
+
+      struct pair {
+        CC_OWNS char *left;
+        CC_OWNS char *right;
+      };
+
+      CC_OWNS char *make_buffer(void);
+      void keep(struct pair *p);
+      void pair_free(CC_FREES struct pair *p);
+      void pair_done(struct pair *p);
+      void zap(CC_FREES char **p);
+      int fill(CC_OWNS_OUT char **out);
+      void use(char *p);
+
+      void cleaned(void) {
+        struct pair p __attribute__((cleanup(pair_done))) = {0};
+        p.left = make_buffer();
+        use(p.left);
+      }
+
+      void cleaned_twice(void) {
+        struct pair p __attribute__((cleanup(pair_done))) = {0};
+        p.left = make_buffer();
+        free(p.left);
+      }
+
+      void freed(void) {
+        struct pair p = {0};
+        p.left = make_buffer();
+        p.right = make_buffer();
+        pair_free(&p);
+      }
+
+      void freed_twice(void) {
+        struct pair p = {0};
+        p.left = make_buffer();
+        pair_free(&p);
+        free(p.left);
+      }
+
+      void cleared(void) {
+        struct pair p;
+        memset(&p, 0, sizeof p);
+        p.left = make_buffer();
+        free(p.left);
+      }
+
+      void cleared_leaks(void) {
+        struct pair p = {0};
+        p.left = make_buffer();
+        memset(&p, 0, sizeof p);
+      }
+
+      void cleared_then_leaks(int n) {
+        struct pair p;
+        memset(&p, 0, sizeof p);
+        p.left = make_buffer();
+        if (n)
+          return;
+        keep(&p);
+      }
+
+      void reset(void) {
+        struct pair p = {0}, q = {0};
+        p.left = make_buffer();
+        q = p;
+        keep(&q);
+        p = (struct pair){0};
+        p.left = make_buffer();
+        free(p.left);
+      }
+
+      void reset_leaks(void) {
+        struct pair p = {0}, q = {0};
+        p.left = make_buffer();
+        q = p;
+        keep(&q);
+        p = (struct pair){ .left = make_buffer() };
+      }
+
+      void reset_drops(void) {
+        struct pair p = {0};
+        p.left = make_buffer();
+        p = (struct pair){0};
+      }
+
+      void zapped(void) {
+        struct pair p = {0};
+        p.left = make_buffer();
+        zap(&p.left);
+        zap(&p.left);
+      }
+
+      void zapped_leaks(void) {
+        struct pair p = {0};
+        p.left = make_buffer();
+        p.right = make_buffer();
+        zap(&p.left);
+      }
+
+      void filled(void) {
+        struct pair p = {0};
+        if (fill(&p.left) < 0)
+          return;
+        use(p.left);
+        free(p.left);
+      }
+
+      void filled_leaks(void) {
+        struct pair p = {0};
+        if (fill(&p.left) < 0)
+          return;
+        use(p.left);
+      }
+
+      struct node { CC_OWNS char *buf; int link; };
+      void attach(int *link);
+
+      void other_address(void) {
+        struct node x = {0};
+        x.buf = make_buffer();
+        attach(&x.link);
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/clears.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      {"code":"CC-OWN-DOUBLE-FREE","tool":"rules","file":"$DIR/clears.c","line":24,
+      """
+    And the output includes:
+      """
+      {"code":"CC-OWN-DOUBLE-FREE","tool":"rules","file":"$DIR/clears.c","line":37,
+      """
+    And the output includes:
+      """
+      {"code":"CC-OWN-LEAK","tool":"rules","file":"$DIR/clears.c","line":51,
+      """
+    And the output includes:
+      """
+      {"code":"CC-OWN-LEAK","tool":"rules","file":"$DIR/clears.c","line":57,
+      """
+    And the output includes:
+      """
+      {"code":"CC-OWN-LEAK","tool":"rules","file":"$DIR/clears.c","line":76,
+      """
+    And the output includes:
+      """
+      {"code":"CC-OWN-LEAK","tool":"rules","file":"$DIR/clears.c","line":84,
+      """
+    And the output includes:
+      """
+      {"code":"CC-OWN-LEAK","tool":"rules","file":"$DIR/clears.c","line":97,
+      """
+    And the output includes:
+      """
+      {"code":"CC-OWN-LEAK","tool":"rules","file":"$DIR/clears.c","line":112,
+      """
+    And the output does not include:
+      """
+      "line":18,
+      """
+    And the output does not include:
+      """
+      "line":30,
+      """
+    And the output does not include:
+      """
+      "line":44,
+      """
+    And the output does not include:
+      """
+      "line":66,
+      """
+    And the output does not include:
+      """
+      "line":90,
+      """
+    And the output does not include:
+      """
+      "line":104,
+      """
+    And the output does not include:
+      """
+      "line":122,
       """
 
   Scenario: A function with more paths than the rules follow is checked on those it went through and counted

@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   address passed, a copy, a by-value argument, a return, `p = q`), and hand them on there: a leak before the escape,
   or a field that still owns when the whole struct gets a new value, is a CC-OWN-LEAK. Run `--update-baseline` once
   after upgrading.
+- **Breaking:** a local struct with a `cleanup` function, or whose `CC_OWNS` field has its address taken
+  (`free_and_null(&p.left)`, `take(&p.left)`), is followed too; the cleanup function, `pair_free(&p)` at a `CC_FREES`
+  parameter, `memset(&p, 0, sizeof p)` and `p = (struct pair){...}` free or clear its fields. A field freed twice, or
+  one that still owns at a clear, is a finding. Run `--update-baseline` once after upgrading.
 
 ## [0.4.0] - 2026-11-09
 
