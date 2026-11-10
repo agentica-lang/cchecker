@@ -82,9 +82,7 @@ end
 ## no tool.
 export def in_text(file: String, text: String) -> Result[List[Ignore]]
   ignores: List[Ignore] = []
-  if not text.include?(MARKER)
-    return ok(ignores)
-  end
+  return ok(ignores) if not text.include?(MARKER)
 
   carry = ""
   lines = text.split("\n")
@@ -101,23 +99,19 @@ export def in_text(file: String, text: String) -> Result[List[Ignore]]
     end
   end
 
-  return ok(ignores)
+  ok(ignores)
 end
 
 ## Returns the suppression of an annotation of a function (`ignore(CODE: reason)`, from CC_IGNORE), or none for any
 ## other annotation; an error for a code of another tool than the rules, which never report at a function.
 export def of_mark(file: String, line: Int, column: Int, mark: String) -> Result[Optional[Ignore]]
-  if not mark.start_with?(MARK_PREFIX) or not mark.end_with?(")")
-    return ok(none)
-  end
+  return ok(none) if not mark.start_with?(MARK_PREFIX) or not mark.end_with?(")")
 
   body = mark.slice(MARK_PREFIX.length, mark.length - MARK_PREFIX.length - 1)
   ignore = try parsed(file, line, column, body, true)
-  if not ignore.codes.all? do |code| tool_of(code) == RULES end
-    return error("#{file}:#{line}: #{MARK_USAGE}")
-  end
+  return error("#{file}:#{line}: #{MARK_USAGE}") if not ignore.codes.all? do |code| tool_of(code) == RULES end
 
-  return ok(some(ignore))
+  ok(some(ignore))
 end
 
 ## Takes the suppressed findings out. `ran` holds the pairs of a tool and a file (`Baseline.pair`) that the run covered
@@ -162,7 +156,7 @@ export def apply(findings: List[Finding], ignores: List[Ignore], ran: Set[String
     end
   end
 
-  return Applied(findings: kept, suppressed: suppressed)
+  Applied(findings: kept, suppressed: suppressed)
 end
 
 # Splits one line into its comments and the rest, skipping string and character literals, so a marker in a string is
@@ -172,9 +166,7 @@ def lexed_line(line: String, carry: String) -> Lexed
   chars = line.split("")
   n = chars.size
   comments: List[Comment] = []
-  if carry == LINE
-    return Lexed(comments: [Comment(start: 0, text: line)], code: false, carry: continued(line, LINE))
-  end
+  return Lexed(comments: [Comment(start: 0, text: line)], code: false, carry: continued(line, LINE)) if carry == LINE
 
   code = false
   block = carry == BLOCK
@@ -183,9 +175,7 @@ def lexed_line(line: String, carry: String) -> Lexed
   if carry == "\"" or carry == "'"
     code = true
     i = literal_end(chars, 0, carry)
-    if i > n
-      return Lexed(comments: [], code: true, carry: continued(line, carry))
-    end
+    return Lexed(comments: [], code: true, carry: continued(line, carry)) if i > n
   end
 
   while i < n
@@ -224,9 +214,7 @@ def lexed_line(line: String, carry: String) -> Lexed
     elsif c == "\"" or c == "'"
       code = true
       i = literal_end(chars, i + 1, c)
-      if i > n
-        return Lexed(comments: comments, code: true, carry: continued(line, c))
-      end
+      return Lexed(comments: comments, code: true, carry: continued(line, c)) if i > n
     else
       if not BLANKS.include?(c)
         code = true
@@ -241,7 +229,7 @@ def lexed_line(line: String, carry: String) -> Lexed
     carry_out = BLOCK
   end
 
-  return Lexed(comments: comments, code: code, carry: carry_out)
+  Lexed(comments: comments, code: code, carry: carry_out)
 end
 
 # The index after the quote `quote` that closes a literal whose text starts at `from`, or past the end of the line
@@ -256,11 +244,9 @@ def literal_end(chars: List[String], from: Int, quote: String) -> Int
     i += 1
   end
 
-  if i >= chars.size
-    return chars.size + 1
-  end
+  return chars.size + 1 if i >= chars.size
 
-  return i + 1
+  i + 1
 end
 
 # `open` when the line ends with a `\` that continues it on the next line, else "".
@@ -271,11 +257,9 @@ def continued(line: String, open: String) -> String
     end_at -= 1
   end
 
-  if end_at > 0 and line.at(end_at - 1) == "\\"
-    return open
-  end
+  return open if end_at > 0 and line.at(end_at - 1) == "\\"
 
-  return ""
+  ""
 end
 
 # Whether the `'` at `i` is a digit separator of C23 (`1'000`, `0xff'ff`, `0x1.f'fp0`): it stands inside a number, a
@@ -286,21 +270,19 @@ def separator?(chars: List[String], i: Int) -> Bool
     start -= 1
   end
 
-  return start < i and "0123456789".include?(chars[start])
+  start < i and "0123456789".include?(chars[start])
 end
 
 def identifier_char?(c: String) -> Bool
-  return c == "_" or "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ".include?(c)
+  c == "_" or "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ".include?(c)
 end
 
 # Whether the line is an `#error` or `#warning` directive.
 def text_directive?(line: String) -> Bool
-  if not line.strip.start_with?("#")
-    return false
-  end
+  return false if not line.strip.start_with?("#")
 
   words = line.strip.replace("#", "# ").split(" ").select do |word| word != "" end
-  return words.size >= 2 and words[0] == "#" and TEXT_DIRECTIVES.include?(words[1])
+  words.size >= 2 and words[0] == "#" and TEXT_DIRECTIVES.include?(words[1])
 end
 
 # The text after `cchecker: ignore` in a comment, and where the marker starts in it; none when the comment does not
@@ -310,23 +292,17 @@ end
 # body, a usage error, so the marker the user meant is not dropped.
 def body_of(text: String) -> Optional[Comment]
   at = skipped(text, LEADING)
-  if not text.slice(at, text.length - at).start_with?(MARKER)
-    return none
-  end
+  return none if not text.slice(at, text.length - at).start_with?(MARKER)
 
   word = at + MARKER.length
   word += skipped(text.slice(word, text.length - word), BLANKS)
-  if not text.slice(word, text.length - word).start_with?(WORD)
-    return none
-  end
+  return none if not text.slice(word, text.length - word).start_with?(WORD)
 
   codes = word + WORD.length
   blanks = skipped(text.slice(codes, text.length - codes), BLANKS)
-  if blanks == 0 and codes < text.length
-    return some(Comment(start: at, text: ""))
-  end
+  return some(Comment(start: at, text: "")) if blanks == 0 and codes < text.length
 
-  return some(Comment(start: at, text: text.slice(codes + blanks, text.length - codes - blanks)))
+  some(Comment(start: at, text: text.slice(codes + blanks, text.length - codes - blanks)))
 end
 
 # The number of characters at the start of `text` that are in `set`.
@@ -336,7 +312,7 @@ def skipped(text: String, set: Set[String]) -> Int
     i += 1
   end
 
-  return i
+  i
 end
 
 # The codes and the reason of `CODE[, CODE...]: reason`.
@@ -350,15 +326,13 @@ def parsed(file: String, line: Int, column: Int, text: String, function: Bool) -
         return error("#{file}:#{line}: #{USAGE}")
       end
 
-      return ok(Ignore(file: file, line: line, column: column, codes: codes, reason: reason, function: function))
-    none -> return error("#{file}:#{line}: #{USAGE}")
+      ok(Ignore(file: file, line: line, column: column, codes: codes, reason: reason, function: function))
+    none -> error("#{file}:#{line}: #{USAGE}")
   end
 end
 
 # A code of a tool, with a `*` only at its end.
-def known_code?(code: String) -> Bool
-  return tool_of(code) != "" and not code.slice(0, code.length - 1).include?("*")
-end
+def known_code?(code: String) -> Bool = tool_of(code) != "" and not code.slice(0, code.length - 1).include?("*")
 
 # The suppression among `matching` nearest to the finding: one on its line before one on the line above.
 def nearest(f: Finding, ignores: List[Ignore], matching: List[Int]) -> Optional[Int]
@@ -374,44 +348,36 @@ def nearest(f: Finding, ignores: List[Ignore], matching: List[Int]) -> Optional[
     end
   end
 
-  return best
+  best
 end
 
 def holds?(ignore: Ignore, f: Finding) -> Bool
-  if ignore.file != f.file or not ignore.codes.any? do |code| matches?(code, f.code) end
-    return false
-  end
+  return false if ignore.file != f.file or not ignore.codes.any? do |code| matches?(code, f.code) end
 
-  if ignore.function
-    return f.line == ignore.line and f.column == ignore.column
-  end
+  return f.line == ignore.line and f.column == ignore.column if ignore.function
 
-  return f.line == ignore.line or (ignore.alone and f.line == ignore.line + 1)
+  f.line == ignore.line or (ignore.alone and f.line == ignore.line + 1)
 end
 
 def matches?(pattern: String, code: String) -> Bool
-  if pattern.end_with?("*")
-    return code.start_with?(pattern.slice(0, pattern.length - 1))
-  end
+  return code.start_with?(pattern.slice(0, pattern.length - 1)) if pattern.end_with?("*")
 
-  return code == pattern
+  code == pattern
 end
 
 # Whether the tool of a code ran on the file of the suppression and ended well, so the code, if it matched nothing,
 # is stale.
 def checked?(ignore: Ignore, code: String, ran: Set[String]) -> Bool
-  return ran.include?(Baseline.pair(tool_of(code), ignore.file))
+  ran.include?(Baseline.pair(tool_of(code), ignore.file))
 end
 
 # The tool of a code or of a prefix; "" for none, which no pair of a run has.
-def tool_of(code: String) -> String
-  return Baseline.tool_of(code.replace("*", ""))
-end
+def tool_of(code: String) -> String = Baseline.tool_of(code.replace("*", ""))
 
 # The findings of a suppression with codes that matched nothing (`stale`), each code tracked on its own: one for each
 # tool of those codes, so a baseline or a filter by tool sees it.
 def unused(ignore: Ignore, stale: List[String]) -> List[Finding]
-  return stale.map do |code| tool_of(code) end.uniq.map do |tool|
+  stale.map do |code| tool_of(code) end.uniq.map do |tool|
     codes = stale.select do |code| tool_of(code) == tool end
     Finding(code: UNUSED, tool: tool, file: ignore.file, line: ignore.line, column: ignore.column, message: "the suppression of #{codes.join(", ")} matches no finding: #{ignore.reason}")
   end

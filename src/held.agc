@@ -84,13 +84,13 @@ export def rules_of(units: List[Unit], graph: Effects.Graph) -> Rules
     end
   end
 
-  return Rules(graph: graph, quiet: quiet, levels: levels, takes: takes, bodies: bodies)
+  Rules(graph: graph, quiet: quiet, levels: levels, takes: takes, bodies: bodies)
 end
 
 ## Returns the rules that a call of `body` breaks while the path holds `held`; `at` is the step of the call
 ## (`LINE:COL`).
 export def at_call(rules: Rules, body: Body, held: List[Held], site: Site, at: String) -> List[Breach]
-  return under_quiet(rules, body, held, site, at).concat(out_of_order(rules, body, held, site, at))
+  under_quiet(rules, body, held, site, at).concat(out_of_order(rules, body, held, site, at))
 end
 
 # A call under a quiet lock that is, or reaches, a system call. The release of the lock and a wait on it are how the
@@ -99,9 +99,7 @@ end
 # releases a lock taken under it to all of them.
 def under_quiet(rules: Rules, body: Body, held: List[Held], site: Site, at: String) -> List[Breach]
   quiet = held.select do |h| h.quiet or rules.quiet.include?(h.lock.class) end
-  if quiet.empty?
-    return []
-  end
+  return [] if quiet.empty?
 
   reached = system_call(rules, body, site)
   found: List[Breach] = []
@@ -130,13 +128,13 @@ def under_quiet(rules: Rules, body: Body, held: List[Held], site: Site, at: Stri
     end
   end
 
-  return found
+  found
 end
 
 # Whether a call releases a lock taken while `h` was held: the path of a held lock starts at its last take, so a lock
 # taken later has a shorter one.
 def nested_release?(rules: Rules, body: Body, held: List[Held], h: Held, site: Site) -> Bool
-  return site.drops.any? do |lock|
+  site.drops.any? do |lock|
     held.any? do |other|
       other.lock.key == lock.key and other.path.size < h.path.size and system_take?(rules, body, other)
     end
@@ -146,24 +144,20 @@ end
 # Whether the take of a held lock was a system call, and so a finding of its own under the quiet lock: not a trylock,
 # nor a helper whose body makes none. The first step of its path is its take (`LINE:COL takes LOCK`).
 def system_take?(rules: Rules, body: Body, h: Held) -> Bool
-  if h.path.empty?
-    return false
-  end
+  return false if h.path.empty?
 
   at = h.path.first.split(" ").first
   for node in body.nodes
     case node.event
       Event.Call(call) ->
         taken = call.takes.any? do |lock| lock.key == h.lock.key end
-        if taken and "#{call.line}:#{call.column}" == at
-          return not system_call(rules, body, call).empty?
-        end
+        return not system_call(rules, body, call).empty? if taken and "#{call.line}:#{call.column}" == at
 
       _ -> next
     end
   end
 
-  return false
+  false
 end
 
 # The call path to a system call that a call which releases a lock makes while the quiet lock is held: none for a call
@@ -188,9 +182,7 @@ def before_release(rules: Rules, body: Body, site: Site, quiet: Optional[Held]) 
           Event.Call(call) ->
             stops = call.drops.any? do |lock| stops_at.include?(lock.key) end
             path = system_call(rules, helper, call)
-            if call.drops.concat(call.waits).empty? and not path.empty?
-              return [site.name].concat(path)
-            end
+            return [site.name].concat(path) if call.drops.concat(call.waits).empty? and not path.empty?
 
           _ -> stops = false
         end
@@ -203,13 +195,11 @@ def before_release(rules: Rules, body: Body, site: Site, quiet: Optional[Held]) 
         end
       end
 
-      return []
+      []
     none ->
-      if quiet.some? or Known.DROPS.include?(site.name)
-        return []
-      end
+      return [] if quiet.some? or Known.DROPS.include?(site.name)
 
-      return system_call(rules, body, site)
+      system_call(rules, body, site)
   end
 end
 
@@ -218,15 +208,11 @@ end
 # definition did not see the marked prototype (`releases` is empty), they are the marks merged from all declarations,
 # in the names of the prototype that wrote them.
 def stop_keys(rules: Rules, helper: Body, site: Site, h: Held) -> Set[String]
-  if helper.releases.empty?
-    return Set.new(marked_releases(rules, helper.key))
-  end
+  return Set.new(marked_releases(rules, helper.key)) if helper.releases.empty?
 
-  if helper.releases.size != site.drops.size
-    return Set.new(helper.releases)
-  end
+  return Set.new(helper.releases) if helper.releases.size != site.drops.size
 
-  return Set.new(
+  Set.new(
     (0...site.drops.size).to_a.select do |i| site.drops[i].key == h.lock.key end.map do |i| helper.releases[i] end,
   )
 end
@@ -234,7 +220,7 @@ end
 # The keys of the locks of a function's CC_RELEASES marks, merged from all its declarations, as written.
 def marked_releases(rules: Rules, key: String) -> List[String]
   marks = rules.graph.functions.get(key).map do |f| f.marks end.unwrap_or([])
-  return marks.select do |mark| mark.start_with?("releases(") and mark.end_with?(")") end
+  marks.select do |mark| mark.start_with?("releases(") and mark.end_with?(")") end
     .flat_map do |mark| mark.slice(9, mark.length - 10).split(",") end
     .map do |lock| Flow.key_of(lock.strip) end
 end
@@ -243,9 +229,7 @@ end
 # included), [the call, ..., the system call] for a function of the project that reaches one, [] for neither. A call
 # through a pointer goes to the functions stored in it, and the path starts at the first of them that reaches one.
 def system_call(rules: Rules, body: Body, site: Site) -> List[String]
-  if not site.pointer
-    return Effects.system_path(rules.graph, site.key).unwrap_or([])
-  end
+  return Effects.system_path(rules.graph, site.key).unwrap_or([]) if not site.pointer
 
   for target in Effects.pointer_targets(rules.graph, body.key, site.line, site.column)
     case Effects.system_path(rules.graph, target)
@@ -254,16 +238,14 @@ def system_call(rules: Rules, body: Body, site: Site) -> List[String]
     end
   end
 
-  return []
+  []
 end
 
 # A lock with a level taken while a lock of the same or a higher level is held: by the call itself, or by a function
 # of the project that the call reaches.
 def out_of_order(rules: Rules, body: Body, held: List[Held], site: Site, at: String) -> List[Breach]
   leveled = held.select do |h| rules.levels.key?(h.lock.class) end
-  if leveled.empty?
-    return []
-  end
+  return [] if leveled.empty?
 
   found: List[Breach] = []
   for lock in waited(site)
@@ -281,9 +263,7 @@ def out_of_order(rules: Rules, body: Body, held: List[Held], site: Site, at: Str
     end
   end
 
-  if not site.takes.empty? or not site.drops.empty?
-    return found
-  end
+  return found if not site.takes.empty? or not site.drops.empty?
 
   # A function that takes the class of a lock held may take that very lock again, which a lock that counts its nested
   # takes allows: only another class is out of order.
@@ -302,41 +282,35 @@ def out_of_order(rules: Rules, body: Body, held: List[Held], site: Site, at: Str
     end
   end
 
-  return found
+  found
 end
 
 def higher_or_same?(rules: Rules, held: String, taken: String) -> Bool
   case rules.levels.get(taken)
-    some(level) -> return rules.levels[held] >= level
-    none -> return false
+    some(level) -> rules.levels[held] >= level
+    none -> false
   end
 end
 
 # The locks a call waits for: a trylock waits for none, so it never takes part in a cycle of waits.
 def waited(site: Site) -> List[Lock]
-  if site.tried
-    return []
-  end
+  return [] if site.tried
 
-  return site.takes
+  site.takes
 end
 
 # The classes that a call takes through the functions it reaches: those of the callee, or of every function stored in
 # the pointer it calls.
 def reached_by(rules: Rules, body: Body, site: Site) -> List[String]
-  if not site.pointer
-    return reached_takes(rules, site.key)
-  end
+  return reached_takes(rules, site.key) if not site.pointer
 
   targets = Effects.pointer_targets(rules.graph, body.key, site.line, site.column)
-  return targets.flat_map do |target| reached_takes(rules, target) end.uniq
+  targets.flat_map do |target| reached_takes(rules, target) end.uniq
 end
 
 # The classes that a function of the project takes, in its body or in the functions it reaches.
 def reached_takes(rules: Rules, start: String) -> List[String]
-  if not Effects.defined?(rules.graph, start) or Effects.stopped?(rules.graph, start)
-    return []
-  end
+  return [] if not Effects.defined?(rules.graph, start) or Effects.stopped?(rules.graph, start)
 
   seen = Set.new([start])
   queue = [start]
@@ -358,18 +332,16 @@ def reached_takes(rules: Rules, start: String) -> List[String]
     end
   end
 
-  return classes.to_a
+  classes.to_a
 end
 
 # The level of a mark `lock_level(N)`, or none for another mark.
 def level_of(mark: String) -> Optional[Int]
-  if not mark.start_with?(LEVEL_PREFIX) or not mark.end_with?(")")
-    return none
-  end
+  return none if not mark.start_with?(LEVEL_PREFIX) or not mark.end_with?(")")
 
   inside = mark.slice(LEVEL_PREFIX.length, mark.length - LEVEL_PREFIX.length - 1).strip
   case inside.to_i
-    ok(level) -> return some(level)
-    error(_) -> return none
+    ok(level) -> some(level)
+    error(_) -> none
   end
 end

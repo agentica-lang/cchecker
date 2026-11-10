@@ -59,7 +59,7 @@ end
 ## Returns the baseline file, or an error when it cannot be read or is not a baseline.
 export def load(path: String) -> Result[Loaded]
   text = try Files.read_all(path)
-  return parse(path, text)
+  parse(path, text)
 end
 
 ## Returns the baseline in the text of a baseline file.
@@ -75,22 +75,20 @@ export def parse(path: String, text: String) -> Result[Loaded]
     end
   end
 
-  return ok(Loaded(entries: document.findings, tools: document.tools.unwrap_or({})))
+  ok(Loaded(entries: document.findings, tools: document.tools.unwrap_or({})))
 end
 
 ## Returns the entries for the findings: one for each kind, in the order of the report.
 export def entries_of(findings: List[Finding]) -> List[Entry]
   groups = findings.group_by(&Findings.baseline_key)
-  return groups.values.map do |group|
+  groups.values.map do |group|
     first = group.first
     Entry(code: first.code, file: first.file, message: first.message, count: group.size)
   end
 end
 
 ## Returns the key of a tool on a file, the unit that a scope covers.
-export def pair(tool: String, file: String) -> String
-  return "#{tool}\n#{file}"
-end
+export def pair(tool: String, file: String) -> String = "#{tool}\n#{file}"
 
 ## Returns the entries of an updated baseline: those of `entries` that the run did not cover, and one for each kind of
 ## the findings of the run. A finding in a file that the run did not cover (a header seen through the flags of one
@@ -111,7 +109,7 @@ export def merged(entries: List[Entry], scope: Scope, findings: List[Finding]) -
   replaced = Set.new(found.map do |entry| Findings.key(entry.code, entry.file, entry.message) end)
   combined = kept.select do |entry| not replaced.include?(Findings.key(entry.code, entry.file, entry.message)) end
   combined = combined.concat(found)
-  return combined.sort_by do |entry| "#{entry.file}\n#{entry.code}\n#{entry.message}" end
+  combined.sort_by do |entry| "#{entry.file}\n#{entry.code}\n#{entry.message}" end
 end
 
 ## Returns the versions for an updated baseline, by name in order. Only a `whole` run (every file of its tools) writes
@@ -124,9 +122,7 @@ export def updated_tools(
   ran: List[String],
   whole: Bool,
 ) -> Map[String, String]
-  if not whole
-    return stored
-  end
+  return stored if not whole
 
   merged: Map[String, String] = {}
   for tool in stored.keys
@@ -144,7 +140,7 @@ export def updated_tools(
     ordered = ordered.put(tool, merged[tool])
   end
 
-  return ordered
+  ordered
 end
 
 ## Returns the tools of `current` whose version is not the one in `stored`, in the order of the names. A tool of only
@@ -153,27 +149,25 @@ end
 ## change; a line with no number is compared whole. The changes keep the full lines.
 export def changes(stored: Map[String, String], current: Map[String, String]) -> List[VersionChange]
   names = stored.keys.select do |tool| current.key?(tool) and number(current[tool]) != number(stored[tool]) end
-  return names.sort.map do |tool| VersionChange(tool: tool, baseline: stored[tool], current: current[tool]) end
+  names.sort.map do |tool| VersionChange(tool: tool, baseline: stored[tool], current: current[tool]) end
 end
 
 ## Returns the text of the baseline file, one line for each entry. `tools` are written as they come: see
 ## `updated_tools`.
 export def render(entries: List[Entry], tools: Map[String, String]) -> String
   body = entries.map do |entry| "    #{JSON.encode(entry)}" end.join(",\n")
-  return "{\n  \"version\": #{VERSION},\n  \"tools\": #{JSON.encode(tools)},\n  \"findings\": [\n#{body}\n  ]\n}\n"
+  "{\n  \"version\": #{VERSION},\n  \"tools\": #{JSON.encode(tools)},\n  \"findings\": [\n#{body}\n  ]\n}\n"
 end
 
 ## Writes the baseline. A file that exists is swapped for the new one in a single rename, so a reader never sees half
 ## of it.
 export def write(path: String, entries: List[Entry], tools: Map[String, String]) -> Result[Void]
   text = render(entries, tools)
-  if File.stat(path).ok?
-    return File.replace(path, text.bytes)
-  end
+  return File.replace(path, text.bytes) if File.stat(path).ok?
 
   temporary = path + ".tmp"
   try File.write_text(temporary, text)
-  return Path.rename(temporary, path)
+  Path.rename(temporary, path)
 end
 
 ## Takes the accepted findings out of `findings`. When a kind has more findings than the baseline holds, the last ones
@@ -215,56 +209,46 @@ export def split(findings: List[Finding], entries: List[Entry], scope: Scope) ->
   end
 
   fixed = stale.reduce(0) do |total, entry| total + entry.count end
-  return Split(new_findings: new_findings, accepted: matched, fixed: fixed, stale: stale)
+  Split(new_findings: new_findings, accepted: matched, fixed: fixed, stale: stale)
 end
 
 ## Returns the tool that makes the codes with the prefix of `code`, or "" for none; an entry of no tool is never
 ## covered.
 export def tool_of(code: String) -> String
-  if code.start_with?("CC-GCC-")
-    return "gcc"
-  end
+  return "gcc" if code.start_with?("CC-GCC-")
 
-  if code.start_with?("CC-TIDY-")
-    return "clang-tidy"
-  end
+  return "clang-tidy" if code.start_with?("CC-TIDY-")
 
-  if code.start_with?("CC-EFFECT-") or code.start_with?("CC-PATH-") or code.start_with?("CC-OWN-")
-    return "rules"
-  end
+  return "rules" if code.start_with?("CC-EFFECT-") or code.start_with?("CC-PATH-") or code.start_with?("CC-OWN-")
 
-  return ""
+  ""
 end
 
 # The first dotted number of a version line, or the line.
 def number(line: String) -> String
   case Regex.match(line, /\d+(\.\d+)+/)
-    ok(found) -> return found.text
-    error(_) -> return line
+    ok(found) -> found.text
+    error(_) -> line
   end
 end
 
 def larger(a: Int, b: Int) -> Int
-  if a > b
-    return a
-  end
+  return a if a > b
 
-  return b
+  b
 end
 
 # Whether the run covered the entry: its tool ran on the file and ended well, or the run was full.
 def covered?(scope: Scope, entry: Entry) -> Bool
   tool = tool_of(entry.code)
-  if scope.full
-    return scope.tools.include?(tool)
-  end
+  return scope.tools.include?(tool) if scope.full
 
-  return scope.pairs.include?(pair(tool, entry.file))
+  scope.pairs.include?(pair(tool, entry.file))
 end
 
 def decode(path: String, text: String) -> Result[Document]
   case JSON.decode(text, Document)
-    ok(document) -> return ok(document)
-    error(message) -> return error("#{path}: #{message}")
+    ok(document) -> ok(document)
+    error(message) -> error("#{path}: #{message}")
   end
 end

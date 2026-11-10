@@ -119,7 +119,7 @@ end
 ## `reference_decls` gives, in C; with `prune` (the default) without the keys that no rule reads, which hold a third
 ## of the text.
 export def project_decls(path: String, directory: String, cwd: String, prune: Bool = true) -> Result[Dump]
-  return decls_in(path, try files(path), directory, cwd, prune)
+  decls_in(path, try files(path), directory, cwd, prune)
 end
 
 ## Returns what `project_decls` returns, for a dump whose `"file": ` values `raws` are known (`compact` gives them).
@@ -136,27 +136,21 @@ export def decls_in(
   end
 
   dump = try scan(path, places, prune)
-  if not dump.ended
-    return error("the AST dump ends early")
-  end
+  return error("the AST dump ends early") if not dump.ended
 
-  return ok(Dump(decls: dump.decls, oversized: dump.oversized.map(&decoded_name), skipped: dump.skipped))
+  ok(Dump(decls: dump.decls, oversized: dump.oversized.map(&decoded_name), skipped: dump.skipped))
 end
 
 ## Returns what `project_decls` returns, by the scan in Agentica: the reference that the C scan is tested against.
 export def reference_decls(path: String, directory: String, cwd: String) -> Result[Dump]
   state = try File.foreach(path, LINE_BYTES).reduce(start(directory, cwd), &step)
-  if not state.ended
-    return error("the AST dump ends early")
-  end
+  return error("the AST dump ends early") if not state.ended
 
-  return ok(Dump(decls: finish(state), oversized: state.oversized, skipped: state.skipped))
+  ok(Dump(decls: finish(state), oversized: state.oversized, skipped: state.skipped))
 end
 
 ## Returns the state before the first line.
-export def start(directory: String, cwd: String) -> State
-  return State(directory: directory, cwd: cwd)
-end
+export def start(directory: String, cwd: String) -> State = State(directory: directory, cwd: cwd)
 
 ## Returns the state after one line of the dump.
 export def step(state: State, line: String) -> State
@@ -173,21 +167,13 @@ export def step(state: State, line: String) -> State
     )
   end
 
-  if DECL_ENDS.include?(line) and state.phase != Phase.Between
-    return close(state)
-  end
+  return close(state) if DECL_ENDS.include?(line) and state.phase != Phase.Between
 
-  if state.phase == Phase.Between
-    return state.with(ended: line == DUMP_END)
-  end
+  return state.with(ended: line == DUMP_END) if state.phase == Phase.Between
 
-  if state.phase == Phase.Kept and state.lines.size >= MAX_DECL_LINES
-    return oversized(state)
-  end
+  return oversized(state) if state.phase == Phase.Kept and state.lines.size >= MAX_DECL_LINES
 
-  if state.phase == Phase.Oversized
-    return past_the_cap(state, line)
-  end
+  return past_the_cap(state, line) if state.phase == Phase.Oversized
 
   current = state
   if line.start_with?("      \"") or line.start_with?("        \"")
@@ -196,28 +182,21 @@ export def step(state: State, line: String) -> State
     current = deeper_key(state, line)
   end
 
-  if current.phase == Phase.Dropped
-    return current
-  end
+  return current if current.phase == Phase.Dropped
 
-  return located_or_kept(current, line)
+  located_or_kept(current, line)
 end
 
 ## Returns the kept declarations as the text of a JSON array.
-export def finish(state: State) -> String
-  return "[#{state.decls.join(",\n")}]"
-end
+export def finish(state: State) -> String = "[#{state.decls.join(",\n")}]"
 
 ## Whether a type, as clang writes it (`"const unsigned char[300]"`), is an array of numbers or characters. A scalar or
 ## a pointer, `void *` among them, can hold a function through a cast, and a typedef is not known here.
 export def plain_array?(type: String) -> Bool
-  if not type.include?("[") or type.include?("(") or type.include?("*")
-    return false
-  end
+  return false if not type.include?("[") or type.include?("(") or type.include?("*")
 
   words = type.replace("\"", " ").replace("[", " [").split(" ")
-  return words.select do |word| word != "" and not word.start_with?("[") end
-    .all? do |word| PLAIN_WORDS.include?(word) end
+  words.select do |word| word != "" and not word.start_with?("[") end.all? do |word| PLAIN_WORDS.include?(word) end
 end
 
 # The scan of `step` in C, for speed: the dump of one file is tens of MiB. The module is built from native/ by
@@ -241,74 +220,50 @@ end
 def located_or_kept(state: State, line: String) -> State
   text = line.strip
   # The file of `includedFrom` is the file that included this one: the location is still in this one.
-  if state.included
-    return keep(state.with(included: false), line)
-  end
+  return keep(state.with(included: false), line) if state.included
 
-  if text.start_with?("\"includedFrom\": {")
-    return keep(state.with(included: true), line)
-  end
+  return keep(state.with(included: true), line) if text.start_with?("\"includedFrom\": {")
 
-  if text.start_with?("\"spellingLoc\": {")
-    return keep(state.with(spelling: true), line)
-  end
+  return keep(state.with(spelling: true), line) if text.start_with?("\"spellingLoc\": {")
 
-  if text.start_with?("\"expansionLoc\": {")
-    return keep(state.with(spelling: false), line)
-  end
+  return keep(state.with(spelling: false), line) if text.start_with?("\"expansionLoc\": {")
 
-  if text.start_with?("\"file\": ")
-    return keep(with_file(state, value_of(text, "\"file\": ")), line)
-  end
+  return keep(with_file(state, value_of(text, "\"file\": ")), line) if text.start_with?("\"file\": ")
 
   if text.start_with?("\"line\": ")
     return keep(state.with(line: value_of(text, "\"line\": ").to_i.unwrap_or(state.line)), line)
   end
 
-  if text.start_with?("\"col\": ")
-    return located(state, text)
-  end
+  return located(state, text) if text.start_with?("\"col\": ")
 
-  return keep(state, line)
+  keep(state, line)
 end
 
 # A declaration too large to keep: an error when it named a function, as its calls are lost. One that has named none so
 # far is read on without its lines, since it may name one past the cap.
 def oversized(state: State) -> State
-  if state.functions
-    return state.with(phase: Phase.Dropped, lines: [], oversized: state.oversized.push(state.name))
-  end
+  return state.with(phase: Phase.Dropped, lines: [], oversized: state.oversized.push(state.name)) if state.functions
 
-  return state.with(phase: Phase.Oversized, lines: [])
+  state.with(phase: Phase.Oversized, lines: [])
 end
 
 # A line past the cap of a declaration that has named no function so far: a function makes it an error.
 def past_the_cap(state: State, line: String) -> State
-  if line.end_with?(FUNCTION_KIND)
-    return state.with(phase: Phase.Dropped, oversized: state.oversized.push(state.name))
-  end
+  return state.with(phase: Phase.Dropped, oversized: state.oversized.push(state.name)) if line.end_with?(FUNCTION_KIND)
 
-  return state
+  state
 end
 
 # The keys of the declaration itself and of its type: whether it is a variable, its name, and, at its type, whether a
 # variable of that type can hold a function pointer.
 def top_key(state: State, line: String) -> State
-  if line == VAR_KIND
-    return state.with(variable: true)
-  end
+  return state.with(variable: true) if line == VAR_KIND
 
-  if line.end_with?(FUNCTION_KIND)
-    return state.with(functions: true)
-  end
+  return state.with(functions: true) if line.end_with?(FUNCTION_KIND)
 
-  if line.start_with?(NAME_KEY)
-    return state.with(name: decoded_name(value_of(line.strip, "\"name\": ")))
-  end
+  return state.with(name: decoded_name(value_of(line.strip, "\"name\": "))) if line.start_with?(NAME_KEY)
 
-  if line.start_with?(DESUGARED_KEY)
-    return state.with(desugared: value_of(line, DESUGARED_KEY))
-  end
+  return state.with(desugared: value_of(line, DESUGARED_KEY)) if line.start_with?(DESUGARED_KEY)
 
   if line.start_with?(TYPE_KEY) and state.variable and state.phase == Phase.Kept
     type = state.desugared
@@ -316,59 +271,39 @@ def top_key(state: State, line: String) -> State
       type = value_of(line, TYPE_KEY)
     end
 
-    if plain_array?(type)
-      return state.with(phase: Phase.Dropped, lines: [])
-    end
+    return state.with(phase: Phase.Dropped, lines: []) if plain_array?(type)
 
     return state.with(array: type.include?("["))
   end
 
-  return state
+  state
 end
 
 # The lines below the keys of the declaration: whether it names a function, and, for an array whose type does not tell
 # (a typedef), whether its first item is a number. A number cast to a pointer (`0`, or `1` under `-Wno-int-conversion`)
 # is not one: the array holds pointers.
 def deeper_key(state: State, line: String) -> State
-  if state.phase != Phase.Kept
-    return state
-  end
+  return state if state.phase != Phase.Kept
 
-  if not state.functions and line.end_with?(FUNCTION_KIND)
-    return state.with(functions: true, array: false)
-  end
+  return state.with(functions: true, array: false) if not state.functions and line.end_with?(FUNCTION_KIND)
 
-  if not state.array
-    return state
-  end
+  return state if not state.array
 
-  if line == INIT_LIST
-    return state.with(items: true)
-  end
+  return state.with(items: true) if line == INIT_LIST
 
-  if not state.items
-    return state
-  end
+  return state if not state.items
 
   text = line.strip
-  if text.start_with?(CAST_KEY) and value_of(text, CAST_KEY).end_with?(TO_POINTER)
-    return state.with(array: false)
-  end
+  return state.with(array: false) if text.start_with?(CAST_KEY) and value_of(text, CAST_KEY).end_with?(TO_POINTER)
 
-  if not text.start_with?(KIND_KEY)
-    return state
-  end
+  return state if not text.start_with?(KIND_KEY)
 
   kind = value_of(text, KIND_KEY)
-  if SEEN_THROUGH.include?(kind)
-    return state
-  end
+  return state if SEEN_THROUGH.include?(kind)
 
-  if LITERALS.include?(kind)
-    return state.with(phase: Phase.Dropped, lines: [])
-  end
+  return state.with(phase: Phase.Dropped, lines: []) if LITERALS.include?(kind)
 
-  return state.with(array: false)
+  state.with(array: false)
 end
 
 # The `col` of a location comes after its file and line, so they are known here. The first location of a declaration
@@ -385,7 +320,7 @@ def located(state: State, text: String) -> State
     return keep(state.with(phase: phase), marked)
   end
 
-  return keep(state, marked)
+  keep(state, marked)
 end
 
 def close(state: State) -> State
@@ -395,52 +330,42 @@ def close(state: State) -> State
   end
 
   # It ended without naming a function: it is skipped.
-  if state.phase == Phase.Oversized
-    return state.with(phase: Phase.Between, skipped: state.skipped + 1)
-  end
+  return state.with(phase: Phase.Between, skipped: state.skipped + 1) if state.phase == Phase.Oversized
 
-  return state.with(phase: Phase.Between, lines: [])
+  state.with(phase: Phase.Between, lines: [])
 end
 
 # A line is kept without its indent: a deep expression (a chain of `else if` or of `||`) is indented by its depth on
 # every line, which would make the text grow with the square of the chain. No string of the dump spans two lines.
 def keep(state: State, line: String) -> State
-  if state.phase == Phase.Open or state.phase == Phase.Kept
-    return state.with(lines: state.lines.push(line.strip))
-  end
+  return state.with(lines: state.lines.push(line.strip)) if state.phase == Phase.Open or state.phase == Phase.Kept
 
-  return state
+  state
 end
 
 # A file of the dump is relative to where clang ran. `<built-in>` and `<scratch space>` are no files.
 def with_file(state: State, value: String) -> State
   located = place_of(state.directory, state.cwd, value)
-  return state.with(encoded: located.encoded, inside: located.inside)
+  state.with(encoded: located.encoded, inside: located.inside)
 end
 
 # The file of a `"file": ` value as the kept locations write it (absolute, JSON text), and whether it is in the
 # project.
 def place_of(directory: String, cwd: String, value: String) -> Place
   name = JSON.string(JSON.parse(value).unwrap_or(JSON.from(""))).unwrap_or("")
-  if name == "" or name.start_with?("<")
-    return Place(raw: value, encoded: JSON.encode(name), inside: false)
-  end
+  return Place(raw: value, encoded: JSON.encode(name), inside: false) if name == "" or name.start_with?("<")
 
   path = Paths.absolute(directory, name).unwrap_or(name)
-  return Place(raw: value, encoded: JSON.encode(path), inside: Paths.inside(cwd, path).some?)
+  Place(raw: value, encoded: JSON.encode(path), inside: Paths.inside(cwd, path).some?)
 end
 
 # The name of a declaration, written as JSON text in the dump.
-def decoded_name(name: String) -> String
-  return JSON.string(JSON.parse(name).unwrap_or(JSON.from(name))).unwrap_or(name)
-end
+def decoded_name(name: String) -> String = JSON.string(JSON.parse(name).unwrap_or(JSON.from(name))).unwrap_or(name)
 
 # The value of a `"key": value,` line, without the comma.
 def value_of(text: String, key: String) -> String
   value = text.slice(key.length, text.length - key.length)
-  if value.end_with?(",")
-    return value.slice(0, value.length - 1)
-  end
+  return value.slice(0, value.length - 1) if value.end_with?(",")
 
-  return value
+  value
 end

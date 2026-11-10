@@ -198,7 +198,7 @@ export def check(
     end
   end
 
-  return Checked(
+  Checked(
     findings: findings,
     unresolved: inferred.unresolved,
     missing_roots: missing_roots(graph, config),
@@ -212,9 +212,7 @@ end
 ## the calls through the fields of `[assume] stop_fields`, which no walk follows, and the direct calls of the pairs of
 ## `[assume] stop_calls`. A call through a copy of such a field (a local that got it) is still followed.
 export def assumed(units: List[Unit], config: Config.Config) -> List[Unit]
-  if not Config.assumes_any?(config)
-    return units
-  end
+  return units if not Config.assumes_any?(config)
 
   cut = Set.new(config.stop_fields.map do |field| "#{FIELD_SLOT}#{field}" end)
   edges = edges_of(config)
@@ -229,7 +227,7 @@ export def assumed(units: List[Unit], config: Config.Config) -> List[Unit]
     nonblocking: listing_of(config.nonblocking),
   )
 
-  return units.map do |unit|
+  units.map do |unit|
     unit.with(
       functions: unit.functions.map do |f| with_assumed(f, lists) end,
       calls: unit.calls.select do |call| not cut_call?(cut, call) and not cut_edge?(edges, functions, call) end,
@@ -293,19 +291,15 @@ export def with_jumps(units: List[Unit], cwd: String) -> List[Unit]
     end
   end
 
-  if queue.size == seeds
-    return units
-  end
+  return units if queue.size == seeds
 
-  return units.map do |unit| unit.with(functions: unit.functions.map do |f| with_via(f, via) end) end
+  units.map do |unit| unit.with(functions: unit.functions.map do |f| with_via(f, via) end) end
 end
 
 ## Returns the fields of `[assume] stop_fields` that the units neither store a function in nor call through, each with
 ## its key (`request.cal (assume.stop_fields)`). It reads the units before `assumed` takes the calls out.
 export def missing_fields(units: List[Unit], config: Config.Config) -> List[String]
-  if config.stop_fields.empty?
-    return []
-  end
+  return [] if config.stop_fields.empty?
 
   known: Set[String] = Set.new([])
   for unit in units
@@ -322,15 +316,13 @@ export def missing_fields(units: List[Unit], config: Config.Config) -> List[Stri
   end
 
   missing = config.stop_fields.uniq.select do |field| not known.include?("#{FIELD_SLOT}#{field}") end
-  return missing.map do |field| "#{field} (assume.stop_fields)" end
+  missing.map do |field| "#{field} (assume.stop_fields)" end
 end
 
 ## Returns the pairs of `[assume] stop_calls` that match no call of the units, each with its key
 ## (`on_exit>close (assume.stop_calls)`). It reads the units before `assumed` takes the calls out.
 export def missing_calls(units: List[Unit], config: Config.Config) -> List[String]
-  if config.stop_calls.empty?
-    return []
-  end
+  return [] if config.stop_calls.empty?
 
   functions = functions_by_key(units)
   calls = units.flat_map do |unit| unit.calls end
@@ -339,18 +331,14 @@ export def missing_calls(units: List[Unit], config: Config.Config) -> List[Strin
     not calls.any? do |call| cut_edge?(edge, functions, call) end
   end
 
-  return missing.map do |text| "#{text} (assume.stop_calls)" end
+  missing.map do |text| "#{text} (assume.stop_calls)" end
 end
 
 ## Returns whether no walk goes into a function: it is marked CC_STOP or named in `[assume] stop`.
-export def stopped?(graph: Graph, key: String) -> Bool
-  return marked?(graph, key, STOP)
-end
+export def stopped?(graph: Graph, key: String) -> Bool = marked?(graph, key, STOP)
 
 ## Returns the functions of the units, each merged from all its declarations.
-export def functions(units: List[Unit]) -> List[Function]
-  return graph_of(units).functions.values
-end
+export def functions(units: List[Unit]) -> List[Function] = graph_of(units).functions.values
 
 ## Returns the names of the shortest call path from a function of the project to a system call, a blocking one
 ## included: [`key`'s name, ..., the call]; none when it makes none. A library function is a path of its own name when
@@ -359,29 +347,23 @@ export def system_path(graph: Graph, key: String) -> Optional[List[String]]
   # A function of the project marked CC_BLOCKING is one itself, whatever its body does. Every blocking call enters the
   # kernel whatever the `[library]` flags say, so the families passed do not change what a system call is.
   families = Known.BLOCKING_FAMILIES
-  if stopped?(graph, key)
-    return none
-  end
+  return none if stopped?(graph, key)
 
-  if has?(graph, families, key, Effect.System)
-    return some([name_of(graph, key)])
-  end
+  return some([name_of(graph, key)]) if has?(graph, families, key, Effect.System)
 
   # The lock rules follow every call, cold ones included: `[effects] follow_cold` is about the roots of the
   # effect rules.
   walk = Walk(families: families, follow_cold: true, all: false, short_locks: Set.new([]), inferred: Set.new([]))
   paths = search(graph, walk, key, Effect.System)
-  if paths.empty?
-    return none
-  end
+  return none if paths.empty?
 
-  return some(paths.first.map do |k| name_of(graph, k) end)
+  some(paths.first.map do |k| name_of(graph, k) end)
 end
 
 ## Returns the functions that a call through a pointer at `line`:`column` of `caller` reaches: those stored in its slot.
 export def pointer_targets(graph: Graph, caller: String, line: Int, column: Int) -> List[String]
   slots = graph.pointers.get("#{caller} #{line}:#{column}").unwrap_or([])
-  return slots.flat_map do |slot| graph.slots.get(slot).unwrap_or([]) end.uniq
+  slots.flat_map do |slot| graph.slots.get(slot).unwrap_or([]) end.uniq
 end
 
 ## Returns the functions that a function calls, directly or through a slot.
@@ -394,12 +376,12 @@ export def callees(graph: Graph, key: String) -> List[String]
     end
   end
 
-  return found
+  found
 end
 
 ## Returns whether the project defines the function.
 export def defined?(graph: Graph, key: String) -> Bool
-  return graph.functions.get(key).map do |f| f.defined end.unwrap_or(false)
+  graph.functions.get(key).map do |f| f.defined end.unwrap_or(false)
 end
 
 ## Returns the call graph of the units.
@@ -453,7 +435,7 @@ export def graph_of(units: List[Unit]) -> Graph
     stores = stores.concat(unit.stores)
   end
 
-  return Graph(
+  Graph(
     functions: functions,
     edges: edges,
     slots: slots_of(stores),
@@ -469,11 +451,7 @@ end
 ## or by the name of a static global (`big_lock` for `big_lock@src/a.c`, as `[assume]` names a static function), or by
 ## its name and the end of its file (`big_lock@a.c`).
 export def named_class?(names: Set[String], class: String) -> Bool
-  return (
-    names.include?(class) or
-    names.include?(bare_class(class)) or
-    names.to_a.any? do |entry| in_file?(entry, class) end
-  )
+  names.include?(class) or names.include?(bare_class(class)) or names.to_a.any? do |entry| in_file?(entry, class) end
 end
 
 # The classes of the short locks: those marked CC_NO_SYSCALL_UNDER() and those of `[assume] short_locks`. An entry
@@ -483,7 +461,7 @@ def short_locks_of(units: List[Unit], config: Config.Config) -> Set[String]
     .select do |m| m.mark == SHORT_LOCK_MARK end
     .map do |m| m.class end
 
-  return Set.new(marked.concat(config.short_locks.select do |entry| not entry.include?("(") end))
+  Set.new(marked.concat(config.short_locks.select do |entry| not entry.include?("(") end))
 end
 
 # The wrappers `name(N)` among the entries of `short_locks`.
@@ -496,7 +474,7 @@ def wrappers_of(entries: List[String]) -> List[Config.Wrapper]
     end
   end
 
-  return found
+  found
 end
 
 # The classes of the locks that are short because no section of theirs reaches a blocking call, as the short rule
@@ -530,7 +508,7 @@ def inferred_locks(graph: Graph, walk: Walk, sections: Sections) -> Set[String]
     added = quiet_classes(graph, walk.with(inferred: found, all: false, empty_slots: true), by_class, left)
   end
 
-  return found
+  found
 end
 
 # The classes among `classes` none of whose sections reaches a blocking call with the short locks of `walk`. Each
@@ -549,18 +527,16 @@ def quiet_classes(
     end,
   )
 
-  return classes.select do |class|
+  classes.select do |class|
     by_class.get(class).unwrap_or([]).all? do |section| not blocks?(graph, walk, section, blocking) end
   end
 end
 
 # The functions a call of a section goes to: its callee, or the functions stored in the pointer it calls.
 def targets_of(graph: Graph, section: Section) -> List[String]
-  if section.pointer
-    return pointer_targets(graph, section.caller, section.line, section.column)
-  end
+  return pointer_targets(graph, section.caller, section.line, section.column) if section.pointer
 
-  return [section.callee]
+  [section.callee]
 end
 
 # Whether a call of a section is, or reaches, a blocking call (one of `blocking`), as a call of a short function would
@@ -569,13 +545,9 @@ end
 # another may not.
 def blocks?(graph: Graph, walk: Walk, section: Section, blocking: Set[String]) -> Bool
   if not section.pointer and not section.takes.empty? and not defined?(graph, section.callee)
-    if marked?(graph, section.callee, "blocking")
-      return true
-    end
+    return true if marked?(graph, section.callee, "blocking")
 
-    if wrapper_take?(graph, walk, section.caller, section.callee)
-      return false
-    end
+    return false if wrapper_take?(graph, walk, section.caller, section.callee)
 
     return not section.tried and not section.takes.all? do |c| short_class?(walk, c) end
   end
@@ -583,11 +555,9 @@ def blocks?(graph: Graph, walk: Walk, section: Section, blocking: Set[String]) -
   targets = targets_of(graph, section)
   # A pointer that the run stores no function in may hold any function: the inference counts it as blocking, where
   # the short rule reaches nothing through it.
-  if targets.empty?
-    return section.pointer
-  end
+  return section.pointer if targets.empty?
 
-  return targets.any? do |key|
+  targets.any? do |key|
     skipped = (
       cut?(graph, walk, key, Effect.Blocks, not walk.follow_cold) or
       short_takes?(graph, walk, section.caller, key) or
@@ -602,23 +572,21 @@ end
 # the lock is of a short class, or the call is of a wrapper of `short_locks` (`uv_mutex_lock(0)`), or it is made in
 # one (a lock wrapper of the project: the lock it takes is its parameter's, whatever the caller passes).
 def short_takes?(graph: Graph, walk: Walk, key: String, callee: String) -> Bool
-  if wrapper_take?(graph, walk, key, callee)
-    return true
-  end
+  return true if wrapper_take?(graph, walk, key, callee)
 
   classes = graph.locks.get("#{key}>#{callee}").unwrap_or([])
-  return not classes.empty? and classes.all? do |c| short_class?(walk, c) end
+  not classes.empty? and classes.all? do |c| short_class?(walk, c) end
 end
 
 # Whether a class is short: one the rules know, marked or named in `[assume] short_locks` (`named_class?`), or
 # inferred, as it is.
 def short_class?(walk: Walk, class: String) -> Bool
-  return class != "" and (named_class?(walk.short_locks, class) or walk.inferred.include?(class))
+  class != "" and (named_class?(walk.short_locks, class) or walk.inferred.include?(class))
 end
 
 # Whether a call of the known take `callee` in `key` is of a wrapper of `short_locks`, or made in one.
 def wrapper_take?(graph: Graph, walk: Walk, key: String, callee: String) -> Bool
-  return (
+  (
     not walk.short_wrappers.empty? and
     Known.TAKES.include?(name_of_key(graph.functions, callee)) and
     (listed_wrapper?(graph, walk, callee) or listed_wrapper?(graph, walk, key))
@@ -630,7 +598,7 @@ end
 def listed_wrapper?(graph: Graph, walk: Walk, key: String) -> Bool
   name = name_of_key(graph.functions, key)
   files = graph.declared.get(key).unwrap_or([])
-  return walk.short_wrappers.any? do |wrapper|
+  walk.short_wrappers.any? do |wrapper|
     wrapper.name == name and (wrapper.tail == "" or files.any? do |file| ends_with_path?(file, wrapper.tail) end)
   end
 end
@@ -638,19 +606,15 @@ end
 # Whether `entry` (`name@file`) names the static global `class` by the end of its file's path.
 def in_file?(entry: String, class: String) -> Bool
   name = bare_class(entry)
-  if name == entry or name != bare_class(class)
-    return false
-  end
+  return false if name == entry or name != bare_class(class)
 
   file = entry.slice(name.length + 1, entry.length - name.length - 1)
   path = class.slice(name.length + 1, class.length - name.length - 1)
-  return ends_with_path?(path, file)
+  ends_with_path?(path, file)
 end
 
 # Whether `path` is `tail` or ends with it after a slash: whole parts of the path, so `b.c` is not `ab.c`.
-def ends_with_path?(path: String, tail: String) -> Bool
-  return path == tail or path.end_with?("/#{tail}")
-end
+def ends_with_path?(path: String, tail: String) -> Bool = path == tail or path.end_with?("/#{tail}")
 
 def entry_of(entry: String) -> Entry
   case entry.index_of("@")
@@ -660,8 +624,8 @@ def entry_of(entry: String) -> Entry
         tail = tail.slice(2, tail.length - 2)
       end
 
-      return Entry(name: entry.slice(0, at), bare: false, tail: tail)
-    none -> return Entry(name: entry, bare: true, tail: "")
+      Entry(name: entry.slice(0, at), bare: false, tail: tail)
+    none -> Entry(name: entry, bare: true, tail: "")
   end
 end
 
@@ -676,12 +640,12 @@ def listing_of(entries: List[String]) -> Listing
     end
   end
 
-  return Listing(bare: Set.new(bare), tails: tails)
+  Listing(bare: Set.new(bare), tails: tails)
 end
 
 # Whether the list names the function: by its name, or by its name and the end of the path of its file.
 def listed?(listing: Listing, function: Function) -> Bool
-  return (
+  (
     listing.bare.include?(function.name) or
     listing.tails.get(function.name).unwrap_or([]).any? do |tail| ends_with_path?(function.file, tail) end
   )
@@ -690,8 +654,8 @@ end
 # A class without the file of a static global.
 def bare_class(class: String) -> String
   case class.index_of("@")
-    some(at) -> return class.slice(0, at)
-    none -> return class
+    some(at) -> class.slice(0, at)
+    none -> class
   end
 end
 
@@ -708,20 +672,18 @@ def returns_at_once?(graph: Graph, walk: Walk, key: String, callee: String) -> B
   end
 
   calls = graph.quiet.get("#{key}>#{callee}").unwrap_or([])
-  return walk.flags and not calls.empty? and calls.all? do |set| set end
+  walk.flags and not calls.empty? and calls.all? do |set| set end
 end
 
 # Whether a call goes through one of the slots `cut`.
 def cut_call?(cut: Set[String], call: Call) -> Bool
   case call.target
-    Target.Slot(slot) -> return cut.include?(slot)
-    Target.Direct(_) -> return false
+    Target.Slot(slot) -> cut.include?(slot)
+    Target.Direct(_) -> false
   end
 end
 
-def edges_of(config: Config.Config) -> List[Cut]
-  return edges_of_texts(config.stop_calls)
-end
+def edges_of(config: Config.Config) -> List[Cut] = edges_of_texts(config.stop_calls)
 
 def edges_of_texts(texts: List[String]) -> List[Cut]
   edges: List[Cut] = []
@@ -732,7 +694,7 @@ def edges_of_texts(texts: List[String]) -> List[Cut]
     end
   end
 
-  return edges
+  edges
 end
 
 # Every declaration and definition of the functions of the units, by key: a name in `[assume]` may be the file of any.
@@ -748,7 +710,7 @@ def functions_by_key(units: List[Unit]) -> Map[String, List[Function]]
     end
   end
 
-  return found
+  found
 end
 
 # Whether a call is the one of a pair of `[assume] stop_calls`: a direct call whose caller and callee are the functions
@@ -756,24 +718,20 @@ end
 def cut_edge?(edges: List[Cut], functions: Map[String, List[Function]], call: Call) -> Bool
   case call.target
     Target.Direct(callee) ->
-      return edges.any? do |edge|
-        named?(edge.caller, functions, call.caller) and named?(edge.callee, functions, callee)
-      end
+      edges.any? do |edge| named?(edge.caller, functions, call.caller) and named?(edge.callee, functions, callee) end
 
-    Target.Slot(_) -> return false
+    Target.Slot(_) -> false
   end
 end
 
 def named?(listing: Listing, functions: Map[String, List[Function]], key: String) -> Bool
-  return functions.get(key).unwrap_or([]).any? do |function| listed?(listing, function) end
+  functions.get(key).unwrap_or([]).any? do |function| listed?(listing, function) end
 end
 
 # The classes of `[assume] short_locks` that no lock of the units has (none taken and none marked), and those of
 # `owned_locks` that no lock through a pointer has, with their key.
 def missing_locks(units: List[Unit], graph: Graph, config: Config.Config) -> List[String]
-  if config.short_locks.empty? and config.owned_locks.empty?
-    return []
-  end
+  return [] if config.short_locks.empty? and config.owned_locks.empty?
 
   classes = graph.locks
     .values
@@ -789,15 +747,13 @@ def missing_locks(units: List[Unit], graph: Graph, config: Config.Config) -> Lis
     )
   end
 
-  return missing.map do |c| "#{c} (assume.short_locks)" end.concat(missing_owned(units, config))
+  missing.map do |c| "#{c} (assume.short_locks)" end.concat(missing_owned(units, config))
 end
 
 # The classes of `[assume] owned_locks` that no lock through a pointer has, with their key: the name of a mutex that
 # is not behind a pointer would do nothing.
 def missing_owned(units: List[Unit], config: Config.Config) -> List[String]
-  if config.owned_locks.empty?
-    return []
-  end
+  return [] if config.owned_locks.empty?
 
   classes = units.flat_map do |unit| unit.bodies end.flat_map(&pointer_classes)
   known = Set.new(classes.concat(classes.map(&bare_class)))
@@ -805,7 +761,7 @@ def missing_owned(units: List[Unit], config: Config.Config) -> List[String]
     not known.include?(c) and not classes.any? do |class| in_file?(c, class) end
   end
 
-  return missing.map do |c| "#{c} (assume.owned_locks)" end
+  missing.map do |c| "#{c} (assume.owned_locks)" end
 end
 
 # The classes of the locks through a pointer field or global that the calls of a body take, release or wait on, a lock
@@ -821,7 +777,7 @@ def pointer_classes(body: Body) -> List[String]
     end
   end
 
-  return classes
+  classes
 end
 
 # Whether a wrapper of `acquires` or `releases` names a function with a named parameter at its place, in a declaration
@@ -830,24 +786,20 @@ end
 def lock_declared?(text: String, functions: List[Function]) -> Bool
   case Config.wrapper_of(text)
     some(wrapper) ->
-      return functions.any? do |f|
-        f.name == wrapper.name and f.arity > wrapper.index and file_named?(f, wrapper.tail)
-      end
+      functions.any? do |f| f.name == wrapper.name and f.arity > wrapper.index and file_named?(f, wrapper.tail) end
 
-    none -> return false
+    none -> false
   end
 end
 
 # Whether the path `tail` ("" is any) names the function: the file of a static one is that of its definition, as its
 # key says, and a function with external linkage has the file of any of its declarations.
 def file_named?(function: Function, tail: String) -> Bool
-  if tail == ""
-    return true
-  end
+  return true if tail == ""
 
   case function.key.index_of("@")
-    some(at) -> return ends_with_path?(function.key.slice(at + 1, function.key.length - at - 1), tail)
-    none -> return ends_with_path?(function.file, tail)
+    some(at) -> ends_with_path?(function.key.slice(at + 1, function.key.length - at - 1), tail)
+    none -> ends_with_path?(function.file, tail)
   end
 end
 
@@ -855,8 +807,8 @@ end
 # declaring it in its own files, so it is not missing when no unit has it.
 def known_take?(text: String) -> Bool
   case Config.wrapper_of(text)
-    some(wrapper) -> return wrapper.tail == "" and Known.TAKES.include?(wrapper.name)
-    none -> return false
+    some(wrapper) -> wrapper.tail == "" and Known.TAKES.include?(wrapper.name)
+    none -> false
   end
 end
 
@@ -864,38 +816,34 @@ end
 def wrapper_matches?(text: String, files: Map[String, List[String]]) -> Bool
   case Config.wrapper_of(text)
     some(wrapper) ->
-      return files.get(wrapper.name)
+      files.get(wrapper.name)
         .unwrap_or([])
         .any? do |file| wrapper.tail == "" or ends_with_path?(file, wrapper.tail) end
 
-    none -> return false
+    none -> false
   end
 end
 
 # Whether a function may jump out or jumps by a mark (or `[assume]`): where the inference starts.
-def jumping?(function: Function) -> Bool
-  return function.marks.include?(MAY_JUMP) or function.marks.include?(JUMPS)
-end
+def jumping?(function: Function) -> Bool = function.marks.include?(MAY_JUMP) or function.marks.include?(JUMPS)
 
 # Whether the inference stops at a function: it catches the jump, or no rule walks into it.
 def catches?(function: Optional[Function]) -> Bool
   marks = function.map do |f| f.marks end.unwrap_or([])
-  return marks.include?(CATCHES) or marks.include?(STOP)
+  marks.include?(CATCHES) or marks.include?(STOP)
 end
 
 # A function that may jump out through the functions it calls, with the mark and the chain.
 def with_via(function: Function, via: Map[String, List[String]]) -> Function
   chain = via.get(function.key).unwrap_or([])
-  if chain.empty? or jumping?(function)
-    return function
-  end
+  return function if chain.empty? or jumping?(function)
 
-  return function.with(marks: function.marks.push(MAY_JUMP), via: chain)
+  function.with(marks: function.marks.push(MAY_JUMP), via: chain)
 end
 
 # The name of a function by key, or the key itself for one the units do not declare.
 def name_of_key(functions: Map[String, Function], key: String) -> String
-  return functions.get(key).map do |f| f.name end.unwrap_or(key)
+  functions.get(key).map do |f| f.name end.unwrap_or(key)
 end
 
 # A function with the marks of `[assume]` that name it.
@@ -931,15 +879,13 @@ def with_assumed(function: Function, lists: Assumed) -> Function
     marks = marks.push(NONBLOCKING)
   end
 
-  return function.with(marks: marks.uniq, noreturn: noreturn)
+  function.with(marks: marks.uniq, noreturn: noreturn)
 end
 
 # The entries of `[assume]` that no function of the units has, with their key. A `name@file` counts when the file of
 # any declaration of the function, or of its definition, ends with the path: the same functions that `assumed` marks.
 def missing_assumed(units: List[Unit], config: Config.Config) -> List[String]
-  if not Config.assumes_any?(config)
-    return []
-  end
+  return [] if not Config.assumes_any?(config)
 
   files = files_by_name(units.flat_map do |unit| unit.functions end)
   short = unmatched(config.trusted, files).map do |name| "#{name} (assume.short)" end
@@ -960,7 +906,7 @@ def missing_assumed(units: List[Unit], config: Config.Config) -> List[String]
     .map do |text| "#{text} (assume.releases)" end
 
   nonblocking = unmatched(config.nonblocking, files).map do |name| "#{name} (assume.nonblocking)" end
-  return (
+  (
     short.concat(stop)
       .concat(may_jump)
       .concat(jumps)
@@ -982,44 +928,38 @@ def files_by_name(functions: List[Function]) -> Map[String, List[String]]
     end
   end
 
-  return files
+  files
 end
 
 # The entries that name none of the functions, whose files are `files` by name.
 def unmatched(entries: List[String], files: Map[String, List[String]]) -> List[String]
-  return entries.uniq.select do |text| not matches_any?(entry_of(text), files) end
+  entries.uniq.select do |text| not matches_any?(entry_of(text), files) end
 end
 
 def matches_any?(entry: Entry, files: Map[String, List[String]]) -> Bool
-  if entry.bare
-    return files.key?(entry.name)
-  end
+  return files.key?(entry.name) if entry.bare
 
-  return entry.tail != "" and files.get(entry.name).unwrap_or([]).any? do |file| ends_with_path?(file, entry.tail) end
+  entry.tail != "" and files.get(entry.name).unwrap_or([]).any? do |file| ends_with_path?(file, entry.tail) end
 end
 
 def marked?(graph: Graph, key: String, mark: String) -> Bool
-  return graph.functions.get(key).map do |f| f.marks.include?(mark) end.unwrap_or(false)
+  graph.functions.get(key).map do |f| f.marks.include?(mark) end.unwrap_or(false)
 end
 
 # The entries of `[roots]` that no function of the graph defines.
 def missing_roots(graph: Graph, config: Config.Config) -> List[String]
   names = config.short.concat(config.hot).uniq
-  if names.empty?
-    return []
-  end
+  return [] if names.empty?
 
-  return unmatched(names, files_by_name(graph.functions.values.select do |f| f.defined end))
+  unmatched(names, files_by_name(graph.functions.values.select do |f| f.defined end))
 end
 
 # The source of a finding of an inferred root: the flag of the inference, and that of the family of the blocking call
 # when one made it, as either flag turns the finding off.
 def inferred_source(family: String) -> String
-  if family == ""
-    return Known.CALLBACKS_FLAG
-  end
+  return Known.CALLBACKS_FLAG if family == ""
 
-  return "#{Known.CALLBACKS_FLAG}+#{family}"
+  "#{Known.CALLBACKS_FLAG}+#{family}"
 end
 
 # The callbacks in the order of their places, so that the root of a function passed at several places is the first.
@@ -1048,17 +988,17 @@ def inferred_of(graph: Graph, units: List[Unit], cwd: String) -> Inferred
     end
   end
 
-  return Inferred(roots: roots, unresolved: unresolved)
+  Inferred(roots: roots, unresolved: unresolved)
 end
 
 # Zero-padded, so that the text order is the order of the numbers.
 def padded(n: Int) -> String
   digits = n.to_s
-  return "0" * (9 - digits.length) + digits
+  "0" * (9 - digits.length) + digits
 end
 
 def same?(known: UnresolvedCallback, callback: Callback, shown: String) -> Bool
-  return (
+  (
     known.file == shown and
     known.line == callback.line and
     known.call == callback.call and
@@ -1068,8 +1008,8 @@ end
 
 def keys_of(graph: Graph, source: Source) -> List[String]
   case source
-    Source.Function(key) -> return [key]
-    Source.Copy(from) -> return graph.slots.get(from).unwrap_or([])
+    Source.Function(key) -> [key]
+    Source.Copy(from) -> graph.slots.get(from).unwrap_or([])
   end
 end
 
@@ -1094,7 +1034,7 @@ def slots_of(stores: List[Store]) -> Map[String, List[String]]
     end
   end
 
-  return slots
+  slots
 end
 
 # One function from two declarations: the marks and attributes of both, at the place of the definition.
@@ -1104,19 +1044,17 @@ def merged(known: Optional[Function], function: Function) -> Function
       marks = before.marks.concat(function.marks).uniq
       noreturn = before.noreturn or function.noreturn
       cold = before.cold or function.cold
-      if before.defined
-        return before.with(marks: marks, noreturn: noreturn, cold: cold)
-      end
+      return before.with(marks: marks, noreturn: noreturn, cold: cold) if before.defined
 
-      return function.with(marks: marks, noreturn: noreturn, cold: cold)
-    none -> return function
+      function.with(marks: marks, noreturn: noreturn, cold: cold)
+    none -> function
   end
 end
 
 # The findings of a rule on a function, when the function reaches what the rule forbids: one for each bad call the
 # walk finds, each with its shortest call path.
 def broken(graph: Graph, walk: Walk, function: Function, effect: Effect) -> List[Finding]
-  return search(graph, walk, function.key, effect).map do |path|
+  search(graph, walk, function.key, effect).map do |path|
     names = path.map do |key| name_of(graph, key) end
     # The message has no path, so the baseline holds when the path changes; the report prints the path. It names the
     # bad call, so each finding of --all-paths has a key of its own, and the first is the one a run without it gives.
@@ -1150,15 +1088,11 @@ def search(graph: Graph, walk: Walk, start: String, effect: Effect) -> List[List
     i += 1
     if walk.empty_slots and empty_slot?(graph, key)
       found = found.push(path_to(callers, start, key))
-      if not walk.all
-        return found
-      end
+      return found if not walk.all
     end
 
     for callee in callees(graph, key)
-      if callers.key?(callee) or cut?(graph, walk, callee, effect, not walk.follow_cold)
-        next
-      end
+      next if callers.key?(callee) or cut?(graph, walk, callee, effect, not walk.follow_cold)
 
       if (
         effect == Effect.Blocks and
@@ -1170,21 +1104,19 @@ def search(graph: Graph, walk: Walk, start: String, effect: Effect) -> List[List
       callers = callers.put(callee, key)
       if has?(graph, walk.families, callee, effect)
         found = found.push(path_to(callers, start, callee))
-        if not walk.all
-          return found
-        end
+        return found if not walk.all
       elsif defined?(graph, callee)
         queue = queue.push(callee)
       end
     end
   end
 
-  return found
+  found
 end
 
 # Whether a function calls through a pointer that the run stores no function in.
 def empty_slot?(graph: Graph, key: String) -> Bool
-  return graph.edges.get(key).unwrap_or([]).any? do |target|
+  graph.edges.get(key).unwrap_or([]).any? do |target|
     case target
       Target.Slot(slot) -> graph.slots.get(slot).unwrap_or([]).empty?
       Target.Direct(_) -> false
@@ -1197,11 +1129,9 @@ end
 def cut?(graph: Graph, walk: Walk, key: String, effect: Effect, cold: Bool) -> Bool
   # A function that blocks itself (CC_BLOCKING) cannot be assumed short; CC_STOP wins over every mark.
   trusted = marked?(graph, key, ASSUME_SHORT) and not marked?(graph, key, "blocking")
-  if stopped?(graph, key) or (effect == Effect.Blocks and trusted)
-    return true
-  end
+  return true if stopped?(graph, key) or (effect == Effect.Blocks and trusted)
 
-  return cold and skips?(graph, key)
+  cold and skips?(graph, key)
 end
 
 # A function that never returns or is cold, which the walk does not go into, unless a CC_BLOCKING mark says what it
@@ -1212,8 +1142,8 @@ def skips?(graph: Graph, key: String) -> Bool
   case graph.functions.get(key)
     some(f) ->
       exits = not f.defined and Known.NORETURN.include?(f.name)
-      return (f.noreturn or f.cold or exits) and not f.marks.include?("blocking")
-    none -> return Known.NORETURN.include?(key)
+      (f.noreturn or f.cold or exits) and not f.marks.include?("blocking")
+    none -> Known.NORETURN.include?(key)
   end
 end
 
@@ -1227,7 +1157,7 @@ def path_to(callers: Map[String, String], start: String, last: String) -> List[S
     path = [key].concat(path)
   end
 
-  return path
+  path
 end
 
 def has?(graph: Graph, families: List[Known.Family], key: String, effect: Effect) -> Bool
@@ -1235,53 +1165,47 @@ def has?(graph: Graph, families: List[Known.Family], key: String, effect: Effect
   marked = graph.functions.get(key).map do |f| f.marks.include?("blocking") end.unwrap_or(false)
   library = not defined?(graph, key)
   case effect
-    Effect.Blocks -> return marked or (library and families.any? do |family| family.calls.include?(name) end)
-    Effect.Allocates -> return library and Known.ALLOCATING.include?(name)
-    Effect.System -> return marked or (library and (Known.SYSTEM.include?(name) or Known.BLOCKING.include?(name)))
+    Effect.Blocks -> marked or (library and families.any? do |family| family.calls.include?(name) end)
+    Effect.Allocates -> library and Known.ALLOCATING.include?(name)
+    Effect.System -> marked or (library and (Known.SYSTEM.include?(name) or Known.BLOCKING.include?(name)))
   end
 end
 
 # The `[library]` flag whose family made the last call of a path blocking, or "" when a mark did, or for the rules of
 # CC_HOT, which no flag turns off.
 def source_of(graph: Graph, families: List[Known.Family], key: String, effect: Effect) -> String
-  if effect != Effect.Blocks or defined?(graph, key)
-    return ""
-  end
+  return "" if effect != Effect.Blocks or defined?(graph, key)
 
   name = name_of(graph, key)
   for family in families
-    if family.calls.include?(name)
-      return family.flag
-    end
+    return family.flag if family.calls.include?(name)
   end
 
-  return ""
+  ""
 end
 
-def name_of(graph: Graph, key: String) -> String
-  return graph.functions.get(key).map do |f| f.name end.unwrap_or(key)
-end
+def name_of(graph: Graph, key: String) -> String = graph.functions.get(key).map do |f| f.name end.unwrap_or(key)
 
 def code_of(effect: Effect) -> String
   case effect
-    Effect.Blocks -> return "CC-EFFECT-SHORT-BLOCKS"
-    Effect.Allocates -> return "CC-EFFECT-HOT-ALLOCATES"
-    Effect.System -> return "CC-EFFECT-HOT-SYSCALL"
+    Effect.Blocks -> "CC-EFFECT-SHORT-BLOCKS"
+    Effect.Allocates -> "CC-EFFECT-HOT-ALLOCATES"
+    Effect.System -> "CC-EFFECT-HOT-SYSCALL"
   end
 end
 
 def kind_of(function: Function, effect: Effect) -> String
   case effect
-    Effect.Blocks -> return "short function #{function.name}"
-    Effect.Allocates -> return "hot function #{function.name}"
-    Effect.System -> return "hot function #{function.name}"
+    Effect.Blocks -> "short function #{function.name}"
+    Effect.Allocates -> "hot function #{function.name}"
+    Effect.System -> "hot function #{function.name}"
   end
 end
 
 def call_of(effect: Effect) -> String
   case effect
-    Effect.Blocks -> return "the blocking call"
-    Effect.Allocates -> return "the allocation"
-    Effect.System -> return "the system call"
+    Effect.Blocks -> "the blocking call"
+    Effect.Allocates -> "the allocation"
+    Effect.System -> "the system call"
   end
 end

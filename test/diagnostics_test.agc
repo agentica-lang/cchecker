@@ -6,13 +6,13 @@ def test_gcc_line_with_a_cwe_and_an_option() -> Result[Void]
   try Test.eq(found[0].message, "leak of 'buf'")
   try Test.eq(found[0].line, 9)
   try Test.eq(found[0].column, 12)
-  return Test.eq(Diagnostics.option(found[0]), some("-Wanalyzer-malloc-leak"))
+  Test.eq(Diagnostics.option(found[0]), some("-Wanalyzer-malloc-leak"))
 end
 
 def test_clang_tidy_line_with_a_dotted_check() -> Result[Void]
   found = Diagnostics.parse("/p/a.c:3:5: warning: Attempt to free released memory [clang-analyzer-unix.Malloc]")
   try Test.eq(found[0].file, "/p/a.c")
-  return Test.eq(Diagnostics.option(found[0]), some("clang-analyzer-unix.Malloc"))
+  Test.eq(Diagnostics.option(found[0]), some("clang-analyzer-unix.Malloc"))
 end
 
 def test_notes_and_source_lines_are_skipped() -> Result[Void]
@@ -25,18 +25,18 @@ def test_notes_and_source_lines_are_skipped() -> Result[Void]
   OUT
   found = Diagnostics.parse(text)
   try Test.eq(found.size, 1)
-  return Test.eq(found[0].severity, "warning")
+  Test.eq(found[0].severity, "warning")
 end
 
 def test_an_error_without_a_name_has_no_option() -> Result[Void]
   found = Diagnostics.parse("a.c:1:10: fatal error: nothere.h: No such file or directory")
   try Test.eq(found[0].severity, "fatal error")
-  return Test.eq(Diagnostics.option(found[0]), none)
+  Test.eq(Diagnostics.option(found[0]), none)
 end
 
 def test_brackets_inside_the_message_are_kept() -> Result[Void]
   found = Diagnostics.parse("a.c:2:3: warning: index x[5] is out of bounds [-Warray-bounds]")
-  return Test.eq(found[0].message, "index x[5] is out of bounds")
+  Test.eq(found[0].message, "index x[5] is out of bounds")
 end
 
 def test_a_coloured_diagnostic_is_unparsed_without_its_colours() -> Result[Void]
@@ -46,7 +46,7 @@ def test_a_coloured_diagnostic_is_unparsed_without_its_colours() -> Result[Void]
   )
 
   try Test.eq(Diagnostics.parse(text).size, 1)
-  return Test.eq(Diagnostics.unparsed(text), ["a.c:2:3: warning: coloured [x]"])
+  Test.eq(Diagnostics.unparsed(text), ["a.c:2:3: warning: coloured [x]"])
 end
 
 def test_a_linked_tag_is_unparsed_without_its_links() -> Result[Void]
@@ -54,7 +54,7 @@ def test_a_linked_tag_is_unparsed_without_its_links() -> Result[Void]
   bel = String.from_bytes(Bytes.from_list([7]).unwrap!).unwrap!
   text = "a.c:9:12: warning: leak [#{esc}]8;;https://gcc.gnu.org/x#{bel}-Wanalyzer-malloc-leak#{esc}]8;;#{bel}]"
   try Test.eq(Diagnostics.parse(text).size, 0)
-  return Test.eq(Diagnostics.unparsed(text), ["a.c:9:12: warning: leak [-Wanalyzer-malloc-leak]"])
+  Test.eq(Diagnostics.unparsed(text), ["a.c:9:12: warning: leak [-Wanalyzer-malloc-leak]"])
 end
 
 def test_plain_lines_are_never_unparsed() -> Result[Void]
@@ -65,5 +65,5 @@ def test_plain_lines_are_never_unparsed() -> Result[Void]
           |       ^~~~~~~~~
     a.c:5:7: note: allocated here
   OUT
-  return Test.eq(Diagnostics.unparsed(text), [])
+  Test.eq(Diagnostics.unparsed(text), [])
 end

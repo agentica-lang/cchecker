@@ -89,11 +89,11 @@ export def load(explicit: Optional[String], folder: String) -> Result[Config]
       text = try read(path)
       document = try parse(path, text)
       case Toml.get(document, TOOL_TABLE)
-        ok(table) -> return from_table(path, "#{TOOL_TABLE}.", table)
-        error(_) -> return from_table(path, "", document, manifest_note(document))
+        ok(table) -> from_table(path, "#{TOOL_TABLE}.", table)
+        error(_) -> from_table(path, "", document, manifest_note(document))
       end
 
-    none -> return found_in(folder)
+    none -> found_in(folder)
   end
 end
 
@@ -166,18 +166,16 @@ export def from_table(origin: String, prefix: String, table: Toml.Value, note: S
   end
 
   try apart(origin, prefix, config)
-  return ok(config)
+  ok(config)
 end
 
 ## Returns the settings that hold when no file gives any: every family on, no roots.
-export def defaults() -> Config
-  return Config(origin: DEFAULTS, off: Set.new(OFF_BY_DEFAULT), short: [], hot: [])
-end
+export def defaults() -> Config = Config(origin: DEFAULTS, off: Set.new(OFF_BY_DEFAULT), short: [], hot: [])
 
 ## Returns whether the settings have any list of `[assume]`. Each list is here, so a new one is not left out of the
 ## checks that skip the work when there is none.
 export def assumes_any?(config: Config) -> Bool
-  return not (
+  not (
     config.trusted.empty? and
     config.stops.empty? and
     config.short_locks.empty? and
@@ -196,7 +194,7 @@ end
 
 ## Returns the flags of `[library]` that a run knows, in the order of docs/settings.md.
 export def flags() -> List[String]
-  return (
+  (
     Known.BLOCKING_FAMILIES.map do |family| family.flag end
       .push(Known.CALLBACKS_FLAG)
       .push(Known.LIBGC_ALLOC_FLAG)
@@ -213,21 +211,17 @@ export def edge_of(text: String) -> Optional[Edge]
     some(at) ->
       caller = text.slice(0, at)
       callee = text.slice(at + 1, text.length - at - 1)
-      if caller == "" or callee == "" or caller.end_with?("-") or not plain?(caller) or not plain?(callee)
-        return none
-      end
+      return none if caller == "" or callee == "" or caller.end_with?("-") or not plain?(caller) or not plain?(callee)
 
-      return some(Edge(caller: caller, callee: callee))
-    none -> return none
+      some(Edge(caller: caller, callee: callee))
+    none -> none
   end
 end
 
 ## Returns the wrapper that `text` writes, or none when it is not `name(N)` or `name@path(N)` with a decimal `N`.
 export def wrapper_of(text: String) -> Optional[Wrapper]
   parts = text.split("(")
-  if parts.size != 2 or not parts[1].end_with?(")")
-    return none
-  end
+  return none if parts.size != 2 or not parts[1].end_with?(")")
 
   head = parts[0]
   digits = parts[1].slice(0, parts[1].length - 1)
@@ -235,13 +229,11 @@ export def wrapper_of(text: String) -> Optional[Wrapper]
     return none
   end
 
-  if head == "" or head.include?(" ") or head.include?("\t") or head.include?(")")
-    return none
-  end
+  return none if head == "" or head.include?(" ") or head.include?("\t") or head.include?(")")
 
   case digits.to_i
-    ok(index) -> return wrapper_at(head, index)
-    error(_) -> return none
+    ok(index) -> wrapper_at(head, index)
+    error(_) -> none
   end
 end
 
@@ -255,35 +247,27 @@ def wrapper_at(head: String, index: Int) -> Optional[Wrapper]
         tail = tail.slice(2, tail.length - 2)
       end
 
-      if at == 0 or tail == ""
-        return none
-      end
+      return none if at == 0 or tail == ""
 
-      return some(Wrapper(name: head.slice(0, at), tail: tail, index: index))
-    none -> return some(Wrapper(name: head, tail: "", index: index))
+      some(Wrapper(name: head.slice(0, at), tail: tail, index: index))
+    none -> some(Wrapper(name: head, tail: "", index: index))
   end
 end
 
-def plain?(name: String) -> Bool
-  return not (name.include?(">") or name.include?(" ") or name.include?("\t"))
-end
+def plain?(name: String) -> Bool = not (name.include?(">") or name.include?(" ") or name.include?("\t"))
 
 # The note of an unknown key of a file of -c read whole: only a file that looks like a manifest of Agentica (it has a
 # `name`) gets it, as it may lack its [tool.cchecker] table; a plain file of cchecker does not.
 def manifest_note(document: Toml.Value) -> String
-  if Toml.get(document, "name").ok?
-    return WHOLE_NOTE
-  end
+  return WHOLE_NOTE if Toml.get(document, "name").ok?
 
-  return ""
+  ""
 end
 
 # The settings of the project folder: cchecker.toml, else the table of cchecker in agentica.toml, else the defaults.
 def found_in(folder: String) -> Result[Config]
   own = try Path.join([folder, OWN_FILE])
-  if File.stat(own).ok?
-    return from_table(OWN_FILE, "", try parse(OWN_FILE, try read(own)))
-  end
+  return from_table(OWN_FILE, "", try parse(OWN_FILE, try read(own))) if File.stat(own).ok?
 
   manifest = try Path.join([folder, MANIFEST])
   if File.stat(manifest).ok?
@@ -294,7 +278,7 @@ def found_in(folder: String) -> Result[Config]
     end
   end
 
-  return ok(defaults())
+  ok(defaults())
 end
 
 def library_of(origin: String, path: String, value: Toml.Value, note: String) -> Result[Set[String]]
@@ -302,9 +286,7 @@ def library_of(origin: String, path: String, value: Toml.Value, note: String) ->
   off: Set[String] = Set.new(OFF_BY_DEFAULT)
   known = flags()
   for flag in entries.keys
-    if not known.include?(flag)
-      return error(unknown(origin, "#{path}.#{flag}", note))
-    end
+    return error(unknown(origin, "#{path}.#{flag}", note)) if not known.include?(flag)
 
     if try flag_of(origin, "#{path}.#{flag}", entries.get(flag).unwrap!)
       off = off.delete(flag)
@@ -313,13 +295,13 @@ def library_of(origin: String, path: String, value: Toml.Value, note: String) ->
     end
   end
 
-  return ok(off)
+  ok(off)
 end
 
 def flag_of(origin: String, path: String, value: Toml.Value) -> Result[Bool]
   case value
-    Toml.Value.Bool(on) -> return ok(on)
-    _ -> return error("#{origin}: #{path} must be true or false")
+    Toml.Value.Bool(on) -> ok(on)
+    _ -> error("#{origin}: #{path} must be true or false")
   end
 end
 
@@ -334,8 +316,8 @@ def names_of(origin: String, path: String, value: Toml.Value) -> Result[List[Str
         end
       end
 
-      return ok(names)
-    _ -> return error("#{origin}: #{path} must be a list of function names")
+      ok(names)
+    _ -> error("#{origin}: #{path} must be a list of function names")
   end
 end
 
@@ -349,7 +331,7 @@ def defines_of(origin: String, path: String, value: Toml.Value) -> Result[List[S
     end
   end
 
-  return ok(names)
+  ok(names)
 end
 
 # A function that takes a lock for its caller does not release one too: `acquires` and `releases` name different ones.
@@ -372,7 +354,7 @@ def apart(origin: String, prefix: String, config: Config) -> Result[Void]
     end
   end
 
-  return ok()
+  ok()
 end
 
 # The wrappers of `acquires` and `releases`: each `name(N)` or `name@path(N)`, of a function of the project. A known
@@ -399,7 +381,7 @@ def wrappers_of(origin: String, path: String, value: Toml.Value) -> Result[List[
     end
   end
 
-  return ok(names)
+  ok(names)
 end
 
 # The locks of `short_locks`: lock classes, or wrappers `name(N)` whose lock counts as short.
@@ -411,7 +393,7 @@ def locks_of(origin: String, path: String, value: Toml.Value) -> Result[List[Str
     end
   end
 
-  return ok(names)
+  ok(names)
 end
 
 # The lock classes of `owned_locks`: `struct.field`, a global, or `name@path` for a static global; never a wrapper.
@@ -427,8 +409,8 @@ def classes_of(origin: String, path: String, value: Toml.Value) -> Result[List[S
         end
       end
 
-      return ok(names)
-    _ -> return error(wrong)
+      ok(names)
+    _ -> error(wrong)
   end
 end
 
@@ -440,30 +422,30 @@ def pairs_of(origin: String, path: String, value: Toml.Value) -> Result[List[Str
     end
   end
 
-  return ok(names)
+  ok(names)
 end
 
 def table_of(origin: String, path: String, value: Toml.Value) -> Result[Map[String, Toml.Value]]
   case value
-    Toml.Value.Table(entries) -> return ok(entries)
-    _ -> return error("#{origin}: #{path} must be a table")
+    Toml.Value.Table(entries) -> ok(entries)
+    _ -> error("#{origin}: #{path} must be a table")
   end
 end
 
 def unknown(origin: String, path: String, note: String) -> String
-  return "#{origin}: #{path} is not a setting of cchecker#{note}"
+  "#{origin}: #{path} is not a setting of cchecker#{note}"
 end
 
 def read(path: String) -> Result[String]
   case File.read_text(path)
-    ok(text) -> return ok(text)
-    error(message) -> return error("cannot read the settings file #{path}: #{message}")
+    ok(text) -> ok(text)
+    error(message) -> error("cannot read the settings file #{path}: #{message}")
   end
 end
 
 def parse(origin: String, text: String) -> Result[Toml.Value]
   case Toml.parse(text)
-    ok(document) -> return ok(document)
-    error(message) -> return error("#{origin}: #{message}")
+    ok(document) -> ok(document)
+    error(message) -> error("#{origin}: #{message}")
   end
 end

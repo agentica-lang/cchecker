@@ -6,13 +6,11 @@ export def read_all(path: String) -> Result[String]
   chunks: List[Bytes] = []
   while true
     chunk = try File.read_bytes(handle, 1_048_576)
-    if chunk.empty?
-      break
-    end
+    break if chunk.empty?
 
     chunks = chunks.push(chunk)
   end
 
   try File.close(handle)
-  return String.from_bytes(Bytes.concat(chunks))
+  String.from_bytes(Bytes.concat(chunks))
 end

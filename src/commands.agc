@@ -54,13 +54,13 @@ export def load(path: String) -> Result[List[Entry]]
     entries = entries.push(try entry(folder, row))
   end
 
-  return ok(entries)
+  ok(entries)
 end
 
 ## Returns the entries of the C files given on the command line, all built with the same flags.
 export def from_files(files: List[String], flags: List[String]) -> Result[List[Entry]]
   cwd = try Paths.working_directory()
-  return ok(files.map do |file| Entry(directory: cwd, file: file, args: flags) end)
+  ok(files.map do |file| Entry(directory: cwd, file: file, args: flags) end)
 end
 
 ## Returns the entries with the repeats of a file left out, the first one kept: CMake lists a source file once for
@@ -82,7 +82,7 @@ export def fold(entries: List[Entry], ignored: List[String]) -> Folded
     end
   end
 
-  return Folded(entries: kept, folded: entries.size - kept.size)
+  Folded(entries: kept, folded: entries.size - kept.size)
 end
 
 ## Returns the words of a shell command line: spaces separate them, quotes and backslashes group and escape.
@@ -134,7 +134,7 @@ export def split_words(text: String) -> List[String]
     words = words.push(current.join(""))
   end
 
-  return words
+  words
 end
 
 ## Returns the flags of a compiler command: it leaves out the compiler, the source file (however the command spells it
@@ -155,7 +155,7 @@ export def flags_of(words: List[String], source: String, directory: String) -> L
     end
   end
 
-  return kept
+  kept
 end
 
 def entry(folder: String, row: Raw) -> Result[Entry]
@@ -164,22 +164,18 @@ def entry(folder: String, row: Raw) -> Result[Entry]
     none -> split_words(row.command.unwrap_or(""))
   end
 
-  if words.empty?
-    return error("the entry of #{row.file} has no command or arguments")
-  end
+  return error("the entry of #{row.file} has no command or arguments") if words.empty?
 
   directory = try Paths.absolute(folder, row.directory)
   source = try Paths.absolute(directory, row.file)
-  return ok(Entry(directory: directory, file: row.file, args: flags_of(words, source, directory)))
+  ok(Entry(directory: directory, file: row.file, args: flags_of(words, source, directory)))
 end
 
 # Whether the word is a path to the source file. A flag is not, and a word that cannot be made a path is not either.
 def names?(word: String, source: String, directory: String) -> Bool
-  if word.start_with?("-")
-    return false
-  end
+  return false if word.start_with?("-")
 
-  return Paths.absolute(directory, word).unwrap_or("") == source
+  Paths.absolute(directory, word).unwrap_or("") == source
 end
 
 # The flags of an entry that tell it from another for folding: without those of a shared library, and without the
@@ -201,24 +197,24 @@ def folding_flags(args: List[String], ignored: Set[String]) -> List[String]
     end
   end
 
-  return flags
+  flags
 end
 
 # Whether the flag is a define of a name in `ignored`.
 def ignored_define?(flag: String, ignored: Set[String]) -> Bool
-  return flag.start_with?("-D") and flag.length > 2 and ignored.include?(define_name(flag.slice(2, flag.length - 2)))
+  flag.start_with?("-D") and flag.length > 2 and ignored.include?(define_name(flag.slice(2, flag.length - 2)))
 end
 
 # The name of a define written `NAME` or `NAME=value`.
 def define_name(text: String) -> String
   case text.index_of("=")
-    some(at) -> return text.slice(0, at)
-    none -> return text
+    some(at) -> text.slice(0, at)
+    none -> text
   end
 end
 
 # Whether the flag is the define that CMake adds to each file of a shared library, `-D<target>_EXPORTS`, which code
 # reads only to mark what the library exports.
 def export_define?(flag: String) -> Bool
-  return flag.start_with?("-D") and flag.end_with?("_EXPORTS") and not flag.include?("=")
+  flag.start_with?("-D") and flag.end_with?("_EXPORTS") and not flag.include?("=")
 end

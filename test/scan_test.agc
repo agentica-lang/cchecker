@@ -218,36 +218,36 @@ def scanned() -> Result[List[Decl]]
   lines = DUMP.split("\n")
   state = lines.reduce(Scan.start("/proj", "/proj"), &Scan.step)
   dump = try JSON.decode("{\"decls\": #{Scan.finish(state)}}", Dump)
-  return ok(dump.decls)
+  ok(dump.decls)
 end
 
 def test_only_the_declarations_of_the_project_are_kept() -> Result[Void]
   decls = try scanned()
-  return Test.eq(decls.map do |d| d.name end, ["f", "g"])
+  Test.eq(decls.map do |d| d.name end, ["f", "g"])
 end
 
 def test_a_location_gets_the_file_and_line_it_left_out() -> Result[Void]
   decls = try scanned()
   try Test.eq(decls[0].loc, Place(cc_file: "/proj/src/a.h", cc_line: 7, col: 5))
-  return Test.eq(decls[1].loc, Place(cc_file: "/proj/src/a.h", cc_line: 7, col: 6))
+  Test.eq(decls[1].loc, Place(cc_file: "/proj/src/a.h", cc_line: 7, col: 6))
 end
 
 def test_an_array_of_plain_numbers_is_told_by_its_type() -> Result[Void]
   types = ["\"const unsigned char[300]\"", "\"int[2][3]\"", "\"void *[3]\"", "\"char *[2]\"", "\"int\"", "\"char *\""]
   try Test.eq(types.map do |t| Scan.plain_array?(t) end, [true, true, false, false, false, false])
-  return Test.eq(Scan.plain_array?("\"const uint8_t[3]\""), false)
+  Test.eq(Scan.plain_array?("\"const uint8_t[3]\""), false)
 end
 
 def test_a_table_of_a_typedef_is_dropped_by_its_numbers_and_kept_by_a_function() -> Result[Void]
   state = TABLES.split("\n").reduce(Scan.start("/proj", "/proj"), &Scan.step)
   dump = try JSON.decode("{\"decls\": #{Scan.finish(state)}}", Names)
-  return Test.eq(dump.decls.map do |d| d.name end, ["OPS"])
+  Test.eq(dump.decls.map do |d| d.name end, ["OPS"])
 end
 
 def test_a_null_pointer_first_item_is_no_number() -> Result[Void]
   state = NULLS.split("\n").reduce(Scan.start("/proj", "/proj"), &Scan.step)
   dump = try JSON.decode("{\"decls\": #{Scan.finish(state)}}", Names)
-  return Test.eq(dump.decls.map do |d| d.name end, ["table"])
+  Test.eq(dump.decls.map do |d| d.name end, ["table"])
 end
 
 # The scan in C (native/scan.c) gives what the scan in Agentica gives, on the dumps above and on clang's dumps of the C
@@ -276,7 +276,7 @@ def test_the_scan_in_c_gives_what_the_scan_in_agentica_gives() -> Result[Void]
   end
 
   _ = Path.remove(folder)
-  return result
+  result
 end
 
 # A FIFO that no writer opens (a clang that never started, or was killed before its redirect) ends the copy at its
@@ -294,13 +294,13 @@ def test_the_copy_of_a_fifo_that_no_one_opens_ends_at_its_timeout() -> Result[Vo
   _ = Path.remove(folder)
   try made
   try Test.eq(error_of(copied), Scan.TIMED_OUT)
-  return Test.eq(error_of(unwritten).start_with?(Scan.UNSTARTED), true)
+  Test.eq(error_of(unwritten).start_with?(Scan.UNSTARTED), true)
 end
 
 def error_of(copied: Result[List[String]]) -> String
   case copied
-    ok(_) -> return "copied"
-    error(message) -> return message
+    ok(_) -> "copied"
+    error(message) -> message
   end
 end
 
@@ -316,7 +316,7 @@ def test_the_scan_in_c_reads_crafted_lines_as_the_scan_in_agentica() -> Result[V
   end
 
   _ = Path.remove(folder)
-  return Test.eq(try checks, [true, true, true, true, true, true, true, true])
+  Test.eq(try checks, [true, true, true, true, true, true, true, true])
 end
 
 # For each dump: the C scan keeps some declarations, gives the reference text and reads its compacted copy the same;
@@ -348,7 +348,7 @@ def crafted_scans(folder: String) -> Result[List[Bool]]
   # The place of h is that of its own `col` line.
   pruned_long = try Scan.project_decls(long, "/proj", "/proj")
   checks = checks.push(pruned_crlf.decls.include?("\"cc_loc\": [\"/proj/src/a.h\", 7, 6]"))
-  return ok(checks.push(pruned_long.decls.include?("\"cc_loc\": [\"/proj/src/a.h\", 7, 2]")))
+  ok(checks.push(pruned_long.decls.include?("\"cc_loc\": [\"/proj/src/a.h\", 7, 2]")))
 end
 
 def same_scans(dumps: List[String], cwd: String) -> Result[Void]
@@ -374,7 +374,7 @@ def same_scans(dumps: List[String], cwd: String) -> Result[Void]
     try Test.eq(try same_copy(path, root), true)
   end
 
-  return ok()
+  ok()
 end
 
 # Whether the copy of a dump by `Scan.compact`, with its indents cut short, scans as the dump, pruned and not.
@@ -386,7 +386,7 @@ def same_copy(path: String, root: String) -> Result[Bool]
   _ = Path.remove(copy)
   fast = try Scan.project_decls(path, root, root, false)
   pruned = try Scan.project_decls(path, root, root)
-  return ok(try copied == fast and try copied_pruned == pruned)
+  ok(try copied == fast and try copied_pruned == pruned)
 end
 
 # The dump of a C file as the rules ask clang for it.
@@ -399,5 +399,5 @@ def clang_dump(source: String, path: String) -> Result[Void]
   process = try Process.spawn_captured("sh", args, Process.Options(timeout_ms: 30_000, env: {"CCHECKER_DUMP": path}))
   code = try Process.wait(process, 30_000)
   Process.close(process)
-  return Test.eq(code, 0)
+  Test.eq(code, 0)
 end

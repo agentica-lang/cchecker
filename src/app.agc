@@ -78,9 +78,7 @@ export def run(options: Options) -> Result[Int]
   gathered = Commands.fold(try gather(options), config.fold_ignoring)
   scratch = try scratch_path(cwd)
   plan = try plan_for(options, config, gathered.entries, cwd, scratch)
-  if plan.jobs.empty?
-    return error("no C files to check")
-  end
+  return error("no C files to check") if plan.jobs.empty?
 
   if not plan.skipped.empty?
     IO.warn(skipped_line(plan.skipped))
@@ -167,9 +165,7 @@ export def run(options: Options) -> Result[Int]
 
   case options.baseline
     some(path) ->
-      if options.update_baseline
-        return update(path, loaded, scope, findings, collected.errors, options)
-      end
+      return update(path, loaded, scope, findings, collected.errors, options) if options.update_baseline
 
       split = Baseline.split(findings, loaded.entries, scope)
       changes = Baseline.changes(loaded.tools, Tools.versions_of(options, loaded.tools.keys))
@@ -180,7 +176,7 @@ export def run(options: Options) -> Result[Int]
       )
 
       failing = failing_of(options, rules_off, split.stale)
-      return ok(
+      ok(
         finish(
           options,
           Report.Report(
@@ -205,7 +201,7 @@ export def run(options: Options) -> Result[Int]
         ),
       )
     none ->
-      return ok(
+      ok(
         finish(
           options,
           Report.Report(
@@ -253,11 +249,9 @@ def full_rules(options: Options, config: Config.Config, cwd: String) -> Result[V
     end
   end
 
-  if causes.empty?
-    return ok()
-  end
+  return ok() if causes.empty?
 
-  return error(
+  error(
     "--update-baseline needs every check of the rules on: #{causes.join(", and ")}, or the baseline would " +
     "lose their findings (of the settings, only [roots] is compared)",
   )
@@ -266,11 +260,9 @@ end
 # The names of a list of [roots] of the project that the file of -c leaves out, as "short: a, b", or nothing.
 def left_out(key: String, project: List[String], given: List[String]) -> List[String]
   names = project.uniq.select do |name| not given.include?(name) end
-  if names.empty?
-    return []
-  end
+  return [] if names.empty?
 
-  return ["#{key}: #{names.join(", ")}"]
+  ["#{key}: #{names.join(", ")}"]
 end
 
 # The baseline file, read before any tool runs so that a baseline that cannot be read costs no time. A baseline that is
@@ -278,12 +270,10 @@ end
 def baseline_file(options: Options) -> Result[Baseline.Loaded]
   case options.baseline
     some(path) ->
-      if options.update_baseline and not File.stat(path).ok?
-        return ok(Baseline.Loaded(entries: []))
-      end
+      return ok(Baseline.Loaded(entries: [])) if options.update_baseline and not File.stat(path).ok?
 
-      return Baseline.load(path)
-    none -> return ok(Baseline.Loaded(entries: []))
+      Baseline.load(path)
+    none -> ok(Baseline.Loaded(entries: []))
   end
 end
 
@@ -318,7 +308,7 @@ def update(
   whole = options.files.empty? and options.exclude.empty?
   try Baseline.write(path, entries, Baseline.updated_tools(loaded.tools, versions, ran, whole))
   puts("cchecker: wrote #{entries.reduce(0) do |total, entry| total + entry.count end} findings to #{path}")
-  return ok(0)
+  ok(0)
 end
 
 def finish(options: Options, report: Report.Report) -> Int
@@ -351,15 +341,11 @@ def finish(options: Options, report: Report.Report) -> Int
     IO.warn(inferred.unwrap!)
   end
 
-  if not report.errors.empty?
-    return 2
-  end
+  return 2 if not report.errors.empty?
 
-  if not report.findings.empty? or Report.failed_stale?(report)
-    return 1
-  end
+  return 1 if not report.findings.empty? or Report.failed_stale?(report)
 
-  return 0
+  0
 end
 
 # The stale entries that fail the run with `--strict-baseline`: those of the scope of the run (`Baseline.split` keeps
@@ -367,13 +353,9 @@ end
 # without the [roots] of the project), the entries of the rules may look stale while they are not, so they do not fail
 # the run, with a warning when there is one; the entries of the other tools still do.
 def failing_of(options: Options, rules_off: Bool, stale: List[Baseline.Entry]) -> List[Baseline.Entry]
-  if not options.strict_baseline
-    return []
-  end
+  return [] if not options.strict_baseline
 
-  if not rules_off
-    return stale
-  end
+  return stale if not rules_off
 
   rules = ToolKind.name(Tool.Rules)
   kept = stale.select do |entry| Baseline.tool_of(entry.code) != rules end
@@ -383,24 +365,22 @@ def failing_of(options: Options, rules_off: Bool, stale: List[Baseline.Entry]) -
     )
   end
 
-  return kept
+  kept
 end
 
 def gather(options: Options) -> Result[List[Commands.Entry]]
   case options.database
-    some(path) -> return Commands.load(path)
-    none -> return from_command_line(options)
+    some(path) -> Commands.load(path)
+    none -> from_command_line(options)
   end
 end
 
 def from_command_line(options: Options) -> Result[List[Commands.Entry]]
-  if not options.files.empty?
-    return Commands.from_files(options.files, options.flags)
-  end
+  return Commands.from_files(options.files, options.flags) if not options.files.empty?
 
   case File.stat(DEFAULT_DATABASE)
-    ok(_) -> return Commands.load(DEFAULT_DATABASE)
-    error(_) -> return error("give FILEs or a compile database (-p PATH): there is no #{DEFAULT_DATABASE} here")
+    ok(_) -> Commands.load(DEFAULT_DATABASE)
+    error(_) -> error("give FILEs or a compile database (-p PATH): there is no #{DEFAULT_DATABASE} here")
   end
 end
 
@@ -463,16 +443,14 @@ def plan_for(
     end
   end
 
-  return ok(Plan(jobs: jobs, skipped: skipped, ignored: ignored))
+  ok(Plan(jobs: jobs, skipped: skipped, ignored: ignored))
 end
 
 # The file where a job of the rules writes the AST; the other tools write none.
 def dump_path(tool: Tool, scratch: String, n: Int) -> String
-  if tool == Tool.Rules
-    return "#{scratch}/#{n}.json"
-  end
+  return "#{scratch}/#{n}.json" if tool == Tool.Rules
 
-  return ""
+  ""
 end
 
 def skipped_line(skipped: List[String]) -> String
@@ -482,7 +460,7 @@ def skipped_line(skipped: List[String]) -> String
     word = "file"
   end
 
-  return "cchecker: skipped #{count} #{word} outside the working directory: #{skipped.take(5).join(", ")}"
+  "cchecker: skipped #{count} #{word} outside the working directory: #{skipped.take(5).join(", ")}"
 end
 
 # What the run covered, for the baseline: its tools, the files each tool ended well on, and every file when it ran all
@@ -501,7 +479,7 @@ def scope_of(options: Options, plan: Plan, collected: Collected) -> Baseline.Sco
   )
 
   rules = Baseline.pair(ToolKind.name(Tool.Rules), "")
-  return Baseline.Scope(
+  Baseline.Scope(
     tools: Set.new(options.tools.map do |tool| ToolKind.name(tool) end),
     pairs: Set.new(collected.ran.select do |pair| full or not pair.start_with?(rules) end),
     full: full,
@@ -517,7 +495,7 @@ def scratch_path(cwd: String) -> Result[String]
   end
 
   folder = try Paths.absolute(cwd, base)
-  return ok("#{folder}/#{SCRATCH_PREFIX}#{System.pid()}-#{Time.now_ms()}")
+  ok("#{folder}/#{SCRATCH_PREFIX}#{System.pid()}-#{Time.now_ms()}")
 end
 
 # Removes the folders that runs which were killed left next to `folder`: those whose process is gone, and which look
@@ -525,9 +503,7 @@ end
 # dumps (`N.json`) and their FIFOs (`N.fifo`). Anything else of that name is left alone. A process is known to be
 # gone only where /proc lists the running ones.
 def remove_stale(folder: String) -> Void
-  if not File.stat("/proc/self").ok?
-    return
-  end
+  return if not File.stat("/proc/self").ok?
 
   base = Paths.parent(folder)
   user = owner(folder)
@@ -544,43 +520,36 @@ end
 # `N.fifo` files.
 def scratch?(path: String, user: Int) -> Bool
   case File.lstat(path)
-    ok(info) ->
-      if info.kind != "directory" or info.user_id != user or info.mode % 4096 != PRIVATE_MODE
-        return false
-      end
+    ok(info) -> return false if info.kind != "directory" or info.user_id != user or info.mode % 4096 != PRIVATE_MODE
 
     error(_) -> return false
   end
 
   nothing: List[String] = []
-  return Dir.list(path).unwrap_or(nothing).all? do |name| dump_name?(name) end
+  Dir.list(path).unwrap_or(nothing).all? do |name| dump_name?(name) end
 end
 
 # A dump `N.json`, or the FIFO `N.fifo` that clang writes it into.
 def dump_name?(name: String) -> Bool
-  return (name.end_with?(".json") or name.end_with?(".fifo")) and name.slice(0, name.length - 5).to_i.ok?
+  (name.end_with?(".json") or name.end_with?(".fifo")) and name.slice(0, name.length - 5).to_i.ok?
 end
 
 # The user id of a file, not following a link, or -1.
 def owner(path: String) -> Int
   case File.lstat(path)
-    ok(info) -> return info.user_id
-    error(_) -> return -1
+    ok(info) -> info.user_id
+    error(_) -> -1
   end
 end
 
 # Whether a name is that of a scratch folder, `cchecker-PID-MS`, whose process is gone.
 def stale?(name: String) -> Bool
-  if not name.start_with?(SCRATCH_PREFIX)
-    return false
-  end
+  return false if not name.start_with?(SCRATCH_PREFIX)
 
   parts = name.slice(SCRATCH_PREFIX.length, name.length - SCRATCH_PREFIX.length).split("-")
-  if parts.size != 2 or not parts[0].to_i.ok? or not parts[1].to_i.ok?
-    return false
-  end
+  return false if parts.size != 2 or not parts[0].to_i.ok? or not parts[1].to_i.ok?
 
-  return not File.stat("/proc/#{parts[0]}").ok?
+  not File.stat("/proc/#{parts[0]}").ok?
 end
 
 # Runs the jobs, those of the largest source files first, so that a large file does not run alone at the end. The
@@ -592,15 +561,15 @@ def run_largest_first(options: Options, jobs: List[Tools.Job]) -> List[Result[To
   ran = Task.map(order.map do |i| jobs[i] end, options.jobs, Tools.limit_ms(options), &Tools.run)
   # The place of each job in `order`, to put its result back.
   places = (0...order.size).to_a.sort_by do |k| order[k] end
-  return places.map do |k| ran[k] end
+  places.map do |k| ran[k] end
 end
 
 # The size of the source file of a job, or 0 when it cannot be read (the tool then says why).
 def source_size(job: Tools.Job) -> Int
   path = Paths.absolute(job.entry.directory, job.entry.file).unwrap_or(job.entry.file)
   case File.stat(path)
-    ok(info) -> return info.size_bytes
-    error(_) -> return 0
+    ok(info) -> info.size_bytes
+    error(_) -> 0
   end
 end
 
@@ -613,15 +582,13 @@ def collect_in_scratch(
   cwd: String,
   planned: Bool,
 ) -> Result[Collected]
-  if not options.tools.include?(Tool.Rules)
-    return ok(collect(options, config, jobs, cwd, planned))
-  end
+  return ok(collect(options, config, jobs, cwd, planned)) if not options.tools.include?(Tool.Rules)
 
   try Dir.mkdir_private(folder)
   remove_stale(folder)
   collected = collect(options, config, jobs, cwd, planned)
   _ = Path.remove(folder)
-  return ok(collected)
+  ok(collected)
 end
 
 # `planned` says that the jobs are every file of the compile database; with no error and no file left unchecked, the
@@ -670,7 +637,7 @@ def collect(options: Options, config: Config.Config, jobs: List[Tools.Job], cwd:
   end
 
   owned = Profile.measure("ownership") do Ownership.check(units) end
-  return Collected(
+  Collected(
     findings: (
       findings.concat(checked.findings)
         .concat(locked.findings)
@@ -724,7 +691,7 @@ def ignores_of(
     end
   end
 
-  return ok(ignores)
+  ok(ignores)
 end
 
 # The errors of the tools in their order, each once: a mark of a header that several units include gives the same
@@ -740,14 +707,14 @@ def once(errors: List[ToolError]) -> List[ToolError]
     end
   end
 
-  return kept
+  kept
 end
 
 # The functions with too many paths, once each (both rules may walk one, and a function of a header is in each unit
 # that includes it), in the order of the files, with paths shown as findings are.
 def incomplete_of(functions: List[IncompleteFunction], cwd: String) -> List[IncompleteFunction]
   shown = functions.map do |f| f.with(file: Paths.inside(cwd, f.file).unwrap_or(f.file)) end
-  return shown.group_by do |f| "#{f.file}\n#{Findings.pad(f.line)}\n#{f.function}" end
+  shown.group_by do |f| "#{f.file}\n#{Findings.pad(f.line)}\n#{f.function}" end
     .values
     .map do |same| same.first end
     .sort_by do |f| "#{f.file}\n#{Findings.pad(f.line)}" end
@@ -764,5 +731,5 @@ def localize(findings: List[Finding], cwd: String, exclude: List[String]) -> Lis
     end
   end
 
-  return kept
+  kept
 end

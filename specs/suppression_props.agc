@@ -67,7 +67,7 @@ end
 export def files() -> Prop.Gen[List[Line]]
   kind_and_code = Prop.pair(Prop.int(0, CALLER), Prop.int(0, CODES.size - 1))
   attach_and_reason = Prop.pair(Prop.int(0, MARK), Prop.int(0, NO_REASON))
-  return (
+  (
     Prop.pair(kind_and_code, attach_and_reason)
     |> Prop.map(&line_of)
     |> Prop.list(8)
@@ -77,18 +77,18 @@ end
 ## Checks `runs` files, from `seed` when it is given, with cchecker (the bytecode `program`, run in specs/ on a compile
 ## database in `folder`): its findings, suppressed findings and exit code are the oracle's.
 export def suppressions_agree(program: String, folder: String, runs: Int, seed: Optional[Int]) -> Result[Void]
-  return check(program, folder, runs, seed, false)
+  check(program, folder, runs, seed, false)
 end
 
 ## The negative control: the same files with no function that blocks. Nothing is suppressed, and every suppression
 ## with a reason is unused.
 export def nothing_to_suppress(program: String, folder: String, runs: Int, seed: Optional[Int]) -> Result[Void]
-  return check(program, folder, runs, seed, true)
+  check(program, folder, runs, seed, true)
 end
 
 def check(program: String, folder: String, runs: Int, seed: Optional[Int], clean: Bool) -> Result[Void]
   config = Prop.Config(runs: runs, seed: seed, shrinks: Props.SHRINKS)
-  return Prop.check(files(), config) do |generated|
+  Prop.check(files(), config) do |generated|
     lines = generated
     if clean
       lines = generated.map do |line| without_blocking(line) end
@@ -99,20 +99,13 @@ def check(program: String, folder: String, runs: Int, seed: Optional[Int], clean
 end
 
 def line_of(parts: Prop.Pair[Prop.Pair[Int, Int], Prop.Pair[Int, Int]]) -> Line
-  return Line(
-    kind: parts.first.first,
-    code: parts.first.second,
-    attach: parts.second.first,
-    reason: parts.second.second,
-  )
+  Line(kind: parts.first.first, code: parts.first.second, attach: parts.second.first, reason: parts.second.second)
 end
 
 def without_blocking(line: Line) -> Line
-  if line.kind == BLOCKING
-    return line.with(kind: CLEAN)
-  end
+  return line.with(kind: CLEAN) if line.kind == BLOCKING
 
-  return line
+  line
 end
 
 def agrees(program: String, folder: String, lines: List[Line]) -> Result[Void]
@@ -123,9 +116,7 @@ def agrees(program: String, folder: String, lines: List[Line]) -> Result[Void]
   output = try Props.run_with(program, ["--tools", "rules", "--json", "-p", folder])
   expected = oracle(lines)
   if expected.code == 2 or output.code == 2
-    if output.code == expected.code
-      return ok()
-    end
+    return ok() if output.code == expected.code
 
     return error("expected exit code #{expected.code}, got #{output.code}, in:\n#{source}\n#{output.stderr}")
   end
@@ -135,18 +126,18 @@ def agrees(program: String, folder: String, lines: List[Line]) -> Result[Void]
     return error("expected #{shown(expected)}, got #{shown(got)}, in:\n#{source}")
   end
 
-  return ok()
+  ok()
 end
 
 def shown(outcome: Outcome) -> String
   findings = outcome.findings.join(", ")
-  return "findings [#{findings}], suppressed [#{outcome.suppressed.join(", ")}], exit code #{outcome.code}"
+  "findings [#{findings}], suppressed [#{outcome.suppressed.join(", ")}], exit code #{outcome.code}"
 end
 
 # The findings and suppressed findings of cchecker's --json.
 def outcome_of(output: Props.Output) -> Outcome
   parsed = JSON.parse(output.stdout).unwrap_or(JSON.from(""))
-  return Outcome(findings: listed(parsed, "findings"), suppressed: listed(parsed, "suppressed"), code: output.code)
+  Outcome(findings: listed(parsed, "findings"), suppressed: listed(parsed, "suppressed"), code: output.code)
 end
 
 def listed(parsed: Json, key: String) -> List[String]
@@ -157,7 +148,7 @@ def listed(parsed: Json, key: String) -> List[String]
     "#{code}@#{line}"
   end
 
-  return named.sort
+  named.sort
 end
 
 # The oracle: the rule of docs/suppressions.md applied to the lines.
@@ -187,9 +178,7 @@ def oracle(lines: List[Line]) -> Outcome
     end
   end
 
-  if usage
-    return Outcome(findings: [], suppressed: [], code: 2)
-  end
+  return Outcome(findings: [], suppressed: [], code: 2) if usage
 
   findings: List[String] = []
   suppressed: List[String] = []
@@ -217,46 +206,40 @@ def oracle(lines: List[Line]) -> Outcome
     code = 1
   end
 
-  return Outcome(findings: findings.sort, suppressed: suppressed.sort, code: code)
+  Outcome(findings: findings.sort, suppressed: suppressed.sort, code: code)
 end
 
 # Whether a code matches the finding of a blocking function: it is its code or a prefix of it.
 def matches?(code: String) -> Bool
-  return code == SHORT_BLOCKS or (code.end_with?("*") and SHORT_BLOCKS.start_with?(code.replace("*", "")))
+  code == SHORT_BLOCKS or (code.end_with?("*") and SHORT_BLOCKS.start_with?(code.replace("*", "")))
 end
 
 # Whether a suppression holds for the finding at line `at`: a code of it matches, and it is on its line or alone on
 # the line above.
 def holds?(ignore: Ignore, at: Int) -> Bool
-  if not ignore.codes.any? do |code| matches?(code) end
-    return false
-  end
+  return false if not ignore.codes.any? do |code| matches?(code) end
 
-  return at == ignore.line or (ignore.alone and at == ignore.line + 1)
+  at == ignore.line or (ignore.alone and at == ignore.line + 1)
 end
 
-def function?(line: Line) -> Bool
-  return line.kind == BLOCKING or line.kind == CLEAN or line.kind == CALLER
-end
+def function?(line: Line) -> Bool = line.kind == BLOCKING or line.kind == CLEAN or line.kind == CALLER
 
 # The line a CALLER at `i` calls: the nearest function before it that blocks or not, or -1 for none.
 def callee(lines: List[Line], i: Int) -> Int
   j = i - 1
   while j >= 0
-    if lines[j].kind == BLOCKING or lines[j].kind == CLEAN
-      return j
-    end
+    return j if lines[j].kind == BLOCKING or lines[j].kind == CLEAN
 
     j -= 1
   end
 
-  return -1
+  -1
 end
 
 # Whether a CALLER reaches `sleep`: its callee blocks. Its finding is at the caller, apart from the callee's own.
 def calls_blocking?(lines: List[Line], i: Int) -> Bool
   j = callee(lines, i)
-  return j >= 0 and lines[j].kind == BLOCKING
+  j >= 0 and lines[j].kind == BLOCKING
 end
 
 # The C file of the lines.
@@ -268,7 +251,7 @@ def c_file(lines: List[Line]) -> String
     i += 1
   end
 
-  return HEADER.concat(body).join("\n") + "\n"
+  HEADER.concat(body).join("\n") + "\n"
 end
 
 # The text of the line at `i`; `called` is the function a CALLER calls (-1 for none).
@@ -299,7 +282,7 @@ def text_of(line: Line, i: Int, called: Int) -> String
     return "#{code} #{comment}"
   end
 
-  return code
+  code
 end
 
 # A comment that suppresses the code of the line: `/* */` and a line comment (`//`, `///`, `//!`) by turns.
@@ -310,9 +293,7 @@ def comment_of(line: Line, i: Int) -> String
   end
 
   text = "cchecker: ignore #{CODES[line.code]}:#{reason}"
-  if i % 2 == 1
-    return "/* #{text} */"
-  end
+  return "/* #{text} */" if i % 2 == 1
 
-  return "#{["//", "///", "//!"][i / 2 % 3]} #{text}"
+  "#{["//", "///", "//!"][i / 2 % 3]} #{text}"
 end
