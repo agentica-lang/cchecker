@@ -266,6 +266,30 @@ Feature: Time and memory on large generated inputs
       "incomplete_functions":[]
       """
 
+  Scenario: Fields set from a local in 24 blocks of a loop stay in their bounds
+    The field stands for the local: on one side of each test the struct escapes and takes the local along, on the other
+    a free of the field frees the local. At the end of its block both leave the state.
+
+    Given the C file "aliases.c" holds, with ITEMS as 24 times " { CC_OWNS char *b = make(); struct pair p = { .left = b }; if (pick()) keep(&p); else free(p.left); }":
+      """
+      #include <stdlib.h>
+      #include "cchecker.h"
+      struct pair { CC_OWNS char *left; CC_OWNS char *right; };
+      CC_OWNS char *make(void);
+      int pick(void);
+      void keep(struct pair *p);
+      void many(int n) {
+        for (int i = 0; i < n; i++) {ITEMS
+        }
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/aliases.c -- -I../include" in at most 1500 MiB and 20 seconds
+    Then the exit code is 0
+    And the output includes:
+      """
+      "incomplete_functions":[]
+      """
+
   Scenario: Local structs cleared, freed and cleaned up in 24 blocks of a loop stay in their bounds
     Given the C file "clears.c" holds, with ITEMS as 24 times " { struct pair p __attribute__((cleanup(pair_done))); memset(&p, 0, sizeof p); p.left = make(); if (pick()) zap(&p.left); else { free(p.left); p = (struct pair){0}; } }":
       """

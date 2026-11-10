@@ -112,7 +112,10 @@ function pointer, or out through a parameter without `CC_OWNS_OUT`
 variables of the same name in one function (a local that shadows another, a
 parameter or a global, or the same name in two blocks) are two variables: each
 pointer has its own state, and a condition on one is not a condition on the
-other. A local that stands for a pointer holds the old value when the pointer
+other. A local that gets a pointer already freed or handed on (`free(b); char
+*c = b;`) is a CC-OWN-USE-AFTER-FREE there, and a call that clears only the
+local (`zap(&c)` at a `CC_FREES` parameter) frees the pointer it stands for. A
+local that stands for a pointer holds the old value when the pointer
 gets a new one (`old = p; p = make();`, `take(&p)` at a `CC_OWNS_OUT`
 parameter, `old = *p; *p = v;` through a `CC_FREES` parameter), except after
 `p = realloc(p, n)`, which is trusted to work. `return p` hands `p` on even when
@@ -145,6 +148,21 @@ afterwards is not found. `sizeof p` and a field that does not own (`p.n`) are no
 escape; a `CC_OWNS` field in an operand of `asm` (`"r"(p.left)`) is only read,
 so the field still owns after it.
 
+The struct of a variable is the one its type names where the variable is
+declared, as C finds a tag or a typedef in the blocks around it (a tag declared
+in the clauses of a `for`, or in the condition of an `if`, `while`, `do` or
+`switch`, is seen only inside that statement): one of a block that shadows
+another of the same name is its own struct, and so is an unnamed one. A field set from a
+local (`p.left = b`, `struct pair p = { .left = b }`) stands for that local, as
+an unmarked local does: a free of either frees the one pointer (a free of both is
+a CC-OWN-DOUBLE-FREE), a leak names the local, and a local already freed or
+handed on is a CC-OWN-USE-AFTER-FREE there. A clear of the field alone
+(`zap(&p.left)`, `pair_free(&p)`) frees the local. When the struct escapes, the
+local is lent with it, as by `lend(&b)`: whoever got the struct may have freed
+or kept it, so a lookup key on the stack (`struct entry key = { .name = name };
+find(&key); free(name);`) is clean, and so is `keep(&p);` with no free of `b`,
+while a second free of `b` or a use after its free is found.
+
 Some uses of the whole struct are no escape. A `cleanup` function on the struct
 frees every field at the end of its block: its body is not read, so a cleanup
 function that frees only some fields can give a false CC-OWN-DOUBLE-FREE after
@@ -158,20 +176,18 @@ defined in another unit: in its own function a `CC_FREES` parameter that points
 to a struct is still one pointer to free, so a helper that frees only the fields
 (`pair_done`) is checked as one that leaks the struct; leave such a helper
 unmarked and give it as a `cleanup` function, or call it on a struct that then
-escapes. `memset(&p, 0, sizeof p)` (the fill `0` or `'\0'`, the size `sizeof p`,
-`sizeof` of the type the variable is declared with, as `sizeof(struct pair)` for
-`struct pair p` and `sizeof(pair_t)` for `pair_t p`, or for `struct pair p`
-`sizeof` of a typedef of `struct pair`; any other size, such as
-`sizeof(struct pair)` for `pair_t p`, is an escape) and a compound literal
+escapes. `memset(&p, 0, sizeof p)` (the fill `0` or `'\0'`, the size `sizeof p`
+or `sizeof` of a type that names the same struct, as `sizeof(struct pair)` or
+`sizeof(pair_t)` with `typedef struct pair pair_t`; any other size is an
+escape) and a compound literal
 (`p = (struct pair){0}`, `p = (struct pair){ .left = q }`) clear the struct:
 each field gets null or its item, also after an escape, so the struct is
 followed again, and a field that still owns leaks there. An item that is a field
 of the same struct, also through a cast or parentheses, is read before the
 store, as C does, so `p = (struct pair){ .left = p.right, .right = p.left }`
 swaps the fields; one that reads a field in any other way
-(`p.left ? p.left : q`, `steal(p.left)`) is still read field by field, which can
-give a false leak
-([#111](https://github.com/agentica-lang/cchecker/issues/111)). `&p.left` of a
+(`p.left ? p.left : q`, `steal(p.left)`) is read before the store too. `&p.left`
+of a
 `CC_OWNS` field is the address of that pointer, as `&b` of a local:
 `free_and_null(&p.left)` at a `CC_FREES` parameter frees and clears it,
 `take(&p.left)` at a `CC_OWNS_OUT` parameter fills it, and any other call is
@@ -179,12 +195,14 @@ lent it.
 
 A struct whose field that does not own has its address taken (`&p.n`, which may
 reach the whole struct) is not followed, nor a static one, a union, or one whose
-type name stands for two structs (a tag in a function body that shadows another,
-a typedef at the top level or in a body that names another record than the tag
-or an earlier typedef of the same name): a store into their `CC_OWNS` fields
-hands the pointer on. A known gap: an initializer of a union
-(`union u v = { .p = b };`) does not hand the pointer on yet, which gives a
-false leak ([#111](https://github.com/agentica-lang/cchecker/issues/111)).
+struct is not known (an unnamed struct through `__typeof__`, a tag defined
+inside a `sizeof` or a cast in a function body) or does not fit how
+the function uses it (a field it reads or an item of its initializer that the
+struct does not have: clang's AST has no node for a tag declared in a parameter
+list, `void f(struct pair { int k; } x)`, so its name finds the struct of the
+file): a store into their `CC_OWNS` fields hands the pointer on, as an
+initializer does, also of a union (`union u v = { .p = b };`) or of a struct
+in an unnamed member.
 
 A filled pointer that the path never reads is not reported (`take(&b); return
 0;`): telling it from what a call that failed left would need a mark that says

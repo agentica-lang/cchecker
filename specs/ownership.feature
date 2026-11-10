@@ -149,7 +149,7 @@ Feature: Ownership on every path
     Then the exit code is 1
     And the output includes:
       """
-      {"code":"CC-OWN-DOUBLE-FREE","tool":"rules","file":"$DIR/own.c","line":6,"column":6,
+      {"code":"CC-OWN-DOUBLE-FREE","tool":"rules","file":"$DIR/own.c","line":6,"column":<column>,
       """
     And the output does not include:
       """
@@ -157,17 +157,24 @@ Feature: Ownership on every path
       """
 
     Examples:
-      | case              | code                                                                         |
-      | twice             | void f(int n) { CC_OWNS char *b = malloc(n); free(b); free(b); }             |
-      | on one path       | void f(int n) { CC_OWNS char *b = malloc(n); if (work(b)) free(b); free(b); } |
-      | after handing on  | void f(int n) { CC_OWNS char *b = malloc(n); adopt(b); free(b); }            |
-      | freed by the project | void f(int n) { char *p = make(n); drop(p); drop(p); }                    |
-      | owned parameter   | void f(CC_OWNS char *p) { free(p); free(p); }                                |
-      | freed through address | void f(int n) { CC_OWNS char *b = malloc(n); zap(&b); if (b) free(b); }    |
-      | stored through *p     | void f(CC_FREES char **p) { CC_OWNS char *n = malloc(8); free(*p); *p = n; free(n); } |
-      | old value freed       | void f(CC_FREES char **p) { char *old = *p; free(*p); *p = NULL; free(old); } |
-      | goto into a block     | void f(void) { char *keep = NULL; int once = 0; { CC_OWNS char *t = make(1); keep = t; again: free(t); } keep = NULL; if (!once) { once = 1; goto again; } } |
-      | two locals of the old value | void f(CC_FREES char **p, char *v) { char *a = *p; char *c = *p; *p = v; free(a); free(c); } |
+      | case                                          | column | code                                                                                                                                                           |
+      | twice                                         | 6      | void f(int n) { CC_OWNS char *b = malloc(n); free(b); free(b); }                                                                                               |
+      | on one path                                   | 6      | void f(int n) { CC_OWNS char *b = malloc(n); if (work(b)) free(b); free(b); }                                                                                  |
+      | after handing on                              | 6      | void f(int n) { CC_OWNS char *b = malloc(n); adopt(b); free(b); }                                                                                              |
+      | freed by the project                          | 6      | void f(int n) { char *p = make(n); drop(p); drop(p); }                                                                                                         |
+      | owned parameter                               | 6      | void f(CC_OWNS char *p) { free(p); free(p); }                                                                                                                  |
+      | freed through address                         | 6      | void f(int n) { CC_OWNS char *b = malloc(n); zap(&b); if (b) free(b); }                                                                                        |
+      | stored through *p                             | 6      | void f(CC_FREES char **p) { CC_OWNS char *n = malloc(8); free(*p); *p = n; free(n); }                                                                          |
+      | old value freed                               | 6      | void f(CC_FREES char **p) { char *old = *p; free(*p); *p = NULL; free(old); }                                                                                  |
+      | goto into a block                             | 6      | void f(void) { char *keep = NULL; int once = 0; { CC_OWNS char *t = make(1); keep = t; again: free(t); } keep = NULL; if (!once) { once = 1; goto again; } }   |
+      | two locals of the old value                   | 6      | void f(CC_FREES char **p, char *v) { char *a = *p; char *c = *p; *p = v; free(a); free(c); }                                                                   |
+      | a field that stands for a local               | 6      | void f(int n) { struct s { CC_OWNS char *a; } p = {0}; CC_OWNS char *b = make(n); p.a = b; free(b); free(p.a); }                                               |
+      | two fields of one local                       | 6      | void f(int n) { struct s { CC_OWNS char *a; CC_OWNS char *c; } p = {0}; CC_OWNS char *b = make(n); p.a = b; p.c = b; free(p.a); free(p.c); }                   |
+      | case label in a block of a switch             | 6      | void f(int st) { char *keep; for (;;) { switch (st) { case 0: { CC_OWNS char *t = make(1); keep = t; case 1: free(t); } } keep = NULL; } }                     |
+      | struct freed, then the local of its field     | 72     | struct s { CC_OWNS char *a; }; void s_free(CC_FREES struct s *p); void f(int n) { CC_OWNS char *b = make(n); struct s p = {0}; p.a = b; s_free(&p); free(b); } |
+      | field cleared, then its local freed           | 6      | void f(int n) { struct s { CC_OWNS char *a; } p = {0}; CC_OWNS char *b = make(n); p.a = b; zap(&p.a); free(b); }                                               |
+      | alias cleared, then its local freed           | 6      | void f(int n) { CC_OWNS char *b = make(n); char *c = b; zap(&c); free(b); }                                                                                    |
+      | local of a field freed twice after the escape | 6      | void f(int n) { struct s { CC_OWNS char *a; } p = {0}; CC_OWNS char *b = make(n); p.a = b; work((char *)&p); free(b); free(b); }                   |
 
   Scenario Outline: A pointer used after a path freed it or handed it on is a finding at the function (<case>)
     Given the C file "own.c" holds:
@@ -187,14 +194,20 @@ Feature: Ownership on every path
       """
 
     Examples:
-      | case               | column | code                                                                       |
-      | read               | 6      | void f(int n) { CC_OWNS char *b = malloc(n); free(b); work(b); }           |
-      | written through    | 6      | void f(int n) { CC_OWNS char *b = malloc(n); free(b); b[0] = 0; }          |
-      | after handing on   | 6      | void f(int n) { CC_OWNS char *b = malloc(n); adopt(b); work(b); }          |
-      | handed on twice    | 6      | void f(int n) { CC_OWNS char *b = malloc(n); adopt(b); adopt(b); }         |
-      | returned           | 15     | CC_OWNS char *f(int n) { CC_OWNS char *b = malloc(n); free(b); return b; } |
-      | stored through *p  | 6      | void f(CC_FREES char **p) { CC_OWNS char *n = malloc(8); free(*p); *p = n; work(n); } |
-      | through a pointer  | 6      | void f(CC_FREES char *p) { free(p); *p = 0; }                              |
+      | case                              | column | code                                                                                                                                          |
+      | read                              | 6      | void f(int n) { CC_OWNS char *b = malloc(n); free(b); work(b); }                                                                              |
+      | written through                   | 6      | void f(int n) { CC_OWNS char *b = malloc(n); free(b); b[0] = 0; }                                                                             |
+      | after handing on                  | 6      | void f(int n) { CC_OWNS char *b = malloc(n); adopt(b); work(b); }                                                                             |
+      | handed on twice                   | 6      | void f(int n) { CC_OWNS char *b = malloc(n); adopt(b); adopt(b); }                                                                            |
+      | returned                          | 15     | CC_OWNS char *f(int n) { CC_OWNS char *b = malloc(n); free(b); return b; }                                                                    |
+      | stored through *p                 | 6      | void f(CC_FREES char **p) { CC_OWNS char *n = malloc(8); free(*p); *p = n; work(n); }                                                         |
+      | through a pointer                 | 6      | void f(CC_FREES char *p) { free(p); *p = 0; }                                                                                                 |
+      | stored in a field                 | 6      | void f(int n) { struct s { CC_OWNS char *a; } p = {0}; CC_OWNS char *b = malloc(n); free(b); p.a = b; free(p.a); }                            |
+      | in an initializer                 | 6      | void f(int n) { CC_OWNS char *b = malloc(n); adopt(b); struct s { CC_OWNS char *a; } p = { b }; free(p.a); }                                  |
+      | local of a cleared field          | 35     | void zap(CC_FREES char **p); void f(int n) { CC_OWNS char *b = malloc(n); struct s { CC_OWNS char *a; } p = { .a = b }; zap(&p.a); work(b); } |
+      | local of a field after the escape | 6      | void f(int n) { CC_OWNS char *b = malloc(n); struct s { CC_OWNS char *a; } p = { .a = b }; work((char *)&p); free(b); work(b); }              |
+      | alias of a freed pointer          | 6      | void f(int n) { CC_OWNS char *b = malloc(n); free(b); char *c = b; (void)n; }                                                                 |
+      | alias of a pointer handed on      | 6      | void f(int n) { CC_OWNS char *b = malloc(n); adopt(b); char *c = b; (void)n; }                                                                |
 
   Scenario Outline: A pointer handed on through an out-parameter or into an item of an owned array is followed (<case>)
     Given the C file "out.c" holds:

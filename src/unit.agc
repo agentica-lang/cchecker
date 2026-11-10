@@ -48,6 +48,15 @@ TYPE_QUALIFIERS = Set.new([
   "_Null_unspecified", "struct", "union",
 ])
 
+# The selection and iteration statements with a condition, other than `for`.
+CONDITIONED = Set.new(["WhileStmt", "DoStmt", "IfStmt", "SwitchStmt"])
+
+# The letters and digits of a C identifier, with `_`.
+IDENTIFIER_CHARS = Set.new("abcdefghijklmnopqrstuvwxyz0123456789".split(""))
+
+# The qualifiers of a value, which do not change the record of its type or the type an initializer converts to.
+VALUE_QUALIFIERS = Set.new(["const", "volatile", "restrict", "__restrict", "__restrict__", "_Atomic"])
+
 # The marks of a lock field or global: CC_NO_SYSCALL_UNDER() and CC_LOCK_LEVEL(n), n a decimal number.
 QUIET_MARK = "no_syscall_under"
 LEVEL_MARK = "lock_level"
@@ -206,6 +215,19 @@ end
 struct Nested
   node: Json
   name: String
+end
+
+# What the walk of the function bodies in `typed_of` knows: the tags and the typedef names in scope, by name, one map
+# per block with the innermost last (a typedef that names no record maps to ""), the unnamed record that each field
+# of an unnamed type is (`members`), the records by id, the record found for each node by its id, and the local
+# variables whose record does not fit their uses (`unfit`).
+struct Typing
+  tags: List[Map[String, String]]
+  typedefs: List[Map[String, String]]
+  members: Map[String, String]
+  records: Map[String, Record]
+  found: Map[String, String] = {}
+  unfit: Set[String]
 end
 
 # What the walk of the functions needs from the whole unit: the keys of its static functions and variables by name,
@@ -418,37 +440,23 @@ def owning_of(tables: Tables, nodes: List[Json]) -> Flow.Owning
     end
   end
 
-  # The records with a CC_OWNS field that is not in a union, by type name, with all their fields in the order of the
-  # items of an initializer.
+  # The records with a CC_OWNS field that is not in a union, by the id of their declaration, with all their fields in
+  # the order of the items of an initializer, and the record that the type of each local variable, initializer and
+  # `sizeof` of a function body names.
+  all_records = records_of(nodes.concat(inner))
   records: Map[String, Flow.OwnedRecord] = {}
-  for name in tables.records.keys
-    record = tables.records[name]
-    if record.field_ids.any? do |id| fields.include?(id) and not unions.include?(id) end
-      records = records.put(name, Flow.OwnedRecord(ids: record.field_ids, names: record.fields))
+  for id in all_records.keys
+    record = all_records[id]
+    if record.field_ids.any? do |field| fields.include?(field) and not unions.include?(field) end
+      records = records.put(id, Flow.OwnedRecord(ids: record.field_ids, names: record.fields))
     end
   end
 
-  # The type names of two definitions: a tag of a function body that shadows another tag, or a typedef that names
-  # another record than the tag or the typedef of the same name. `records` holds one record per
-  # name, which may be the wrong one for such a type. `typedef struct pair pair;` names one record.
-  defined: Map[String, String] = {}
-  ambiguous: Set[String] = Set.new([])
-  for nested in record_decls(nodes, "").concat(record_decls(inner, ""))
-    name = Ast.text(nested.node, "name")
-    if name != "" and has_fields?(nested.node)
-      ambiguous = with_name(ambiguous, defined, name, Ast.text(nested.node, "id"))
-      defined = defined.put(name, Ast.text(nested.node, "id"))
-    end
-  end
-
-  typedefs = nodes.concat(inner).select do |n| Ast.kind(n) == "TypedefDecl" end
-  named: Map[String, String] = {}
-  for node in typedefs
-    name = Ast.text(node, "name")
-    id = record_id_of(node)
-    if id != ""
-      ambiguous = with_name(with_name(ambiguous, defined, name, id), named, name, id)
-      named = named.put(name, id)
+  typed: Map[String, String] = {}
+  found = typed_of(nodes, bodies, all_records)
+  for id in found.keys
+    if records.key?(found[id])
+      typed = typed.put(id, found[id])
     end
   end
 
@@ -466,7 +474,7 @@ def owning_of(tables: Tables, nodes: List[Json]) -> Flow.Owning
     globals: Set.new(globals),
     unions: unions,
     records: records,
-    ambiguous: ambiguous,
+    typed: typed,
   )
 end
 
@@ -936,15 +944,6 @@ def tables_of(nodes: List[Json]) -> Tables
   )
 end
 
-# `ambiguous` with `name` when `seen` gives it another record than `id`.
-def with_name(ambiguous: Set[String], seen: Map[String, String], name: String, id: String) -> Set[String]
-  if name != "" and seen.get(name).map do |other| other != id end.unwrap_or(false)
-    return ambiguous.add(name)
-  end
-
-  return ambiguous
-end
-
 # The keys of the static functions by name. A static function is keyed by the file of its definition, its own file: a
 # header can declare a static function that each file including it defines in its own way.
 def static_functions_of(nodes: List[Json]) -> Map[String, String]
@@ -1037,6 +1036,362 @@ def record_id_of(node: Json) -> String
   end
 
   return ""
+end
+
+# The record that the type of each local variable, initializer, compound literal and `sizeof` of a type in the
+# function bodies names, by the id of the node: a tag or a typedef name is looked up in the blocks around the node, as
+# C does, then at the top level, so a tag or a typedef of a block that shadows another one is its own record. An
+# unnamed struct is the one declared with the variable (`struct { ... } p`), or the unnamed member that the item of an
+# initializer gives. A variable is left out when a field it reads (`p.f`) or an item of its initializer does not fit
+# the record: clang's AST has no node for a tag declared in a parameter list (`void f(struct pair { int k; } x)`), so
+# its name finds the top-level tag instead.
+def typed_of(nodes: List[Json], bodies: List[Json], records: Map[String, Record]) -> Map[String, String]
+  tags: Map[String, String] = {}
+  for nested in record_decls(nodes, "")
+    name = Ast.text(nested.node, "name")
+    if name != "" and (has_fields?(nested.node) or not tags.key?(name))
+      tags = tags.put(name, Ast.text(nested.node, "id"))
+    end
+  end
+
+  typedefs: Map[String, String] = {}
+  for node in nodes
+    if Ast.kind(node) == "TypedefDecl"
+      typedefs = typedefs.put(Ast.text(node, "name"), typedef_record(node))
+    end
+  end
+
+  members: Map[String, String] = {}
+  for nested in record_decls(nodes.concat(Flow.descendants(bodies)), "")
+    members = unnamed_members(members, nested.node)
+  end
+
+  t = Typing(tags: [tags], typedefs: [typedefs], members: members, records: records, unfit: Set.new([]))
+  for body in bodies
+    t = typed_in(t, body, "")
+  end
+
+  typed: Map[String, String] = {}
+  for id in t.found.keys
+    if not t.unfit.include?(id)
+      typed = typed.put(id, t.found[id])
+    end
+  end
+
+  return typed
+end
+
+# `members` with each field of a record whose type is the unnamed record declared just before it, by the id of the
+# field (`struct { ... };` in a struct, or `struct { ... } in;`).
+def unnamed_members(members: Map[String, String], node: Json) -> Map[String, String]
+  found = members
+  unnamed = ""
+  for child in Ast.children(node)
+    if Ast.kind(child) == "RecordDecl"
+      unnamed = ""
+      if Ast.text(child, "name") == ""
+        unnamed = Ast.text(child, "id")
+      end
+    elsif Ast.kind(child) == "FieldDecl" and unnamed != "" and unnamed_type?(type_text(child))
+      found = found.put(Ast.text(child, "id"), unnamed)
+    end
+  end
+
+  return found
+end
+
+# Whether a statement opens a scope of tags and typedef names: a block, a `for` (a tag declared in its clauses is
+# not seen after it), and a selection or iteration statement whose condition declares a tag (`if (sizeof(struct q {
+# int k; }))`), which C makes a block too. Any other such statement declares nothing of its own: a body that is not a
+# block cannot be a declaration.
+def opens_scope?(node: Json) -> Bool
+  kind = Ast.kind(node)
+  if kind == "CompoundStmt" or kind == "ForStmt"
+    return true
+  end
+
+  if not CONDITIONED.include?(kind) or Ast.children(node).empty?
+    return false
+  end
+
+  condition = Ast.children(node).first
+  if kind == "DoStmt"
+    condition = Ast.children(node).last
+  end
+
+  return Flow.descendants([condition]).any? do |n| Ast.kind(n) == "RecordDecl" end
+end
+
+# The walk of `typed_of` through a node. `given` is the record that the node around it says an unnamed type is.
+def typed_in(t: Typing, node: Json, given: String) -> Typing
+  if opens_scope?(node)
+    inner = t.with(tags: t.tags.push({}), typedefs: t.typedefs.push({}))
+    for child in Ast.children(node)
+      inner = typed_in(inner, child, "")
+    end
+
+    return inner.with(tags: t.tags, typedefs: t.typedefs)
+  end
+
+  case Ast.kind(node)
+    "DeclStmt" ->
+      walked = t
+      unnamed = ""
+      for child in Ast.children(node)
+        case Ast.kind(child)
+          "RecordDecl" ->
+            walked = declared_tags(walked, child)
+            if Ast.text(child, "name") == ""
+              unnamed = Ast.text(child, "id")
+            end
+
+          "TypedefDecl" ->
+            scope = walked.typedefs.last.put(Ast.text(child, "name"), typedef_record(child))
+            walked = walked.with(typedefs: walked.typedefs.set(walked.typedefs.size - 1, scope))
+          "VarDecl" -> walked = typed_variable(walked, child, unnamed)
+          _ -> walked = typed_in(walked, child, "")
+        end
+      end
+
+      return walked
+    "InitListExpr" ->
+      id = record_named(t, JSON.get(node, "type").unwrap_or(JSON.from("")), given)
+      walked = t
+      if id != ""
+        walked = walked.with(found: walked.found.put(Ast.text(node, "id"), id))
+      end
+
+      items = Ast.children(node)
+      fields = t.records.get(id).map do |record| record.field_ids end.unwrap_or([])
+      for i in 0...items.size
+        member = ""
+        if i < fields.size
+          member = t.members.get(fields[i], "")
+        end
+
+        walked = typed_in(walked, items[i], member)
+      end
+
+      return walked
+    "MemberExpr" ->
+      # A field the record of the variable does not have: the variable is of another record.
+      base = Flow.see_through(Ast.children(node).first)
+      walked = t
+      if not Ast.flag?(node, "isArrow") and Ast.kind(base) == "DeclRefExpr"
+        var = Ast.referenced_id(base)
+        fields = t.records.get(t.found.get(var, "")).map do |record| record.field_ids end.unwrap_or([])
+        if t.found.key?(var) and not fields.include?(Ast.text(node, "referencedMemberDecl"))
+          walked = walked.with(unfit: walked.unfit.add(var))
+        end
+      end
+
+      return typed_children(walked, node)
+    "UnaryExprOrTypeTraitExpr" ->
+      walked = t
+      case JSON.get(node, "argType")
+        ok(type) ->
+          id = record_named(t, type, "")
+          if id != ""
+            walked = walked.with(found: walked.found.put(Ast.text(node, "id"), id))
+          end
+
+        error(_) -> walked = walked
+      end
+
+      return typed_children(walked, node)
+    _ -> return typed_children(t, node)
+  end
+end
+
+def typed_children(t: Typing, node: Json) -> Typing
+  walked = t
+  for child in Ast.children(node)
+    walked = typed_in(walked, child, "")
+  end
+
+  return walked
+end
+
+# A local variable and its initializer. A variable whose initializer has an item that does not fit the field it gives a
+# value to is of another record.
+def typed_variable(t: Typing, node: Json, unnamed: String) -> Typing
+  id = record_named(t, JSON.get(node, "type").unwrap_or(JSON.from("")), unnamed)
+  walked = t
+  if id != ""
+    walked = walked.with(found: walked.found.put(Ast.text(node, "id"), id))
+  end
+
+  for child in Ast.children(node)
+    walked = typed_in(walked, child, id)
+    if Ast.kind(child) == "InitListExpr" and not fits?(walked, id, child)
+      walked = walked.with(unfit: walked.unfit.add(Ast.text(node, "id")))
+    end
+  end
+
+  return walked
+end
+
+# Whether each item of an initializer has the type of the field it gives a value to. A union's names its field.
+def fits?(t: Typing, id: String, init: Json) -> Bool
+  case t.records.get(id)
+    some(record) ->
+      if JSON.get(init, "field").ok?
+        return true
+      end
+
+      items = Ast.children(init)
+      if items.size > record.field_ids.size
+        return false
+      end
+
+      for i in 0...items.size
+        if same_type(type_text(items[i])) != same_type(field_type(record, i))
+          return false
+        end
+      end
+
+      return true
+    none -> return true
+  end
+end
+
+# The type of the field `i` of a record without its typedefs.
+def field_type(record: Record, i: Int) -> String
+  if i < record.desugared.size and record.desugared[i] != ""
+    return record.desugared[i]
+  end
+
+  if i < record.types.size
+    return record.types[i]
+  end
+
+  return ""
+end
+
+# A type without its qualifiers and spaces, as two types that a value converts between without a cast compare.
+def same_type(text: String) -> String
+  words = text.replace("*", " * ").split(" ").select do |word| word != "" and not VALUE_QUALIFIERS.include?(word) end
+  return words.join("")
+end
+
+# The type of a node without its typedefs.
+def type_text(node: Json) -> String
+  type = JSON.get(node, "type").unwrap_or(JSON.from(""))
+  desugared = Ast.text(type, "desugaredQualType")
+  if desugared != ""
+    return desugared
+  end
+
+  return Ast.text(type, "qualType")
+end
+
+# The scope of `t` with the tags that a record declaration in a block declares: its own (a definition, or a first
+# declaration of the name) and those of the named records in it, which C puts in the same scope.
+def declared_tags(t: Typing, node: Json) -> Typing
+  scope = t.tags.last
+  for nested in record_decls([node], "")
+    name = Ast.text(nested.node, "name")
+    if name != "" and (has_fields?(nested.node) or tag_of(t, name) == "")
+      scope = scope.put(name, Ast.text(nested.node, "id"))
+    end
+  end
+
+  return t.with(tags: t.tags.set(t.tags.size - 1, scope))
+end
+
+# The record that a type names, as `typed_of` finds it; `unnamed` for an unnamed struct, "" for any other type (a
+# pointer, an array, a number).
+def record_named(t: Typing, type: Json, unnamed: String) -> String
+  text = without_qualifiers(Ast.text(type, "qualType"))
+  if text.start_with?("typeof") or text.start_with?("__typeof")
+    text = without_qualifiers(Ast.text(type, "desugaredQualType"))
+  end
+
+  for word in ["struct ", "union "]
+    if text.start_with?(word)
+      tag = text.slice(word.length, text.length - word.length)
+      if unnamed_type?(text)
+        return unnamed
+      end
+
+      if not identifier?(tag)
+        return ""
+      end
+
+      return tag_of(t, tag)
+    end
+  end
+
+  if not identifier?(text)
+    return ""
+  end
+
+  i = t.typedefs.size - 1
+  while i >= 0
+    case t.typedefs[i].get(text)
+      some(id) -> return id
+      none -> i -= 1
+    end
+  end
+
+  return ""
+end
+
+# The record of a tag in the blocks around, then at the top level; "" when there is none.
+def tag_of(t: Typing, name: String) -> String
+  i = t.tags.size - 1
+  while i >= 0
+    case t.tags[i].get(name)
+      some(id) -> return id
+      none -> i -= 1
+    end
+  end
+
+  return ""
+end
+
+# The record a typedef names: "" for a pointer, an array or any other type that is not a struct or a union. clang
+# writes the type of a typedef of an unnamed struct with the typedef's name (`struct pair`, without typedefs `pair`),
+# so either form may be the one that shows the struct.
+def typedef_record(node: Json) -> String
+  type = JSON.get(node, "type").unwrap_or(JSON.from(""))
+  if not [Ast.text(type, "qualType"), Ast.text(type, "desugaredQualType")].any?(&record_type?)
+    return ""
+  end
+
+  return record_id_of(node)
+end
+
+# Whether a type is a struct or a union itself, not a pointer to one or an array of them.
+def record_type?(text: String) -> Bool
+  bare = without_qualifiers(text)
+  if not (bare.start_with?("struct ") or bare.start_with?("union "))
+    return false
+  end
+
+  return identifier?(bare.split(" ").drop(1).join(" ")) or unnamed_type?(bare)
+end
+
+# Whether a type is an unnamed struct or union as clang writes it: `struct (unnamed struct at f.c:3:5)`, or `struct
+# conn::(anonymous at f.c:3:5)` for a member.
+def unnamed_type?(text: String) -> Bool
+  bare = without_qualifiers(text)
+  return (bare.include?("(unnamed ") or bare.include?("(anonymous ")) and bare.end_with?(")")
+end
+
+def identifier?(text: String) -> Bool
+  return text != "" and text.split("").all? do |c| c == "_" or IDENTIFIER_CHARS.include?(c.downcase) end
+end
+
+# A type without the qualifiers in front of it (`const struct pair` is `struct pair`).
+def without_qualifiers(text: String) -> String
+  words = text.split(" ")
+  start = 0
+  while start < words.size and VALUE_QUALIFIERS.include?(words[start])
+    start += 1
+  end
+
+  return words.drop(start).join(" ")
 end
 
 def function_of(tables: Tables, node: Json) -> Function
