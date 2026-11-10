@@ -103,9 +103,7 @@ enum Verdict
 end
 
 ## Returns the time in milliseconds after which nothing of a job is left to wait for.
-export def limit_ms(options: Options) -> Int
-  return options.timeout_s * 1000 + WRAPPER_MS + 5_000
-end
+export def limit_ms(options: Options) -> Int = options.timeout_s * 1000 + WRAPPER_MS + 5_000
 
 ## Returns a budget of `mib` MiB, all of it free.
 export def budget(mib: Int) -> Budget
@@ -116,17 +114,17 @@ export def budget(mib: Int) -> Budget
     _ = Channel.send(tokens, 1, 1_000)
   end
 
-  return Budget(turn: turn, tokens: tokens, mib: mib)
+  Budget(turn: turn, tokens: tokens, mib: mib)
 end
 
 ## Returns whether `timeout` of coreutils is installed. Without it a timeout stops the tool but not its children.
 export def timeout_available?() -> Bool
-  case Process.spawn_captured("timeout", ["--version"], ".", 5_000)
+  case Process.spawn_captured("timeout", ["--version"], Process.Options(timeout_ms: 5_000))
     ok(process) ->
       code = Process.wait(process, 5_000).unwrap_or(1)
       Process.close(process)
-      return code == 0
-    error(_) -> return false
+      code == 0
+    error(_) -> false
   end
 end
 
@@ -134,26 +132,24 @@ end
 ## the target; "" when `clang` does not say.
 export def target_of(clang: String, entry: Commands.Entry) -> String
   args = ["-print-target-triple"].concat(target_flags(entry.args))
-  case Process.spawn_captured(clang, args, entry.directory, 5_000)
+  case Process.spawn_captured(clang, args, Process.Options(timeout_ms: 5_000, chdir: entry.directory))
     ok(process) ->
       line = Process.read_line(process, 5_000).unwrap_or("")
       code = Process.wait(process, 5_000).unwrap_or(1)
       Process.close(process)
-      if code != 0
-        return ""
-      end
+      return "" if code != 0
 
-      return line.strip
-    error(_) -> return ""
+      line.strip
+    error(_) -> ""
   end
 end
 
 ## Returns the name that the baseline gives the program of a tool: `gcc`, `clang-tidy`, and `clang` for the rules.
 export def version_key(tool: Tool) -> String
   case tool
-    Tool.Gcc -> return "gcc"
-    Tool.ClangTidy -> return "clang-tidy"
-    Tool.Rules -> return "clang"
+    Tool.Gcc -> "gcc"
+    Tool.ClangTidy -> "clang-tidy"
+    Tool.Rules -> "clang"
   end
 end
 
@@ -171,7 +167,7 @@ export def versions_of(options: Options, keys: List[String]) -> Map[String, Stri
     end
   end
 
-  return found
+  found
 end
 
 ## Returns the flags of a compile command that choose its target: `--target=`, `-target T`, `-arch A`, `-m32`, ...
@@ -190,7 +186,7 @@ export def target_flags(args: List[String]) -> List[String]
     i += 1
   end
 
-  return found
+  found
 end
 
 ## Runs the job. An error is a tool that did not start or did not finish in time; a file that does not compile is an
@@ -259,9 +255,7 @@ export def run(job: Job) -> Result[Outcome]
   end
 
   done = outcome(job, "#{output.stdout}\n#{output.stderr}", code)
-  if job.tool != Tool.Rules
-    return ok(done)
-  end
+  return ok(done) if job.tool != Tool.Rules
 
   if copy_error != ""
     copy_failed = ToolError(tool: "rules", file: job.entry.file, message: copy_error)
@@ -277,7 +271,7 @@ export def run(job: Job) -> Result[Outcome]
   # The dump is tens of MiB: it goes as soon as it is read, or when clang failed.
   read = with_unit(job, done, raws)
   _ = Path.remove(job.dump)
-  return read
+  read
 end
 
 ## Returns the code of a diagnostic: `-Wanalyzer-malloc-leak` of gcc is CC-GCC-ANALYZER-MALLOC-LEAK, and the check
@@ -285,10 +279,10 @@ end
 ## CC-TIDY-WARNING.
 export def code_of(tool: Tool, option: Optional[String]) -> String
   case tool
-    Tool.Gcc -> return "CC-GCC-" + plain_option(option.unwrap_or("-WWARNING")).replace("=", "").upcase
-    Tool.ClangTidy -> return "CC-TIDY-" + option.unwrap_or("WARNING").replace(".", "-").upcase
+    Tool.Gcc -> "CC-GCC-" + plain_option(option.unwrap_or("-WWARNING")).replace("=", "").upcase
+    Tool.ClangTidy -> "CC-TIDY-" + option.unwrap_or("WARNING").replace(".", "-").upcase
     # Never asked: the dump of the rules reports no diagnostic of clang, only its errors (see `verdict`).
-    Tool.Rules -> return "CC-CLANG-" + plain_option(option.unwrap_or("-WWARNING")).upcase
+    Tool.Rules -> "CC-CLANG-" + plain_option(option.unwrap_or("-WWARNING")).upcase
   end
 end
 
@@ -296,49 +290,37 @@ end
 ## after it, but a tool that kills itself or is killed from outside (the OOM killer) gives the same codes, so the text
 ## says both.
 export def failure(wrapped: Bool, timeout_s: Int, text: String, code: Int) -> String
-  if wrapped and code == 124
-    return "was stopped after #{timeout_s} seconds, or ended by itself with code 124"
-  end
+  return "was stopped after #{timeout_s} seconds, or ended by itself with code 124" if wrapped and code == 124
 
-  if wrapped and code == 137
-    return "was killed: it did not end in #{timeout_s} seconds, or a signal ended it"
-  end
+  return "was killed: it did not end in #{timeout_s} seconds, or a signal ended it" if wrapped and code == 137
 
-  return "exited with code #{code}: #{first_line(text)}"
+  "exited with code #{code}: #{first_line(text)}"
 end
 
 ## Returns the line that says why a tool stopped: a fatal error (gcc says so when cc1 is killed), else the first error,
 ## else the first line.
 export def first_line(text: String) -> String
   lines = text.split("\n").map do |line| line.strip end.select do |line| line != "" end
-  if lines.empty?
-    return "no output"
-  end
+  return "no output" if lines.empty?
 
   for marker in ["fatal error:", "error"]
     found = lines.select do |line| line.include?(marker) end
-    if not found.empty?
-      return found.first
-    end
+    return found.first if not found.empty?
   end
 
-  return lines.first
+  lines.first
 end
 
 ## Returns the path of the FIFO that clang writes the dump into: the dump's, `N.fifo` for `N.json`.
-export def fifo_path(dump: String) -> String
-  return "#{dump.slice(0, dump.length - ".json".length)}.fifo"
-end
+export def fifo_path(dump: String) -> String = "#{dump.slice(0, dump.length - ".json".length)}.fifo"
 
-def executable(job: Job) -> String
-  return program_of(job.options, job.tool)
-end
+def executable(job: Job) -> String = program_of(job.options, job.tool)
 
 def program_of(options: Options, tool: Tool) -> String
   case tool
-    Tool.Gcc -> return options.gcc
-    Tool.ClangTidy -> return options.clang_tidy
-    Tool.Rules -> return options.clang
+    Tool.Gcc -> options.gcc
+    Tool.ClangTidy -> options.clang_tidy
+    Tool.Rules -> options.clang
   end
 end
 
@@ -346,26 +328,22 @@ end
 # machine to the next. The timeout of `spawn_captured` is not documented as a kill, so `close` ends a program that
 # is still running, and the waits are short: the first line is out by then.
 def version_line(program: String) -> String
-  case Process.spawn_captured(program, ["--version"], ".", 5_000, {"LC_ALL": "C"})
+  case Process.spawn_captured(program, ["--version"], Process.Options(timeout_ms: 5_000, env: {"LC_ALL": "C"}))
     ok(process) ->
       line = Process.read_line(process, 5_000).unwrap_or("")
       code = Process.wait(process, 1_000).unwrap_or(1)
       Process.close(process)
-      if code != 0
-        return ""
-      end
+      return "" if code != 0
 
-      return line.strip
-    error(_) -> return ""
+      line.strip
+    error(_) -> ""
   end
 end
 
 # The outcome of a job of the rules with the declarations of the project in its dump, read into a unit, when clang
 # ended well. `raws` are the files that the dump names.
 def with_unit(job: Job, done: Outcome, raws: List[String]) -> Result[Outcome]
-  if not done.errors.empty?
-    return ok(done)
-  end
+  return ok(done) if not done.errors.empty?
 
   scanned = Profile.measure("scan") do Scan.decls_in(job.dump, raws, job.entry.directory, job.cwd) end
   dump = try scanned
@@ -411,7 +389,7 @@ def with_unit(job: Job, done: Outcome, raws: List[String]) -> Result[Outcome]
     ToolError(tool: "rules", file: file, message: e.message)
   end
 
-  return ok(
+  ok(
     done.with(
       units: [unit.with(target: job.target)],
       errors: done.errors.concat(errors).concat(large).concat(marks),
@@ -424,7 +402,7 @@ end
 def parse_and_read(decls: String, acquires: List[String], releases: List[String]) -> Result[Unit]
   parsed = Profile.measure("json") do JSON.parse(decls) end
   tree = try parsed
-  return Profile.measure("unit") do UnitReader.read_with(tree, acquires, releases) end
+  Profile.measure("unit") do UnitReader.read_with(tree, acquires, releases) end
 end
 
 # Takes `share` MiB of the budget, waiting for jobs that hold it; an error when they do not give it back in time.
@@ -442,7 +420,7 @@ def take(b: Budget, share: Int, timeout_ms: Int) -> Result[Int]
   end
 
   _ = Channel.send(b.turn, 0, timeout_ms)
-  return ok(taken)
+  ok(taken)
 end
 
 def give_back(b: Budget, share: Int) -> Void
@@ -460,9 +438,9 @@ def start(
   program: String,
   env: Map[String, String],
 ) -> Result[Process]
-  case Process.spawn_captured(command, args, directory, timeout_ms, env)
-    ok(process) -> return ok(process)
-    error(message) -> return error("cannot run #{program}: #{message}")
+  case Process.spawn_captured(command, args, Process.Options(timeout_ms: timeout_ms, chdir: directory, env: env))
+    ok(process) -> ok(process)
+    error(message) -> error("cannot run #{program}: #{message}")
   end
 end
 
@@ -470,21 +448,21 @@ def arguments(job: Job) -> List[String]
   entry = job.entry
   case job.tool
     Tool.Gcc ->
-      return (
+      (
         ["-fanalyzer", "-fdiagnostics-path-format=none", "-fno-diagnostics-show-caret"]
           .concat(entry.args)
           .concat(GCC_AFTER)
           .concat(["-c", entry.file, "-o", "/dev/null"])
       )
     Tool.ClangTidy ->
-      return (
+      (
         ["--quiet", "--checks=#{job.options.checks}", "--header-filter=.*"]
           .concat(CLANG_FLAGS)
           .concat([entry.file, "--"])
           .concat(entry.args)
       )
     Tool.Rules ->
-      return (
+      (
         ["-Xclang", "-ast-dump=json", "-fsyntax-only", "-Wno-unknown-warning-option"]
           .concat(entry.args)
           .concat(AST_FLAGS)
@@ -537,25 +515,21 @@ def outcome(job: Job, text: String, code: Int) -> Outcome
     errors = errors.push(ToolError(tool: tool, file: job.entry.file, message: message))
   end
 
-  return Outcome(findings: findings, errors: errors)
+  Outcome(findings: findings, errors: errors)
 end
 
 # The header of an `#include` that the compiler did not find, as gcc (`x.h: No such file or directory`) and clang
 # (`'x.h' file not found`) say it in the C locale; empty for any other diagnostic.
 def missing_header(d: Diagnostics.Diagnostic) -> List[String]
-  if d.severity == "warning"
-    return []
-  end
+  return [] if d.severity == "warning"
 
-  if d.message.end_with?(GCC_MISSING)
-    return [d.message.slice(0, d.message.length - GCC_MISSING.length)]
-  end
+  return [d.message.slice(0, d.message.length - GCC_MISSING.length)] if d.message.end_with?(GCC_MISSING)
 
   if d.message.start_with?("'") and d.message.end_with?(CLANG_MISSING)
     return [d.message.slice(1, d.message.length - CLANG_MISSING.length - 1)]
   end
 
-  return []
+  []
 end
 
 # The shell gives 127 for a program it cannot find. The rules are on by default, so a missing clang says how to go
@@ -565,7 +539,7 @@ def hint(tool: Tool, code: Int) -> String
     return " (install clang or name it with --clang, or leave the rules out with --tools gcc,clang-tidy)"
   end
 
-  return ""
+  ""
 end
 
 # gcc reports its analyzer only. Its other warnings come from the flags of the build (-Wall), and clang-tidy leaves
@@ -576,46 +550,36 @@ def verdict(tool: Tool, d: Diagnostics.Diagnostic) -> Verdict
   failed = d.severity != "warning"
   case tool
     Tool.Gcc ->
-      if analyzer?(Diagnostics.option(d))
-        return Verdict.Report
-      end
+      return Verdict.Report if analyzer?(Diagnostics.option(d))
 
-      if failed
-        return Verdict.Failure
-      end
+      return Verdict.Failure if failed
 
-      return Verdict.Ignore
+      Verdict.Ignore
     Tool.ClangTidy ->
-      if failed
-        return Verdict.Failure
-      end
+      return Verdict.Failure if failed
 
-      return Verdict.Report
+      Verdict.Report
     Tool.Rules ->
-      if failed
-        return Verdict.Failure
-      end
+      return Verdict.Failure if failed
 
-      return Verdict.Ignore
+      Verdict.Ignore
   end
 end
 
 def analyzer?(option: Optional[String]) -> Bool
   case option
-    some(text) -> return plain_option(text).start_with?("analyzer-")
-    none -> return false
+    some(text) -> plain_option(text).start_with?("analyzer-")
+    none -> false
   end
 end
 
 # The option without the -W, and without the -Werror= and -Wno-error= that gcc puts in front of a promoted warning.
 def plain_option(option: String) -> String
   for prefix in ["-Werror=", "-Wno-error=", "-W"]
-    if option.start_with?(prefix)
-      return option.slice(prefix.length, option.length - prefix.length)
-    end
+    return option.slice(prefix.length, option.length - prefix.length) if option.start_with?(prefix)
   end
 
-  return option
+  option
 end
 
 # Whether gcc says that it ended the run on purpose because of -Werror. A cc1 that was killed after it printed such an
@@ -623,7 +587,7 @@ end
 # the flags only the "some" line can come (the analyzer warnings named with `-Werror=analyzer-...` stay errors); the
 # "all" line is kept for a gcc that prints it anyway.
 def treated_as_errors?(text: String) -> Bool
-  return (
+  (
     text.include?("cc1: all warnings being treated as errors") or
     text.include?("cc1: some warnings being treated as errors")
   )
@@ -633,11 +597,11 @@ end
 def where(job: Job, d: Diagnostics.Diagnostic) -> String
   path = Paths.absolute(job.entry.directory, d.file).unwrap_or(d.file)
   shown = Paths.inside(job.entry.directory, path).unwrap_or(path)
-  return "#{shown}:#{d.line}:#{d.column}: #{d.message}"
+  "#{shown}:#{d.line}:#{d.column}: #{d.message}"
 end
 
 def finding(job: Job, d: Diagnostics.Diagnostic) -> Finding
-  return Finding(
+  Finding(
     code: code_of(job.tool, Diagnostics.option(d)),
     tool: ToolKind.name(job.tool),
     file: Paths.absolute(job.entry.directory, d.file).unwrap_or(d.file),

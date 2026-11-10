@@ -77,8 +77,10 @@ end
 ## The generator of functions: up to 24 tokens of the body and 3 of the cleanup (lock, unlock, work, or a `return` or
 ## a `goto out` under a condition).
 export def programs() -> Prop.Gen[Program]
-  tokens = Prop.pair(Prop.list(Prop.one_of(DRAWN), 24), Prop.list(Prop.one_of([LOCK, UNLOCK, WORK, RETURN, GOTO]), 3))
-  return Prop.map(tokens, &program_of)
+  drawn = Prop.list(Prop.one_of(DRAWN), 24)
+  tail = Prop.list(Prop.one_of([LOCK, UNLOCK, WORK, RETURN, GOTO]), 3)
+  tokens = Prop.pair(drawn, tail)
+  Prop.map(tokens, &program_of)
 end
 
 ## Checks `runs` functions, from `seed` when it is given, with cchecker (the bytecode `program`, run in specs/): each
@@ -86,7 +88,7 @@ end
 ## positive), and the exit code is 1 with findings and 0 without.
 export def walk_agrees(program: String, folder: String, runs: Int, seed: Optional[Int]) -> Result[Void]
   config = Prop.Config(runs: runs, seed: seed, shrinks: Props.SHRINKS)
-  return Prop.check(programs(), config) do |generated|
+  Prop.check(programs(), config) do |generated|
     source = c_file(generated)
     agrees(Props.run(program, folder, source), generated, source)
   end
@@ -96,13 +98,13 @@ end
 export def c_file(generated: Program) -> String
   head = ["#include <pthread.h>", "", "pthread_mutex_t m;", "int pick(int k);", "void work(void);", "int f(void) {"]
   lines = head.concat(lines_of(generated.body, 1)).push("out:").concat(lines_of(generated.cleanup, 1))
-  return lines.push("  return 0;").push("}").join("\n") + "\n"
+  lines.push("  return 0;").push("}").join("\n") + "\n"
 end
 
 def program_of(tokens: Prop.Pair[List[Int], List[Int]]) -> Program
   body = block(tokens.first, 0, false, false, [])
   cleanup = block(tokens.second, 0, false, false, [])
-  return Program(body: body.stmts, cleanup: cleanup.stmts)
+  Program(body: body.stmts, cleanup: cleanup.stmts)
 end
 
 # Reads statements from `at` to a token of `stops`. `loop` says whether a `continue` fits, `breakable` a `break`.
@@ -111,9 +113,7 @@ def block(tokens: List[Int], at: Int, loop: Bool, breakable: Bool, stops: List[I
   i = at
   while i < tokens.size
     token = tokens[i]
-    if stops.include?(token)
-      return Parsed(stmts: stmts, at: i + 1, stop: token)
-    end
+    return Parsed(stmts: stmts, at: i + 1, stop: token) if stops.include?(token)
 
     i += 1
     if [LOCK, UNLOCK, WORK].include?(token)
@@ -148,7 +148,7 @@ def block(tokens: List[Int], at: Int, loop: Bool, breakable: Bool, stops: List[I
     end
   end
 
-  return Parsed(stmts: stmts, at: i, stop: -1)
+  Parsed(stmts: stmts, at: i, stop: -1)
 end
 
 # Compares what cchecker reported with the oracle: a code is reported if and only if a path breaks its rule.
@@ -170,7 +170,7 @@ def agrees(ran: Result[Props.Output], generated: Program, source: String) -> Res
     return error("exit code #{output.code} with #{reported.size} findings, in:\n#{source}\n#{output.stderr}")
   end
 
-  return ok()
+  ok()
 end
 
 # The rules that the counts at the returns break: a lock held, or released more than taken.
@@ -184,7 +184,7 @@ def broken(counts: List[Int]) -> List[String]
     codes = codes.push(NOT_HELD)
   end
 
-  return codes
+  codes
 end
 
 # The oracle: the counts of the lock at the returns of the function, on every path. The label `out:` is reached
@@ -201,7 +201,7 @@ def exits(generated: Program) -> List[Int]
     label = merged(entry, cleanup.jump)
   end
 
-  return merged(body.ret, merged(cleanup.ret, cleanup.normal))
+  merged(body.ret, merged(cleanup.ret, cleanup.normal))
 end
 
 def run_block(stmts: List[Stmt], counts: List[Int]) -> Flow
@@ -211,7 +211,7 @@ def run_block(stmts: List[Stmt], counts: List[Int]) -> Flow
     flow = joined(flow.with(normal: []), one)
   end
 
-  return flow
+  flow
 end
 
 def run_stmt(stmt: Stmt, counts: List[Int]) -> Flow
@@ -234,7 +234,7 @@ def run_stmt(stmt: Stmt, counts: List[Int]) -> Flow
     return run_switch(stmt.cases, counts)
   end
 
-  return Flow(normal: counts)
+  Flow(normal: counts)
 end
 
 # Each count after a take (or a release), held within CLAMP.
@@ -244,7 +244,7 @@ def moved(counts: List[Int], take: Bool) -> List[Int]
     by = 1
   end
 
-  return merged([], counts.map do |count| [[count + by, CLAMP].min.unwrap_or(0), -CLAMP].max.unwrap_or(0) end)
+  merged([], counts.map do |count| [[count + by, CLAMP].min.unwrap_or(0), -CLAMP].max.unwrap_or(0) end)
 end
 
 # The head of the loop is reached from before it and after each turn (the end of the body or a `continue`), until no
@@ -259,7 +259,7 @@ def run_loop(body: List[Stmt], counts: List[Int]) -> Flow
     next_head = merged(head, merged(turn.normal, turn.cont))
   end
 
-  return Flow(normal: merged(head, turn.brk), ret: turn.ret, jump: turn.jump)
+  Flow(normal: merged(head, turn.brk), ret: turn.ret, jump: turn.jump)
 end
 
 # Each case is entered from the switch and from the case before it that does not break; with no `default`, the switch
@@ -275,11 +275,11 @@ def run_switch(cases: List[List[Stmt]], counts: List[Int]) -> Flow
     flow = joined(flow, ran.with(normal: [], brk: []))
   end
 
-  return flow.with(normal: merged(breaks, falling))
+  flow.with(normal: merged(breaks, falling))
 end
 
 def joined(a: Flow, b: Flow) -> Flow
-  return Flow(
+  Flow(
     normal: merged(a.normal, b.normal),
     brk: merged(a.brk, b.brk),
     cont: merged(a.cont, b.cont),
@@ -288,13 +288,9 @@ def joined(a: Flow, b: Flow) -> Flow
   )
 end
 
-def merged(a: List[Int], b: List[Int]) -> List[Int]
-  return a.concat(b).uniq.sort
-end
+def merged(a: List[Int], b: List[Int]) -> List[Int] = a.concat(b).uniq.sort
 
-def lines_of(stmts: List[Stmt], depth: Int) -> List[String]
-  return stmts.flat_map do |stmt| stmt_lines(stmt, depth) end
-end
+def lines_of(stmts: List[Stmt], depth: Int) -> List[String] = stmts.flat_map do |stmt| stmt_lines(stmt, depth) end
 
 def stmt_lines(stmt: Stmt, depth: Int) -> List[String]
   pad = "  " * depth
@@ -328,5 +324,5 @@ def stmt_lines(stmt: Stmt, depth: Int) -> List[String]
     return lines.push("#{pad}}")
   end
 
-  return ["#{pad}#{simple.get(kind).unwrap_or("work();")}"]
+  ["#{pad}#{simple.get(kind).unwrap_or("work();")}"]
 end

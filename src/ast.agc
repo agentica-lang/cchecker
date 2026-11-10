@@ -12,9 +12,7 @@ export struct Place
 end
 
 ## Returns the kind of a node (`IfStmt`), or "" for an empty one.
-export def kind(node: Json) -> String
-  return text(node, "kind")
-end
+export def kind(node: Json) -> String = text(node, "kind")
 
 ## Returns the nodes inside a node. clang 19 writes the items of an array initializer with a filler (designated items,
 ## or fewer items than the array holds) under `array_filler` instead of `inner`, as one list: the filler first, then
@@ -23,83 +21,75 @@ export def children(node: Json) -> List[Json]
   # Most nodes have no filler: their `inner` is given as it is, with no new list.
   inner = list_at(node, "inner")
   case JSON.get(node, "array_filler")
-    ok(filler) -> return inner.concat(JSON.list(filler).unwrap_or([]))
-    error(_) -> return inner
+    ok(filler) -> inner.concat(JSON.list(filler).unwrap_or([]))
+    error(_) -> inner
   end
 end
 
 ## Returns the items of an initializer list, in order, without the filler that `children` gives first for an array.
-export def items(node: Json) -> List[Json]
-  return list_at(node, "inner").concat(list_at(node, "array_filler").drop(1))
-end
+export def items(node: Json) -> List[Json] = list_at(node, "inner").concat(list_at(node, "array_filler").drop(1))
 
 ## Returns a string of a node, or "".
 export def text(node: Json, key: String) -> String
   case JSON.get(node, key)
-    ok(value) -> return JSON.string(value).unwrap_or("")
-    error(_) -> return ""
+    ok(value) -> JSON.string(value).unwrap_or("")
+    error(_) -> ""
   end
 end
 
 ## Returns a number of a node, or 0.
 export def number(node: Json, key: String) -> Int
   case JSON.get(node, key)
-    ok(value) -> return JSON.int(value).unwrap_or(0)
-    error(_) -> return 0
+    ok(value) -> JSON.int(value).unwrap_or(0)
+    error(_) -> 0
   end
 end
 
 ## Returns a flag of a node, or false.
 export def flag?(node: Json, key: String) -> Bool
   case JSON.get(node, key)
-    ok(value) -> return JSON.bool(value).unwrap_or(false)
-    error(_) -> return false
+    ok(value) -> JSON.bool(value).unwrap_or(false)
+    error(_) -> false
   end
 end
 
 ## Returns how many nodes the tree of `node` has, counting no further than `limit` + 1.
-export def size_of(node: Json, limit: Int) -> Int
-  return counted(node, limit + 1)
-end
+export def size_of(node: Json, limit: Int) -> Int = counted(node, limit + 1)
 
 ## Returns the kind of the declaration that a reference names (`FunctionDecl`, `ParmVarDecl`), or "".
 export def referenced_kind(node: Json) -> String
-  return text(JSON.get(node, "referencedDecl").unwrap_or(JSON.from("")), "kind")
+  text(JSON.get(node, "referencedDecl").unwrap_or(JSON.from("")), "kind")
 end
 
 ## Returns the name of the declaration that a reference names, or "".
 export def referenced_name(node: Json) -> String
-  return text(JSON.get(node, "referencedDecl").unwrap_or(JSON.from("")), "name")
+  text(JSON.get(node, "referencedDecl").unwrap_or(JSON.from("")), "name")
 end
 
 ## Returns the id of the declaration that a reference names, or "".
-export def referenced_id(node: Json) -> String
-  return text(JSON.get(node, "referencedDecl").unwrap_or(JSON.from("")), "id")
-end
+export def referenced_id(node: Json) -> String = text(JSON.get(node, "referencedDecl").unwrap_or(JSON.from("")), "id")
 
 ## Returns the place of a declaration: where its macro was expanded, when it comes from one.
 export def place_of(node: Json) -> Place
   case JSON.get(node, "cc_loc")
-    ok(short) -> return short_place(short)
-    error(_) -> return expanded(JSON.get(node, "loc").unwrap_or(JSON.from("")))
+    ok(short) -> short_place(short)
+    error(_) -> expanded(JSON.get(node, "loc").unwrap_or(JSON.from("")))
   end
 end
 
 ## Returns where a statement or an expression starts in the code as written (where a macro was expanded).
 export def start_of(node: Json) -> Place
   case JSON.get(node, "cc_begin")
-    ok(short) -> return short_place(short)
-    error(_) ->
-      return expanded(JSON.get(JSON.get(node, "range").unwrap_or(JSON.from("")), "begin").unwrap_or(JSON.from("")))
+    ok(short) -> short_place(short)
+    error(_) -> expanded(JSON.get(JSON.get(node, "range").unwrap_or(JSON.from("")), "begin").unwrap_or(JSON.from("")))
   end
 end
 
 ## Returns where a statement or an expression ends in the code as written.
 export def end_of(node: Json) -> Place
   case JSON.get(node, "cc_end")
-    ok(short) -> return short_place(short)
-    error(_) ->
-      return expanded(JSON.get(JSON.get(node, "range").unwrap_or(JSON.from("")), "end").unwrap_or(JSON.from("")))
+    ok(short) -> short_place(short)
+    error(_) -> expanded(JSON.get(JSON.get(node, "range").unwrap_or(JSON.from("")), "end").unwrap_or(JSON.from("")))
   end
 end
 
@@ -108,24 +98,22 @@ end
 ## it belongs to, so one inside (a parameter that points to a function that does not return) does not count.
 export def noreturn_type?(node: Json) -> Bool
   type = JSON.get(node, "type").unwrap_or(JSON.from(""))
-  return noreturn_attribute?(text(type, "qualType")) or noreturn_attribute?(text(type, "desugaredQualType"))
+  noreturn_attribute?(text(type, "qualType")) or noreturn_attribute?(text(type, "desugaredQualType"))
 end
 
 def expanded(loc: Json) -> Place
   case JSON.get(loc, "expansionLoc")
-    ok(expansion) -> return place_in(expansion)
-    error(_) -> return place_in(loc)
+    ok(expansion) -> place_in(expansion)
+    error(_) -> place_in(loc)
   end
 end
 
 # A place as the scan writes it in short (`cc_loc`, `cc_begin`, `cc_end`): `[FILE, LINE, COL]`, expanded already.
 def short_place(short: Json) -> Place
   parts: List[Json] = JSON.list(short).unwrap_or([])
-  if parts.size != 3
-    return Place(file: "", line: 0, column: 0)
-  end
+  return Place(file: "", line: 0, column: 0) if parts.size != 3
 
-  return Place(
+  Place(
     file: JSON.string(parts[0]).unwrap_or(""),
     line: JSON.int(parts[1]).unwrap_or(0),
     column: JSON.int(parts[2]).unwrap_or(0),
@@ -133,14 +121,14 @@ def short_place(short: Json) -> Place
 end
 
 def place_in(loc: Json) -> Place
-  return Place(file: text(loc, "cc_file"), line: number(loc, "cc_line"), column: number(loc, "col"))
+  Place(file: text(loc, "cc_file"), line: number(loc, "cc_line"), column: number(loc, "col"))
 end
 
 def list_at(node: Json, key: String) -> List[Json]
   empty: List[Json] = []
   case JSON.get(node, key)
-    ok(nodes) -> return JSON.list(nodes).unwrap_or(empty)
-    error(_) -> return empty
+    ok(nodes) -> JSON.list(nodes).unwrap_or(empty)
+    error(_) -> empty
   end
 end
 
@@ -166,7 +154,7 @@ def counted(node: Json, budget: Int) -> Int
     end
   end
 
-  return n
+  n
 end
 
 # Whether a type ends with `__attribute__((noreturn))`, maybe followed by other groups of attributes: clang writes
@@ -177,16 +165,12 @@ def noreturn_attribute?(type: String) -> Bool
   i = groups.size - 1
   while i > 0
     group = groups[i]
-    if group == "noreturn))"
-      return true
-    end
+    return true if group == "noreturn))"
 
-    if not group.end_with?("))") or group.split("(").size + 2 != group.split(")").size
-      return false
-    end
+    return false if not group.end_with?("))") or group.split("(").size + 2 != group.split(")").size
 
     i -= 1
   end
 
-  return false
+  false
 end

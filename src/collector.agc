@@ -65,11 +65,9 @@ export def collector_type?(marks: Marks, type: String) -> Bool
 
   stars = name.length - name.replace("*", "").length
   base = name.replace("*", "").strip
-  if base == ""
-    return false
-  end
+  return false if base == ""
 
-  return (stars <= 1 and marks.types.include?(base)) or (stars == 0 and marks.holders.include?(base))
+  (stars <= 1 and marks.types.include?(base)) or (stars == 0 and marks.holders.include?(base))
 end
 
 ## Returns the findings of the rule in a function definition, at the function: `key` and `name` are the function's, at
@@ -157,7 +155,7 @@ export def stores(
     end
   end
 
-  return found.values
+  found.values
 end
 
 ## Returns the findings of the variables of static storage declared at the top of the file with a collector type, at
@@ -174,13 +172,13 @@ export def statics(marks: Marks, nodes: List[Json]) -> List[Finding]
     end
   end
 
-  return found
+  found
 end
 
 # Whether a variable is declared with a collector type, as written or behind a typedef (`obj_ref`), and may change.
 def declared_collector?(marks: Marks, decl: Json) -> Bool
   type = type_of(decl)
-  return (collector_type?(marks, type) or collector_type?(marks, desugared_type_of(decl))) and not constant?(type)
+  (collector_type?(marks, type) or collector_type?(marks, desugared_type_of(decl))) and not constant?(type)
 end
 
 # The scope with the locals that point to memory from malloc and those that hold a value of the collector, through
@@ -203,30 +201,22 @@ def grown(start: Scope, written: List[Flow.Written]) -> Scope
     end
   end
 
-  return scope
+  scope
 end
 
 # Whether an expression is a value of the collector: by its type or the type of a cast in it, a call of an allocator
 # of the collector, a local that got one, or either side of `?:`.
 def collected?(scope: Scope, node: Json) -> Bool
   # A null pointer is no value: clang gives the cast of `NULL` or `0` the type of the target.
-  if Flow.zero?(node)
-    return false
-  end
+  return false if Flow.zero?(node)
 
   bare = node
   while true
-    if Ast.text(bare, "castKind") == "NullToPointer"
-      return false
-    end
+    return false if Ast.text(bare, "castKind") == "NullToPointer"
 
-    if collector_type?(scope.marks, type_of(bare)) or collector_type?(scope.marks, desugared_type_of(bare))
-      return true
-    end
+    return true if collector_type?(scope.marks, type_of(bare)) or collector_type?(scope.marks, desugared_type_of(bare))
 
-    if not Flow.SEE_THROUGH.include?(Ast.kind(bare)) or Ast.children(bare).empty?
-      break
-    end
+    break if not Flow.SEE_THROUGH.include?(Ast.kind(bare)) or Ast.children(bare).empty?
 
     bare = Ast.children(bare).first
   end
@@ -234,10 +224,10 @@ def collected?(scope: Scope, node: Json) -> Bool
   case Ast.kind(bare)
     "CallExpr" ->
       called = Flow.callee_name(bare)
-      return scope.library.include?(called) or scope.marks.allocators.include?(Flow.key_of_function(scope.ctx, called))
-    "DeclRefExpr" -> return scope.collected.include?(Flow.variable_name(bare))
-    "ConditionalOperator" -> return Ast.children(bare).drop(1).any? do |branch| collected?(scope, branch) end
-    _ -> return false
+      scope.library.include?(called) or scope.marks.allocators.include?(Flow.key_of_function(scope.ctx, called))
+    "DeclRefExpr" -> scope.collected.include?(Flow.variable_name(bare))
+    "ConditionalOperator" -> Ast.children(bare).drop(1).any? do |branch| collected?(scope, branch) end
+    _ -> false
   end
 end
 
@@ -248,16 +238,13 @@ def heap?(scope: Scope, node: Json) -> Bool
   parts = Ast.children(bare)
   case Ast.kind(bare)
     "DeclRefExpr" ->
-      return (
-        scope.heap.include?(Flow.variable_name(bare)) or
-        scope.ctx.owning.globals.include?(Ast.referenced_id(bare))
-      )
-    "MemberExpr" -> return scope.ctx.owning.fields.include?(Ast.text(bare, "referencedMemberDecl"))
-    "CallExpr" -> return Known.OWNED.include?(Flow.callee_name(bare)) or Flow.owning_call?(scope.ctx, bare)
+      scope.heap.include?(Flow.variable_name(bare)) or scope.ctx.owning.globals.include?(Ast.referenced_id(bare))
+    "MemberExpr" -> scope.ctx.owning.fields.include?(Ast.text(bare, "referencedMemberDecl"))
+    "CallExpr" -> Known.OWNED.include?(Flow.callee_name(bare)) or Flow.owning_call?(scope.ctx, bare)
     "BinaryOperator" ->
       opcode = Ast.text(bare, "opcode")
-      return (opcode == "+" or opcode == "-") and parts.any? do |part| heap?(scope, part) end
-    _ -> return false
+      (opcode == "+" or opcode == "-") and parts.any? do |part| heap?(scope, part) end
+    _ -> false
   end
 end
 
@@ -273,46 +260,36 @@ def storage(scope: Scope, node: Json) -> String
         return "static"
       end
 
-      return ""
+      ""
     "MemberExpr" ->
-      if Ast.flag?(bare, "isArrow")
-        return pointee(scope, parts.first)
-      end
+      return pointee(scope, parts.first) if Ast.flag?(bare, "isArrow")
 
-      return storage(scope, parts.first)
+      storage(scope, parts.first)
     "ArraySubscriptExpr" ->
       base = Flow.see_through(parts.first)
-      if type_of(base).include?("[")
-        return storage(scope, base)
-      end
+      return storage(scope, base) if type_of(base).include?("[")
 
-      return pointee(scope, parts.first)
+      pointee(scope, parts.first)
     "UnaryOperator" ->
-      if Ast.text(bare, "opcode") == "*"
-        return pointee(scope, parts.first)
-      end
+      return pointee(scope, parts.first) if Ast.text(bare, "opcode") == "*"
 
-      return ""
-    _ -> return ""
+      ""
+    _ -> ""
   end
 end
 
 def pointee(scope: Scope, pointer: Json) -> String
-  if heap?(scope, pointer)
-    return "heap"
-  end
+  return "heap" if heap?(scope, pointer)
 
-  return ""
+  ""
 end
 
 # How a step names the value stored: the function called, or the expression.
 def value_word(node: Json) -> String
   bare = Flow.see_through(node)
-  if Ast.kind(bare) == "CallExpr" and Flow.callee_name(bare) != ""
-    return Flow.callee_name(bare)
-  end
+  return Flow.callee_name(bare) if Ast.kind(bare) == "CallExpr" and Flow.callee_name(bare) != ""
 
-  return shown(node)
+  shown(node)
 end
 
 # The text of the target of a store, from its names, fields, items and `*`; `?` for a part it cannot write.
@@ -320,22 +297,18 @@ def shown(node: Json) -> String
   bare = Flow.see_through(node)
   parts = Ast.children(bare)
   case Ast.kind(bare)
-    "DeclRefExpr" -> return Ast.referenced_name(bare)
+    "DeclRefExpr" -> Ast.referenced_name(bare)
     "MemberExpr" ->
-      if Ast.flag?(bare, "isArrow")
-        return "#{shown(parts.first)}->#{Ast.text(bare, "name")}"
-      end
+      return "#{shown(parts.first)}->#{Ast.text(bare, "name")}" if Ast.flag?(bare, "isArrow")
 
-      return "#{shown(parts.first)}.#{Ast.text(bare, "name")}"
-    "ArraySubscriptExpr" -> return "#{shown(parts[0])}[#{shown(parts[1])}]"
+      "#{shown(parts.first)}.#{Ast.text(bare, "name")}"
+    "ArraySubscriptExpr" -> "#{shown(parts[0])}[#{shown(parts[1])}]"
     "UnaryOperator" ->
-      if Ast.flag?(bare, "isPostfix")
-        return "#{shown(parts.first)}#{Ast.text(bare, "opcode")}"
-      end
+      return "#{shown(parts.first)}#{Ast.text(bare, "opcode")}" if Ast.flag?(bare, "isPostfix")
 
-      return "#{Ast.text(bare, "opcode")}#{shown(parts.first)}"
-    "IntegerLiteral" -> return Ast.text(bare, "value")
-    _ -> return "?"
+      "#{Ast.text(bare, "opcode")}#{shown(parts.first)}"
+    "IntegerLiteral" -> Ast.text(bare, "value")
+    _ -> "?"
   end
 end
 
@@ -349,19 +322,17 @@ def constant?(type: String) -> Bool
   end
 
   stars = name.split("*")
-  return stars.last.include?("const")
+  stars.last.include?("const")
 end
 
-def type_of(node: Json) -> String
-  return Ast.text(JSON.get(node, "type").unwrap_or(JSON.from("")), "qualType")
-end
+def type_of(node: Json) -> String = Ast.text(JSON.get(node, "type").unwrap_or(JSON.from("")), "qualType")
 
 def desugared_type_of(node: Json) -> String
-  return Ast.text(JSON.get(node, "type").unwrap_or(JSON.from("")), "desugaredQualType")
+  Ast.text(JSON.get(node, "type").unwrap_or(JSON.from("")), "desugaredQualType")
 end
 
 def at(place: Ast.Place, code: String, message: String, path: List[String]) -> Finding
-  return Finding(
+  Finding(
     code: code,
     tool: ToolKind.name(Tool.Rules),
     file: place.file,

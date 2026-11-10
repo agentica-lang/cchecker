@@ -140,46 +140,38 @@ export def parse(args: List[String]) -> Result[Options]
   )
 
   problem = mistake(options)
-  if problem != ""
-    return error("cchecker: #{problem}\n#{hint()}")
-  end
+  return error("cchecker: #{problem}\n#{hint()}") if problem != ""
 
-  return ok(options)
+  ok(options)
 end
 
 # The jobs of -j, or the number of cores without it.
 def jobs_of(given: Optional[Int]) -> Int
   case given
-    some(jobs) -> return jobs
-    none -> return cores()
+    some(jobs) -> jobs
+    none -> cores()
   end
 end
 
 # The number of cores that are online, as `getconf` says it on Linux and macOS, or 4 when it cannot tell.
 def cores() -> Int
-  case Process.spawn_captured("getconf", ["_NPROCESSORS_ONLN"], ".", 5_000)
+  case Process.spawn_captured("getconf", ["_NPROCESSORS_ONLN"], Process.Options(timeout_ms: 5_000))
     ok(process) ->
       text = Process.read_line(process, 5_000).unwrap_or("")
       _ = Process.wait(process, 5_000)
       Process.close(process)
-      return text.strip.to_i.unwrap_or(DEFAULT_JOBS).clamp(1, 256)
-    error(_) -> return DEFAULT_JOBS
+      text.strip.to_i.unwrap_or(DEFAULT_JOBS).clamp(1, 256)
+    error(_) -> DEFAULT_JOBS
   end
 end
 
 # Returns what is wrong with a combination of options that option_parser cannot tell, or "".
 def mistake(options: Options) -> String
-  if options.tools.empty?
-    return "--tools needs at least one of #{TOOLS.join(" or ")}"
-  end
+  return "--tools needs at least one of #{TOOLS.join(" or ")}" if options.tools.empty?
 
-  if options.update_baseline and not options.baseline.some?
-    return "--update-baseline needs --baseline FILE"
-  end
+  return "--update-baseline needs --baseline FILE" if options.update_baseline and not options.baseline.some?
 
-  if options.strict_baseline and not options.baseline.some?
-    return "--strict-baseline needs --baseline FILE"
-  end
+  return "--strict-baseline needs --baseline FILE" if options.strict_baseline and not options.baseline.some?
 
   if options.strict_baseline and options.update_baseline
     return "give one of --strict-baseline, --update-baseline: an update drops the stale entries"
@@ -193,20 +185,14 @@ def mistake(options: Options) -> String
     return "--update-baseline needs the default --checks: a baseline made with fewer checks would lose the others"
   end
 
-  if not options.files.empty? and options.database.some?
-    return "give FILEs or --compile-commands, not both"
-  end
+  return "give FILEs or --compile-commands, not both" if not options.files.empty? and options.database.some?
 
-  if options.files.empty? and not options.flags.empty?
-    return "the flags after -- need at least one FILE"
-  end
+  return "the flags after -- need at least one FILE" if options.files.empty? and not options.flags.empty?
 
-  return ""
+  ""
 end
 
-def hint() -> String
-  return "Try 'cchecker --help' for more information"
-end
+def hint() -> String = "Try 'cchecker --help' for more information"
 
 def tool_list(text: String) -> Result[List[Tool]]
   tools: List[Tool] = []
@@ -217,12 +203,10 @@ def tool_list(text: String) -> Result[List[Tool]]
     end
   end
 
-  return ok(tools)
+  ok(tools)
 end
 
-def names(text: String) -> List[String]
-  return text.split(",").map do |name| name.strip end.select do |name| name != "" end
-end
+def names(text: String) -> List[String] = text.split(",").map do |name| name.strip end.select do |name| name != "" end
 
 # option_parser has no variable-length positional argument, so the files are told apart here: a word that does not
 # start with "-" and is not the value of the option before it. option_parser takes a value that starts with "-" for an
@@ -249,27 +233,21 @@ def tell_apart(words: List[String]) -> Words
     options = options.push(pending)
   end
 
-  return Words(files: files, options: options)
+  Words(files: files, options: options)
 end
 
 # An option and its value as option_parser reads them: `--checks=VALUE`, and `-pVALUE` for a short option, in the form
 # that was typed. An empty value stays a word of its own, as before: `-p` alone would need a value.
 def joined(option: String, value: String) -> List[String]
-  if value == ""
-    return [option, value]
-  end
+  return [option, value] if value == ""
 
-  if option.start_with?("--")
-    return ["#{option}=#{value}"]
-  end
+  return ["#{option}=#{value}"] if option.start_with?("--")
 
-  return ["#{option}#{value}"]
+  ["#{option}#{value}"]
 end
 
 def takes_value?(word: String) -> Bool
-  if word.start_with?("--")
-    return not word.include?("=") and VALUE_LONG.include?(word.slice(2, word.length - 2))
-  end
+  return not word.include?("=") and VALUE_LONG.include?(word.slice(2, word.length - 2)) if word.start_with?("--")
 
-  return word.length == 2 and VALUE_SHORT.include?(word.slice(1, 1))
+  word.length == 2 and VALUE_SHORT.include?(word.slice(1, 1))
 end

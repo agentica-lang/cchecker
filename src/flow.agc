@@ -409,36 +409,26 @@ export def locks?(ctx: Context, node: Json) -> Bool
     name = Ast.text(JSON.get(node, "cleanup_function").unwrap_or(JSON.from("")), "name")
   end
 
-  if Known.TAKES.include?(name) or Known.TRIES.include?(name) or Known.DROPS.include?(name)
-    return true
-  end
+  return true if Known.TAKES.include?(name) or Known.TRIES.include?(name) or Known.DROPS.include?(name)
 
-  if name != "" and ctx.callees.key?(key_of_function(ctx, name))
-    return true
-  end
+  return true if name != "" and ctx.callees.key?(key_of_function(ctx, name))
 
-  return Ast.children(node).any? do |child| locks?(ctx, child) end
+  Ast.children(node).any? do |child| locks?(ctx, child) end
 end
 
 ## Returns whether the ownership rules read a function definition, whose key is `key`: it has a pointer that owns or
 ## a parameter that hands one out, or calls a function that returns one or hands one out.
 export def owns?(ctx: Context, key: String, node: Json) -> Bool
-  if ctx.owning.takes.key?(key) or ctx.owning.frees.key?(key) or ctx.owning.outs.key?(key)
-    return true
-  end
+  return true if ctx.owning.takes.key?(key) or ctx.owning.frees.key?(key) or ctx.owning.outs.key?(key)
 
-  if Ast.children(node).any? do |child| owning_node?(ctx, child) end
-    return true
-  end
+  return true if Ast.children(node).any? do |child| owning_node?(ctx, child) end
 
   # A local struct whose CC_OWNS fields the rules follow (`owned_fields`), which only the whole function tells.
-  if not Ast.children(node).any? do |child| field_access?(ctx, child) end
-    return false
-  end
+  return false if not Ast.children(node).any? do |child| field_access?(ctx, child) end
 
   bodies = Ast.children(node).select do |child| Ast.kind(child) == "CompoundStmt" end
   all = descendants(bodies)
-  return not owned_fields(ctx, all, keys_of(node, all)).of.empty?
+  not owned_fields(ctx, all, keys_of(node, all)).of.empty?
 end
 
 ## Returns the graph of a function definition, whose key is `key`.
@@ -470,7 +460,7 @@ export def body_of(ctx: Context, key: String, node: Json) -> Body
   names = params_named(node)
   dropped = ctx.callees.get(key).map do |callee| callee.locks.select do |lock| not lock.takes end end.unwrap_or([])
   taken = ctx.callees.get(key).map do |callee| callee.locks.select do |lock| lock.takes end end.unwrap_or([])
-  return Body(
+  Body(
     key: key,
     name: Ast.text(node, "name"),
     file: place.file,
@@ -508,21 +498,17 @@ export def substituted(lock: String, params: List[String], args: List[String]) -
   name = written.slice(0, root)
   for i in 0...params.size
     if params[i] == name
-      if i >= args.size or args[i] == ""
-        return ""
-      end
+      return "" if i >= args.size or args[i] == ""
 
       return prefix + args[i] + written.slice(root, written.length - root)
     end
   end
 
-  return prefix + written
+  prefix + written
 end
 
 ## Returns the key of a lock text: the object, without the `&` or `*&` in front, and `->` read as `.`.
-export def key_of(lock: String) -> String
-  return shown_of(lock).replace("->", ".")
-end
+export def key_of(lock: String) -> String = shown_of(lock).replace("->", ".")
 
 ## Returns a lock text as a finding shows it: without the `&` or `*&` in front.
 export def shown_of(lock: String) -> String
@@ -535,12 +521,12 @@ export def shown_of(lock: String) -> String
     end
   end
 
-  return written
+  written
 end
 
 ## Returns whether a declaration is marked CC_OWNS.
 export def marked_owner?(node: Json) -> Bool
-  return Ast.children(node).any? do |child|
+  Ast.children(node).any? do |child|
     Ast.kind(child) == "DeprecatedAttr" and Ast.text(child, "message") == OWNS_MARK
   end
 end
@@ -564,29 +550,25 @@ export def writes_of(all: List[Json], locals: Set[String], keys: Map[String, Str
     end
   end
 
-  return found
+  found
 end
 
 ## Returns whether an expression is a call of a function that returns an owned pointer (CC_OWNS on the function).
 export def owning_call?(ctx: Context, node: Json) -> Bool
   bare = see_through(node)
-  if Ast.kind(bare) != "CallExpr"
-    return false
-  end
+  return false if Ast.kind(bare) != "CallExpr"
 
   name = callee_name(bare)
-  return name != "" and ctx.owning.returns.include?(key_of_function(ctx, name))
+  name != "" and ctx.owning.returns.include?(key_of_function(ctx, name))
 end
 
 ## Returns the name of the local variable or the parameter that an expression is, through casts and parentheses; ""
 ## for any other.
 export def variable_name(node: Json) -> String
   bare = see_through(node)
-  if Ast.kind(bare) == "DeclRefExpr" and VARIABLES.include?(Ast.referenced_kind(bare))
-    return Ast.referenced_name(bare)
-  end
+  return Ast.referenced_name(bare) if Ast.kind(bare) == "DeclRefExpr" and VARIABLES.include?(Ast.referenced_kind(bare))
 
-  return ""
+  ""
 end
 
 ## Returns the key of the local variable or parameter that an expression is, through casts and parentheses: the key
@@ -599,24 +581,20 @@ export def variable_key(keys: Map[String, String], node: Json) -> String
     return keys.get(Ast.referenced_id(bare), "")
   end
 
-  if Ast.kind(bare) == "MemberExpr"
-    return keys.get(Ast.text(bare, "id"), "")
-  end
+  return keys.get(Ast.text(bare, "id"), "") if Ast.kind(bare) == "MemberExpr"
 
-  return ""
+  ""
 end
 
 ## Returns the key of a variable at its declaration (see `variable_key`).
 export def declared_key(keys: Map[String, String], decl: Json) -> String
-  return keys.get(Ast.text(decl, "id"), Ast.text(decl, "name"))
+  keys.get(Ast.text(decl, "id"), Ast.text(decl, "name"))
 end
 
 ## Returns the name that a key stands for: what the code calls the variable (`p` for `p#2`, `p.left` for `p#2.left`).
 export def plain(key: String) -> String
   parts = key.split(KEY_MARK)
-  if parts.size < 2
-    return key
-  end
+  return key if parts.size < 2
 
   rest = parts[1]
   digits = 0
@@ -624,7 +602,7 @@ export def plain(key: String) -> String
     digits += 1
   end
 
-  return parts[0] + rest.slice(digits, rest.length - digits)
+  parts[0] + rest.slice(digits, rest.length - digits)
 end
 
 ## Returns every node under the given ones, each before the nodes inside it.
@@ -634,7 +612,7 @@ export def descendants(nodes: List[Json]) -> List[Json]
     found = with_descendants(found, node)
   end
 
-  return found
+  found
 end
 
 ## Returns an expression without the casts and parentheses around it.
@@ -644,28 +622,22 @@ export def see_through(node: Json) -> Json
     bare = Ast.children(bare).first
   end
 
-  return bare
+  bare
 end
 
 ## Returns the name of the function that a call names, or "" for a call through a pointer.
 export def callee_name(node: Json) -> String
   parts = Ast.children(node)
-  if parts.empty?
-    return ""
-  end
+  return "" if parts.empty?
 
   callee = see_through(parts.first)
-  if Ast.kind(callee) != "DeclRefExpr" or Ast.referenced_kind(callee) != "FunctionDecl"
-    return ""
-  end
+  return "" if Ast.kind(callee) != "DeclRefExpr" or Ast.referenced_kind(callee) != "FunctionDecl"
 
-  return Ast.referenced_name(callee)
+  Ast.referenced_name(callee)
 end
 
 ## Returns the key of a function of the unit by name: `name@file` for a static one.
-export def key_of_function(ctx: Context, name: String) -> String
-  return ctx.statics.get(name).unwrap_or(name)
-end
+export def key_of_function(ctx: Context, name: String) -> String = ctx.statics.get(name).unwrap_or(name)
 
 ## Returns whether a returned value is an error by the usual C convention: a negative integer constant (or a negated
 ## enum constant), a null pointer constant, or a false bool, by the type after typedefs. Any other value, 0 of an int
@@ -687,28 +659,24 @@ export def error_value?(node: Json) -> Bool
     )
   end
 
-  if Ast.kind(bare) != "UnaryOperator" or Ast.text(bare, "opcode") != "-" or Ast.children(bare).empty?
-    return false
-  end
+  return false if Ast.kind(bare) != "UnaryOperator" or Ast.text(bare, "opcode") != "-" or Ast.children(bare).empty?
 
   value = see_through(Ast.children(bare).first)
   constant = Ast.kind(value) == "DeclRefExpr" and Ast.referenced_kind(value) == "EnumConstantDecl"
-  return constant or (Ast.kind(value) == "IntegerLiteral" and Ast.text(value, "value") != "0")
+  constant or (Ast.kind(value) == "IntegerLiteral" and Ast.text(value, "value") != "0")
 end
 
 ## Returns whether an expression is the constant 0, through casts and parentheses.
 export def zero?(node: Json) -> Bool
   bare = see_through(node)
-  return Ast.kind(bare) == "IntegerLiteral" and Ast.text(bare, "value") == "0"
+  Ast.kind(bare) == "IntegerLiteral" and Ast.text(bare, "value") == "0"
 end
 
 ## Returns a type without the qualifiers at its end, and out of `_Atomic(...)`: `char *` for `char *const volatile`.
 ## clang writes no space between the star and the qualifier.
 export def unqualified(type: String) -> String
   text = type.strip
-  if text.start_with?("_Atomic(") and text.end_with?(")")
-    return unqualified(text.slice(8, text.length - 9))
-  end
+  return unqualified(text.slice(8, text.length - 9)) if text.start_with?("_Atomic(") and text.end_with?(")")
 
   for word in ["const", "volatile", "restrict", "__restrict"]
     if text.end_with?(" #{word}") or text.end_with?("*#{word}")
@@ -716,7 +684,7 @@ export def unqualified(type: String) -> String
     end
   end
 
-  return text
+  text
 end
 
 ## Returns the names of the parameters of a function definition, whose key is `key`, that own what the caller passes
@@ -724,14 +692,12 @@ end
 export def owned_params(ctx: Context, key: String, node: Json) -> List[String]
   names = params_named(node)
   indices = ctx.owning.takes.get(key, []).concat(ctx.owning.frees.get(key, [])).uniq.sort
-  return indices.select do |i| i < names.size end.map do |i| names[i] end
+  indices.select do |i| i < names.size end.map do |i| names[i] end
 end
 
 ## Returns the names of the parameters of a function, in order.
 export def params_named(node: Json) -> List[String]
-  return Ast.children(node)
-    .select do |child| Ast.kind(child) == "ParmVarDecl" end
-    .map do |child| Ast.text(child, "name") end
+  Ast.children(node).select do |child| Ast.kind(child) == "ParmVarDecl" end.map do |child| Ast.text(child, "name") end
 end
 
 # The pointers of a function that own, or may stand for one that does. A local is one when it gets an owned value (a
@@ -811,7 +777,7 @@ def owners_of(ctx: Context, key: String, node: Json) -> Owners
     wholes: followed.wholes,
   )
 
-  return Owners(
+  Owners(
     params: params,
     places: places,
     names: names,
@@ -826,13 +792,13 @@ end
 def taken_structs(ctx: Context, key: String, node: Json) -> List[Json]
   params = Ast.children(node).select do |child| Ast.kind(child) == "ParmVarDecl" end
   takes = ctx.owning.takes.get(key, [])
-  return (0...params.size).to_a.select do |i| takes.include?(i) end.map do |i| params[i] end
+  (0...params.size).to_a.select do |i| takes.include?(i) end.map do |i| params[i] end
 end
 
 # Whether the type of a declaration or an expression is a struct or a union itself, as written or behind a typedef.
 def record_type?(node: Json) -> Bool
   type = JSON.get(node, "type").unwrap_or(JSON.from(""))
-  return [Ast.text(type, "qualType"), Ast.text(type, "desugaredQualType")].any? do |text|
+  [Ast.text(type, "qualType"), Ast.text(type, "desugaredQualType")].any? do |text|
     bare = unqualified(text)
     for word in ["const ", "volatile "]
       if bare.start_with?(word)
@@ -847,7 +813,7 @@ end
 # Whether an expression is a call of an allocator (`malloc`, `calloc`, ...), through casts and parentheses.
 def allocation?(node: Json) -> Bool
   bare = see_through(node)
-  return Ast.kind(bare) == "CallExpr" and Known.OWNED.include?(callee_name(bare))
+  Ast.kind(bare) == "CallExpr" and Known.OWNED.include?(callee_name(bare))
 end
 
 # The locals whose address a call passes to a parameter that hands an owned pointer out (`fill(&p)`).
@@ -867,16 +833,14 @@ def filled_locals(ctx: Context, all: List[Json], locals: Set[String], keys: Map[
     end
   end
 
-  return found
+  found
 end
 
 # The indices of the parameters of a function, by name, that hand an owned pointer out to the caller.
 def out_params(ctx: Context, name: String) -> List[Int]
-  if name == ""
-    return []
-  end
+  return [] if name == ""
 
-  return ctx.owning.outs.get(key_of_function(ctx, name), [])
+  ctx.owning.outs.get(key_of_function(ctx, name), [])
 end
 
 # Whether a node is or holds a local marked CC_OWNS, a call of a function that returns an owned pointer, or a call of
@@ -884,27 +848,19 @@ end
 # Whether a node is or holds a CC_OWNS field of a local variable (`p.left`), or the declaration of a local struct with
 # such a field.
 def field_access?(ctx: Context, node: Json) -> Bool
-  if struct_of(node) != "" and ctx.owning.fields.include?(Ast.text(node, "referencedMemberDecl"))
-    return true
-  end
+  return true if struct_of(node) != "" and ctx.owning.fields.include?(Ast.text(node, "referencedMemberDecl"))
 
-  if Ast.kind(node) == "VarDecl" and ctx.owning.typed.key?(Ast.text(node, "id"))
-    return true
-  end
+  return true if Ast.kind(node) == "VarDecl" and ctx.owning.typed.key?(Ast.text(node, "id"))
 
-  return Ast.children(node).any? do |child| field_access?(ctx, child) end
+  Ast.children(node).any? do |child| field_access?(ctx, child) end
 end
 
 def owning_node?(ctx: Context, node: Json) -> Bool
-  if (Ast.kind(node) == "VarDecl" and marked_owner?(node)) or owning_call?(ctx, node)
-    return true
-  end
+  return true if (Ast.kind(node) == "VarDecl" and marked_owner?(node)) or owning_call?(ctx, node)
 
-  if Ast.kind(node) == "CallExpr" and not out_params(ctx, callee_name(node)).empty?
-    return true
-  end
+  return true if Ast.kind(node) == "CallExpr" and not out_params(ctx, callee_name(node)).empty?
 
-  return Ast.children(node).any? do |child| owning_node?(ctx, child) end
+  Ast.children(node).any? do |child| owning_node?(ctx, child) end
 end
 
 # Whether a value makes the variable that gets it stand for an owned pointer: a call that returns one, a realloc of a
@@ -920,7 +876,7 @@ def gets_owner?(ctx: Context, keys: Map[String, String], names: Set[String], fre
 
   bare = see_through(value)
   parts = Ast.children(bare)
-  return (
+  (
     Ast.kind(bare) == "CallExpr" and
     Known.RESIZES.include?(callee_name(bare)) and
     parts.size > 1 and
@@ -975,16 +931,14 @@ def kept_calls(ctx: Context, all: List[Json], places: Places) -> Set[String]
     end
   end
 
-  return kept
+  kept
 end
 
 # The values an expression may have: each side of `?:` (`x ?: y` is `x` or `y`), the last expression of a statement
 # expression, or itself.
 def values_of(node: Json) -> List[Json]
   bare = see_through(node)
-  if Ast.kind(bare) == "ConditionalOperator"
-    return Ast.children(bare).drop(1).flat_map(&values_of)
-  end
+  return Ast.children(bare).drop(1).flat_map(&values_of) if Ast.kind(bare) == "ConditionalOperator"
 
   if Ast.kind(bare) == "BinaryConditionalOperator"
     parts = Ast.children(bare)
@@ -992,10 +946,11 @@ def values_of(node: Json) -> List[Json]
   end
 
   if Ast.kind(bare) == "StmtExpr"
-    return values_of(unlabelled(last_child(last_child(bare))))
+    body = last_child(last_child(bare))
+    return values_of(unlabelled(body))
   end
 
-  return [node]
+  [node]
 end
 
 # A statement under its labels and attributes (`done: p;` is `p;`).
@@ -1005,7 +960,7 @@ def unlabelled(node: Json) -> Json
     bare = last_child(bare)
   end
 
-  return bare
+  bare
 end
 
 # The key of each variable that a function declares (its parameters, then its locals in the order of the source), by
@@ -1035,7 +990,7 @@ def keys_of(node: Json, all: List[Json]) -> Map[String, String]
     keys = keys.put(Ast.text(decl, "id"), key)
   end
 
-  return keys
+  keys
 end
 
 # The CC_OWNS fields of the local structs of a function (`p.left`): the key of each is the key of the struct (`keys`),
@@ -1048,9 +1003,7 @@ end
 # a local array of structs is a struct of its own (`a[0].left`), within the bound of `MAX_NESTED_FIELDS` in all.
 def owned_fields(ctx: Context, all: List[Json], keys: Map[String, String], params: List[Json] = []) -> Followed
   found = Followed(members: {}, of: {}, items: {})
-  if ctx.owning.fields.empty?
-    return found
-  end
+  return found if ctx.owning.fields.empty?
 
   structs: Map[String, Json] = {}
   for n in params.concat(all)
@@ -1099,13 +1052,11 @@ def owned_fields(ctx: Context, all: List[Json], keys: Map[String, String], param
     end
   end
 
-  if unfollowed.empty?
-    return found
-  end
+  return found if unfollowed.empty?
 
   roots = Set.new(structs.keys.map do |id| keys.get(id, "") end)
   dropped = Set.new(found.of.keys.select do |place| unfollowed.include?(root_of(place, roots)) end)
-  return Followed(
+  Followed(
     members: found.members.select do |_, place| not unfollowed.include?(root_of(place, roots)) end,
     of: found.of.select do |place, _| not dropped.include?(place) end,
     items: found.items.select do |place, _| not unfollowed.include?(root_of(place, roots)) end,
@@ -1123,9 +1074,7 @@ end
 def unfollowed_arrays(ctx: Context, found: Followed, all: List[Json], keys: Map[String, String]) -> Set[String]
   arrays = Set.new(found.parts.keys.select do |key| found.slots.key?("#{key}|[0]") end)
   unfollowed: Set[String] = Set.new([])
-  if arrays.empty?
-    return unfollowed
-  end
+  return unfollowed if arrays.empty?
 
   measured: Set[String] = Set.new([])
   allowed: Set[String] = Set.new([])
@@ -1174,17 +1123,15 @@ def unfollowed_arrays(ctx: Context, found: Followed, all: List[Json], keys: Map[
     end
   end
 
-  return unfollowed
+  unfollowed
 end
 
 # The key of the struct of `roots` that a place is in (`p` for `p.inner.left`, `a` for `a[0].left`).
 def root_of(place: String, roots: Set[String]) -> String
   name = place.split(".").first.split("[").first
-  if roots.include?(name)
-    return name
-  end
+  return name if roots.include?(name)
 
-  return ""
+  ""
 end
 
 # The CC_OWNS fields of a struct, those of the structs in it too, up to the first count over `MAX_NESTED_FIELDS`; over
@@ -1197,21 +1144,17 @@ def nested_fields(ctx: Context, record: OwnedRecord, depth: Int) -> Int
     elsif i < record.nested.size and record.nested[i] != ""
       case ctx.owning.records.get(record.nested[i])
         some(inner) ->
-          if depth >= MAX_NESTED_DEPTH
-            return MAX_NESTED_FIELDS + 1
-          end
+          return MAX_NESTED_FIELDS + 1 if depth >= MAX_NESTED_DEPTH
 
           count += nested_fields(ctx, inner, depth + 1)
         none -> next
       end
     end
 
-    if count > MAX_NESTED_FIELDS
-      return count
-    end
+    return count if count > MAX_NESTED_FIELDS
   end
 
-  return count
+  count
 end
 
 # `found` with the parts of the struct `key` of the record `record`: each CC_OWNS field outside a union, and each
@@ -1228,9 +1171,7 @@ def with_parts(
   nest: Bool,
 ) -> Followed
   grown = found.with(of: found.of.put(key, found.of.get(key, [])), parts: found.parts.put(key, []))
-  if depth > MAX_NESTED_DEPTH
-    return grown
-  end
+  return grown if depth > MAX_NESTED_DEPTH
 
   for i in 0...record.ids.size
     nested = ""
@@ -1271,7 +1212,7 @@ def with_parts(
     end
   end
 
-  return grown
+  grown
 end
 
 # `found` with the items of the local array `key` of structs of the record `record`: each is a struct of its own
@@ -1292,7 +1233,7 @@ def with_items(ctx: Context, found: Followed, key: String, record: OwnedRecord, 
     )
   end
 
-  return grown
+  grown
 end
 
 # The key of the part that a member expression names (`p.left`, `p.inner`, `p.inner.left`, `c.buf` through an unnamed
@@ -1301,9 +1242,7 @@ def part_of(found: Followed, keys: Map[String, String], node: Json) -> String
   bare = see_through(node)
   if Ast.kind(bare) == "DeclRefExpr" and VARIABLES.include?(Ast.referenced_kind(bare))
     key = keys.get(Ast.referenced_id(bare), "")
-    if found.parts.key?(key)
-      return key
-    end
+    return key if found.parts.key?(key)
 
     return ""
   end
@@ -1312,23 +1251,17 @@ def part_of(found: Followed, keys: Map[String, String], node: Json) -> String
     parts = Ast.children(bare)
     base = part_of(found, keys, parts.first)
     index = constant_of(parts.last)
-    if base == "" or index < 0
-      return ""
-    end
+    return "" if base == "" or index < 0
 
     return found.slots.get("#{base}|[#{index}]", "")
   end
 
-  if Ast.kind(bare) != "MemberExpr" or Ast.flag?(bare, "isArrow")
-    return ""
-  end
+  return "" if Ast.kind(bare) != "MemberExpr" or Ast.flag?(bare, "isArrow")
 
   base = part_of(found, keys, Ast.children(bare).first)
-  if base == ""
-    return ""
-  end
+  return "" if base == ""
 
-  return found.slots.get("#{base}|#{Ast.text(bare, "referencedMemberDecl")}", "")
+  found.slots.get("#{base}|#{Ast.text(bare, "referencedMemberDecl")}", "")
 end
 
 # The value of an index that is an integer constant: a number, also through a cast, parentheses and the operators `+`,
@@ -1337,55 +1270,41 @@ def constant_of(node: Json) -> Int
   bare = see_through(node)
   if Ast.kind(bare) == "IntegerLiteral"
     value = Ast.text(bare, "value").to_i.unwrap_or(-1)
-    if value > MAX_INDEX
-      return -1
-    end
+    return -1 if value > MAX_INDEX
 
     return value
   end
 
   parts = Ast.children(bare)
-  if Ast.kind(bare) != "BinaryOperator" or parts.size != 2
-    return -1
-  end
+  return -1 if Ast.kind(bare) != "BinaryOperator" or parts.size != 2
 
   left = constant_of(parts.first)
   right = constant_of(parts.last)
-  if left < 0 or right < 0
-    return -1
-  end
+  return -1 if left < 0 or right < 0
 
   case Ast.text(bare, "opcode")
     "+" ->
-      if left + right > MAX_INDEX
-        return -1
-      end
+      return -1 if left + right > MAX_INDEX
 
-      return left + right
+      left + right
     "-" ->
-      if left < right
-        return -1
-      end
+      return -1 if left < right
 
-      return left - right
+      left - right
     "*" ->
-      if left > 0 and right > MAX_INDEX / left
-        return -1
-      end
+      return -1 if left > 0 and right > MAX_INDEX / left
 
-      return left * right
-    _ -> return -1
+      left * right
+    _ -> -1
   end
 end
 
 # `found` with the field `place` of the struct `key`.
 def with_field(found: Followed, key: String, place: String) -> Followed
   places = found.of.get(key, [])
-  if places.include?(place)
-    return found
-  end
+  return found if places.include?(place)
 
-  return found.with(of: found.of.put(key, places.push(place)))
+  found.with(of: found.of.put(key, places.push(place)))
 end
 
 # The items of an initializer that give a CC_OWNS field of its struct its value, by index. The item of a union is the
@@ -1413,57 +1332,47 @@ def owning_items(ctx: Context, init: Json) -> Set[Int]
     none -> return owning
   end
 
-  return owning
+  owning
 end
 
 # The record of a variable, an initializer or a `sizeof` with a CC_OWNS field, by the id of its node.
 def record_of(ctx: Context, node: Json) -> Optional[OwnedRecord]
   case ctx.owning.typed.get(Ast.text(node, "id"))
-    some(id) -> return ctx.owning.records.get(id)
-    none -> return none
+    some(id) -> ctx.owning.records.get(id)
+    none -> none
   end
 end
 
 # The id of the local variable whose field an expression is (`p.left`, `p.inner.left`, not `p->left`); "" for any
 # other.
 def struct_of(node: Json) -> String
-  if Ast.kind(node) != "MemberExpr" or Ast.flag?(node, "isArrow")
-    return ""
-  end
+  return "" if Ast.kind(node) != "MemberExpr" or Ast.flag?(node, "isArrow")
 
   base = see_through(Ast.children(node).first)
-  if Ast.kind(base) == "MemberExpr"
-    return struct_of(base)
-  end
+  return struct_of(base) if Ast.kind(base) == "MemberExpr"
 
   # An item of a local array (`a[i].left`), not of one through a pointer.
   if Ast.kind(base) == "ArraySubscriptExpr"
     decayed = Ast.children(base).first
-    if Ast.text(decayed, "castKind") != "ArrayToPointerDecay"
-      return ""
-    end
+    return "" if Ast.text(decayed, "castKind") != "ArrayToPointerDecay"
 
     base = see_through(decayed)
   end
 
-  if Ast.kind(base) != "DeclRefExpr" or not VARIABLES.include?(Ast.referenced_kind(base))
-    return ""
-  end
+  return "" if Ast.kind(base) != "DeclRefExpr" or not VARIABLES.include?(Ast.referenced_kind(base))
 
-  return Ast.referenced_id(base)
+  Ast.referenced_id(base)
 end
 
 # The key of what a reference names: the key of a variable of the function, else the name (a global, a function, an
 # enum constant), which no key of the function has. Conditions and writes name variables so.
 def referenced_key(keys: Map[String, String], ref: Json) -> String
-  return keys.get(Ast.referenced_id(ref), Ast.referenced_name(ref))
+  keys.get(Ast.referenced_id(ref), Ast.referenced_name(ref))
 end
 
 # The indices of the parameters of a function that take or free what a call passes: CC_OWNS and CC_FREES, the first
 # of `free`, and the first of a realloc, which moves it.
-def taken(ctx: Context, name: String, key: String) -> List[Int]
-  return freed(ctx, name, key).concat(handed(ctx, name, key))
-end
+def taken(ctx: Context, name: String, key: String) -> List[Int] = freed(ctx, name, key).concat(handed(ctx, name, key))
 
 def freed(ctx: Context, name: String, key: String) -> List[Int]
   indices = ctx.owning.frees.get(key, [])
@@ -1471,7 +1380,7 @@ def freed(ctx: Context, name: String, key: String) -> List[Int]
     indices = indices.push(0)
   end
 
-  return indices
+  indices
 end
 
 def handed(ctx: Context, name: String, key: String) -> List[Int]
@@ -1480,7 +1389,7 @@ def handed(ctx: Context, name: String, key: String) -> List[Int]
     indices = indices.push(0)
   end
 
-  return indices
+  indices
 end
 
 # Whether a store into an expression hands a pointer on: a CC_OWNS field (`x->held`), an item of one
@@ -1488,22 +1397,20 @@ end
 def place_owns?(ctx: Context, node: Json) -> Bool
   bare = see_through(node)
   case Ast.kind(bare)
-    "MemberExpr" -> return ctx.owning.fields.include?(Ast.text(bare, "referencedMemberDecl"))
-    "ArraySubscriptExpr" -> return place_owns?(ctx, Ast.children(bare).first)
-    "DeclRefExpr" -> return ctx.owning.globals.include?(Ast.referenced_id(bare))
-    _ -> return false
+    "MemberExpr" -> ctx.owning.fields.include?(Ast.text(bare, "referencedMemberDecl"))
+    "ArraySubscriptExpr" -> place_owns?(ctx, Ast.children(bare).first)
+    "DeclRefExpr" -> ctx.owning.globals.include?(Ast.referenced_id(bare))
+    _ -> false
   end
 end
 
 # Whether a store into an expression of a function hands a pointer on to a place that `places` names: `*out` of a
 # parameter that hands an owned pointer out, or an item of a pointer whose items own (`argv[i]`).
 def handed_place?(places: Places, node: Json) -> Bool
-  if pointee_param(places.keys, node, places.outs) != ""
-    return true
-  end
+  return true if pointee_param(places.keys, node, places.outs) != ""
 
   bare = see_through(node)
-  return (
+  (
     Ast.kind(bare) == "ArraySubscriptExpr" and
     places.arrays.include?(variable_key(places.keys, Ast.children(bare).first))
   )
@@ -1511,7 +1418,7 @@ end
 
 def identifier_char?(c: String) -> Bool
   code = c.code
-  return c == "_" or (code >= 97 and code <= 122) or (code >= 65 and code <= 90) or (code >= 48 and code <= 57)
+  c == "_" or (code >= 97 and code <= 122) or (code >= 65 and code <= 90) or (code >= 48 and code <= 57)
 end
 
 # The local variables that are set once, where they are declared, and never written or lent (`&x`) after: a lock
@@ -1534,17 +1441,17 @@ def aliases_of(bodies: List[Json]) -> Map[String, Json]
     end
   end
 
-  return values.select do |name, _value| not written.include?(name) end
+  values.select do |name, _value| not written.include?(name) end
 end
 
 # Whether a node writes the variable of its first child: an assignment, `++`, `--`, or `&`, which lends it.
 def writes?(node: Json) -> Bool
   opcode = Ast.text(node, "opcode")
   case Ast.kind(node)
-    "BinaryOperator" -> return ASSIGNMENTS.include?(opcode)
-    "CompoundAssignOperator" -> return true
-    "UnaryOperator" -> return opcode == "++" or opcode == "--" or opcode == "&"
-    _ -> return false
+    "BinaryOperator" -> ASSIGNMENTS.include?(opcode)
+    "CompoundAssignOperator" -> true
+    "UnaryOperator" -> opcode == "++" or opcode == "--" or opcode == "&"
+    _ -> false
   end
 end
 
@@ -1568,33 +1475,33 @@ def label_blocks(nodes: List[Json], around: List[String]) -> Map[String, List[St
     end
   end
 
-  return found
+  found
 end
 
 def statement(b: Builder, node: Json, preds: List[Int]) -> Built
   case Ast.kind(node)
-    "" -> return Built(b: b, exits: preds)
-    "CompoundStmt" -> return block(b, node, preds)
-    "IfStmt" -> return if_statement(b, node, preds)
-    "WhileStmt" -> return while_loop(b, node, preds)
-    "DoStmt" -> return do_loop(b, node, preds)
-    "ForStmt" -> return for_loop(b, node, preds)
-    "SwitchStmt" -> return switch_statement(b, node, preds)
-    "CaseStmt" -> return case_label(b, node, preds, "case")
-    "DefaultStmt" -> return case_label(b, node, preds, "default")
-    "BreakStmt" -> return break_statement(b, node, preds)
-    "ContinueStmt" -> return continue_statement(b, node, preds)
-    "ReturnStmt" -> return return_statement(b, node, preds)
-    "GotoStmt" -> return goto_statement(b, node, Ast.text(node, "targetLabelDeclId"), preds)
-    "IndirectGotoStmt" -> return goto_statement(b, node, "", preds)
+    "" -> Built(b: b, exits: preds)
+    "CompoundStmt" -> block(b, node, preds)
+    "IfStmt" -> if_statement(b, node, preds)
+    "WhileStmt" -> while_loop(b, node, preds)
+    "DoStmt" -> do_loop(b, node, preds)
+    "ForStmt" -> for_loop(b, node, preds)
+    "SwitchStmt" -> switch_statement(b, node, preds)
+    "CaseStmt" -> case_label(b, node, preds, "case")
+    "DefaultStmt" -> case_label(b, node, preds, "default")
+    "BreakStmt" -> break_statement(b, node, preds)
+    "ContinueStmt" -> continue_statement(b, node, preds)
+    "ReturnStmt" -> return_statement(b, node, preds)
+    "GotoStmt" -> goto_statement(b, node, Ast.text(node, "targetLabelDeclId"), preds)
+    "IndirectGotoStmt" -> goto_statement(b, node, "", preds)
     "LabelStmt" ->
       label = labelled(b, node, preds)
-      return statement(label.b, last_child(node), label.exits)
-    "AttributedStmt" -> return statement(b, last_child(node), preds)
+      statement(label.b, last_child(node), label.exits)
+    "AttributedStmt" -> statement(b, last_child(node), preds)
     "DeclStmt" ->
       declared = declarations(b, node, preds)
-      return flushed(declared.b, node, declared.exits)
-    "NullStmt" -> return Built(b: b, exits: preds)
+      flushed(declared.b, node, declared.exits)
+    "NullStmt" -> Built(b: b, exits: preds)
     "GCCAsmStmt" ->
       # An operand of `asm` may read or write a whole local struct (`"r"(&p)`, `"r"(p.inner)`): an escape of it. A
       # field of it (`p.n`) is no read of the struct.
@@ -1618,29 +1525,24 @@ def statement(b: Builder, node: Json, preds: List[Int]) -> Built
         built = escaped(built.b, ref, built.exits)
       end
 
-      return built
+      built
     _ ->
       done = expression(b, node, preds)
-      return flushed(done.b, node, done.exits)
+      flushed(done.b, node, done.exits)
   end
 end
 
 # The label of a `LabelStmt`: the paths join there, and a `goto` finds it.
 def labelled(b: Builder, node: Json, preds: List[Int]) -> Built
   label = add(b, Event.Join, preds)
-  return Built(
-    b: label.b.with(labels: label.b.labels.put(Ast.text(node, "declId"), label.exits.first)),
-    exits: label.exits,
-  )
+  Built(b: label.b.with(labels: label.b.labels.put(Ast.text(node, "declId"), label.exits.first)), exits: label.exits)
 end
 
 # The end of a full statement (`node`): the pointers of its statement expressions close there (`pending`). One that a
 # variable still stands for stays, so they close again with the block around the statement, where that variable may
 # close with them.
 def flushed(b: Builder, node: Json, preds: List[Int]) -> Built
-  if b.pending.empty?
-    return Built(b: b, exits: preds)
-  end
+  return Built(b: b, exits: preds) if b.pending.empty?
 
   scopes = b.scopes
   if not scopes.empty?
@@ -1651,29 +1553,28 @@ def flushed(b: Builder, node: Json, preds: List[Int]) -> Built
 
   place = Ast.end_of(node)
   mark = Mark(word: "ends", line: place.line, column: place.column)
-  return closes_at(b.with(pending: [], scopes: scopes), b.pending, mark, preds)
+  closes_at(b.with(pending: [], scopes: scopes), b.pending, mark, preds)
 end
 
 # `flushed` on both sides of a condition (`node`) of a statement.
 def flushed_split(split: Split, node: Json) -> Split
   yes = flushed(split.b, node, split.yes)
   no = flushed(yes.b.with(pending: split.b.pending), node, split.no)
-  return Split(b: no.b, yes: yes.exits, no: no.exits)
+  Split(b: no.b, yes: yes.exits, no: no.exits)
 end
 
 # A close of the pointers `names` at `mark` after `preds`; nothing for no names, or no node before it.
 def closes_at(b: Builder, names: List[String], mark: Mark, preds: List[Int]) -> Built
-  if names.empty? or preds.empty?
-    return Built(b: b, exits: preds)
-  end
+  return Built(b: b, exits: preds) if names.empty? or preds.empty?
 
-  return add(b, Event.Closes(Closing(names: names, mark: mark)), preds)
+  add(b, Event.Closes(Closing(names: names, mark: mark)), preds)
 end
 
 # The block of a statement expression `({ ...; v; })` opens as a scope for the cleanups of its variables.
 def opened_expression(b: Builder, node: Json) -> Builder
-  scope = Scope(id: Ast.text(last_child(see_through(node)), "id"), cleanups: [], outer: b.pending)
-  return b.with(scopes: b.scopes.push(scope), pending: [])
+  inner = last_child(see_through(node))
+  scope = Scope(id: Ast.text(inner, "id"), cleanups: [], outer: b.pending)
+  b.with(scopes: b.scopes.push(scope), pending: [])
 end
 
 # A statement expression (`node`, with statements) up to its value: its scope opened, and its statements run but the
@@ -1683,7 +1584,7 @@ def valued_expression(b: Builder, node: Json, preds: List[Int]) -> Valued
   statements = Ast.children(last_child(node))
   opened = opened_expression(b, node)
   built = in_order_statements(opened, statements.take(statements.size - 1), preds)
-  return last_value(built.b, statements.last, built.exits)
+  last_value(built.b, statements.last, built.exits)
 end
 
 def last_value(b: Builder, node: Json, preds: List[Int]) -> Valued
@@ -1693,16 +1594,14 @@ def last_value(b: Builder, node: Json, preds: List[Int]) -> Valued
     return last_value(label.b, last_child(node), label.exits)
   end
 
-  if kind == "AttributedStmt"
-    return last_value(b, last_child(node), preds)
-  end
+  return last_value(b, last_child(node), preds) if kind == "AttributedStmt"
 
   if kind.end_with?("Stmt")
     built = statement(b, node, preds)
     return Valued(b: built.b, exits: built.exits, value: JSON.from(""))
   end
 
-  return Valued(b: b, exits: preds, value: node)
+  Valued(b: b, exits: preds, value: node)
 end
 
 # The end of the block of a statement expression: the cleanups of its variables run, and its pointers close at the end
@@ -1710,7 +1609,7 @@ end
 def closed_expression(b: Builder, preds: List[Int]) -> Built
   scope = b.scopes.last
   called = calls(b, scope.cleanups.reverse, preds)
-  return Built(
+  Built(
     b: called.b.with(
       scopes: called.b.scopes.take(called.b.scopes.size - 1),
       pending: scope.outer.concat(called.b.pending).concat(scope.declared),
@@ -1726,7 +1625,7 @@ def block(b: Builder, node: Json, preds: List[Int]) -> Built
     built = statement(built.b, child, built.exits)
   end
 
-  return closed(built.b, node, built.exits)
+  closed(built.b, node, built.exits)
 end
 
 # The way out of the innermost scope (`node`) at its end: its cleanup calls, the close of its pointers, and the scope
@@ -1734,7 +1633,7 @@ end
 def closed(b: Builder, node: Json, preds: List[Int]) -> Built
   place = Ast.end_of(node)
   left = leaving(b, b.scopes.size - 1, preds, some(Mark(word: "ends", line: place.line, column: place.column)))
-  return Built(b: left.b.with(scopes: left.b.scopes.take(left.b.scopes.size - 1)), exits: left.exits)
+  Built(b: left.b.with(scopes: left.b.scopes.take(left.b.scopes.size - 1)), exits: left.exits)
 end
 
 # An `if` and the `else if` chain after it, in a loop: a recursion would keep every builder of the chain alive.
@@ -1748,9 +1647,7 @@ def if_statement(b: Builder, node: Json, preds: List[Int]) -> Built
     split = flushed_split(condition(built, parts[0], pending), parts[0])
     then_part = statement(split.b, parts[1], split.yes)
     exits = exits.concat(then_part.exits)
-    if not Ast.flag?(current, "hasElse")
-      return Built(b: then_part.b, exits: exits.concat(split.no))
-    end
+    return Built(b: then_part.b, exits: exits.concat(split.no)) if not Ast.flag?(current, "hasElse")
 
     if Ast.kind(parts[2]) != "IfStmt"
       else_part = statement(then_part.b, parts[2], split.no)
@@ -1762,14 +1659,14 @@ def if_statement(b: Builder, node: Json, preds: List[Int]) -> Built
     pending = split.no
   end
 
-  return Built(b: built, exits: exits)
+  Built(b: built, exits: exits)
 end
 
 def while_loop(b: Builder, node: Json, preds: List[Int]) -> Built
   parts = Ast.children(node)
   head = add(b, Event.Join, preds)
   split = flushed_split(condition(head.b, parts[0], head.exits), parts[0])
-  return looped(split.b, parts[1], split, head.exits.first, JSON.from(""))
+  looped(split.b, parts[1], split, head.exits.first, JSON.from(""))
 end
 
 def do_loop(b: Builder, node: Json, preds: List[Int]) -> Built
@@ -1781,7 +1678,7 @@ def do_loop(b: Builder, node: Json, preds: List[Int]) -> Built
   closed = body.b.with(jumps: body.b.jumps.take(body.b.jumps.size - 1))
   test = add(closed, Event.Join, body.exits.concat(jump.continues))
   split = flushed_split(condition(test.b, parts[1], test.exits), parts[1])
-  return Built(b: link(split.b, split.yes, head.exits.first), exits: split.no.concat(jump.breaks))
+  Built(b: link(split.b, split.yes, head.exits.first), exits: split.no.concat(jump.breaks))
 end
 
 def for_loop(b: Builder, node: Json, preds: List[Int]) -> Built
@@ -1797,7 +1694,7 @@ def for_loop(b: Builder, node: Json, preds: List[Int]) -> Built
   end
 
   ran = looped(split.b, parts[4], split, head.exits.first, parts[3])
-  return closed(ran.b, node, ran.exits)
+  closed(ran.b, node, ran.exits)
 end
 
 # The body of a `while` or a `for` from the true side of its condition, then the increment (an empty node for a
@@ -1809,11 +1706,11 @@ def looped(b: Builder, body: Json, split: Split, head: Int, increment: Json) -> 
   closed = ran.b.with(jumps: ran.b.jumps.take(ran.b.jumps.size - 1))
   ran_increment = expression(closed, increment, ran.exits.concat(jump.continues))
   stepped = flushed(ran_increment.b, increment, ran_increment.exits)
-  return Built(b: link(stepped.b, stepped.exits, head), exits: split.no.concat(jump.breaks))
+  Built(b: link(stepped.b, stepped.exits, head), exits: split.no.concat(jump.breaks))
 end
 
 def loop_jump(b: Builder, head: Int) -> Jump
-  return Jump(switch: false, head: head, depth: b.scopes.size, breaks: [], continues: [], defaulted: false)
+  Jump(switch: false, head: head, depth: b.scopes.size, breaks: [], continues: [], defaulted: false)
 end
 
 # A switch jumps from its head to each `case` and `default` of its body; without a `default`, a value that no case
@@ -1836,20 +1733,16 @@ def switch_statement(b: Builder, node: Json, preds: List[Int]) -> Built
   done = body.b.jumps.last
   closed = body.b.with(jumps: body.b.jumps.take(body.b.jumps.size - 1))
   exits = body.exits.concat(done.breaks)
-  if done.defaulted
-    return Built(b: closed, exits: exits)
-  end
+  return Built(b: closed, exits: exits) if done.defaulted
 
   place = Ast.start_of(node)
   missed = add(closed, Event.Note(Mark(word: "no case", line: place.line, column: place.column)), head.exits)
-  return Built(b: missed.b, exits: exits.concat(missed.exits))
+  Built(b: missed.b, exits: exits.concat(missed.exits))
 end
 
 def case_label(b: Builder, node: Json, preds: List[Int], word: String) -> Built
   at = innermost(b.jumps, true)
-  if at < 0
-    return statement(b, last_child(node), preds)
-  end
+  return statement(b, last_child(node), preds) if at < 0
 
   jump = b.jumps[at]
   place = Ast.start_of(node)
@@ -1858,33 +1751,26 @@ def case_label(b: Builder, node: Json, preds: List[Int], word: String) -> Built
   marked = add(entering, Event.Note(Mark(word: word, line: place.line, column: place.column)), [jump.head])
   entry = add(marked.b, Event.Join, preds.concat(marked.exits))
   updated = entry.b.with(jumps: entry.b.jumps.set(at, jump.with(defaulted: jump.defaulted or word == "default")))
-  return statement(updated, last_child(node), entry.exits)
+  statement(updated, last_child(node), entry.exits)
 end
 
 def break_statement(b: Builder, node: Json, preds: List[Int]) -> Built
   at = innermost(b.jumps, false)
-  if at < 0
-    return Built(b: b, exits: [])
-  end
+  return Built(b: b, exits: []) if at < 0
 
   left = leaving(b, b.jumps[at].depth, preds, some(mark_at(node, "break")))
   jump = left.b.jumps[at]
-  return Built(
-    b: left.b.with(jumps: left.b.jumps.set(at, jump.with(breaks: jump.breaks.concat(left.exits)))),
-    exits: [],
-  )
+  Built(b: left.b.with(jumps: left.b.jumps.set(at, jump.with(breaks: jump.breaks.concat(left.exits)))), exits: [])
 end
 
 def continue_statement(b: Builder, node: Json, preds: List[Int]) -> Built
   at = innermost_loop(b.jumps)
-  if at < 0
-    return Built(b: b, exits: [])
-  end
+  return Built(b: b, exits: []) if at < 0
 
   left = leaving(b, b.jumps[at].depth, preds, some(mark_at(node, "continue")))
   jump = left.b.jumps[at]
   updated = left.b.jumps.set(at, jump.with(continues: jump.continues.concat(left.exits)))
-  return Built(b: left.b.with(jumps: updated), exits: [])
+  Built(b: left.b.with(jumps: updated), exits: [])
 end
 
 # The index of the innermost jump a `break` leaves (a loop or a switch), or a `case` belongs to (a switch); -1
@@ -1892,27 +1778,23 @@ end
 def innermost(jumps: List[Jump], switch_only: Bool) -> Int
   i = jumps.size - 1
   while i >= 0
-    if jumps[i].switch or not switch_only
-      return i
-    end
+    return i if jumps[i].switch or not switch_only
 
     i -= 1
   end
 
-  return -1
+  -1
 end
 
 def innermost_loop(jumps: List[Jump]) -> Int
   i = jumps.size - 1
   while i >= 0
-    if not jumps[i].switch
-      return i
-    end
+    return i if not jumps[i].switch
 
     i -= 1
   end
 
-  return -1
+  -1
 end
 
 def return_statement(b: Builder, node: Json, preds: List[Int]) -> Built
@@ -1925,7 +1807,7 @@ def return_statement(b: Builder, node: Json, preds: List[Int]) -> Built
   mark = mark_at(node, "returns").with(failed: failed)
   left = leaving(value.b, 0, value.exits, some(mark))
   ended = add(left.b, Event.Exit(mark), left.exits)
-  return Built(b: ended.b.with(pending: []), exits: [])
+  Built(b: ended.b.with(pending: []), exits: [])
 end
 
 # A `goto` leaves the blocks that are not around its label. The label is linked at the end, when every label is known;
@@ -1951,7 +1833,7 @@ def goto_statement(b: Builder, node: Json, label: String, preds: List[Int]) -> B
   enters = targets.any? do |blocks| blocks.any? do |id| not open.include?(id) end end
   left = leaving(b.with(enters: b.enters or enters), depth, preds, mark)
   jumped = add(left.b, Event.Join, left.exits)
-  return Built(b: jumped.b.with(gotos: jumped.b.gotos.push(Goto(from: jumped.exits.first, label: label))), exits: [])
+  Built(b: jumped.b.with(gotos: jumped.b.gotos.push(Goto(from: jumped.exits.first, label: label))), exits: [])
 end
 
 def with_gotos(b: Builder) -> Builder
@@ -1969,7 +1851,7 @@ def with_gotos(b: Builder) -> Builder
     end
   end
 
-  return linked
+  linked
 end
 
 # The way out of the blocks from `depth` in: their cleanup calls, the innermost first, then one close of their pointers
@@ -1994,15 +1876,15 @@ def leaving(b: Builder, depth: Int, preds: List[Int], at: Optional[Mark]) -> Bui
 
   called = calls(b, sites, preds)
   case at
-    some(mark) -> return closes_at(called.b, b.pending.concat(names), mark, called.exits)
-    none -> return called
+    some(mark) -> closes_at(called.b, b.pending.concat(names), mark, called.exits)
+    none -> called
   end
 end
 
 # A mark at the start of a statement.
 def mark_at(node: Json, word: String) -> Mark
   place = Ast.start_of(node)
-  return Mark(word: word, line: place.line, column: place.column)
+  Mark(word: word, line: place.line, column: place.column)
 end
 
 def calls(b: Builder, sites: List[Site], preds: List[Int]) -> Built
@@ -2011,7 +1893,7 @@ def calls(b: Builder, sites: List[Site], preds: List[Int]) -> Built
     built = add(built.b, Event.Call(site), built.exits)
   end
 
-  return built
+  built
 end
 
 def declarations(b: Builder, node: Json, preds: List[Int]) -> Built
@@ -2022,7 +1904,7 @@ def declarations(b: Builder, node: Json, preds: List[Int]) -> Built
     end
   end
 
-  return built
+  built
 end
 
 # A variable: its value, then the write of it, and its cleanup call for the way out of its block.
@@ -2055,9 +1937,7 @@ def declaration(b: Builder, node: Json, preds: List[Int]) -> Built
   end
 
   cleanup = Ast.children(node).select do |child| Ast.kind(child) == "CleanupAttr" end
-  if cleanup.empty? or written.b.scopes.empty?
-    return written
-  end
+  return written if cleanup.empty? or written.b.scopes.empty?
 
   function = Ast.text(JSON.get(cleanup.first, "cleanup_function").unwrap_or(JSON.from("")), "name")
   place = Ast.place_of(node)
@@ -2078,7 +1958,7 @@ def declaration(b: Builder, node: Json, preds: List[Int]) -> Built
   site = site.with(frees: site.frees.concat(written.b.owners.places.fields.get(key, [])))
   scope = written.b.scopes.last
   scopes = written.b.scopes.set(written.b.scopes.size - 1, scope.with(cleanups: scope.cleanups.push(site)))
-  return Built(b: written.b.with(scopes: scopes), exits: written.exits)
+  Built(b: written.b.with(scopes: scopes), exits: written.exits)
 end
 
 # The initializer of a followed struct, or of a struct in it, whose key is `key`: each CC_OWNS field gets its item, and
@@ -2129,21 +2009,19 @@ def initializer(b: Builder, key: String, init: Json, preds: List[Int], held: Map
     end
   end
 
-  return built
+  built
 end
 
 # A CC_OWNS field, or each one of a struct in the struct, that an initializer leaves out: it is null.
 def nulled_struct(b: Builder, place: String, init: Json, preds: List[Int]) -> Built
-  if not b.owners.places.parts.key?(place)
-    return nulled_field(b, place, init, preds)
-  end
+  return nulled_field(b, place, init, preds) if not b.owners.places.parts.key?(place)
 
   built = Built(b: b, exits: preds)
   for field in b.owners.places.fields.get(place, [])
     built = nulled_field(built.b, field, init, built.exits)
   end
 
-  return built
+  built
 end
 
 # A field that takes the value an item of a compound literal held before the store (`held`).
@@ -2151,7 +2029,7 @@ def moved_field(b: Builder, place: String, temp: String, item: Json, preds: List
   at = Ast.start_of(item)
   assign = Assign(name: place, value: "moved", from: temp, shown: plain(temp), line: at.line, column: at.column)
   written = add(b, Event.Writes([place]), preds)
-  return add(written.b, Event.Assigns(assign), written.exits)
+  add(written.b, Event.Assigns(assign), written.exits)
 end
 
 # A CC_OWNS field that an initializer leaves out: it is null.
@@ -2159,37 +2037,29 @@ def nulled_field(b: Builder, place: String, init: Json, preds: List[Int]) -> Bui
   at = Ast.start_of(init)
   assign = Assign(name: place, value: "null", from: "", shown: "NULL", line: at.line, column: at.column)
   written = add(b, Event.Writes([place]), preds)
-  return add(written.b, Event.Assigns(assign), written.exits)
+  add(written.b, Event.Assigns(assign), written.exits)
 end
 
 def expression(b: Builder, node: Json, preds: List[Int]) -> Built
   case Ast.kind(node)
-    "" -> return Built(b: b, exits: preds)
-    "CallExpr" -> return call(b, node, preds, false)
-    "DeclRefExpr" -> return used(b, node, preds)
+    "" -> Built(b: b, exits: preds)
+    "CallExpr" -> call(b, node, preds, false)
+    "DeclRefExpr" -> used(b, node, preds)
     "MemberExpr" ->
-      if owner_named(b, node) != ""
-        return used(b, node, preds)
-      end
+      return used(b, node, preds) if owner_named(b, node) != ""
 
       # `p.inner` of a followed struct names a struct in it whole, which escapes there; `p.n` reads a field, which
       # is no escape of the struct (see `item_read`).
-      if whole_key(b, node) != ""
-        return escaped(b, node, preds)
-      end
+      return escaped(b, node, preds) if whole_key(b, node) != ""
 
-      if struct_of(node) != ""
-        return item_read(b, node, preds)
-      end
+      return item_read(b, node, preds) if struct_of(node) != ""
 
-      return in_order(b, Ast.children(node), preds)
+      in_order(b, Ast.children(node), preds)
     "ArraySubscriptExpr" ->
       # `a[0]` of a followed array names an item whole, which escapes there.
-      if whole_key(b, node) != ""
-        return escaped(b, node, preds)
-      end
+      return escaped(b, node, preds) if whole_key(b, node) != ""
 
-      return in_order(b, Ast.children(node), preds)
+      in_order(b, Ast.children(node), preds)
     "BinaryOperator" ->
       opcode = Ast.text(node, "opcode")
       if opcode == "&&" or opcode == "||"
@@ -2197,12 +2067,10 @@ def expression(b: Builder, node: Json, preds: List[Int]) -> Built
         return Built(b: split.b, exits: split.yes.concat(split.no))
       end
 
-      if ASSIGNMENTS.include?(opcode)
-        return assignment(b, node, preds)
-      end
+      return assignment(b, node, preds) if ASSIGNMENTS.include?(opcode)
 
-      return in_order(b, Ast.children(node), preds)
-    "CompoundAssignOperator" -> return assignment(b, node, preds)
+      in_order(b, Ast.children(node), preds)
+    "CompoundAssignOperator" -> assignment(b, node, preds)
     "UnaryOperator" ->
       opcode = Ast.text(node, "opcode")
       operand = Ast.children(node).first
@@ -2229,23 +2097,21 @@ def expression(b: Builder, node: Json, preds: List[Int]) -> Built
 
       # The address of a variable lets a callee change it; the address of `q->mu` does not change `q`.
       root = storage_root(b.owners.places.keys, operand)
-      if opcode == "&" and root != ""
-        return add(inner.b, Event.Writes([root]), inner.exits)
-      end
+      return add(inner.b, Event.Writes([root]), inner.exits) if opcode == "&" and root != ""
 
-      return inner
+      inner
     "ConditionalOperator" ->
       parts = Ast.children(node)
       split = condition(b, parts[0], preds)
       chosen = expression(split.b, parts[1], split.yes)
       other = expression(chosen.b, parts[2], split.no)
-      return Built(b: other.b, exits: chosen.exits.concat(other.exits))
+      Built(b: other.b, exits: chosen.exits.concat(other.exits))
     "BinaryConditionalOperator" ->
       # `x ?: y`: the value of `x` when it is true, else `y`.
       parts = Ast.children(node)
       split = condition(b, parts[0], preds)
       other = expression(split.b, parts.last, split.no)
-      return Built(b: other.b, exits: split.yes.concat(other.exits))
+      Built(b: other.b, exits: split.yes.concat(other.exits))
     "InitListExpr" ->
       # A pointer that owns, put in a CC_OWNS field by an initializer or a compound literal, is handed on to it; in any
       # other item it is only read.
@@ -2261,13 +2127,13 @@ def expression(b: Builder, node: Json, preds: List[Int]) -> Built
         end
       end
 
-      return built
+      built
     "StmtExpr" ->
       opened = opened_expression(b, node)
       built = in_order_statements(opened, Ast.children(last_child(node)), preds)
-      return closed_expression(built.b, built.exits)
-    "UnaryExprOrTypeTraitExpr" -> return Built(b: b, exits: preds)
-    _ -> return in_order(b, Ast.children(node), preds)
+      closed_expression(built.b, built.exits)
+    "UnaryExprOrTypeTraitExpr" -> Built(b: b, exits: preds)
+    _ -> in_order(b, Ast.children(node), preds)
   end
 end
 
@@ -2279,11 +2145,9 @@ def item_read(b: Builder, node: Json, preds: List[Int]) -> Built
     base = see_through(Ast.children(base).first)
   end
 
-  if Ast.kind(base) != "ArraySubscriptExpr" or whole_key(b, base) != ""
-    return Built(b: b, exits: preds)
-  end
+  return Built(b: b, exits: preds) if Ast.kind(base) != "ArraySubscriptExpr" or whole_key(b, base) != ""
 
-  return in_order(b, Ast.children(base), preds)
+  in_order(b, Ast.children(base), preds)
 end
 
 def in_order(b: Builder, nodes: List[Json], preds: List[Int]) -> Built
@@ -2292,7 +2156,7 @@ def in_order(b: Builder, nodes: List[Json], preds: List[Int]) -> Built
     built = expression(built.b, node, built.exits)
   end
 
-  return built
+  built
 end
 
 def in_order_statements(b: Builder, nodes: List[Json], preds: List[Int]) -> Built
@@ -2301,7 +2165,7 @@ def in_order_statements(b: Builder, nodes: List[Json], preds: List[Int]) -> Buil
     built = statement(built.b, node, built.exits)
   end
 
-  return built
+  built
 end
 
 # An assignment: the value, then the target. A plain write of a variable does not read it; a pointer that owns gets
@@ -2310,9 +2174,7 @@ def assignment(b: Builder, node: Json, preds: List[Int]) -> Built
   parts = Ast.children(node)
   if Ast.kind(node) == "BinaryOperator" and Ast.text(node, "opcode") == "=" and parts.size == 2
     name = variable_key(b.owners.places.keys, parts[0])
-    if b.owners.names.include?(name)
-      return owner_assigned(b, name, parts[1], preds)
-    end
+    return owner_assigned(b, name, parts[1], preds) if b.owners.names.include?(name)
 
     # `*p = v` in a CC_FREES parameter that points to the pointer gives the pointer a new value without reading it:
     # null, or a value that goes back to the caller, which the function does not own. A pointer that owns is handed
@@ -2371,7 +2233,7 @@ def assignment(b: Builder, node: Json, preds: List[Int]) -> Built
   end
 
   value = in_order(b, parts.drop(1).concat(parts.take(1)), preds)
-  return add(value.b, Event.Writes([target_root(b.owners.places.keys, parts.first)]), value.exits)
+  add(value.b, Event.Writes([target_root(b.owners.places.keys, parts.first)]), value.exits)
 end
 
 # A value handed on: returned (`into` is none) or stored in a place that hands it on (`into`). A pointer that owns is
@@ -2410,11 +2272,9 @@ def handed_value(b: Builder, into: Optional[String], value: Json, preds: List[In
     return closed_expression(last.b, last.exits)
   end
 
-  if owner_named(b, value) == ""
-    return expression(b, value, preds)
-  end
+  return expression(b, value, preds) if owner_named(b, value) == ""
 
-  return handed_on(b, into, value, preds)
+  handed_on(b, into, value, preds)
 end
 
 # A pointer that owns, `value`, handed on by a return (`into` is none) or to the place `into` by a store.
@@ -2423,7 +2283,7 @@ def handed_on(b: Builder, into: Optional[String], value: Json, preds: List[Int])
   place = Ast.start_of(value)
   word = into.map do |shown| "stores #{plain(given)} in #{shown}" end.unwrap_or("returns")
 
-  return add(b, Event.Gives(Give(name: given, word: word, line: place.line, column: place.column)), preds)
+  add(b, Event.Gives(Give(name: given, word: word, line: place.line, column: place.column)), preds)
 end
 
 # A pointer that owns, or may stand for one, gets a value. A pointer that it moves from is not read.
@@ -2466,7 +2326,7 @@ def owner_assigned(b: Builder, name: String, value: Json, preds: List[Int]) -> B
   end
 
   written = add(built.b, Event.Writes([name]), built.exits)
-  return add(written.b, Event.Assigns(assign), written.exits)
+  add(written.b, Event.Assigns(assign), written.exits)
 end
 
 # How a pointer that owns, or may stand for one, gets a value (`Assign`).
@@ -2475,9 +2335,7 @@ def assigned(b: Builder, name: String, value: Json) -> Assign
   start = Assign(name: name, value: "other", from: "", shown: "", line: place.line, column: place.column)
   bare = see_through(value)
   marked = b.owners.marked.include?(name)
-  if zero?(bare)
-    return start.with(value: "null", shown: "NULL")
-  end
+  return start.with(value: "null", shown: "NULL") if zero?(bare)
 
   source = owner_named(b, bare)
   if source == ""
@@ -2517,28 +2375,24 @@ def assigned(b: Builder, name: String, value: Json) -> Assign
     return start.with(value: "owned", shown: shown)
   end
 
-  return start.with(shown: text_of(b, bare, false))
+  start.with(shown: text_of(b, bare, false))
 end
 
 # A read of a variable: an event when it is a pointer that owns, or may stand for one, or a local struct whose CC_OWNS
 # fields the rules follow, which escapes there (a field of it is no read of the struct: see `expression`).
 def used(b: Builder, node: Json, preds: List[Int]) -> Built
   name = owner_named(b, node)
-  if name == ""
-    return escaped(b, node, preds)
-  end
+  return escaped(b, node, preds) if name == ""
 
   place = Ast.start_of(node)
-  return add(b, Event.Uses(Use(name: name, line: place.line, column: place.column)), preds)
+  add(b, Event.Uses(Use(name: name, line: place.line, column: place.column)), preds)
 end
 
 # A new value of a whole local struct (`p = q`): each followed CC_OWNS field gets a value the rules do not know, so
 # one that still owns leaks there, and then the fields are the new value's, as after an escape.
 def struct_assigned(b: Builder, target: Json, value: Json, preds: List[Int]) -> Built
   fields = followed_struct(b, target)
-  if fields.empty?
-    return Built(b: b, exits: preds)
-  end
+  return Built(b: b, exits: preds) if fields.empty?
 
   place = Ast.start_of(value)
   shown = text_of(b, value, false)
@@ -2552,13 +2406,13 @@ def struct_assigned(b: Builder, target: Json, value: Json, preds: List[Int]) -> 
     built = add(built.b, Event.Assigns(assign), built.exits)
   end
 
-  return add(built.b, Event.Escapes(fields), built.exits)
+  add(built.b, Event.Escapes(fields), built.exits)
 end
 
 # The value of a variable that is not a pointer that owns, then what it does to a whole local struct (`p = q`).
 def struct_assigned_after(b: Builder, target: Json, value: Json, preds: List[Int]) -> Built
   read = expression(b, value, preds)
-  return struct_assigned(read.b, target, value, read.exits)
+  struct_assigned(read.b, target, value, read.exits)
 end
 
 # `p = (struct pair){ ... }` of a followed struct: the fields are followed again, and each gets its item as from an
@@ -2566,14 +2420,10 @@ end
 def reset_by_literal(b: Builder, target: Json, value: Json, preds: List[Int]) -> Optional[Built]
   fields = followed_struct(b, target)
   bare = see_through(value)
-  if fields.empty? or Ast.kind(bare) != "CompoundLiteralExpr"
-    return none
-  end
+  return none if fields.empty? or Ast.kind(bare) != "CompoundLiteralExpr"
 
   init = see_through(Ast.children(bare).first)
-  if Ast.kind(init) != "InitListExpr"
-    return none
-  end
+  return none if Ast.kind(init) != "InitListExpr"
 
   # C evaluates the whole literal before it stores the struct. An item that reads a field of the struct other than
   # by naming it (`p.left ? p.left : make(n)`, `steal(p.left)`) is read first: into a place of its own when it goes to
@@ -2626,18 +2476,16 @@ def reset_by_literal(b: Builder, target: Json, value: Json, preds: List[Int]) ->
 
   reset = add(built.b, Event.Resets(fields), built.exits)
   stored = initializer(reset.b, key, init, reset.exits, held)
-  if held.empty?
-    return some(stored)
-  end
+  return some(stored) if held.empty?
 
   closing = Closing(names: held.values.select do |temp| temp != "" end, mark: mark_at(init, "ends"))
-  return some(add(stored.b, Event.Closes(closing), stored.exits))
+  some(add(stored.b, Event.Closes(closing), stored.exits))
 end
 
 # Whether a fill byte is zero: `0` or `'\0'`.
 def zero_byte?(node: Json) -> Bool
   bare = see_through(node)
-  return zero?(bare) or (Ast.kind(bare) == "CharacterLiteral" and Ast.number(bare, "value") == 0)
+  zero?(bare) or (Ast.kind(bare) == "CharacterLiteral" and Ast.number(bare, "value") == 0)
 end
 
 # Whether the size of a `memset` of `&p` (or `&p.inner`) is that of the whole struct: `sizeof p`, `sizeof(struct pair)`
@@ -2645,9 +2493,7 @@ end
 # (`memset(a, 0, sizeof a)`) is cleared by `sizeof a` only.
 def whole_size?(b: Builder, target: Json, size: Json) -> Bool
   bare = see_through(size)
-  if Ast.kind(bare) != "UnaryExprOrTypeTraitExpr" or Ast.text(bare, "name") != "sizeof"
-    return false
-  end
+  return false if Ast.kind(bare) != "UnaryExprOrTypeTraitExpr" or Ast.text(bare, "name") != "sizeof"
 
   pointed = see_through(target)
   if address?(target)
@@ -2656,13 +2502,9 @@ def whole_size?(b: Builder, target: Json, size: Json) -> Bool
 
   whole = whole_key(b, pointed)
   measured = Ast.children(bare)
-  if not measured.empty?
-    return whole != "" and whole_key(b, measured.first) == whole
-  end
+  return whole != "" and whole_key(b, measured.first) == whole if not measured.empty?
 
-  if not address?(target) or b.ctx.owning.lengths.key?(Ast.referenced_id(pointed))
-    return false
-  end
+  return false if not address?(target) or b.ctx.owning.lengths.key?(Ast.referenced_id(pointed))
 
   # The record of a variable by its declaration, of a struct in it by its field.
   id = Ast.referenced_id(pointed)
@@ -2671,28 +2513,24 @@ def whole_size?(b: Builder, target: Json, size: Json) -> Bool
   end
 
   record = b.ctx.owning.typed.get(id)
-  return record.some? and b.ctx.owning.typed.get(Ast.text(bare, "id")) == record
+  record.some? and b.ctx.owning.typed.get(Ast.text(bare, "id")) == record
 end
 
 # Whether an expression reads one of the followed fields `fields` (`p.left`) anywhere in it.
 def reads_field?(b: Builder, node: Json, fields: List[String]) -> Bool
-  if Ast.kind(node) == "MemberExpr" and fields.include?(b.owners.places.keys.get(Ast.text(node, "id"), ""))
-    return true
-  end
+  return true if Ast.kind(node) == "MemberExpr" and fields.include?(b.owners.places.keys.get(Ast.text(node, "id"), ""))
 
-  return Ast.children(node).any? do |child| reads_field?(b, child, fields) end
+  Ast.children(node).any? do |child| reads_field?(b, child, fields) end
 end
 
 # Whether a key is that of a followed CC_OWNS field of a local struct (`p.left`).
 def followed_field?(b: Builder, key: String) -> Bool
-  return b.owners.places.fields.values.any? do |places| places.include?(key) end
+  b.owners.places.fields.values.any? do |places| places.include?(key) end
 end
 
 # The followed CC_OWNS fields of the local struct, or the struct in it (`p.inner`), that an expression names whole, or
 # none.
-def followed_struct(b: Builder, node: Json) -> List[String]
-  return b.owners.places.fields.get(whole_key(b, node), [])
-end
+def followed_struct(b: Builder, node: Json) -> List[String] = b.owners.places.fields.get(whole_key(b, node), [])
 
 # The key of the followed local struct (`p`), of the struct in it (`p.inner`), of a followed array (`a`) or of an item
 # of it (`a[0]`), that an expression names whole; "".
@@ -2702,37 +2540,29 @@ def whole_key(b: Builder, node: Json) -> String
     return b.owners.places.wholes.get(Ast.text(bare, "id"), "")
   end
 
-  if Ast.kind(bare) != "DeclRefExpr"
-    return ""
-  end
+  return "" if Ast.kind(bare) != "DeclRefExpr"
 
   key = variable_key(b.owners.places.keys, bare)
-  if b.owners.places.fields.key?(key)
-    return key
-  end
+  return key if b.owners.places.fields.key?(key)
 
-  return ""
+  ""
 end
 
 # The followed CC_OWNS fields of the local struct whose address an expression is (`&p`), or none.
 def struct_address(b: Builder, node: Json) -> List[String]
   bare = see_through(node)
-  if not address?(bare)
-    return []
-  end
+  return [] if not address?(bare)
 
-  return followed_struct(b, Ast.children(bare).first)
+  followed_struct(b, Ast.children(bare).first)
 end
 
 # The followed CC_OWNS fields of what a `memset` clears: the struct whose address it gets (`&p`), or a followed array
 # that it gets whole (`a`).
 def cleared_struct(b: Builder, node: Json) -> List[String]
   bare = see_through(node)
-  if Ast.kind(bare) == "DeclRefExpr"
-    return followed_struct(b, bare)
-  end
+  return followed_struct(b, bare) if Ast.kind(bare) == "DeclRefExpr"
 
-  return struct_address(b, bare)
+  struct_address(b, bare)
 end
 
 # `memset(&p, 0, sizeof p)` of a followed struct: its fields are followed again, null, so one that still owned leaks
@@ -2746,99 +2576,79 @@ def cleared(b: Builder, fields: List[String], node: Json, preds: List[Int]) -> B
     built = add(written.b, Event.Assigns(assign), written.exits)
   end
 
-  return built
+  built
 end
 
 # The followed CC_OWNS fields of a local struct that an expression names whole, which escape there; nothing for any
 # other expression.
 def escaped(b: Builder, node: Json, preds: List[Int]) -> Built
   fields = followed_struct(b, node)
-  if fields.empty?
-    return Built(b: b, exits: preds)
-  end
+  return Built(b: b, exits: preds) if fields.empty?
 
-  return add(b, Event.Escapes(fields), preds)
+  add(b, Event.Escapes(fields), preds)
 end
 
 # The pointer that owns, or may stand for one, that an expression is, through casts and parentheses; "".
 def owner_named(b: Builder, node: Json) -> String
   name = variable_key(b.owners.places.keys, node)
-  if b.owners.names.include?(name)
-    return name
-  end
+  return name if b.owners.names.include?(name)
 
-  return ""
+  ""
 end
 
 # The pointer that owns an argument names: `p`, `&p` (a cleanup function, or a function that frees through a pointer
 # to it) or `*p`, also as the last expression of a statement expression; "" for none, or for a `?:`.
 def owner_of(b: Builder, node: Json) -> String
   bare = see_through(single_value(node))
-  if address?(bare)
-    return owner_named(b, Ast.children(bare).first)
-  end
+  return owner_named(b, Ast.children(bare).first) if address?(bare)
 
   pointed = pointee_owner(b, bare)
-  if pointed != ""
-    return pointed
-  end
+  return pointed if pointed != ""
 
-  return owner_named(b, bare)
+  owner_named(b, bare)
 end
 
 # The one value of an expression (`values_of`): the last expression of a statement expression, or the expression
 # itself, also when it may have several (`?:`).
 def single_value(node: Json) -> Json
   values = values_of(node)
-  if values.size == 1
-    return values.first
-  end
+  return values.first if values.size == 1
 
-  return node
+  node
 end
 
 # Whether an expression takes the address of something: `&x`.
 def address?(node: Json) -> Bool
   bare = see_through(node)
-  return Ast.kind(bare) == "UnaryOperator" and Ast.text(bare, "opcode") == "&"
+  Ast.kind(bare) == "UnaryOperator" and Ast.text(bare, "opcode") == "&"
 end
 
 # The CC_FREES parameter that `*p` stands for when the parameter points to the pointer it frees (`T **p`, a cleanup
 # function); "" for any other.
-def pointee_owner(b: Builder, node: Json) -> String
-  return pointee_param(b.owners.places.keys, node, b.owners.places.freed)
-end
+def pointee_owner(b: Builder, node: Json) -> String = pointee_param(b.owners.places.keys, node, b.owners.places.freed)
 
 # The parameter in `freed` that `*p` is, when `*p` is itself a pointer; "" for any other expression.
 def pointee_param(keys: Map[String, String], node: Json, freed: Set[String]) -> String
   bare = see_through(node)
-  if Ast.kind(bare) != "UnaryOperator" or Ast.text(bare, "opcode") != "*" or not pointer_type?(bare)
-    return ""
-  end
+  return "" if Ast.kind(bare) != "UnaryOperator" or Ast.text(bare, "opcode") != "*" or not pointer_type?(bare)
 
   name = variable_key(keys, Ast.children(bare).first)
-  if not freed.include?(name)
-    return ""
-  end
+  return "" if not freed.include?(name)
 
-  return name
+  name
 end
 
 # Whether the type of an expression is a pointer, as written or behind a typedef, `const` or not (`char *const`).
 def pointer_type?(node: Json) -> Bool
   type = JSON.get(node, "type").unwrap_or(JSON.from(""))
-  return [Ast.text(type, "qualType"), Ast.text(type, "desugaredQualType")].any? do |text|
-    unqualified(text).end_with?("*")
-  end
+  [Ast.text(type, "qualType"), Ast.text(type, "desugaredQualType")].any? do |text| unqualified(text).end_with?("*") end
 end
 
 # A call: its arguments in order, then the call. A call that never comes back ends the path. `tried` leaves out the
 # lock that a call of `Known.TRIES` takes: the condition around it takes it on the branch where it worked.
 def call(b: Builder, node: Json, preds: List[Int], tried: Bool) -> Built
   parts = Ast.children(node)
-  if parts.empty?
-    return Built(b: b, exits: preds)
-  end
+  return Built(b: b, exits: preds) if parts.empty?
 
   callee = see_through(parts.first)
   args = parts.drop(1)
@@ -2860,9 +2670,7 @@ def call(b: Builder, node: Json, preds: List[Int], tried: Bool) -> Built
     )
 
     through = add(pointer.b, Event.Call(site), pointer.exits)
-    if site.stops
-      return Built(b: through.b, exits: [])
-    end
+    return Built(b: through.b, exits: []) if site.stops
 
     return through
   end
@@ -2870,9 +2678,7 @@ def call(b: Builder, node: Json, preds: List[Int], tried: Bool) -> Built
   # A pointer that the call frees or takes is not read by it, nor one whose address it gets to hand an owned pointer
   # out through.
   name = Ast.referenced_name(callee)
-  if Known.UNEVALUATED.include?(name)
-    return Built(b: b, exits: preds)
-  end
+  return Built(b: b, exits: preds) if Known.UNEVALUATED.include?(name)
 
   taking = taken(b.ctx, name, key_of_function(b.ctx, name))
   filling = out_params(b.ctx, name)
@@ -2933,33 +2739,25 @@ def call(b: Builder, node: Json, preds: List[Int], tried: Bool) -> Built
   )
 
   called = add(built.b, Event.Call(site), built.exits)
-  if site.stops
-    return Built(b: called.b, exits: [])
-  end
+  return Built(b: called.b, exits: []) if site.stops
 
-  if not clearing.empty?
-    return cleared(called.b, clearing, node, called.exits)
-  end
+  return cleared(called.b, clearing, node, called.exits) if not clearing.empty?
 
-  return called
+  called
 end
 
 # The followed CC_OWNS fields of the items after the one whose address an argument is (`&a[0]` of `a[2]`): a CC_FREES
 # parameter that gets it may free them too (`pairs_free(&a[0], n)`), so they escape there; none for any other.
 def later_items(b: Builder, arg: Json) -> List[String]
   item = see_through(Ast.children(see_through(arg)).first)
-  if Ast.kind(item) != "ArraySubscriptExpr"
-    return []
-  end
+  return [] if Ast.kind(item) != "ArraySubscriptExpr"
 
   items = b.owners.places.parts.get(whole_key(b, Ast.children(item).first), [])
   place = whole_key(b, item)
   at = (0...items.size).to_a.select do |i| items[i] == place end
-  if at.empty?
-    return []
-  end
+  return [] if at.empty?
 
-  return items.drop(at.first + 1).flat_map do |later| b.owners.places.fields.get(later, []) end
+  items.drop(at.first + 1).flat_map do |later| b.owners.places.fields.get(later, []) end
 end
 
 # An argument of a call, before the call. A pointer that owns at a parameter that frees or takes it (`taking`), or
@@ -2981,16 +2779,14 @@ def argument(b: Builder, arg: Json, taking: Bool, filling: Bool, preds: List[Int
   # `&p` at a CC_OWNS_OUT parameter emits no `Lends`: the call fills `p`, and `after_call` checks that a value it still
   # owned is not lost, which a `Lends` before it would hide.
   set = taking or (filling and address?(arg))
-  if not (set and owner != "")
-    return expression(b, arg, preds)
-  end
+  return expression(b, arg, preds) if not (set and owner != "")
 
   if address?(arg)
     # `free_and_null(&p)` may set `p`: a condition on it is forgotten.
     return add(b, Event.Writes([owner]), preds)
   end
 
-  return Built(b: b, exits: preds)
+  Built(b: b, exits: preds)
 end
 
 # What a call does to the locks: a known call takes or drops the lock of its first argument, and a function with
@@ -3036,60 +2832,52 @@ def site_of(b: Builder, name: String, args: List[Arg], place: Ast.Place, noretur
       texts = args.map do |arg| arg.text end
       taken = callee.locks.select do |lock| lock.takes end
       dropped = callee.locks.select do |lock| not lock.takes end
-      return site.with(
+      site.with(
         unnamed: unnamed or taken.any? do |lock| annotated_lock(lock, texts).empty? end,
         takes: takes.concat(taken.flat_map do |lock| annotated_lock(lock, texts) end),
         drops: drops.concat(dropped.flat_map do |lock| annotated_lock(lock, texts) end),
         stops: stops or callee.stops,
       )
-    none -> return site
+    none -> site
   end
 end
 
 # An argument that passes the address of a pointer that owns (`&p`) as it is; any other with no owner.
 def by_address(arg: Arg) -> Arg
-  if arg.address
-    return arg
-  end
+  return arg if arg.address
 
-  return arg.with(owner: "")
+  arg.with(owner: "")
 end
 
 # The pointers that own among the arguments at `indices`.
 def owners_at(args: List[Arg], indices: List[Int]) -> List[String]
-  return indices.select do |i| i < args.size and args[i].owner != "" end.map do |i| args[i].owner end
+  indices.select do |i| i < args.size and args[i].owner != "" end.map do |i| args[i].owner end
 end
 
 # The lock of the argument at `index`, if the call has it and it names an object.
 def lock_of(args: List[Arg], index: Int) -> List[Lock]
-  if index >= args.size
-    return []
-  end
+  return [] if index >= args.size
 
-  return locks_of([args[index].text]).map do |lock|
-    lock.with(class: args[index].class, through: args[index].through)
-  end
+  locks_of([args[index].text]).map do |lock| lock.with(class: args[index].class, through: args[index].through) end
 end
 
 # The key of a lock of CC_RELEASES in the names of the parameters of the definition, which may not be those of the
 # prototype that wrote it; "" for the restore of a pair.
 def released_key(lock: Annotated, names: List[String]) -> String
-  if lock.pair != ""
-    return ""
-  end
+  return "" if lock.pair != ""
 
-  return key_of(substituted(lock.text, lock.params, names))
+  key_of(substituted(lock.text, lock.params, names))
 end
 
 # The lock of an annotation, in the texts of the arguments of the call.
 def annotated_lock(lock: Annotated, texts: List[String]) -> List[Lock]
-  return locks_of([substituted(lock.text, lock.params, texts)]).map do |found|
+  locks_of([substituted(lock.text, lock.params, texts)]).map do |found|
     found.with(class: lock.class, pair: lock.pair, through: lock.through)
   end
 end
 
 def arg_of(b: Builder, node: Json) -> Arg
-  return Arg(
+  Arg(
     text: text_of(b, node, true),
     class: class_of(b, node),
     owner: owner_of(b, node),
@@ -3107,24 +2895,22 @@ def aliased_through?(b: Builder, node: Json, depth: Int) -> Bool
   end
 
   case Ast.kind(bare)
-    "MemberExpr" -> return pointer_type?(bare)
+    "MemberExpr" -> pointer_type?(bare)
     # An item of an array of pointers (`p->mus[i]` of `pthread_mutex_t *mus[2]`) is a pointer itself.
-    "ArraySubscriptExpr" -> return pointer_type?(bare) or aliased_through?(b, Ast.children(bare).first, depth)
+    "ArraySubscriptExpr" -> pointer_type?(bare) or aliased_through?(b, Ast.children(bare).first, depth)
     "DeclRefExpr" ->
       case b.aliases.get(Ast.referenced_name(bare))
-        some(value) if depth < ALIAS_DEPTH -> return aliased_through?(b, value, depth + 1)
-        _ -> return pointer_type?(bare)
+        some(value) if depth < ALIAS_DEPTH -> aliased_through?(b, value, depth + 1)
+        _ -> pointer_type?(bare)
       end
 
-    _ -> return false
+    _ -> false
   end
 end
 
 # The class of a lock expression: the field it ends in, or a global variable, through `&`, `*` and the local variables
 # set once.
-def class_of(b: Builder, node: Json) -> String
-  return aliased_class(b, node, 0)
-end
+def class_of(b: Builder, node: Json) -> String = aliased_class(b, node, 0)
 
 def aliased_class(b: Builder, node: Json, depth: Int) -> String
   bare = see_through(node)
@@ -3133,24 +2919,24 @@ def aliased_class(b: Builder, node: Json, depth: Int) -> String
   end
 
   case Ast.kind(bare)
-    "MemberExpr" -> return b.ctx.fields.get(Ast.text(bare, "referencedMemberDecl")).unwrap_or("")
-    "ArraySubscriptExpr" -> return aliased_class(b, Ast.children(bare).first, depth)
+    "MemberExpr" -> b.ctx.fields.get(Ast.text(bare, "referencedMemberDecl")).unwrap_or("")
+    "ArraySubscriptExpr" -> aliased_class(b, Ast.children(bare).first, depth)
     "DeclRefExpr" ->
       name = Ast.referenced_name(bare)
       case b.aliases.get(name)
-        some(value) if depth < ALIAS_DEPTH -> return aliased_class(b, value, depth + 1)
+        some(value) if depth < ALIAS_DEPTH -> aliased_class(b, value, depth + 1)
         _ ->
           declared = JSON.get(bare, "referencedDecl").unwrap_or(JSON.from(""))
-          return b.ctx.globals.get(Ast.text(declared, "id")).unwrap_or("")
+          b.ctx.globals.get(Ast.text(declared, "id")).unwrap_or("")
       end
 
-    _ -> return ""
+    _ -> ""
   end
 end
 
 # The locks of lock texts; a text that is "" (an expression that names no object, such as a call) is no lock.
 def locks_of(texts: List[String]) -> List[Lock]
-  return texts.select do |text| text != "" end.map do |text| Lock(key: key_of(text), shown: shown_of(text)) end
+  texts.select do |text| text != "" end.map do |text| Lock(key: key_of(text), shown: shown_of(text)) end
 end
 
 # A condition: the nodes after it when it is true and when it is false. `!`, `&&` and `||` split it, a constant
@@ -3170,16 +2956,14 @@ def condition(b: Builder, node: Json, preds: List[Int]) -> Split
   end
 
   if kind == "IntegerLiteral"
-    if Ast.text(bare, "value") == "0"
-      return Split(b: b, yes: [], no: preds)
-    end
+    return Split(b: b, yes: [], no: preds) if Ast.text(bare, "value") == "0"
 
     return Split(b: b, yes: preds, no: [])
   end
 
   case tried_call(bare)
-    some(tried) -> return trial(b, tried, preds)
-    none -> return branch(b, bare, preds)
+    some(tried) -> trial(b, tried, preds)
+    none -> branch(b, bare, preds)
   end
 end
 
@@ -3194,7 +2978,7 @@ def operands_of(node: Json, opcode: String) -> List[Json]
     current = see_through(parts[0])
   end
 
-  return [current].concat(rights.reverse)
+  [current].concat(rights.reverse)
 end
 
 # The operands of `&&` (`all`) or `||` in order: each one after the previous one gave the value that goes on.
@@ -3214,11 +2998,9 @@ def chain(b: Builder, operands: List[Json], all: Bool, preds: List[Int]) -> Spli
     end
   end
 
-  if all
-    return Split(b: built, yes: pending, no: out)
-  end
+  return Split(b: built, yes: pending, no: out) if all
 
-  return Split(b: built, yes: out, no: pending)
+  Split(b: built, yes: out, no: pending)
 end
 
 # A condition of any other form: its calls, then a node for each of its values.
@@ -3239,7 +3021,7 @@ def branch(b: Builder, bare: Json, preds: List[Int]) -> Split
 
   yes = add(value.b, Event.Branch(fact.with(nulls: null_on_true, set: null_on_false)), value.exits)
   no = add(yes.b, Event.Branch(fact.with(value: false, nulls: null_on_false, set: null_on_true)), value.exits)
-  return Split(b: no.b, yes: yes.exits, no: no.exits)
+  Split(b: no.b, yes: yes.exits, no: no.exits)
 end
 
 # Whether a condition tells that a pointer that owns is null: `p`, `p = malloc(n)`, and either compared with 0.
@@ -3250,28 +3032,20 @@ def null_test(b: Builder, node: Json) -> Optional[NullTest]
     name = pointee_owner(b, bare)
   end
 
-  if name != ""
-    return some(NullTest(name: name, null_if: false))
-  end
+  return some(NullTest(name: name, null_if: false)) if name != ""
 
   opcode = Ast.text(bare, "opcode")
   parts = Ast.children(bare)
-  if Ast.kind(bare) != "BinaryOperator" or parts.size != 2
-    return none
-  end
+  return none if Ast.kind(bare) != "BinaryOperator" or parts.size != 2
 
   if opcode == "="
     target = owner_named(b, parts[0])
-    if target == ""
-      return none
-    end
+    return none if target == ""
 
     return some(NullTest(name: target, null_if: false))
   end
 
-  if opcode != "==" and opcode != "!="
-    return none
-  end
+  return none if opcode != "==" and opcode != "!="
 
   for pair in [[parts[0], parts[1]], [parts[1], parts[0]]]
     if zero?(pair[1])
@@ -3279,19 +3053,15 @@ def null_test(b: Builder, node: Json) -> Optional[NullTest]
     end
   end
 
-  return none
+  none
 end
 
 def tried_call(node: Json) -> Optional[Tried]
-  if try_call?(node)
-    return some(Tried(call: see_through(node), zero_is_true: false))
-  end
+  return some(Tried(call: see_through(node), zero_is_true: false)) if try_call?(node)
 
   opcode = Ast.text(node, "opcode")
   parts = Ast.children(node)
-  if Ast.kind(node) != "BinaryOperator" or (opcode != "==" and opcode != "!=") or parts.size != 2
-    return none
-  end
+  return none if Ast.kind(node) != "BinaryOperator" or (opcode != "==" and opcode != "!=") or parts.size != 2
 
   for pair in [[parts[0], parts[1]], [parts[1], parts[0]]]
     if try_call?(pair[0]) and zero?(pair[1])
@@ -3299,12 +3069,12 @@ def tried_call(node: Json) -> Optional[Tried]
     end
   end
 
-  return none
+  none
 end
 
 def try_call?(node: Json) -> Bool
   bare = see_through(node)
-  return Ast.kind(bare) == "CallExpr" and Known.TRIES.include?(callee_name(bare))
+  Ast.kind(bare) == "CallExpr" and Known.TRIES.include?(callee_name(bare))
 end
 
 # The call, then on the branch where it gave 0 a node that takes its lock.
@@ -3320,18 +3090,14 @@ def trial(b: Builder, tried: Tried, preds: List[Int]) -> Split
     called.exits,
   )
 
-  if tried.zero_is_true
-    return Split(b: taken.b, yes: taken.exits, no: called.exits)
-  end
+  return Split(b: taken.b, yes: taken.exits, no: called.exits) if tried.zero_is_true
 
-  return Split(b: taken.b, yes: called.exits, no: taken.exits)
+  Split(b: taken.b, yes: called.exits, no: taken.exits)
 end
 
 # The text of an expression, from the names, fields, constants and operators of `UNARY_TEXT` and `BINARY_TEXT`; ""
 # for anything else. With `aliases`, a local variable set once reads as its value.
-def text_of(b: Builder, node: Json, aliases: Bool) -> String
-  return written_text(b, node, aliases, {}, 0)
-end
+def text_of(b: Builder, node: Json, aliases: Bool) -> String = written_text(b, node, aliases, {}, 0)
 
 # `text_of`, with the key that `keys` gives a variable in place of its name: the text of a condition, so a condition on
 # a local is not one on another variable of its name.
@@ -3346,48 +3112,36 @@ def written_text(b: Builder, node: Json, aliases: Bool, keys: Map[String, String
         aliased = b.aliases.get(name).map do |value| written_text(b, value, aliases, keys, depth + 1) end.unwrap_or("")
       end
 
-      if aliased != ""
-        return aliased
-      end
+      return aliased if aliased != ""
 
-      return referenced_key(keys, bare)
+      referenced_key(keys, bare)
     "MemberExpr" ->
       base = written_text(b, parts.first, aliases, keys, depth)
-      if base == ""
-        return ""
-      end
+      return "" if base == ""
 
-      if Ast.flag?(bare, "isArrow")
-        return "#{base}->#{Ast.text(bare, "name")}"
-      end
+      return "#{base}->#{Ast.text(bare, "name")}" if Ast.flag?(bare, "isArrow")
 
-      return "#{base}.#{Ast.text(bare, "name")}"
+      "#{base}.#{Ast.text(bare, "name")}"
     "ArraySubscriptExpr" ->
       array = written_text(b, parts[0], aliases, keys, depth)
       index = written_text(b, parts[1], aliases, keys, depth)
-      if array == "" or index == ""
-        return ""
-      end
+      return "" if array == "" or index == ""
 
-      return "#{array}[#{index}]"
+      "#{array}[#{index}]"
     "UnaryOperator" ->
       operand = written_text(b, parts.first, aliases, keys, depth)
-      if operand == "" or Ast.flag?(bare, "isPostfix") or not UNARY_TEXT.include?(Ast.text(bare, "opcode"))
-        return ""
-      end
+      return "" if operand == "" or Ast.flag?(bare, "isPostfix") or not UNARY_TEXT.include?(Ast.text(bare, "opcode"))
 
-      return "#{Ast.text(bare, "opcode")}#{operand}"
+      "#{Ast.text(bare, "opcode")}#{operand}"
     "BinaryOperator" ->
       left = written_text(b, parts[0], aliases, keys, depth)
       right = written_text(b, parts[1], aliases, keys, depth)
-      if left == "" or right == "" or not BINARY_TEXT.include?(Ast.text(bare, "opcode"))
-        return ""
-      end
+      return "" if left == "" or right == "" or not BINARY_TEXT.include?(Ast.text(bare, "opcode"))
 
-      return "#{left} #{Ast.text(bare, "opcode")} #{right}"
-    "IntegerLiteral" -> return Ast.text(bare, "value")
-    "CharacterLiteral" -> return "#{Ast.number(bare, "value")}"
-    _ -> return ""
+      "#{left} #{Ast.text(bare, "opcode")} #{right}"
+    "IntegerLiteral" -> Ast.text(bare, "value")
+    "CharacterLiteral" -> "#{Ast.number(bare, "value")}"
+    _ -> ""
   end
 end
 
@@ -3396,44 +3150,38 @@ def local_text(b: Builder, name: String) -> String
   case b.aliases.get(name)
     some(value) ->
       aliased = text_of(b, value, true)
-      if aliased != ""
-        return aliased
-      end
+      return aliased if aliased != ""
 
-      return name
-    none -> return name
+      name
+    none -> name
   end
 end
 
 # The variables an expression reads, by key (`referenced_key`).
 def roots_of(keys: Map[String, String], node: Json) -> List[String]
-  if Ast.kind(node) == "DeclRefExpr"
-    return [referenced_key(keys, node)]
-  end
+  return [referenced_key(keys, node)] if Ast.kind(node) == "DeclRefExpr"
 
   # A followed CC_OWNS field of a local struct is a variable of its own, besides the struct.
   if Ast.kind(node) == "MemberExpr" and keys.key?(Ast.text(node, "id"))
     return [keys[Ast.text(node, "id")]].concat(Ast.children(node).flat_map do |child| roots_of(keys, child) end).uniq
   end
 
-  return Ast.children(node).flat_map do |child| roots_of(keys, child) end.uniq
+  Ast.children(node).flat_map do |child| roots_of(keys, child) end.uniq
 end
 
 # The variable an assignment writes, by key (`referenced_key`): the root of `x`, `x->a.b` or `x[i]`.
 def target_root(keys: Map[String, String], node: Json) -> String
   bare = see_through(node)
   case Ast.kind(bare)
-    "DeclRefExpr" -> return referenced_key(keys, bare)
+    "DeclRefExpr" -> referenced_key(keys, bare)
     "MemberExpr" ->
       # A followed CC_OWNS field of a local struct is a variable of its own.
-      if keys.key?(Ast.text(bare, "id"))
-        return keys[Ast.text(bare, "id")]
-      end
+      return keys[Ast.text(bare, "id")] if keys.key?(Ast.text(bare, "id"))
 
-      return target_root(keys, Ast.children(bare).first)
-    "ArraySubscriptExpr" -> return target_root(keys, Ast.children(bare).first)
-    "UnaryOperator" -> return target_root(keys, Ast.children(bare).first)
-    _ -> return ""
+      target_root(keys, Ast.children(bare).first)
+    "ArraySubscriptExpr" -> target_root(keys, Ast.children(bare).first)
+    "UnaryOperator" -> target_root(keys, Ast.children(bare).first)
+    _ -> ""
   end
 end
 
@@ -3442,38 +3190,32 @@ end
 def storage_root(keys: Map[String, String], node: Json) -> String
   bare = see_through(node)
   case Ast.kind(bare)
-    "DeclRefExpr" -> return referenced_key(keys, bare)
+    "DeclRefExpr" -> referenced_key(keys, bare)
     "MemberExpr" ->
-      if Ast.flag?(bare, "isArrow")
-        return ""
-      end
+      return "" if Ast.flag?(bare, "isArrow")
 
-      return storage_root(keys, Ast.children(bare).first)
+      storage_root(keys, Ast.children(bare).first)
     "ArraySubscriptExpr" ->
       base = Ast.children(bare).first
-      if Ast.text(base, "castKind") != "ArrayToPointerDecay"
-        return ""
-      end
+      return "" if Ast.text(base, "castKind") != "ArrayToPointerDecay"
 
-      return storage_root(keys, Ast.children(base).first)
-    _ -> return ""
+      storage_root(keys, Ast.children(base).first)
+    _ -> ""
   end
 end
 
 def last_child(node: Json) -> Json
   parts = Ast.children(node)
-  if parts.empty?
-    return JSON.from("")
-  end
+  return JSON.from("") if parts.empty?
 
-  return parts.last
+  parts.last
 end
 
 # A new node after `preds`.
 def add(b: Builder, event: Event, preds: List[Int]) -> Built
   index = b.nodes.size
   grown = b.with(nodes: b.nodes.push(Node(event: event, next: [])))
-  return Built(b: link(grown, preds, index), exits: [index])
+  Built(b: link(grown, preds, index), exits: [index])
 end
 
 def link(b: Builder, froms: List[Int], to: Int) -> Builder
@@ -3485,7 +3227,7 @@ def link(b: Builder, froms: List[Int], to: Int) -> Builder
     end
   end
 
-  return b.with(nodes: nodes)
+  b.with(nodes: nodes)
 end
 
 # `found` with the node and every node inside it, in order. Only pushes, so the list is never copied.
@@ -3495,5 +3237,5 @@ def with_descendants(found: List[Json], node: Json) -> List[Json]
     all = with_descendants(all, child)
   end
 
-  return all
+  all
 end

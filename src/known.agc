@@ -287,48 +287,34 @@ end
 ## Returns the name of the flag that makes a call of `FLAG_ARGUMENTS` return at once. A C library may define it as
 ## a constant of an enum (glibc does for MSG_DONTWAIT), which the AST names.
 export def nonblocking_name(call: String) -> String
-  if call == "uv_run"
-    return "UV_RUN_NOWAIT"
-  end
+  return "UV_RUN_NOWAIT" if call == "uv_run"
 
-  if call == "open" or call == "openat"
-    return "O_NONBLOCK"
-  end
+  return "O_NONBLOCK" if call == "open" or call == "openat"
 
-  if WAIT_CALLS.include?(call)
-    return "WNOHANG"
-  end
+  return "WNOHANG" if WAIT_CALLS.include?(call)
 
-  return "MSG_DONTWAIT"
+  "MSG_DONTWAIT"
 end
 
 ## Returns whether the argument of a call of `FLAG_ARGUMENTS` is one value to compare (the mode of `uv_run`), not
 ## flags to test bit by bit.
-export def one_value?(call: String) -> Bool
-  return call == "uv_run"
-end
+export def one_value?(call: String) -> Bool = call == "uv_run"
 
 ## Returns the bit of the flag that makes a call of `FLAG_ARGUMENTS` return at once on `target`, a triple of clang
 ## (`x86_64-pc-linux-gnu`), or 0 when the rules do not know its value there: Linux, but on MIPS, SPARC, Alpha and
 ## PA-RISC, whose values differ, and macOS. WNOHANG is 1 on Linux (every architecture) and macOS.
 export def nonblocking_bit(target: String, call: String) -> Int
-  if one_value?(call)
-    return UV_RUN_NOWAIT_VALUE
-  end
+  return UV_RUN_NOWAIT_VALUE if one_value?(call)
 
   if WAIT_CALLS.include?(call)
-    if apple?(target) or target.include?("-linux")
-      return 1
-    end
+    return 1 if apple?(target) or target.include?("-linux")
 
     return 0
   end
 
   dontwait = call != "open" and call != "openat"
   if apple?(target)
-    if dontwait
-      return 0x80
-    end
+    return 0x80 if dontwait
 
     return 0x4
   end
@@ -336,27 +322,23 @@ export def nonblocking_bit(target: String, call: String) -> Int
   arch = target.split("-").first
   odd = ["mips", "sparc", "alpha", "hppa", "parisc"].any? do |prefix| arch.start_with?(prefix) end
   if target.include?("-linux") and not odd
-    if dontwait
-      return 0x40
-    end
+    return 0x40 if dontwait
 
     return 0x800
   end
 
-  return 0
+  0
 end
 
 ## Returns whether the constant `flags` of a call of `FLAG_ARGUMENTS` makes it return at once, given its `bit`. The
 ## flags of the others are bits to test; the mode of `uv_run` is one value, so `UV_RUN_ONCE` (1) is not `NOWAIT` (2).
 export def flags_return_at_once?(call: String, flags: Int, bit: Int) -> Bool
-  if one_value?(call)
-    return flags == bit
-  end
+  return flags == bit if one_value?(call)
 
-  return Int.bit_and(flags, bit) != 0
+  Int.bit_and(flags, bit) != 0
 end
 
 # Whether a triple of clang is one of Apple's (`arm64-apple-macos`, `x86_64-apple-darwin23`).
 def apple?(target: String) -> Bool
-  return target.include?("-apple-") or target.include?("-darwin") or target.include?("-macos")
+  target.include?("-apple-") or target.include?("-darwin") or target.include?("-macos")
 end

@@ -50,7 +50,7 @@ end
 
 ## Returns the findings in the order of the report: by file, line, column, code and message.
 export def sort(findings: List[Finding]) -> List[Finding]
-  return findings.sort_by do |f| "#{f.file}\n#{pad(f.line)}:#{pad(f.column)}\n#{f.code}\n#{f.message}" end
+  findings.sort_by do |f| "#{f.file}\n#{pad(f.line)}:#{pad(f.column)}\n#{f.code}\n#{f.message}" end
 end
 
 ## Returns the findings without the repeats of one place: a header reached by several files is reported by each.
@@ -65,22 +65,18 @@ export def unique(findings: List[Finding]) -> List[Finding]
     end
   end
 
-  return kept
+  kept
 end
 
 ## Returns what the baseline matches on: the code, the file and the message, never the line, so a finding that moved
 ## with its code is still the same finding.
-export def baseline_key(f: Finding) -> String
-  return key(f.code, f.file, f.message)
-end
+export def baseline_key(f: Finding) -> String = key(f.code, f.file, f.message)
 
 ## Returns the baseline key of a finding that is given by its parts.
-export def key(code: String, file: String, message: String) -> String
-  return JSON.encode([code, file, message])
-end
+export def key(code: String, file: String, message: String) -> String = JSON.encode([code, file, message])
 
 ## Returns a line or column zero-padded, so that the text order of a sort key is the numeric order.
 export def pad(n: Int) -> String
   digits = n.to_s
-  return "0" * (9 - digits.length) + digits
+  "0" * (9 - digits.length) + digits
 end

@@ -75,13 +75,11 @@ export def text(report: Report) -> String
     )
   end
 
-  return lines.join("\n")
+  lines.join("\n")
 end
 
 ## Returns whether the stale entries of the baseline fail the run.
-export def failed_stale?(report: Report) -> Bool
-  return not report.failing.empty?
-end
+export def failed_stale?(report: Report) -> Bool = not report.failing.empty?
 
 ## Returns the report as one JSON object for tools and agents.
 export def json(report: Report) -> String
@@ -107,22 +105,20 @@ export def json(report: Report) -> String
 
   # The key of an experimental inference is in the object only when it ran: the object ends with its `}`.
   case report.inferred_short_locks
-    some(classes) -> return "#{encoded.slice(0, encoded.size - 1)},\"inferred_short_locks\":#{JSON.encode(classes)}}"
-    none -> return encoded
+    some(classes) -> "#{encoded.slice(0, encoded.size - 1)},\"inferred_short_locks\":#{JSON.encode(classes)}}"
+    none -> encoded
   end
 end
 
 ## Returns the lines for standard error: one for each tool error.
 export def error_lines(report: Report) -> List[String]
-  return report.errors.map do |e| "cchecker: error: #{e.tool} on #{e.file}: #{e.message}" end
+  report.errors.map do |e| "cchecker: error: #{e.tool} on #{e.file}: #{e.message}" end
 end
 
 ## Returns the line for standard error about the tools whose version is not the one that made the baseline, or none.
 ## The findings of the analyzers change with their version, so the new and fixed ones may come from it.
 export def version_line(report: Report) -> Optional[String]
-  if report.version_changes.empty?
-    return none
-  end
+  return none if report.version_changes.empty?
 
   changed = report.version_changes.map do |c| "#{c.tool} was #{c.baseline}, is #{c.current}" end.join("; ")
   line = (
@@ -134,12 +130,12 @@ export def version_line(report: Report) -> Optional[String]
     line = line + ", and so may its stale entries"
   end
 
-  return some(line)
+  some(line)
 end
 
 ## Returns the lines for standard error: one for each file that was not checked.
 export def unchecked_lines(report: Report) -> List[String]
-  return report.unchecked_files.map do |u| "cchecker: warning: #{u.file} not checked: #{u.missing} not found" end
+  report.unchecked_files.map do |u| "cchecker: warning: #{u.file} not checked: #{u.missing} not found" end
 end
 
 ## Returns the line for standard error that says how many locks the rules found short by their critical sections, or
@@ -147,12 +143,10 @@ end
 export def inferred_line(report: Report) -> Optional[String]
   classes = report.inferred_short_locks.unwrap_or([])
   count = classes.size
-  if count == 0
-    return none
-  end
+  return none if count == 0
 
   first = classes.first
-  return some(
+  some(
     "cchecker: #{count} #{plural(count, "lock")} found short by #{plural_its(count)} critical sections (first: " +
     "#{first}); --json lists them",
   )
@@ -161,14 +155,12 @@ end
 ## Returns the line for standard error about the callbacks that the inference of roots could not follow, or none.
 export def unresolved_line(report: Report) -> Optional[String]
   count = report.unresolved_callbacks.size
-  if count == 0
-    return none
-  end
+  return none if count == 0
 
   # A callback inside the working directory first: its path is the short one, and the code the project can change.
   inside = report.unresolved_callbacks.select do |u| not u.file.start_with?("/") end
   first = inside.concat(report.unresolved_callbacks).first
-  return some(
+  some(
     "cchecker: #{count} #{plural(count, "callback")} of a libuv call could not be followed to a function, so " +
     "#{plural_it(count)} no root (first: #{first.call} at #{first.file}:#{first.line}); --json lists them",
   )
@@ -181,28 +173,22 @@ def stale_line(entry: Entry) -> String
     times = " (#{entry.count} of them)"
   end
 
-  return "cchecker: fixed since the baseline: #{entry.file} #{entry.code} #{entry.message}#{times}"
+  "cchecker: fixed since the baseline: #{entry.file} #{entry.code} #{entry.message}#{times}"
 end
 
 # The call path of a finding of the rules, and the place of an inferred root, which the message leaves out.
 def path_text(f: Finding) -> String
-  if f.path.empty?
-    return ""
-  end
+  return "" if f.path.empty?
 
-  if f.root != ""
-    return ": #{f.path.join(" -> ")} (root: #{f.root})"
-  end
+  return ": #{f.path.join(" -> ")} (root: #{f.root})" if f.root != ""
 
-  return ": #{f.path.join(" -> ")}"
+  ": #{f.path.join(" -> ")}"
 end
 
 def plural_it(n: Int) -> String
-  if n == 1
-    return "it is"
-  end
+  return "it is" if n == 1
 
-  return "they are"
+  "they are"
 end
 
 def summary(report: Report) -> String
@@ -232,25 +218,19 @@ def summary(report: Report) -> String
     )
   end
 
-  if count == 0
-    return "cchecker: no new findings#{tail}"
-  end
+  return "cchecker: no new findings#{tail}" if count == 0
 
-  return "cchecker: #{count} new #{plural(count, "finding")} in #{files} #{plural(files, "file")}#{tail}"
+  "cchecker: #{count} new #{plural(count, "finding")} in #{files} #{plural(files, "file")}#{tail}"
 end
 
 def plural_its(count: Int) -> String
-  if count == 1
-    return "its"
-  end
+  return "its" if count == 1
 
-  return "their"
+  "their"
 end
 
 def plural(n: Int, word: String) -> String
-  if n == 1
-    return word
-  end
+  return word if n == 1
 
-  return word + "s"
+  word + "s"
 end

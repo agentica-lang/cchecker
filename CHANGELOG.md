@@ -4,6 +4,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** needs Agentica 0.29.0 or later: the sources use its `Process.Options` and its formatted syntax (implicit returns, guards, one-line defs). CI tests with Agentica 0.29.0.
+
 ## [0.5.0] - 2026-11-10
 
 ### Changed

@@ -266,9 +266,7 @@ struct Found
 end
 
 ## Returns the unit of the declarations that `Scan` kept, a JSON array.
-export def read(decls: Json) -> Result[Unit]
-  return read_with(decls, [], [])
-end
+export def read(decls: Json) -> Result[Unit] = read_with(decls, [], [])
 
 ## Returns the unit of the declarations, with the lock wrappers of `[assume] acquires` and `releases` (`name(N)` or
 ## `name@path(N)`) marked as CC_ACQUIRES and CC_RELEASES of their parameter `N` would: the C of a library cannot be
@@ -316,7 +314,7 @@ export def read_with(decls: Json, acquires: List[String], releases: List[String]
   end
 
   marked = lock_marks_of(tables, nodes)
-  return ok(
+  ok(
     Unit(
       functions: functions.map do |f| with_assumed_marks(ctx, f) end,
       calls: found.calls,
@@ -390,7 +388,7 @@ def context_of(tables: Tables, nodes: List[Json], wrappers: Wrappers) -> Flow.Co
     fields = fields.put(id, tables.field_slots[id].replace("field:", ""))
   end
 
-  return Flow.Context(
+  Flow.Context(
     callees: callees,
     statics: tables.static_functions,
     fields: fields,
@@ -496,7 +494,7 @@ def owning_of(tables: Tables, nodes: List[Json]) -> Flow.Owning
   variables = nodes.select do |n| Ast.kind(n) == "VarDecl" end
   marked = Set.new(variables.select do |n| own_marks(n).include?(OWNS) end.map do |n| Ast.text(n, "name") end)
   globals = variables.select do |n| marked.include?(Ast.text(n, "name")) end.map do |n| Ast.text(n, "id") end
-  return Flow.Owning(
+  Flow.Owning(
     returns: returns,
     takes: takes,
     frees: frees,
@@ -545,7 +543,7 @@ def collector_marks(tables: Tables, nodes: List[Json]) -> Collector.Marks
   end
 
   start = Collector.Marks(types: types.delete(""), holders: Set.new([]), allocators: allocators, statics: statics)
-  return with_holders(start, tables)
+  with_holders(start, tables)
 end
 
 # The marks with the records that hold a value of the collector, until no more are found.
@@ -563,27 +561,23 @@ def with_holders(marks: Collector.Marks, tables: Tables) -> Collector.Marks
     end
   end
 
-  return grown
+  grown
 end
 
 # The record that a typedef names itself (`typedef struct obj obj_t`), not one in a pointer or a function type
 # (`typedef value (*make_fn)(void)`); "" for none.
 def own_record_id(node: Json) -> String
   types = Ast.children(node).select do |child| not Ast.kind(child).end_with?("Attr") end
-  if types.empty?
-    return ""
-  end
+  return "" if types.empty?
 
   type = types.first
   if Ast.kind(type) == "ElaboratedType" and not Ast.children(type).empty?
     type = Ast.children(type).first
   end
 
-  if Ast.kind(type) != "RecordType"
-    return ""
-  end
+  return "" if Ast.kind(type) != "RecordType"
 
-  return Ast.text(JSON.get(type, "decl").unwrap_or(JSON.from("")), "id")
+  Ast.text(JSON.get(type, "decl").unwrap_or(JSON.from("")), "id")
 end
 
 # The context of the body of a function: CC_PAIR(set, restore) on a function other than `set` holds in its body only.
@@ -595,7 +589,7 @@ def paired(ctx: Flow.Context, tables: Tables, function: Function) -> Flow.Contex
     end
   end
 
-  return ctx.with(callees: callees)
+  ctx.with(callees: callees)
 end
 
 # The callees with the lock of a pair, `pair:set:restore`: `set` takes it and `restore` releases it, so two pairs on
@@ -613,21 +607,17 @@ def with_pair(callees: Map[String, Flow.Callee], tables: Tables, pair: Pair) -> 
     end
   end
 
-  return added
+  added
 end
 
 # The functions of a mark `pair(set, restore)`; none for another mark, or one that does not name two functions.
 def pair_of(mark: String) -> List[Pair]
-  if not mark.start_with?(PAIR_MARK) or not mark.end_with?(")")
-    return []
-  end
+  return [] if not mark.start_with?(PAIR_MARK) or not mark.end_with?(")")
 
   names = mark.slice(PAIR_MARK.length, mark.length - PAIR_MARK.length - 1).split(",").map do |name| name.strip end
-  if names.size != 2 or names.any? do |name| name == "" end
-    return []
-  end
+  return [] if names.size != 2 or names.any? do |name| name == "" end
 
-  return [Pair(set: names[0], restore: names[1])]
+  [Pair(set: names[0], restore: names[1])]
 end
 
 # Whether the lock of an annotation is reached through a pointer that its class names: the text reads a pointer
@@ -642,9 +632,7 @@ def through_text?(
   types: List[String],
 ) -> Bool
   shown = Flow.shown_of(text)
-  if shown.start_with?("*")
-    return true
-  end
+  return true if shown.start_with?("*")
 
   path = shown.replace("->", ".").split(".").map do |part| part.split("[").first end
   at = -1
@@ -654,9 +642,7 @@ def through_text?(
     end
   end
 
-  if at < 0
-    return path.size == 1 and pointers.include?(path.first)
-  end
+  return path.size == 1 and pointers.include?(path.first) if at < 0
 
   type = types[at]
   written = [type]
@@ -674,7 +660,7 @@ def through_text?(
     end
   end
 
-  return path.size > 1 and written.any? do |t| t.include?("*") end
+  path.size > 1 and written.any? do |t| t.include?("*") end
 end
 
 # The class of the lock of an annotation, through the types of the parameters: `s->pool->mu` of `struct server *s` is
@@ -696,9 +682,7 @@ def class_of_text(
   end
 
   if at < 0
-    if path.size == 1
-      return globals.get(path.first).unwrap_or("")
-    end
+    return globals.get(path.first).unwrap_or("") if path.size == 1
 
     return ""
   end
@@ -709,9 +693,7 @@ def class_of_text(
       some(record) ->
         for k in 0...record.fields.size
           if record.fields[k] == path[j]
-            if j == path.size - 1
-              return "#{record.name}.#{path[j]}"
-            end
+            return "#{record.name}.#{path[j]}" if j == path.size - 1
 
             type = record.types[k]
           end
@@ -721,7 +703,7 @@ def class_of_text(
     end
   end
 
-  return ""
+  ""
 end
 
 # The name of the struct of a type as clang writes it: `struct server *`, `const server *`, `struct server *const`,
@@ -733,7 +715,7 @@ def type_name(type: String) -> String
     .split(" ")
     .select do |word| word != "" and not TYPE_QUALIFIERS.include?(word) end
 
-  return words.join(" ")
+  words.join(" ")
 end
 
 # The lock marks of the fields and the global variables of the unit, by their class, and the errors of the marks that
@@ -770,12 +752,10 @@ def lock_marks_of(tables: Tables, nodes: List[Json]) -> LockMarks
   errors = locks.select do |found| mark_error(found) != "" end
     .map do |found| MarkError(file: found.file, message: mark_error(found)) end
 
-  return LockMarks(marks: locks.select do |found| mark_error(found) == "" end, errors: errors)
+  LockMarks(marks: locks.select do |found| mark_error(found) == "" end, errors: errors)
 end
 
-def lock_mark?(mark: String) -> Bool
-  return mark.start_with?("#{QUIET_MARK}(") or mark.start_with?("#{LEVEL_MARK}(")
-end
+def lock_mark?(mark: String) -> Bool = mark.start_with?("#{QUIET_MARK}(") or mark.start_with?("#{LEVEL_MARK}(")
 
 # What is wrong with a lock mark, or "".
 def mark_error(mark: LockMark) -> String
@@ -796,7 +776,7 @@ def mark_error(mark: LockMark) -> String
     end
   end
 
-  return ""
+  ""
 end
 
 # The locks of an annotation `acquires(a, b)` or `releases(a)`; none for another one.
@@ -809,7 +789,7 @@ def annotated(mark: String, params: List[String]) -> List[Flow.Annotated]
     end
   end
 
-  return []
+  []
 end
 
 # The wrappers that the entries write; the settings only hold valid ones.
@@ -822,7 +802,7 @@ def parsed_wrappers(texts: List[String]) -> List[Config.Wrapper]
     end
   end
 
-  return found
+  found
 end
 
 # The lock of each wrapper of `[assume] acquires` and `releases` that the unit declares, as the mark would give it:
@@ -847,7 +827,7 @@ def with_assumed_locks(
     found = with_assumed_lock(found, tables, globals, declarations, wrapper, false)
   end
 
-  return found
+  found
 end
 
 def with_assumed_lock(
@@ -860,9 +840,7 @@ def with_assumed_lock(
 ) -> Map[String, Flow.Callee]
   found = callees
   for node in declarations
-    if Ast.text(node, "name") != wrapper.name
-      next
-    end
+    next if Ast.text(node, "name") != wrapper.name
 
     key = function_key(tables, wrapper.name)
     names = Flow.params_named(node)
@@ -881,7 +859,7 @@ def with_assumed_lock(
     found = found.put(key, Flow.Callee(locks: known.locks.push(lock), stops: known.stops))
   end
 
-  return found
+  found
 end
 
 # Whether the key of a function is not that of a static one (`name`), or the file of the static function ends with the
@@ -890,8 +868,8 @@ def static_file_matches?(key: String, tail: String) -> Bool
   case key.index_of("@")
     some(at) ->
       file = key.slice(at + 1, key.length - at - 1)
-      return tail == "" or file == tail or file.end_with?("/#{tail}")
-    none -> return true
+      tail == "" or file == tail or file.end_with?("/#{tail}")
+    none -> true
   end
 end
 
@@ -910,7 +888,7 @@ def with_assumed_marks(ctx: Flow.Context, function: Function) -> Function
     end
   end
 
-  return function.with(marks: marks.uniq)
+  function.with(marks: marks.uniq)
 end
 
 def own_marks(node: Json) -> List[String]
@@ -918,22 +896,20 @@ def own_marks(node: Json) -> List[String]
     Ast.kind(child) == "DeprecatedAttr" and not Ast.flag?(child, "inherited")
   end
 
-  return written.map(&mark_of).select do |mark| mark != "" end
+  written.map(&mark_of).select do |mark| mark != "" end
 end
 
 # The text of an annotation after `cchecker:`, or "" for another `deprecated` attribute.
 def mark_of(attribute: Json) -> String
   message = Ast.text(attribute, "message")
-  if not message.start_with?(MARK_PREFIX)
-    return ""
-  end
+  return "" if not message.start_with?(MARK_PREFIX)
 
-  return message.slice(MARK_PREFIX.length, message.length - MARK_PREFIX.length)
+  message.slice(MARK_PREFIX.length, message.length - MARK_PREFIX.length)
 end
 
 def param_types_of(node: Json) -> List[String]
   parameters = Ast.children(node).select do |child| Ast.kind(child) == "ParmVarDecl" end
-  return parameters.map do |child| Ast.text(JSON.get(child, "type").unwrap_or(JSON.from("")), "qualType") end
+  parameters.map do |child| Ast.text(JSON.get(child, "type").unwrap_or(JSON.from("")), "qualType") end
 end
 
 def tables_of(nodes: List[Json]) -> Tables
@@ -967,7 +943,7 @@ def tables_of(nodes: List[Json]) -> Tables
     end
   end
 
-  return Tables(
+  Tables(
     static_functions: static_functions_of(nodes),
     static_variables: static_variables,
     field_slots: field_slots,
@@ -988,12 +964,10 @@ def static_functions_of(nodes: List[Json]) -> Map[String, String]
     end
   end
 
-  return keys
+  keys
 end
 
-def defines?(node: Json) -> Bool
-  return Ast.children(node).any? do |child| Ast.kind(child) == "CompoundStmt" end
-end
+def defines?(node: Json) -> Bool = Ast.children(node).any? do |child| Ast.kind(child) == "CompoundStmt" end
 
 # The records of the unit by id, nested ones included. An anonymous one takes the name of a typedef of it.
 def records_of(nodes: List[Json]) -> Map[String, Record]
@@ -1028,16 +1002,14 @@ def records_of(nodes: List[Json]) -> Map[String, Record]
     end
   end
 
-  return records
+  records
 end
 
 # `id` when it is one of the records in `owning`, else "".
 def owning_or_none(owning: Set[String], id: String) -> String
-  if owning.include?(id)
-    return id
-  end
+  return id if owning.include?(id)
 
-  return ""
+  ""
 end
 
 # The records at the top level and those declared in them, each with its name (see Nested). The fields of
@@ -1055,16 +1027,12 @@ def record_decls(nodes: List[Json], parent: String, aliases: Map[String, String]
     end
   end
 
-  return found
+  found
 end
 
-def unnamed_bit_field?(node: Json) -> Bool
-  return Ast.text(node, "name") == "" and Ast.flag?(node, "isBitfield")
-end
+def unnamed_bit_field?(node: Json) -> Bool = Ast.text(node, "name") == "" and Ast.flag?(node, "isBitfield")
 
-def has_fields?(node: Json) -> Bool
-  return Ast.children(node).any? do |child| Ast.kind(child) == "FieldDecl" end
-end
+def has_fields?(node: Json) -> Bool = Ast.children(node).any? do |child| Ast.kind(child) == "FieldDecl" end
 
 # The record that a typedef names: the `decl` of the RecordType in its type.
 def record_id_of(node: Json) -> String
@@ -1077,7 +1045,7 @@ def record_id_of(node: Json) -> String
     end
   end
 
-  return ""
+  ""
 end
 
 # The record that the type of each local variable, initializer, compound literal and `sizeof` of a type in the
@@ -1135,7 +1103,7 @@ def typed_of(nodes: List[Json], functions: List[Json], records: Map[String, Reco
     end
   end
 
-  return Typed(found: typed, lengths: t.lengths)
+  Typed(found: typed, lengths: t.lengths)
 end
 
 # `members` with each field of a record whose type is the unnamed record declared just before it, by the id of the
@@ -1154,7 +1122,7 @@ def unnamed_members(members: Map[String, String], node: Json) -> Map[String, Str
     end
   end
 
-  return found
+  found
 end
 
 # Whether a statement opens a scope of tags and typedef names: a block, a `for` (a tag declared in its clauses is
@@ -1163,20 +1131,16 @@ end
 # block cannot be a declaration.
 def opens_scope?(node: Json) -> Bool
   kind = Ast.kind(node)
-  if kind == "CompoundStmt" or kind == "ForStmt"
-    return true
-  end
+  return true if kind == "CompoundStmt" or kind == "ForStmt"
 
-  if not CONDITIONED.include?(kind) or Ast.children(node).empty?
-    return false
-  end
+  return false if not CONDITIONED.include?(kind) or Ast.children(node).empty?
 
   condition = Ast.children(node).first
   if kind == "DoStmt"
     condition = Ast.children(node).last
   end
 
-  return Flow.descendants([condition]).any? do |n| Ast.kind(n) == "RecordDecl" end
+  Flow.descendants([condition]).any? do |n| Ast.kind(n) == "RecordDecl" end
 end
 
 # The walk of `typed_of` through a node. `given` is the record that the node around it says an unnamed type is.
@@ -1214,7 +1178,7 @@ def typed_in(t: Typing, node: Json, given: String) -> Typing
         end
       end
 
-      return walked
+      walked
     "InitListExpr" ->
       id = record_named(t, JSON.get(node, "type").unwrap_or(JSON.from("")), given)
       walked = t
@@ -1233,7 +1197,7 @@ def typed_in(t: Typing, node: Json, given: String) -> Typing
         walked = typed_in(walked, items[i], member)
       end
 
-      return walked
+      walked
     "MemberExpr" ->
       # A field the record of the variable does not have: the variable is of another record.
       base = Flow.see_through(Ast.children(node).first)
@@ -1250,7 +1214,7 @@ def typed_in(t: Typing, node: Json, given: String) -> Typing
         end
       end
 
-      return typed_children(walked, node)
+      typed_children(walked, node)
     "UnaryExprOrTypeTraitExpr" ->
       walked = t
       case JSON.get(node, "argType")
@@ -1263,8 +1227,8 @@ def typed_in(t: Typing, node: Json, given: String) -> Typing
         error(_) -> walked = walked
       end
 
-      return typed_children(walked, node)
-    _ -> return typed_children(t, node)
+      typed_children(walked, node)
+    _ -> typed_children(t, node)
   end
 end
 
@@ -1280,7 +1244,7 @@ def typed_fields(t: Typing, node: Json) -> Typing
     end
   end
 
-  return t.with(found: found)
+  t.with(found: found)
 end
 
 def typed_children(t: Typing, node: Json) -> Typing
@@ -1289,7 +1253,7 @@ def typed_children(t: Typing, node: Json) -> Typing
     walked = typed_in(walked, child, "")
   end
 
-  return walked
+  walked
 end
 
 # A local variable or a parameter and its initializer. A variable whose initializer has an item that does not fit the
@@ -1335,81 +1299,63 @@ def typed_variable(t: Typing, node: Json, unnamed: String) -> Typing
     end
   end
 
-  return walked
+  walked
 end
 
 # The number of items of an array type of one constant size (`struct pair[2]`): -1 for a type that is no array, 0 for
 # any other array (a size that is not a number, `struct pair[n]`, or one of arrays, `struct pair[2][3]`).
 def array_length(text: String) -> Int
-  if not text.end_with?("]")
-    return -1
-  end
+  return -1 if not text.end_with?("]")
 
   open = text.split("[")
-  if open.size != 2
-    return 0
-  end
+  return 0 if open.size != 2
 
-  return open[1].slice(0, open[1].length - 1).to_i.unwrap_or(0)
+  open[1].slice(0, open[1].length - 1).to_i.unwrap_or(0)
 end
 
 # The type of the items of an array type (`struct pair` for `struct pair[2]`), or the type itself.
-def item_type(text: String) -> String
-  return text.split("[").first.strip
-end
+def item_type(text: String) -> String = text.split("[").first.strip
 
 # Whether each item of an initializer has the type of the field it gives a value to. A union's names its field.
 def fits?(t: Typing, id: String, init: Json) -> Bool
   case t.records.get(id)
     some(record) ->
-      if JSON.get(init, "field").ok?
-        return true
-      end
+      return true if JSON.get(init, "field").ok?
 
       items = Ast.children(init)
-      if items.size > record.field_ids.size
-        return false
-      end
+      return false if items.size > record.field_ids.size
 
       for i in 0...items.size
-        if same_type(type_text(items[i])) != same_type(field_type(record, i))
-          return false
-        end
+        return false if same_type(type_text(items[i])) != same_type(field_type(record, i))
       end
 
-      return true
-    none -> return true
+      true
+    none -> true
   end
 end
 
 # The type of the field `i` of a record without its typedefs.
 def field_type(record: Record, i: Int) -> String
-  if i < record.desugared.size and record.desugared[i] != ""
-    return record.desugared[i]
-  end
+  return record.desugared[i] if i < record.desugared.size and record.desugared[i] != ""
 
-  if i < record.types.size
-    return record.types[i]
-  end
+  return record.types[i] if i < record.types.size
 
-  return ""
+  ""
 end
 
 # A type without its qualifiers and spaces, as two types that a value converts between without a cast compare.
 def same_type(text: String) -> String
   words = text.replace("*", " * ").split(" ").select do |word| word != "" and not VALUE_QUALIFIERS.include?(word) end
-  return words.join("")
+  words.join("")
 end
 
 # The type of a node without its typedefs.
 def type_text(node: Json) -> String
   type = JSON.get(node, "type").unwrap_or(JSON.from(""))
   desugared = Ast.text(type, "desugaredQualType")
-  if desugared != ""
-    return desugared
-  end
+  return desugared if desugared != ""
 
-  return Ast.text(type, "qualType")
+  Ast.text(type, "qualType")
 end
 
 # The scope of `t` with the tags that a record declaration in a block declares: its own (a definition, or a first
@@ -1423,13 +1369,13 @@ def declared_tags(t: Typing, node: Json) -> Typing
     end
   end
 
-  return t.with(tags: t.tags.set(t.tags.size - 1, scope))
+  t.with(tags: t.tags.set(t.tags.size - 1, scope))
 end
 
 # The record that a type names, as `typed_of` finds it; `unnamed` for an unnamed struct, "" for any other type (a
 # pointer, an array, a number).
 def record_named(t: Typing, type: Json, unnamed: String) -> String
-  return record_of_text(t, Ast.text(type, "qualType"), Ast.text(type, "desugaredQualType"), unnamed)
+  record_of_text(t, Ast.text(type, "qualType"), Ast.text(type, "desugaredQualType"), unnamed)
 end
 
 # `record_named` of a type as clang writes it, and without its typedefs (`desugared`).
@@ -1442,21 +1388,15 @@ def record_of_text(t: Typing, written: String, desugared: String, unnamed: Strin
   for word in ["struct ", "union "]
     if text.start_with?(word)
       tag = text.slice(word.length, text.length - word.length)
-      if unnamed_type?(text)
-        return unnamed
-      end
+      return unnamed if unnamed_type?(text)
 
-      if not identifier?(tag)
-        return ""
-      end
+      return "" if not identifier?(tag)
 
       return tag_of(t, tag)
     end
   end
 
-  if not identifier?(text)
-    return ""
-  end
+  return "" if not identifier?(text)
 
   i = t.typedefs.size - 1
   while i >= 0
@@ -1466,7 +1406,7 @@ def record_of_text(t: Typing, written: String, desugared: String, unnamed: Strin
     end
   end
 
-  return ""
+  ""
 end
 
 # The record of a tag in the blocks around, then at the top level; "" when there is none.
@@ -1479,7 +1419,7 @@ def tag_of(t: Typing, name: String) -> String
     end
   end
 
-  return ""
+  ""
 end
 
 # The record a typedef names: "" for a pointer, an array or any other type that is not a struct or a union. clang
@@ -1487,32 +1427,28 @@ end
 # so either form may be the one that shows the struct.
 def typedef_record(node: Json) -> String
   type = JSON.get(node, "type").unwrap_or(JSON.from(""))
-  if not [Ast.text(type, "qualType"), Ast.text(type, "desugaredQualType")].any?(&record_type?)
-    return ""
-  end
+  return "" if not [Ast.text(type, "qualType"), Ast.text(type, "desugaredQualType")].any?(&record_type?)
 
-  return record_id_of(node)
+  record_id_of(node)
 end
 
 # Whether a type is a struct or a union itself, not a pointer to one or an array of them.
 def record_type?(text: String) -> Bool
   bare = without_qualifiers(text)
-  if not (bare.start_with?("struct ") or bare.start_with?("union "))
-    return false
-  end
+  return false if not (bare.start_with?("struct ") or bare.start_with?("union "))
 
-  return identifier?(bare.split(" ").drop(1).join(" ")) or unnamed_type?(bare)
+  identifier?(bare.split(" ").drop(1).join(" ")) or unnamed_type?(bare)
 end
 
 # Whether a type is an unnamed struct or union as clang writes it: `struct (unnamed struct at f.c:3:5)`, or `struct
 # conn::(anonymous at f.c:3:5)` for a member.
 def unnamed_type?(text: String) -> Bool
   bare = without_qualifiers(text)
-  return (bare.include?("(unnamed ") or bare.include?("(anonymous ")) and bare.end_with?(")")
+  (bare.include?("(unnamed ") or bare.include?("(anonymous ")) and bare.end_with?(")")
 end
 
 def identifier?(text: String) -> Bool
-  return text != "" and text.split("").all? do |c| c == "_" or IDENTIFIER_CHARS.include?(c.downcase) end
+  text != "" and text.split("").all? do |c| c == "_" or IDENTIFIER_CHARS.include?(c.downcase) end
 end
 
 # A type without the qualifiers in front of it (`const struct pair` is `struct pair`).
@@ -1523,7 +1459,7 @@ def without_qualifiers(text: String) -> String
     start += 1
   end
 
-  return words.drop(start).join(" ")
+  words.drop(start).join(" ")
 end
 
 def function_of(tables: Tables, node: Json) -> Function
@@ -1535,7 +1471,7 @@ def function_of(tables: Tables, node: Json) -> Function
       Ast.text(child, "message").slice(MARK_PREFIX.length, Ast.text(child, "message").length - MARK_PREFIX.length)
     end
 
-  return Function(
+  Function(
     key: function_key(tables, name),
     name: name,
     file: place.file,
@@ -1551,7 +1487,7 @@ end
 
 # A declaration that never returns by an attribute, or by its type, as written or behind a typedef (`fatal_fn die;`).
 def noreturn?(node: Json) -> Bool
-  return Ast.children(node).any? do |child| NORETURN_ATTRS.include?(Ast.kind(child)) end or Ast.noreturn_type?(node)
+  Ast.children(node).any? do |child| NORETURN_ATTRS.include?(Ast.kind(child)) end or Ast.noreturn_type?(node)
 end
 
 def in_function(tables: Tables, key: String, node: Json, found: Found) -> Found
@@ -1572,7 +1508,7 @@ def in_function(tables: Tables, key: String, node: Json, found: Found) -> Found
     walked = walk(tables, scope, body, walked)
   end
 
-  return walked
+  walked
 end
 
 # Records the calls and the stores of a node and of everything in it.
@@ -1595,15 +1531,13 @@ def walk(tables: Tables, scope: Scope, node: Json, found: Found) -> Found
     walked = walk(tables, scope, child, walked)
   end
 
-  return walked
+  walked
 end
 
 # A direct call also stores the functions it passes in the parameters of the callee.
 def with_call(tables: Tables, scope: Scope, node: Json, found: Found) -> Found
   parts = Ast.children(node)
-  if parts.empty?
-    return found
-  end
+  return found if parts.empty?
 
   callee = bare(parts.first)
   if Ast.kind(callee) == "DeclRefExpr" and Ast.referenced_kind(callee) == "FunctionDecl"
@@ -1614,9 +1548,7 @@ def with_call(tables: Tables, scope: Scope, node: Json, found: Found) -> Found
     end
 
     noted = with_callbacks(found, callbacks_of(tables, scope, node, Ast.referenced_name(callee), parts))
-    if async_fs?(Ast.referenced_name(callee), parts)
-      return with_field_stores(noted, node, stores)
-    end
+    return with_field_stores(noted, node, stores) if async_fs?(Ast.referenced_name(callee), parts)
 
     call = Call(caller: scope.caller, target: Target.Direct(key))
     if Known.TAKES.include?(Ast.referenced_name(callee)) and parts.size > 1
@@ -1643,17 +1575,15 @@ def with_call(tables: Tables, scope: Scope, node: Json, found: Found) -> Found
     some(slot) ->
       place = Ast.start_of(node)
       call = Call(caller: scope.caller, target: Target.Slot(slot), line: place.line, column: place.column)
-      return found.with(calls: found.calls.push(call))
-    none -> return found
+      found.with(calls: found.calls.push(call))
+    none -> found
   end
 end
 
 # The callbacks of a call of libuv that runs them on the loop. A null pointer (`NULL`, 0) is no callback.
 def callbacks_of(tables: Tables, scope: Scope, node: Json, name: String, parts: List[Json]) -> List[Callback]
   places = Known.LOOP_CALLBACKS.get(name).unwrap_or([])
-  if places.empty?
-    return []
-  end
+  return [] if places.empty?
 
   # The place of the call: where its macro was expanded, when a macro wrote it.
   place = Ast.start_of(node)
@@ -1667,16 +1597,16 @@ def callbacks_of(tables: Tables, scope: Scope, node: Json, name: String, parts: 
     end
   end
 
-  return found
+  found
 end
 
 def null?(node: Json) -> Bool
   value = bare(node)
-  return Ast.kind(value) == "IntegerLiteral" and Ast.text(value, "value") == "0"
+  Ast.kind(value) == "IntegerLiteral" and Ast.text(value, "value") == "0"
 end
 
 def with_callbacks(found: Found, callbacks: List[Callback]) -> Found
-  return found.with(callbacks: found.callbacks.concat(callbacks))
+  found.with(callbacks: found.callbacks.concat(callbacks))
 end
 
 # Records the stores of a node (a variable with an initializer, an assignment). A store in a field that libuv calls on
@@ -1691,7 +1621,7 @@ def with_field_stores(found: Found, node: Json, stores: List[Store]) -> Found
     end
   end
 
-  return with_callbacks(with_stores(found, stores), callbacks)
+  with_callbacks(with_stores(found, stores), callbacks)
 end
 
 # The value of an integer constant written with literals, `|` and `+` (`O_RDONLY | O_NONBLOCK` once the macros are
@@ -1700,25 +1630,19 @@ def constant(node: Json) -> Int
   value = Flow.see_through(node)
   parts = Ast.children(value)
   case Ast.kind(value)
-    "IntegerLiteral" -> return Ast.text(value, "value").to_i.unwrap_or(-1)
+    "IntegerLiteral" -> Ast.text(value, "value").to_i.unwrap_or(-1)
     "BinaryOperator" ->
       opcode = Ast.text(value, "opcode")
-      if parts.size != 2 or (opcode != "|" and opcode != "+")
-        return -1
-      end
+      return -1 if parts.size != 2 or (opcode != "|" and opcode != "+")
 
       left = constant(parts[0])
       right = constant(parts[1])
-      if left < 0 or right < 0
-        return -1
-      end
+      return -1 if left < 0 or right < 0
 
-      if opcode == "+"
-        return left + right
-      end
+      return left + right if opcode == "+"
 
-      return Int.bit_or(left, right)
-    _ -> return -1
+      Int.bit_or(left, right)
+    _ -> -1
   end
 end
 
@@ -1726,9 +1650,7 @@ end
 # `&`, `++` or `op=`) and gets one before the call on every path, the constants it gets.
 def flag_values(scope: Scope, call: Json, argument: Json) -> List[Json]
   value = Flow.see_through(argument)
-  if Ast.kind(value) != "DeclRefExpr" or Ast.referenced_kind(value) != "VarDecl"
-    return [argument]
-  end
+  return [argument] if Ast.kind(value) != "DeclRefExpr" or Ast.referenced_kind(value) != "VarDecl"
 
   id = Ast.referenced_id(value)
   nodes = Flow.descendants(scope.bodies)
@@ -1758,17 +1680,15 @@ def flag_values(scope: Scope, call: Json, argument: Json) -> List[Json]
     end
   end
 
-  if stored.empty? or not first_on_every_path?(scope.bodies, call, id)
-    return [argument]
-  end
+  return [argument] if stored.empty? or not first_on_every_path?(scope.bodies, call, id)
 
-  return stored
+  stored
 end
 
 # Whether an expression is the variable of declaration `id`, as it is.
 def refers?(node: Json, id: String) -> Bool
   value = Flow.see_through(node)
-  return Ast.kind(value) == "DeclRefExpr" and Ast.referenced_id(value) == id
+  Ast.kind(value) == "DeclRefExpr" and Ast.referenced_id(value) == id
 end
 
 # Whether the variable `id` gets a value before `call` on every path: a statement that stores it comes before the
@@ -1788,32 +1708,26 @@ def first_on_every_path?(bodies: List[Json], call: Json, id: String) -> Bool
       # The nearest store: a `case` between it and the call is between any earlier one and the call too.
       j = at - 1
       while j >= 0
-        if stores?(parts[j], id)
-          return not parts.drop(j + 1).take(at - j).any?(&labelled?)
-        end
+        return not parts.drop(j + 1).take(at - j).any?(&labelled?) if stores?(parts[j], id)
 
         j -= 1
       end
     end
   end
 
-  return false
+  false
 end
 
 # The nodes from `node` down to the one whose id is `id`, or none when it is not inside.
 def path_to(node: Json, id: String) -> List[Json]
-  if Ast.text(node, "id") == id
-    return [node]
-  end
+  return [node] if Ast.text(node, "id") == id
 
   for child in Ast.children(node)
     below = path_to(child, id)
-    if not below.empty?
-      return [node].concat(below)
-    end
+    return [node].concat(below) if not below.empty?
   end
 
-  return []
+  []
 end
 
 # Whether a statement stores the variable `id`: an assignment, or a declaration with a value.
@@ -1823,7 +1737,7 @@ def stores?(statement: Json, id: String) -> Bool
     return refers?(Ast.children(value).first, id)
   end
 
-  return (
+  (
     Ast.kind(value) == "DeclStmt" and
     Ast.children(value).any? do |decl| Ast.text(decl, "id") == id and not values(decl).empty? end
   )
@@ -1833,30 +1747,24 @@ end
 # inside it are reached only through that switch.
 def labelled?(statement: Json) -> Bool
   kind = Ast.kind(statement)
-  if kind == "CaseStmt" or kind == "DefaultStmt"
-    return true
-  end
+  return true if kind == "CaseStmt" or kind == "DefaultStmt"
 
-  return kind != "SwitchStmt" and Ast.children(statement).any?(&labelled?)
+  kind != "SwitchStmt" and Ast.children(statement).any?(&labelled?)
 end
 
 # The flags of the values of a flag argument: those of the constant bits all of them have (the one value of an
 # `exact` mode, when all have it), or -1 when one is not a constant.
 def joined(written: List[Json], exact: Bool) -> Int
   constants = written.map(&constant)
-  if constants.empty? or constants.any? do |c| c < 0 end
-    return -1
-  end
+  return -1 if constants.empty? or constants.any? do |c| c < 0 end
 
   if exact
-    if constants.all? do |c| c == constants.first end
-      return constants.first
-    end
+    return constants.first if constants.all? do |c| c == constants.first end
 
     return -1
   end
 
-  return constants.reduce(constants.first) do |all, c| Int.bit_and(all, c) end
+  constants.reduce(constants.first) do |all, c| Int.bit_and(all, c) end
 end
 
 # Whether flags joined with `|` or `+` name the constant of an enum `flag` (`MSG_DONTWAIT | MSG_NOSIGNAL`), or,
@@ -1866,11 +1774,11 @@ def names_flag?(node: Json, flag: String, exact: Bool) -> Bool
   value = Flow.see_through(node)
   parts = Ast.children(value)
   case Ast.kind(value)
-    "DeclRefExpr" -> return Ast.referenced_kind(value) == "EnumConstantDecl" and Ast.referenced_name(value) == flag
+    "DeclRefExpr" -> Ast.referenced_kind(value) == "EnumConstantDecl" and Ast.referenced_name(value) == flag
     "BinaryOperator" ->
       opcode = Ast.text(value, "opcode")
-      return not exact and (opcode == "|" or opcode == "+") and parts.any? do |part| names_flag?(part, flag, exact) end
-    _ -> return false
+      not exact and (opcode == "|" or opcode == "+") and parts.any? do |part| names_flag?(part, flag, exact) end
+    _ -> false
   end
 end
 
@@ -1878,70 +1786,57 @@ end
 # parameter, whose lock the rules do not know.
 def lock_class(slot: String) -> String
   for prefix in ["field:", "var:"]
-    if slot.start_with?(prefix)
-      return slot.slice(prefix.length, slot.length - prefix.length)
-    end
+    return slot.slice(prefix.length, slot.length - prefix.length) if slot.start_with?(prefix)
   end
 
-  return ""
+  ""
 end
 
 # A call of libuv's file functions with a callback, its last argument, only starts the work: the loop runs it on a
 # thread of its own. Without one (NULL or 0) it runs at once on the calling thread.
 def async_fs?(name: String, parts: List[Json]) -> Bool
-  if not name.start_with?("uv_fs_") or parts.size < 2
-    return false
-  end
+  return false if not name.start_with?("uv_fs_") or parts.size < 2
 
   last = bare(parts.last)
-  return not (Ast.kind(last) == "IntegerLiteral" and Ast.text(last, "value") == "0")
+  not (Ast.kind(last) == "IntegerLiteral" and Ast.text(last, "value") == "0")
 end
 
 # `__attribute__((cleanup(f)))` on a variable calls f when the variable goes out of scope.
 def with_cleanup(tables: Tables, scope: Scope, node: Json, found: Found) -> Found
   name = Ast.text(JSON.get(node, "cleanup_function").unwrap_or(JSON.from("")), "name")
-  if name == ""
-    return found
-  end
+  return found if name == ""
 
-  return found.with(
-    calls: found.calls.push(Call(caller: scope.caller, target: Target.Direct(function_key(tables, name)))),
-  )
+  found.with(calls: found.calls.push(Call(caller: scope.caller, target: Target.Direct(function_key(tables, name)))))
 end
 
 def with_assignment(tables: Tables, scope: Scope, node: Json, found: Found) -> Found
   parts = Ast.children(node)
-  if Ast.text(node, "opcode") != "=" or parts.size != 2
-    return found
-  end
+  return found if Ast.text(node, "opcode") != "=" or parts.size != 2
 
   case slot_of(tables, scope, parts[0])
-    some(slot) -> return with_field_stores(found, node, stored(tables, scope, slot, parts[1]))
-    none -> return found
+    some(slot) -> with_field_stores(found, node, stored(tables, scope, slot, parts[1]))
+    none -> found
   end
 end
 
-def with_stores(found: Found, stores: List[Store]) -> Found
-  return found.with(stores: found.stores.concat(stores))
-end
+def with_stores(found: Found, stores: List[Store]) -> Found = found.with(stores: found.stores.concat(stores))
 
 # What a value stores in a slot: the functions it names, or a copy of the slot it reads. The items of an initializer of
 # a struct go to the slots of its fields, and those of an array to the slot of the array.
 def stored(tables: Tables, scope: Scope, slot: String, value: Json) -> List[Store]
   node = bare(value)
   case Ast.kind(node)
-    "InitListExpr" -> return stored_items(tables, scope, slot, node)
+    "InitListExpr" -> stored_items(tables, scope, slot, node)
     "DeclRefExpr" ->
       if Ast.referenced_kind(node) == "FunctionDecl"
         return [Store(slot: slot, source: Source.Function(function_key(tables, Ast.referenced_name(node))))]
       end
 
-      return copied(tables, scope, slot, node)
-    "MemberExpr" -> return copied(tables, scope, slot, node)
-    "ArraySubscriptExpr" -> return copied(tables, scope, slot, node)
-    "ConditionalOperator" ->
-      return Ast.children(node).drop(1).flat_map do |branch| stored(tables, scope, slot, branch) end
-    _ -> return []
+      copied(tables, scope, slot, node)
+    "MemberExpr" -> copied(tables, scope, slot, node)
+    "ArraySubscriptExpr" -> copied(tables, scope, slot, node)
+    "ConditionalOperator" -> Ast.children(node).drop(1).flat_map do |branch| stored(tables, scope, slot, branch) end
+    _ -> []
   end
 end
 
@@ -1951,11 +1846,11 @@ def stored_items(tables: Tables, scope: Scope, slot: String, node: Json) -> List
   case JSON.get(node, "field")
     ok(field) ->
       case tables.field_slots.get(Ast.text(field, "id"))
-        some(field_slot) -> return items.flat_map do |item| stored(tables, scope, field_slot, item) end
-        none -> return []
+        some(field_slot) -> items.flat_map do |item| stored(tables, scope, field_slot, item) end
+        none -> []
       end
 
-    error(_) -> return stored_fields(tables, scope, slot, node)
+    error(_) -> stored_fields(tables, scope, slot, node)
   end
 end
 
@@ -1968,20 +1863,18 @@ def stored_fields(tables: Tables, scope: Scope, slot: String, node: Json) -> Lis
         stores = stores.concat(stored(tables, scope, "field:#{record.name}.#{record.fields[i]}", items[i]))
       end
 
-      return stores
-    none -> return items.flat_map do |item| stored(tables, scope, slot, item) end
+      stores
+    none -> items.flat_map do |item| stored(tables, scope, slot, item) end
   end
 end
 
 # Only a function pointer is followed: a copy of any other value stores nothing.
 def copied(tables: Tables, scope: Scope, slot: String, node: Json) -> List[Store]
-  if not function_pointer?(node)
-    return []
-  end
+  return [] if not function_pointer?(node)
 
   case slot_of(tables, scope, node)
-    some(from) if from != slot -> return [Store(slot: slot, source: Source.Copy(from))]
-    _ -> return []
+    some(from) if from != slot -> [Store(slot: slot, source: Source.Copy(from))]
+    _ -> []
   end
 end
 
@@ -1989,30 +1882,26 @@ end
 def slot_of(tables: Tables, scope: Scope, expression: Json) -> Optional[String]
   node = bare(expression)
   case Ast.kind(node)
-    "DeclRefExpr" -> return named_slot(tables, scope, node)
-    "MemberExpr" -> return tables.field_slots.get(Ast.text(node, "referencedMemberDecl"))
+    "DeclRefExpr" -> named_slot(tables, scope, node)
+    "MemberExpr" -> tables.field_slots.get(Ast.text(node, "referencedMemberDecl"))
     "ArraySubscriptExpr" ->
       parts = Ast.children(node)
-      if parts.empty?
-        return none
-      end
+      return none if parts.empty?
 
-      return slot_of(tables, scope, parts.first)
-    _ -> return none
+      slot_of(tables, scope, parts.first)
+    _ -> none
   end
 end
 
 def named_slot(tables: Tables, scope: Scope, node: Json) -> Optional[String]
   name = Ast.referenced_name(node)
   case Ast.referenced_kind(node)
-    "ParmVarDecl" -> return scope.params.get(name).map do |i| "param:#{scope.caller}:#{i}" end
+    "ParmVarDecl" -> scope.params.get(name).map do |i| "param:#{scope.caller}:#{i}" end
     "VarDecl" ->
-      if scope.locals.include?(name)
-        return some("local:#{scope.caller}:#{name}")
-      end
+      return some("local:#{scope.caller}:#{name}") if scope.locals.include?(name)
 
-      return some("var:#{variable_key(tables, name)}")
-    _ -> return none
+      some("var:#{variable_key(tables, name)}")
+    _ -> none
   end
 end
 
@@ -2020,21 +1909,15 @@ end
 # typedef.
 def function_pointer?(node: Json) -> Bool
   type = JSON.get(node, "type").unwrap_or(JSON.from(""))
-  return pointer_text?(Ast.text(type, "qualType")) or pointer_text?(Ast.text(type, "desugaredQualType"))
+  pointer_text?(Ast.text(type, "qualType")) or pointer_text?(Ast.text(type, "desugaredQualType"))
 end
 
-def pointer_text?(type: String) -> Bool
-  return type.include?("(*") and type.include?(")(")
-end
+def pointer_text?(type: String) -> Bool = type.include?("(*") and type.include?(")(")
 
 # What a declaration at the top level of the file reads: no parameters and no local variables.
-def file_scope() -> Scope
-  return Scope(caller: "", params: {}, locals: Set.new([]))
-end
+def file_scope() -> Scope = Scope(caller: "", params: {}, locals: Set.new([]))
 
-def local_slot(scope: Scope, node: Json) -> String
-  return "local:#{scope.caller}:#{Ast.text(node, "name")}"
-end
+def local_slot(scope: Scope, node: Json) -> String = "local:#{scope.caller}:#{Ast.text(node, "name")}"
 
 # The record of the initializer of a struct, by its type: `struct ops`, `const struct ops` or a typedef name. The
 # initializer of a union names its field (`stored_items`).
@@ -2045,36 +1928,26 @@ def record_of(tables: Tables, node: Json) -> Optional[Record]
     name = name.replace(word, "")
   end
 
-  return tables.records.get(name.strip)
+  tables.records.get(name.strip)
 end
 
 # The expression without the casts, parentheses, `&` and `*` around it, which do not change the function it names.
 def bare(node: Json) -> Json
   parts = Ast.children(node)
-  if parts.empty?
-    return node
-  end
+  return node if parts.empty?
 
-  if TRANSPARENT.include?(Ast.kind(node))
-    return bare(parts.first)
-  end
+  return bare(parts.first) if TRANSPARENT.include?(Ast.kind(node))
 
   if Ast.kind(node) == "UnaryOperator" and (Ast.text(node, "opcode") == "&" or Ast.text(node, "opcode") == "*")
     return bare(parts.first)
   end
 
-  return node
+  node
 end
 
 # The value of a variable: its children that are no attribute.
-def values(node: Json) -> List[Json]
-  return Ast.children(node).select do |child| not Ast.kind(child).end_with?("Attr") end
-end
+def values(node: Json) -> List[Json] = Ast.children(node).select do |child| not Ast.kind(child).end_with?("Attr") end
 
-def function_key(tables: Tables, name: String) -> String
-  return tables.static_functions.get(name).unwrap_or(name)
-end
+def function_key(tables: Tables, name: String) -> String = tables.static_functions.get(name).unwrap_or(name)
 
-def variable_key(tables: Tables, name: String) -> String
-  return tables.static_variables.get(name).unwrap_or(name)
-end
+def variable_key(tables: Tables, name: String) -> String = tables.static_variables.get(name).unwrap_or(name)

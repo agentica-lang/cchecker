@@ -35,16 +35,20 @@ end
 
 ## The generator of tables, with up to 6 fillers.
 export def tables() -> Prop.Gen[Table]
-  kind = Prop.pair(Prop.pair(Prop.int(0, 4), Prop.int(0, 5)), Prop.int(0, 1))
-  items = Prop.pair(Prop.list(Prop.int(0, 4), 6), Prop.pair(Prop.int(0, 6), Prop.int(0, 3)))
-  return Prop.map(Prop.pair(kind, items), &table_of)
+  sizes = Prop.pair(Prop.int(0, 4), Prop.int(0, 5))
+  kind = Prop.pair(sizes, Prop.int(0, 1))
+  ranges = Prop.pair(Prop.int(0, 6), Prop.int(0, 3))
+  fillers = Prop.list(Prop.int(0, 4), 6)
+  items = Prop.pair(fillers, ranges)
+  pair = Prop.pair(kind, items)
+  Prop.map(pair, &table_of)
 end
 
 ## Checks `runs` tables, from `seed` when it is given: cchecker (the bytecode `program`, run in specs/) reports that
 ## the CC_SHORT `entry` reaches `sleep` through `slow`, stored in the table, with CC-EFFECT-SHORT-BLOCKS. `folder` is
 ## the folder of the scenario, under specs/, where the C files go.
 export def scanner_keeps_paths(program: String, folder: String, runs: Int, seed: Optional[Int]) -> Result[Void]
-  return Prop.check(tables(), Prop.Config(runs: runs, seed: seed, shrinks: SHRINKS)) do |table|
+  Prop.check(tables(), Prop.Config(runs: runs, seed: seed, shrinks: SHRINKS)) do |table|
     source = c_file(table, "slow")
     found(run(program, folder, source), source)
   end
@@ -53,7 +57,7 @@ end
 ## The negative twin of `scanner_keeps_paths`: the table stores `quick`, which does not block, in place of `slow`, and
 ## cchecker exits 0 with no CC-EFFECT-SHORT-BLOCKS.
 export def scanner_blames_nothing(program: String, folder: String, runs: Int, seed: Optional[Int]) -> Result[Void]
-  return Prop.check(tables(), Prop.Config(runs: runs, seed: seed, shrinks: SHRINKS)) do |table|
+  Prop.check(tables(), Prop.Config(runs: runs, seed: seed, shrinks: SHRINKS)) do |table|
     source = c_file(table, "quick")
     clean(run(program, folder, source), source)
   end
@@ -63,21 +67,21 @@ end
 export def run(program: String, folder: String, source: String) -> Result[Output]
   path = "#{folder}/case.c"
   try File.write_text("specs/#{path}", source)
-  return run_with(program, ["--tools", "rules", "--json", path, "--", "-I../include"])
+  run_with(program, ["--tools", "rules", "--json", path, "--", "-I../include"])
 end
 
 ## One run of cchecker (the bytecode `program`) in specs/ with the options `options`.
 export def run_with(program: String, options: List[String]) -> Result[Output]
   args = ["run", "--", program].concat(options)
-  process = try Process.spawn_captured("agentica", args, "specs", RUN_MS, {})
+  process = try Process.spawn_captured("agentica", args, Process.Options(timeout_ms: RUN_MS, chdir: "specs"))
   output = try Process.output(process, RUN_MS)
   code = try Process.wait(process, RUN_MS)
   Process.close(process)
-  return ok(Output(code: code, stdout: output.stdout, stderr: output.stderr))
+  ok(Output(code: code, stdout: output.stdout, stderr: output.stderr))
 end
 
 def table_of(parts: Prop.Pair[Prop.Pair[Prop.Pair[Int, Int], Int], Prop.Pair[List[Int], Prop.Pair[Int, Int]]]) -> Table
-  return Table(
+  Table(
     shape: parts.first.first.first,
     ref: parts.first.first.second,
     deref: parts.first.second,
@@ -91,29 +95,25 @@ end
 def blamed?(stdout: String) -> Bool
   finding = "{\"code\":\"CC-EFFECT-SHORT-BLOCKS\","
   path = "\"path\":[\"entry\",\"slow\",\"sleep\"]"
-  return stdout.split(finding).drop(1).any? do |part| part.split("}").first.include?(path) end
+  stdout.split(finding).drop(1).any? do |part| part.split("}").first.include?(path) end
 end
 
 def found(ran: Result[Output], source: String) -> Result[Void]
   output = try ran
-  if output.code == 1 and blamed?(output.stdout)
-    return ok()
-  end
+  return ok() if output.code == 1 and blamed?(output.stdout)
 
-  return missed("no CC-EFFECT-SHORT-BLOCKS on the path entry -> slow -> sleep", source, output)
+  missed("no CC-EFFECT-SHORT-BLOCKS on the path entry -> slow -> sleep", source, output)
 end
 
 def clean(ran: Result[Output], source: String) -> Result[Void]
   output = try ran
-  if output.code == 0 and not output.stdout.include?("CC-EFFECT-SHORT-BLOCKS")
-    return ok()
-  end
+  return ok() if output.code == 0 and not output.stdout.include?("CC-EFFECT-SHORT-BLOCKS")
 
-  return missed("a finding where no function blocks", source, output)
+  missed("a finding where no function blocks", source, output)
 end
 
 def missed(what: String, source: String, output: Output) -> Result[Void]
-  return error("exit code #{output.code}, #{what}, in:\n#{source}\n#{output.stdout}#{output.stderr}")
+  error("exit code #{output.code}, #{what}, in:\n#{source}\n#{output.stdout}#{output.stderr}")
 end
 
 # The C file of a table that stores `target`.
@@ -132,49 +132,43 @@ def c_file(table: Table, target: String) -> String
   ]
 
   call = "CC_SHORT int entry(int i) { return #{call_of(table)}; }"
-  return head.push(declaration(table, ref_text(table.ref, target))).push(call).join("\n") + "\n"
+  head.push(declaration(table, ref_text(table.ref, target))).push(call).join("\n") + "\n"
 end
 
 def declaration(table: Table, value: String) -> String
   case table.shape
-    0 -> return "static fn T[#{size(table)}] = {#{items(table, value)}};"
-    1 -> return "static const struct op T[#{size(table)}] = {#{items(table, value)}};"
-    2 -> return "static struct box T[#{size(table)}] = {#{items(table, value)}};"
+    0 -> "static fn T[#{size(table)}] = {#{items(table, value)}};"
+    1 -> "static const struct op T[#{size(table)}] = {#{items(table, value)}};"
+    2 -> "static struct box T[#{size(table)}] = {#{items(table, value)}};"
     3 ->
       if table.style == 3
         fillers = table.fillers.map do |filler| filler_text(filler) end
         return "static struct bank T = {.ops = {#{fillers.join(", ")}}, .ops[#{last(table)}] = #{value}, .n = 1};"
       end
 
-      return "static struct bank T = {.n = 1, .ops = {#{items(table, value)}}};"
+      "static struct bank T = {.n = 1, .ops = {#{items(table, value)}}};"
 
-    _ -> return "static op_t T[#{size(table)}] = {#{items(table, value)}};"
+    _ -> "static op_t T[#{size(table)}] = {#{items(table, value)}};"
   end
 end
 
 def call_of(table: Table) -> String
   pointer = ["T[i]", "T[i].run", "T[i].op.run", "T.ops[i]", "T[i].run"][table.shape]
-  if table.deref == 1
-    return "(*#{pointer})(i)"
-  end
+  return "(*#{pointer})(i)" if table.deref == 1
 
-  return "#{pointer}(i)"
+  "#{pointer}(i)"
 end
 
 # An array written in order has the size of its items; one with designators has room left, which clang writes as a
 # filler.
 def size(table: Table) -> String
-  if table.style == 0
-    return ""
-  end
+  return "" if table.style == 0
 
-  return "16"
+  "16"
 end
 
 # The index of the function in the chained style: after the fillers, so that no item is written twice.
-def last(table: Table) -> Int
-  return table.fillers.size + table.at
-end
+def last(table: Table) -> Int = table.fillers.size + table.at
 
 def ref_text(ref: Int, target: String) -> String
   forms = [
@@ -186,12 +180,10 @@ def ref_text(ref: Int, target: String) -> String
     "(void *)#{target}",
   ]
 
-  return forms[ref]
+  forms[ref]
 end
 
-def filler_text(filler: Int) -> String
-  return ["0", "quick", "(fn)0", "&quick", "(fn)1"][filler]
-end
+def filler_text(filler: Int) -> String = ["0", "quick", "(fn)0", "&quick", "(fn)1"][filler]
 
 # The items of an array, `value` at `at` (or last) among the fillers.
 def items(table: Table, value: String) -> String
@@ -220,33 +212,29 @@ def items(table: Table, value: String) -> String
     i += 1
   end
 
-  if table.style == 1
-    return written.reverse.join(", ")
-  end
+  return written.reverse.join(", ") if table.style == 1
 
-  return written.join(", ")
+  written.join(", ")
 end
 
 # One item of the table holding the function `value`, written in order or with designated fields.
 def item(shape: Int, style: Int, value: String) -> String
   case shape
-    0 -> return value
-    3 -> return value
+    0 -> value
+    3 -> value
     2 ->
-      if style == 0
-        return "{#{op(0, value)}, quick}"
-      end
+      return "{#{op(0, value)}, quick}" if style == 0
 
-      return "{.alt = quick, .op = #{op(style, value)}}"
+      "{.alt = quick, .op = #{op(style, value)}}"
 
-    _ -> return op(style, value)
+    _ -> op(style, value)
   end
 end
 
 def op(style: Int, value: String) -> String
   case style
-    0 -> return "{1, #{value}}"
-    1 -> return "{.run = #{value}, .n = 1}"
-    _ -> return "{.n = 1, .run = #{value}}"
+    0 -> "{1, #{value}}"
+    1 -> "{.run = #{value}, .n = 1}"
+    _ -> "{.n = 1, .run = #{value}}"
   end
 end

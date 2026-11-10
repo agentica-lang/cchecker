@@ -60,17 +60,13 @@ def main() -> Void
   ])
 end
 
-def write_file(ctx: BDD.Context, args: List[String]) -> BDD.Context
-  return write_text(ctx, args[0], BDD.doc_string(ctx))
-end
+def write_file(ctx: BDD.Context, args: List[String]) -> BDD.Context = write_text(ctx, args[0], BDD.doc_string(ctx))
 
 # A large file, which a doc string would not hold: ITEMS in the doc string is the text repeated. One write takes
 # at most 1 MiB of text, so the items are appended in parts.
 def write_generated(ctx: BDD.Context, args: List[String]) -> BDD.Context
   parts = BDD.doc_string(ctx).split("ITEMS")
-  if parts.size != 2
-    return BDD.assert(ctx, false, "the doc string holds ITEMS #{parts.size - 1} times, not once")
-  end
+  return BDD.assert(ctx, false, "the doc string holds ITEMS #{parts.size - 1} times, not once") if parts.size != 2
 
   written = write_text(ctx, args[0], parts[0])
   path = Path.join([SPECS, folder_of(written), args[0]]).unwrap!
@@ -86,7 +82,7 @@ def write_generated(ctx: BDD.Context, args: List[String]) -> BDD.Context
     left -= count
   end
 
-  return check(written, File.append_text(path, parts[1]))
+  check(written, File.append_text(path, parts[1]))
 end
 
 # The file is in the folder of the scenario, in a subfolder of it when the name has one.
@@ -94,17 +90,13 @@ def write_text(ctx: BDD.Context, name: String, text: String) -> BDD.Context
   started = ensure_folder(ctx)
   path = Path.join([SPECS, folder_of(started), name]).unwrap!
   made = check(started, Dir.mkdir(Paths.parent(path)))
-  return check(made, File.write_text(path, text))
+  check(made, File.write_text(path, text))
 end
 
 # A folder made as cchecker makes its folder of dumps (mode 0700), or with the usual mode, with one empty file in it.
-def make_private_folder(ctx: BDD.Context, args: List[String]) -> BDD.Context
-  return make_folder_with(ctx, args, true)
-end
+def make_private_folder(ctx: BDD.Context, args: List[String]) -> BDD.Context = make_folder_with(ctx, args, true)
 
-def make_open_folder(ctx: BDD.Context, args: List[String]) -> BDD.Context
-  return make_folder_with(ctx, args, false)
-end
+def make_open_folder(ctx: BDD.Context, args: List[String]) -> BDD.Context = make_folder_with(ctx, args, false)
 
 def make_folder_with(ctx: BDD.Context, args: List[String], private: Bool) -> BDD.Context
   started = ensure_folder(ctx)
@@ -116,13 +108,13 @@ def make_folder_with(ctx: BDD.Context, args: List[String], private: Bool) -> BDD
     made = check(made, Dir.mkdir(path))
   end
 
-  return check(made, File.write_text("#{path}/#{args[1]}", ""))
+  check(made, File.write_text("#{path}/#{args[1]}", ""))
 end
 
 # $DIR in the words is the folder of the scenario. The words are split at spaces: no argument here has one.
 def run_cchecker(ctx: BDD.Context, args: List[String]) -> BDD.Context
   words = args[0].replace("$DIR", folder_of(ctx)).split(" ").select do |word| word != "" end
-  return run_program(ctx, "agentica", [PROGRAM].concat(words))
+  run_program(ctx, "agentica", [PROGRAM].concat(words))
 end
 
 # The run under `ulimit -v`, which its compilers inherit: a run that needs more memory fails (its exit code is not the
@@ -135,7 +127,7 @@ def run_bounded(ctx: BDD.Context, args: List[String]) -> BDD.Context
   started = Time.monotonic_ms()
   ran = run_program(ctx, "sh", ["-c", script, "sh", PROGRAM].concat(words))
   elapsed = Time.monotonic_ms() - started
-  return BDD.assert(ran, elapsed <= args[2].to_i! * 1000, "the run took #{elapsed} ms")
+  BDD.assert(ran, elapsed <= args[2].to_i! * 1000, "the run took #{elapsed} ms")
 end
 
 # `run_bounded` in the folder of the scenario, for a run of its compile database.
@@ -148,24 +140,20 @@ def run_in_bounded(ctx: BDD.Context, args: List[String]) -> BDD.Context
   folder = "#{SPECS}/#{folder_of(started)}"
   ran = run_program(started, "sh", ["-c", script, "sh", program].concat(words), {}, folder)
   elapsed = Time.monotonic_ms() - at
-  return BDD.assert(ran, elapsed <= args[2].to_i! * 1000, "the run took #{elapsed} ms")
+  BDD.assert(ran, elapsed <= args[2].to_i! * 1000, "the run took #{elapsed} ms")
 end
 
 # A run whose project folder is the folder of the scenario, for the settings files that cchecker looks for there.
-def run_in_folder(ctx: BDD.Context, args: List[String]) -> BDD.Context
-  return run_in(ctx, ".", args[0])
-end
+def run_in_folder(ctx: BDD.Context, args: List[String]) -> BDD.Context = run_in(ctx, ".", args[0])
 
 # The same in a subfolder of the folder of the scenario, for a file outside the project folder.
-def run_in_subfolder(ctx: BDD.Context, args: List[String]) -> BDD.Context
-  return run_in(ctx, args[0], args[1])
-end
+def run_in_subfolder(ctx: BDD.Context, args: List[String]) -> BDD.Context = run_in(ctx, args[0], args[1])
 
 def run_in(ctx: BDD.Context, sub: String, line: String) -> BDD.Context
   started = ensure_folder(ctx)
   program = Path.resolve(Path.join([SPECS, PROGRAM]).unwrap!).unwrap!
   words = line.split(" ").select do |word| word != "" end
-  return run_program(started, "agentica", [program].concat(words), {}, "#{SPECS}/#{folder_of(started)}/#{sub}")
+  run_program(started, "agentica", [program].concat(words), {}, "#{SPECS}/#{folder_of(started)}/#{sub}")
 end
 
 # TMPDIR is the folder, made empty first, where the run writes its AST dumps.
@@ -174,40 +162,36 @@ def run_with_tmpdir(ctx: BDD.Context, args: List[String]) -> BDD.Context
   folder = args[1].replace("$DIR", folder_of(started))
   made = check(started, Dir.mkdir("#{SPECS}/#{folder}"))
   words = args[0].replace("$DIR", folder_of(made)).split(" ").select do |word| word != "" end
-  return run_program(made, "agentica", [PROGRAM].concat(words), {"TMPDIR": folder})
+  run_program(made, "agentica", [PROGRAM].concat(words), {"TMPDIR": folder})
 end
 
 def folder_empty(ctx: BDD.Context, args: List[String]) -> BDD.Context
   path = host_path(ctx, args[0])
   case Dir.list(path)
-    ok(names) -> return BDD.assert(ctx, names.empty?, "#{path} holds #{names.join(", ")}")
-    error(message) -> return BDD.assert(ctx, false, message)
+    ok(names) -> BDD.assert(ctx, names.empty?, "#{path} holds #{names.join(", ")}")
+    error(message) -> BDD.assert(ctx, false, message)
   end
 end
 
 # The text dump with CCHECKER_AST, the define the rules dump uses (the rules read the JSON dump; the text shows
 # the marks).
 def dump_ast(ctx: BDD.Context, args: List[String]) -> BDD.Context
-  return run_program(
-    ctx,
-    "clang",
-    ["-w", "-DCCHECKER_AST", "-Xclang", "-ast-dump", "-fsyntax-only", "-I../include", args[0]],
-  )
+  run_program(ctx, "clang", ["-w", "-DCCHECKER_AST", "-Xclang", "-ast-dump", "-fsyntax-only", "-I../include", args[0]])
 end
 
 # What a normal build of a project sees: no CCHECKER_AST.
 def preprocess(ctx: BDD.Context, args: List[String]) -> BDD.Context
-  return run_program(ctx, "clang", ["-E", "-I../include", args[0]])
+  run_program(ctx, "clang", ["-E", "-I../include", args[0]])
 end
 
 # The JSON dump as the rules tool asks for it, to show that a fixture is larger than what `Process.output` holds.
 def dump_json_ast(ctx: BDD.Context, args: List[String]) -> BDD.Context
-  return run_program(ctx, "clang", ["-Xclang", "-ast-dump=json", "-fsyntax-only", "-I../include", args[0]])
+  run_program(ctx, "clang", ["-Xclang", "-ast-dump=json", "-fsyntax-only", "-I../include", args[0]])
 end
 
 def dump_is_large(ctx: BDD.Context, args: List[String]) -> BDD.Context
   truncated = JSON.bool(BDD.get(ctx, "truncated").unwrap!).unwrap!
-  return BDD.assert(ctx, truncated, "the output of the dump is 1 MiB or less")
+  BDD.assert(ctx, truncated, "the output of the dump is 1 MiB or less")
 end
 
 # Runs a program in specs/, or in `folder`, and keeps its exit code and output for the steps that check them.
@@ -218,11 +202,11 @@ def run_program(
   env: Map[String, String] = {},
   folder: String = SPECS,
 ) -> BDD.Context
-  process = Process.spawn_captured(program, args, folder, RUN_MS, env).unwrap!
+  process = Process.spawn_captured(program, args, Process.Options(timeout_ms: RUN_MS, chdir: folder, env: env)).unwrap!
   output = Process.output(process, RUN_MS).unwrap!
   code = Process.wait(process, RUN_MS).unwrap!
   Process.close(process)
-  return (
+  (
     ctx
     |> BDD.set("code", JSON.from(code))
     |> BDD.set("stdout", JSON.from(output.stdout))
@@ -233,80 +217,74 @@ end
 
 def exit_code_is(ctx: BDD.Context, args: List[String]) -> BDD.Context
   code = JSON.int(BDD.get(ctx, "code").unwrap!).unwrap!
-  return BDD.assert(ctx, code == args[0].to_i!, "exit code #{code}, stderr: #{text(ctx, "stderr")}")
+  BDD.assert(ctx, code == args[0].to_i!, "exit code #{code}, stderr: #{text(ctx, "stderr")}")
 end
 
 # $DIR in the text is the folder of the scenario, as the report shows it (on standard error too).
 def output_includes(ctx: BDD.Context, args: List[String]) -> BDD.Context
   expected = BDD.doc_string(ctx).strip.replace("$DIR", folder_of(ctx))
   shown = text(ctx, "stdout")
-  return BDD.assert(ctx, shown.include?(expected), "the output does not include #{expected}: #{shown}")
+  BDD.assert(ctx, shown.include?(expected), "the output does not include #{expected}: #{shown}")
 end
 
 def output_excludes(ctx: BDD.Context, args: List[String]) -> BDD.Context
   unwanted = BDD.doc_string(ctx).strip.replace("$DIR", folder_of(ctx))
   shown = text(ctx, "stdout")
-  return BDD.assert(ctx, not shown.include?(unwanted), "the output includes #{unwanted}: #{shown}")
+  BDD.assert(ctx, not shown.include?(unwanted), "the output includes #{unwanted}: #{shown}")
 end
 
 def errors_include(ctx: BDD.Context, args: List[String]) -> BDD.Context
   expected = BDD.doc_string(ctx).strip.replace("$DIR", folder_of(ctx))
   shown = text(ctx, "stderr")
-  return BDD.assert(ctx, shown.include?(expected), "the errors do not include #{expected}: #{shown}")
+  BDD.assert(ctx, shown.include?(expected), "the errors do not include #{expected}: #{shown}")
 end
 
 def errors_not_empty(ctx: BDD.Context, args: List[String]) -> BDD.Context
-  return BDD.assert(ctx, text(ctx, "stderr").strip != "", "the errors are empty")
+  BDD.assert(ctx, text(ctx, "stderr").strip != "", "the errors are empty")
 end
 
 def errors_exclude(ctx: BDD.Context, args: List[String]) -> BDD.Context
   unexpected = BDD.doc_string(ctx).strip.replace("$DIR", folder_of(ctx))
   shown = text(ctx, "stderr")
-  return BDD.assert(ctx, not shown.include?(unexpected), "the errors include #{unexpected}: #{shown}")
+  BDD.assert(ctx, not shown.include?(unexpected), "the errors include #{unexpected}: #{shown}")
 end
 
-def errors_include_once(ctx: BDD.Context, args: List[String]) -> BDD.Context
-  return included_once(ctx, "stderr", "errors")
-end
+def errors_include_once(ctx: BDD.Context, args: List[String]) -> BDD.Context = included_once(ctx, "stderr", "errors")
 
-def output_includes_once(ctx: BDD.Context, args: List[String]) -> BDD.Context
-  return included_once(ctx, "stdout", "output")
-end
+def output_includes_once(ctx: BDD.Context, args: List[String]) -> BDD.Context = included_once(ctx, "stdout", "output")
 
 # Whether the stream of the run holds the doc string exactly once; `word` names the stream in the message.
 def included_once(ctx: BDD.Context, stream: String, word: String) -> BDD.Context
   expected = BDD.doc_string(ctx).strip.replace("$DIR", folder_of(ctx))
   shown = text(ctx, stream)
   times = shown.split(expected).size - 1
-  return BDD.assert(ctx, times == 1, "the #{word} include #{expected} #{times} times: #{shown}")
+  BDD.assert(ctx, times == 1, "the #{word} include #{expected} #{times} times: #{shown}")
 end
 
-def remove_file(ctx: BDD.Context, args: List[String]) -> BDD.Context
-  return check(ctx, Path.remove(host_path(ctx, args[0])))
-end
+def remove_file(ctx: BDD.Context, args: List[String]) -> BDD.Context = check(ctx, Path.remove(host_path(ctx, args[0])))
 
 def file_includes(ctx: BDD.Context, args: List[String]) -> BDD.Context
   path = host_path(ctx, args[0])
   expected = BDD.doc_string(ctx).strip
   held = File.read_text(path).unwrap_or("")
-  return BDD.assert(ctx, held.include?(expected), "#{path} does not include #{expected}: #{held}")
+  BDD.assert(ctx, held.include?(expected), "#{path} does not include #{expected}: #{held}")
 end
 
 def file_excludes(ctx: BDD.Context, args: List[String]) -> BDD.Context
   path = host_path(ctx, args[0])
   unwanted = BDD.doc_string(ctx).strip
   held = File.read_text(path).unwrap_or("")
-  return BDD.assert(ctx, not held.include?(unwanted), "#{path} includes #{unwanted}: #{held}")
+  BDD.assert(ctx, not held.include?(unwanted), "#{path} includes #{unwanted}: #{held}")
 end
 
 def file_exists(ctx: BDD.Context, args: List[String]) -> BDD.Context
   path = host_path(ctx, args[0])
-  return BDD.assert(ctx, File.stat(path).ok?, "#{path} does not exist")
+  BDD.assert(ctx, File.stat(path).ok?, "#{path} does not exist")
 end
 
 def file_missing(ctx: BDD.Context, args: List[String]) -> BDD.Context
   path = host_path(ctx, args[0])
-  return BDD.assert(ctx, not File.stat(path).ok?, "#{path} exists")
+  BDD.assert(ctx, not File.stat(path).ok?, "#{path} exists")
 end
 
 # The file holds the pid of a process the tool started, so it must be there and hold a number: a missing or stale file
@@ -317,77 +295,71 @@ def process_ended(ctx: BDD.Context, args: List[String]) -> BDD.Context
   text = File.read_text(path).unwrap_or("").strip
   found = BDD.assert(ctx, text.to_i.ok?, "#{path} does not hold a pid: #{text}")
   Task.sleep(500)
-  return BDD.assert(found, ended?(text), "process #{text} is still running")
+  BDD.assert(found, ended?(text), "process #{text} is still running")
 end
 
 def ended?(pid: String) -> Bool
   case File.read_text("/proc/#{pid}/status")
-    ok(status) -> return status.include?("State:\tZ")
-    error(_) -> return true
+    ok(status) -> status.include?("State:\tZ")
+    error(_) -> true
   end
 end
 
 # A path of a step is relative to specs/, $DIR is the folder of the scenario and $PID the pid of the steps, a process
 # that runs as long as the scenario.
 def host_path(ctx: BDD.Context, path: String) -> String
-  return "#{SPECS}/#{path.replace("$DIR", folder_of(ctx)).replace("$PID", "#{System.pid()}")}"
+  "#{SPECS}/#{path.replace("$DIR", folder_of(ctx)).replace("$PID", "#{System.pid()}")}"
 end
 
-def text(ctx: BDD.Context, name: String) -> String
-  return JSON.string(BDD.get(ctx, name).unwrap!).unwrap!
-end
+def text(ctx: BDD.Context, name: String) -> String = JSON.string(BDD.get(ctx, name).unwrap!).unwrap!
 
 def folder_of(ctx: BDD.Context) -> String
   case BDD.get(ctx, "folder")
-    ok(value) -> return JSON.string(value).unwrap!
-    error(_) -> return SCRATCH
+    ok(value) -> JSON.string(value).unwrap!
+    error(_) -> SCRATCH
   end
 end
 
 def ensure_folder(ctx: BDD.Context) -> BDD.Context
-  if BDD.get(ctx, "folder").ok?
-    return ctx
-  end
+  return ctx if BDD.get(ctx, "folder").ok?
 
   folder = "#{SCRATCH}/#{System.pid()}-#{Time.now_ms()}"
   made = check(ctx, Dir.mkdir("#{SPECS}/#{folder}"))
-  return (
+  (
     made
     |> BDD.set("folder", JSON.from(folder))
     |> BDD.after(&remove_folder)
   )
 end
 
-def remove_folder(ctx: BDD.Context) -> Result[Void]
-  return Path.remove("#{SPECS}/#{folder_of(ctx)}")
-end
+def remove_folder(ctx: BDD.Context) -> Result[Void] = Path.remove("#{SPECS}/#{folder_of(ctx)}")
 
 # Fails the step with the error of a file operation.
 def check(ctx: BDD.Context, result: Result[Void]) -> BDD.Context
   case result
-    ok(_) -> return ctx
-    error(message) -> return BDD.assert(ctx, false, message)
+    ok(_) -> ctx
+    error(message) -> BDD.assert(ctx, false, message)
   end
 end
 
 def tables_hold(ctx: BDD.Context, args: List[String]) -> BDD.Context
-  return with_compiled(ctx, args[0].to_i!, &Props.scanner_keeps_paths)
+  with_compiled(ctx, args[0].to_i!, &Props.scanner_keeps_paths)
 end
 
 def tables_clean(ctx: BDD.Context, args: List[String]) -> BDD.Context
-  return with_compiled(ctx, args[0].to_i!, &Props.scanner_blames_nothing)
+  with_compiled(ctx, args[0].to_i!, &Props.scanner_blames_nothing)
 end
 
 def walks_agree(ctx: BDD.Context, args: List[String]) -> BDD.Context
-  return with_compiled(ctx, args[0].to_i!, &LockProps.walk_agrees)
+  with_compiled(ctx, args[0].to_i!, &LockProps.walk_agrees)
 end
 
 def suppressions_agree(ctx: BDD.Context, args: List[String]) -> BDD.Context
-  return with_compiled(ctx, args[0].to_i!, &SuppressionProps.suppressions_agree)
+  with_compiled(ctx, args[0].to_i!, &SuppressionProps.suppressions_agree)
 end
 
 def nothing_suppressed(ctx: BDD.Context, args: List[String]) -> BDD.Context
-  return with_compiled(ctx, args[0].to_i!, &SuppressionProps.nothing_to_suppress)
+  with_compiled(ctx, args[0].to_i!, &SuppressionProps.nothing_to_suppress)
 end
 
 # cchecker is compiled once into the folder of the scenario, so that each generated case is one short run.
@@ -411,5 +383,5 @@ def with_compiled(
 
   held = law.call(program, folder_of(compiled), runs, seed)
   replay = "replay it with #{PROP_SEED}=<the seed above> agentica test --only \"NAME\" specs/properties.feature"
-  return BDD.assert(compiled, held.ok?, "#{held.message}\n#{replay}")
+  BDD.assert(compiled, held.ok?, "#{held.message}\n#{replay}")
 end

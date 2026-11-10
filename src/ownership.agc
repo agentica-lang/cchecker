@@ -148,7 +148,7 @@ export def check(units: List[Unit]) -> Checked
     end
   end
 
-  return Checked(findings: findings, incomplete: incomplete)
+  Checked(findings: findings, incomplete: incomplete)
 end
 
 # The findings of one function: with the conditions it tests twice, or without them when there are too many paths.
@@ -168,7 +168,7 @@ def checked(body: Body, functions: Map[String, Function]) -> Walk
     walk = walked(walker.with(tracked: Set.new([]), live: {}))
   end
 
-  return walk
+  walk
 end
 
 def walked(walker: Walker) -> Walk
@@ -184,9 +184,7 @@ def walked(walker: Walker) -> Walk
   found: Map[String, Finding] = {}
   i = 0
   while i < queue.size
-    if i >= MAX_STATES
-      return Walk(findings: found, complete: false)
-    end
+    return Walk(findings: found, complete: false) if i >= MAX_STATES
 
     item = queue[i]
     i += 1
@@ -221,56 +219,48 @@ def walked(walker: Walker) -> Walk
     end
   end
 
-  return Walk(findings: found, complete: true)
+  Walk(findings: found, complete: true)
 end
 
 # One finding for each code and pointer: the first path, which is a shortest one.
 def with_breach(found: Map[String, Finding], body: Body, breach: Breach) -> Map[String, Finding]
   id = "#{breach.code} #{breach.name}"
-  if found.key?(id)
-    return found
-  end
+  return found if found.key?(id)
 
   texts = breach.path.map do |step| step.text end
-  return found.put(id, Locking.located(body, breach.code, breach.message, texts).with(source: breach.source))
+  found.put(id, Locking.located(body, breach.code, breach.message, texts).with(source: breach.source))
 end
 
 def stepped(walker: Walker, event: Event, item: Item) -> Outcome
   case event
-    Event.Join -> return went(item)
+    Event.Join -> went(item)
     Event.Call(site) ->
       stops = Locking.stops?(site, walker.functions)
       jumps = Locking.jumps?(site, walker.functions)
-      if stops and not jumps
-        return Outcome(moved: Moved.Stopped, breaches: [])
-      end
+      return Outcome(moved: Moved.Stopped, breaches: []) if stops and not jumps
 
       outcome = after_call(walker.body, item, site)
-      if not jumps
-        return outcome
-      end
+      return outcome if not jumps
 
       # A call that never comes back but jumps (CC_JUMPS) is a way out of the function, and the path ends there.
       out = jumped(walker, outcome, site, stops)
-      if stops
-        return out.with(moved: Moved.Stopped)
-      end
+      return out.with(moved: Moved.Stopped) if stops
 
-      return out
-    Event.Branch(fact) -> return after_branch(walker, item, fact)
+      out
+    Event.Branch(fact) -> after_branch(walker, item, fact)
     Event.Writes(names) ->
       facts = Locking.forgotten(item.state.facts, walker.roots, names)
-      return went(item.with(state: item.state.with(facts: facts)))
-    Event.Uses(use) -> return after_use(walker.body, item, use)
-    Event.Assigns(assign) -> return after_assign(walker.body, item, assign)
-    Event.Gives(give) -> return after_give(walker.body, item, give)
+      went(item.with(state: item.state.with(facts: facts)))
+    Event.Uses(use) -> after_use(walker.body, item, use)
+    Event.Assigns(assign) -> after_assign(walker.body, item, assign)
+    Event.Gives(give) -> after_give(walker.body, item, give)
     Event.Lends(names) ->
       state = item.state
       for name in names
         state = state.with(owns: state.owns.put(name, UNKNOWN), aliases: state.aliases.delete(name))
       end
 
-      return went(item.with(state: state))
+      went(item.with(state: state))
     Event.Escapes(names) ->
       # A field that stands for a local (`p.left = b`) lends the local with the struct: whoever got the struct may
       # have freed or kept it, as after `lend(&b)`.
@@ -285,7 +275,7 @@ def stepped(walker: Walker, event: Event, item: Item) -> Outcome
         state = state.with(owns: state.owns.put(name, ESCAPED), aliases: state.aliases.delete(name))
       end
 
-      return went(item.with(state: state))
+      went(item.with(state: state))
     Event.Resets(names) ->
       # A clear of the whole struct: the fields are its own again, null until the clear's own values come.
       state = item.state
@@ -295,10 +285,10 @@ def stepped(walker: Walker, event: Event, item: Item) -> Outcome
         end
       end
 
-      return went(item.with(state: state))
-    Event.Closes(closing) -> return closed(walker.body, item, closing)
-    Event.Note(mark) -> return went(item.with(path: item.path.push(marked(mark))))
-    Event.Exit(mark) -> return Outcome(moved: Moved.Ended(item.path.push(marked(mark))), breaches: [])
+      went(item.with(state: state))
+    Event.Closes(closing) -> closed(walker.body, item, closing)
+    Event.Note(mark) -> went(item.with(path: item.path.push(marked(mark))))
+    Event.Exit(mark) -> Outcome(moved: Moved.Ended(item.path.push(marked(mark))), breaches: [])
   end
 end
 
@@ -348,7 +338,7 @@ def closed(body: Body, item: Item, closing: Closing) -> Outcome
     )
   end
 
-  return Outcome(moved: Moved.Went(item.with(state: state)), breaches: breaches)
+  Outcome(moved: Moved.Went(item.with(state: state)), breaches: breaches)
 end
 
 # The state without the kept pointers that nothing stands for any more (the alias got a new value, was lent, or
@@ -356,9 +346,7 @@ end
 # that returns an owned pointer, used many times into one variable, leaves no dead pointer per use). One that may still
 # own stays, to leak where the path ends.
 def released(state: State) -> State
-  if state.kept.empty?
-    return state
-  end
+  return state if state.kept.empty?
 
   named = Set.new(state.aliases.values.concat(state.links.values))
   for name in state.kept.to_a.sort
@@ -373,16 +361,12 @@ def released(state: State) -> State
     end
   end
 
-  return state
+  state
 end
 
-def went(item: Item) -> Outcome
-  return Outcome(moved: Moved.Went(item), breaches: [])
-end
+def went(item: Item) -> Outcome = Outcome(moved: Moved.Went(item), breaches: [])
 
-def marked(mark: Mark) -> Step
-  return Step(text: "#{mark.line}:#{mark.column} #{mark.word}")
-end
+def marked(mark: Mark) -> Step = Step(text: "#{mark.line}:#{mark.column} #{mark.word}")
 
 # A call frees the pointers it frees, takes those it takes, fills those it hands an owned pointer out to (a value that
 # one still owned is lost), and may return an owned value that nothing keeps.
@@ -453,7 +437,7 @@ def after_call(body: Body, item: Item, site: Site) -> Outcome
     breaches = breaches.push(Breach(code: LEAK, name: "#{site.name}()", message: message, path: [step]))
   end
 
-  return Outcome(moved: Moved.Went(current), breaches: breaches)
+  Outcome(moved: Moved.Went(current), breaches: breaches)
 end
 
 # A call that may jump out is a way out of the function too: each pointer that still owns after the call took its
@@ -464,8 +448,8 @@ def jumped(walker: Walker, outcome: Outcome, site: Site, stops: Bool) -> Outcome
       path = after.path.push(Step(text: Locking.jump_text(site, stops, walker.functions)))
       source = Locking.jump_source(site, walker.functions)
       found = leaks(walker.body, after.state, path).map do |breach| breach.with(source: source) end
-      return outcome.with(breaches: outcome.breaches.concat(found))
-    _ -> return outcome
+      outcome.with(breaches: outcome.breaches.concat(found))
+    _ -> outcome
   end
 end
 
@@ -492,15 +476,13 @@ def after_branch(walker: Walker, item: Item, fact: Fact) -> Outcome
     end
   end
 
-  return went(item.with(state: state, path: item.path.push(step)))
+  went(item.with(state: state, path: item.path.push(step)))
 end
 
 # A pointer that is null owns nothing; when it is the result of a realloc, the pointer it moved owns again. A field
 # of a struct that escaped stays so: a value stored in it after the test is handed on too.
 def nulled(state: State, name: String) -> State
-  if state.owns.get(name).map do |own| own == ESCAPED end.unwrap_or(false)
-    return state
-  end
+  return state if state.owns.get(name).map do |own| own == ESCAPED end.unwrap_or(false)
 
   cleared = state.with(owns: state.owns.delete(name))
   case state.links.get(name)
@@ -510,8 +492,8 @@ def nulled(state: State, name: String) -> State
         return restored.with(owns: restored.owns.put(source, OWNED))
       end
 
-      return restored
-    none -> return cleared
+      restored
+    none -> cleared
   end
 end
 
@@ -520,10 +502,9 @@ def after_use(body: Body, item: Item, use: Use) -> Outcome
   case item.state.owns.get(root)
     some(state) if state == FREED or state == MOVED ->
       step = Step(text: "#{use.line}:#{use.column} uses #{plain(root)}", name: root)
-      return Outcome(moved: Moved.Went(item), breaches: [used_after(body, item, root, step)])
-    some(state) if state == FILLED ->
-      return went(item.with(state: item.state.with(owns: item.state.owns.put(root, OWNED))))
-    _ -> return went(item)
+      Outcome(moved: Moved.Went(item), breaches: [used_after(body, item, root, step)])
+    some(state) if state == FILLED -> went(item.with(state: item.state.with(owns: item.state.owns.put(root, OWNED))))
+    _ -> went(item)
   end
 end
 
@@ -537,10 +518,10 @@ def after_give(body: Body, item: Item, give: Give) -> Outcome
   step = Step(text: "#{give.line}:#{give.column} #{word}", name: root, ended: true)
   case item.state.owns.get(root)
     some(state) if state == FREED or state == MOVED ->
-      return Outcome(moved: Moved.Went(item), breaches: [used_after(body, item, root, step)])
-    some(state) if state == CLEARED or state == ESCAPED -> return went(item)
-    some(_) -> return went(ended(item, root, MOVED, step))
-    none -> return went(item)
+      Outcome(moved: Moved.Went(item), breaches: [used_after(body, item, root, step)])
+    some(state) if state == CLEARED or state == ESCAPED -> went(item)
+    some(_) -> went(ended(item, root, MOVED, step))
+    none -> went(item)
   end
 end
 
@@ -598,13 +579,11 @@ def after_assign(body: Body, item: Item, assign: Assign) -> Outcome
     state = state.with(owns: state.owns.put(assign.name, ESCAPED), aliases: state.aliases.delete(assign.name))
   end
 
-  return Outcome(moved: Moved.Went(item.with(state: state, path: item.path.push(step))), breaches: breaches)
+  Outcome(moved: Moved.Went(item.with(state: state, path: item.path.push(step))), breaches: breaches)
 end
 
 # Whether a local stands for the pointer `name`.
-def kept_by_alias?(state: State, name: String) -> Bool
-  return state.aliases.values.include?(name)
-end
+def kept_by_alias?(state: State, name: String) -> Bool = state.aliases.values.include?(name)
 
 # `old = *p; *p = v;` in a CC_FREES parameter, `old = p; p = q;` or `old = p; take(&p);`: the locals that stood for the
 # pointer keep its old value, in the state it had; the first one holds it and the others stand for it.
@@ -617,21 +596,21 @@ def handed_over(state: State, name: String) -> State
   end
 
   case state.owns.get(name)
-    some(own) -> return state.with(aliases: aliases, owns: state.owns.put(holder, own))
-    none -> return state.with(aliases: aliases)
+    some(own) -> state.with(aliases: aliases, owns: state.owns.put(holder, own))
+    none -> state.with(aliases: aliases)
   end
 end
 
 # The result of a realloc owns; the pointer it moved owns again where the result is null.
 def resized(state: State, assign: Assign) -> State
   owned = state.with(owns: state.owns.put(assign.name, OWNED))
-  return owned.with(links: owned.links.put(assign.name, owner(state, assign.from)))
+  owned.with(links: owned.links.put(assign.name, owner(state, assign.from)))
 end
 
 # A pointer that owns gets a new value at `step` (an assignment, or a call that fills it): what it owned leaks.
 def overwritten(body: Body, item: Item, name: String, step: Step) -> Breach
   message = "#{body.name} does not free or hand on #{plain(name)} on every path"
-  return Breach(code: LEAK, name: name, message: message, path: from_last(item.path, name, true).push(step))
+  Breach(code: LEAK, name: name, message: message, path: from_last(item.path, name, true).push(step))
 end
 
 # Each pointer that still owns at the end of a path is a leak.
@@ -644,32 +623,25 @@ def leaks(body: Body, state: State, path: List[Step]) -> List[Breach]
     end
   end
 
-  return found
+  found
 end
 
 def used_after(body: Body, item: Item, name: String, step: Step) -> Breach
   message = "#{body.name} uses #{plain(name)} after it freed it or handed it on"
-  return Breach(code: USE_AFTER_FREE, name: name, message: message, path: ended_path(item, name, step))
+  Breach(code: USE_AFTER_FREE, name: name, message: message, path: ended_path(item, name, step))
 end
 
 # The path from the step that freed or handed on the pointer to `step`.
-def ended_path(item: Item, name: String, step: Step) -> List[Step]
-  return from_last(item.path, name, false).push(step)
-end
+def ended_path(item: Item, name: String, step: Step) -> List[Step] = from_last(item.path, name, false).push(step)
 
 # The item after a call or a store ended the ownership of a pointer, and the step on its path.
 def ended(item: Item, name: String, state: String, step: Step) -> Item
   owns = item.state.owns.put(name, state)
-  return item.with(
-    state: item.state.with(owns: owns, links: item.state.links.delete(name)),
-    path: item.path.push(step),
-  )
+  item.with(state: item.state.with(owns: owns, links: item.state.links.delete(name)), path: item.path.push(step))
 end
 
 # The pointer that a local stands for: itself, or the pointer it is an alias of.
-def owner(state: State, name: String) -> String
-  return state.aliases.get(name).unwrap_or(name)
-end
+def owner(state: State, name: String) -> String = state.aliases.get(name).unwrap_or(name)
 
 # The steps of a path from the last one that gave the pointer its value (`origin`) or ended its ownership; the whole
 # path when there is none (a parameter owns from the entry).
@@ -682,7 +654,7 @@ def from_last(path: List[Step], name: String, origin: Bool) -> List[Step]
     end
   end
 
-  return path.drop(start)
+  path.drop(start)
 end
 
 # The state as a text, the same for two states with the same pointers and conditions whatever their order.
@@ -692,5 +664,5 @@ def encoded(state: State) -> String
   links = state.links.keys.sort.map do |name| "#{name}<#{state.links[name]}" end
   facts = state.facts.keys.sort.map do |text| "#{text}=#{state.facts[text]}" end
   kept = state.kept.to_a.sort
-  return "#{owns.join(";")}|#{aliases.join(";")}|#{links.join(";")}|#{facts.join(";")}|#{kept.join(";")}"
+  "#{owns.join(";")}|#{aliases.join(";")}|#{links.join(";")}|#{facts.join(";")}|#{kept.join(";")}"
 end

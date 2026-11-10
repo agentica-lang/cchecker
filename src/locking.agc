@@ -178,7 +178,7 @@ export def check(units: List[Unit], owned: List[String] = []) -> Checked
     end
   end
 
-  return Checked(findings: findings, incomplete: incomplete, sections: sections, partial: partial.to_a)
+  Checked(findings: findings, incomplete: incomplete, sections: sections, partial: partial.to_a)
 end
 
 ## Returns the conditions that the function tests in two places or more: only those can make a path impossible.
@@ -200,7 +200,7 @@ export def tracked_of(body: Body) -> Set[String]
     end
   end
 
-  return twice
+  twice
 end
 
 ## Returns a finding at the function, with its path cut to the first and the last steps when it is long.
@@ -210,7 +210,7 @@ export def located(body: Body, code: String, message: String, path: List[String]
     texts = texts.take(MAX_PATH / 2).push("...").concat(texts.drop(texts.size - MAX_PATH / 2))
   end
 
-  return Finding(
+  Finding(
     code: code,
     tool: Effects.TOOL,
     file: body.file,
@@ -231,7 +231,7 @@ export def roots_of(body: Body) -> Map[String, List[String]]
     end
   end
 
-  return roots
+  roots
 end
 
 ## Returns the known conditions without those that read one of `names`, which a path just wrote.
@@ -240,20 +240,16 @@ export def forgotten(
   roots: Map[String, List[String]],
   names: List[String],
 ) -> Map[String, Bool]
-  return facts.select do |text, _value| not roots.get(text, []).any? do |root| names.include?(root) end end
+  facts.select do |text, _value| not roots.get(text, []).any? do |root| names.include?(root) end end
 end
 
 ## Returns the known conditions that are still in `live`, the ones a later path can read.
 export def kept(facts: Map[String, Bool], live: Set[String]) -> Map[String, Bool]
-  if facts.empty?
-    return facts
-  end
+  return facts if facts.empty?
 
-  if facts.keys.all? do |text| live.include?(text) end
-    return facts
-  end
+  return facts if facts.keys.all? do |text| live.include?(text) end
 
-  return facts.select do |text, _value| live.include?(text) end
+  facts.select do |text, _value| live.include?(text) end
 end
 
 ## Returns, for each node, the tracked conditions that a path from it can still test before a write to a variable of
@@ -261,9 +257,7 @@ end
 ## that two paths that differ in a condition that is not read again are one. A node not in the map has none.
 export def live_facts(body: Body, tracked: Set[String], roots: Map[String, List[String]]) -> Map[Int, Set[String]]
   live: Map[Int, Set[String]] = {}
-  if tracked.empty?
-    return live
-  end
+  return live if tracked.empty?
 
   nodes = body.nodes
   before: Map[Int, List[Int]] = {}
@@ -292,13 +286,13 @@ export def live_facts(body: Body, tracked: Set[String], roots: Map[String, List[
     end
   end
 
-  return live
+  live
 end
 
 ## Returns whether a call never comes back: by its type or name, or by a CC_NORETURN on the function.
 export def stops?(site: Site, functions: Map[String, Function]) -> Bool
   noreturn = functions.get(site.key).map do |f| f.noreturn end.unwrap_or(false)
-  return site.stops or noreturn
+  site.stops or noreturn
 end
 
 ## Returns whether a call may jump out of its caller (CC_MAY_JUMP, `[assume] may_jump`, CC_JUMPS, `[assume] jumps`):
@@ -306,7 +300,7 @@ end
 ## path ends there; otherwise the path goes on after the call too.
 export def jumps?(site: Site, functions: Map[String, Function]) -> Bool
   marks = functions.get(site.key).map do |f| f.marks end.unwrap_or([])
-  return marks.include?(Effects.MAY_JUMP) or marks.include?(Effects.JUMPS)
+  marks.include?(Effects.MAY_JUMP) or marks.include?(Effects.JUMPS)
 end
 
 ## Returns the step that ends a path at a call that jumps out of the caller: `jumps in` for a call that never comes
@@ -316,13 +310,9 @@ end
 export def jump_text(site: Site, stops: Bool, functions: Map[String, Function]) -> String
   at = "#{site.line}:#{site.column}"
   via = functions.get(site.key).map do |f| f.via end.unwrap_or([])
-  if via.empty? and stops
-    return "#{at} jumps in #{site.name}"
-  end
+  return "#{at} jumps in #{site.name}" if via.empty? and stops
 
-  if via.empty?
-    return "#{at} may jump in #{site.name}"
-  end
+  return "#{at} may jump in #{site.name}" if via.empty?
 
   shown = via.take(MAX_VIA)
   if via.size > MAX_VIA
@@ -330,35 +320,29 @@ export def jump_text(site: Site, stops: Bool, functions: Map[String, Function]) 
   end
 
   text = "#{at} may jump in #{site.name} (#{shown.join(", ")})"
-  if stops
-    return "#{text}, never returns"
-  end
+  return "#{text}, never returns" if stops
 
-  return text
+  text
 end
 
 ## Returns the `source` of a finding at a call that jumps: the flag of the inference when the jump is inferred.
 export def jump_source(site: Site, functions: Map[String, Function]) -> String
   inferred = functions.get(site.key).map do |f| not f.via.empty? end.unwrap_or(false)
-  if inferred
-    return Known.JUMP_CALLERS_FLAG
-  end
+  return Known.JUMP_CALLERS_FLAG if inferred
 
-  return ""
+  ""
 end
 
 ## Returns the word of the value of a condition on a step of a path.
 export def truth(fact: Fact) -> String
-  if fact.value
-    return "true"
-  end
+  return "true" if fact.value
 
-  return "false"
+  "false"
 end
 
 def helper?(function: Optional[Function]) -> Bool
   marks = function.map do |f| f.marks end.unwrap_or([])
-  return marks.any? do |mark| mark.start_with?("acquires(") or mark.start_with?("releases(") end
+  marks.any? do |mark| mark.start_with?("acquires(") or mark.start_with?("releases(") end
 end
 
 # The findings of one function: with the conditions it tests twice, or without them when there are too many paths.
@@ -386,23 +370,21 @@ def checked(body: Body, functions: Map[String, Function], rules: Held.Rules, own
     walk = walked(walker.with(tracked: Set.new([]), live: {}))
   end
 
-  return walk
+  walk
 end
 
 # Whether a function is the set of a CC_PAIR on its own declaration: `pair(name, ...)`.
 def pair_set?(name: String, marks: List[String]) -> Bool
-  return marks.any? do |mark| mark.start_with?("#{PAIR_MARK}#{name},") end
+  marks.any? do |mark| mark.start_with?("#{PAIR_MARK}#{name},") end
 end
 
 # The keys of the locks of a mark `no_syscall_under(a, b)` of the function itself.
 def quiet_keys(mark: String) -> List[String]
   prefix = "no_syscall_under("
-  if not mark.start_with?(prefix) or not mark.end_with?(")")
-    return []
-  end
+  return [] if not mark.start_with?(prefix) or not mark.end_with?(")")
 
   inside = mark.slice(prefix.length, mark.length - prefix.length - 1)
-  return inside.split(",").map do |text| text.strip end.select do |text| text != "" end.map(&Flow.key_of)
+  inside.split(",").map do |text| text.strip end.select do |text| text != "" end.map(&Flow.key_of)
 end
 
 # The locks that the calls of a function take, release or wait on, by key.
@@ -421,7 +403,7 @@ def locks_of(body: Body) -> Map[String, Lock]
     end
   end
 
-  return locks
+  locks
 end
 
 # The keys of the locks that the catcher of a jump gives back: those that the body takes or releases only through calls
@@ -450,7 +432,7 @@ def caught_of(body: Body, functions: Map[String, Function]) -> Set[String]
     end
   end
 
-  return caught.difference(other)
+  caught.difference(other)
 end
 
 # The keys of the pairs whose set the body calls.
@@ -469,7 +451,7 @@ def sets_of(body: Body) -> Set[String]
     end
   end
 
-  return keys
+  keys
 end
 
 def walked(walker: Walker) -> Walk
@@ -481,9 +463,7 @@ def walked(walker: Walker) -> Walk
   sections: Map[String, Section] = {}
   i = 0
   while i < queue.size
-    if i >= MAX_STATES
-      return Walk(findings: found, complete: false, sections: sections)
-    end
+    return Walk(findings: found, complete: false, sections: sections) if i >= MAX_STATES
 
     item = queue[i]
     i += 1
@@ -506,7 +486,7 @@ def walked(walker: Walker) -> Walk
     end
   end
 
-  return Walk(findings: found, complete: true, sections: sections)
+  Walk(findings: found, complete: true, sections: sections)
 end
 
 # The keys of the locks of a function's CC_ACQUIRES and CC_RELEASES in the names of the parameters of its body, or,
@@ -523,29 +503,26 @@ def annotated_keys(body: Body, function: Optional[Function]) -> Set[String]
       .map do |prefix| mark.slice(prefix.length, mark.length - prefix.length - 1) end
   end
 
-  return Set.new(inside.flat_map do |text| text.split(",") end.map do |lock| Flow.key_of(lock.strip) end)
+  Set.new(inside.flat_map do |text| text.split(",") end.map do |lock| Flow.key_of(lock.strip) end)
 end
 
 # Whether the function takes a lock that no text names, so that its sections are not known.
 def unnamed?(body: Body) -> Bool
   for node in body.nodes
     case node.event
-      Event.Call(site) ->
-        if site.unnamed
-          return true
-        end
+      Event.Call(site) -> return true if site.unnamed
 
       _ -> next
     end
   end
 
-  return false
+  false
 end
 
 # The keys of the locks of the findings of a walk that leave a lock to the caller: held at a return or a jump, or
 # released and not taken (findings are keyed `CODE KEY`).
 def unbalanced(findings: Map[String, Finding]) -> List[String]
-  return findings.keys.flat_map do |id|
+  findings.keys.flat_map do |id|
     [NOT_RELEASED, NOT_HELD]
       .select do |code| id.start_with?("#{code} ") end
       .map do |code| id.slice(code.length + 1, id.length - code.length - 1) end
@@ -555,11 +532,9 @@ end
 # The class of a lock as the inference of short locks reads it: "" when the rules cannot tell it, or when its field or
 # global is a pointer to the mutex, as then another class may name the same mutex, unless `owned` names it.
 def section_class(lock: Lock, owned: Set[String]) -> String
-  if lock.through and not Effects.named_class?(owned, lock.class)
-    return ""
-  end
+  return "" if lock.through and not Effects.named_class?(owned, lock.class)
 
-  return lock.class
+  lock.class
 end
 
 # The sections of a call that the path makes while it holds locks: one for each class held, by class and place. The
@@ -590,8 +565,8 @@ def with_sections(sections: Map[String, Section], walker: Walker, item: Item, ev
         end
       end
 
-      return kept
-    _ -> return sections
+      kept
+    _ -> sections
   end
 end
 
@@ -602,17 +577,13 @@ end
 def with_jump(found: Map[String, Finding], walker: Walker, item: Item, event: Event) -> Map[String, Finding]
   case event
     Event.Call(site) ->
-      if not jumps?(site, walker.functions)
-        return found
-      end
+      return found if not jumps?(site, walker.functions)
 
       step = Step(text: jump_text(site, stops?(site, walker.functions), walker.functions))
       held = item.state.held.select do |key, _count| not walker.caught.include?(key) end
       kept = with_exit(found, walker, item.state.with(held: held), item.path.push(step), true)
       source = jump_source(site, walker.functions)
-      if source == ""
-        return kept
-      end
+      return kept if source == ""
 
       for id in kept.keys
         if not found.key?(id)
@@ -620,16 +591,16 @@ def with_jump(found: Map[String, Finding], walker: Walker, item: Item, event: Ev
         end
       end
 
-      return kept
-    _ -> return found
+      kept
+    _ -> found
   end
 end
 
 # Whether an event is a return of an error value.
 def failed?(event: Event) -> Bool
   case event
-    Event.Exit(mark) -> return mark.failed
-    _ -> return false
+    Event.Exit(mark) -> mark.failed
+    _ -> false
   end
 end
 
@@ -651,8 +622,8 @@ def with_breaches(found: Map[String, Finding], walker: Walker, item: Item, event
         end
       end
 
-      return kept
-    _ -> return found
+      kept
+    _ -> found
   end
 end
 
@@ -663,26 +634,22 @@ end
 def with_unset(found: Map[String, Finding], walker: Walker, item: Item, site: Site) -> Map[String, Finding]
   state = item.state
   pairs = site.drops.select do |lock| lock.pair != "" end
-  if pairs.any? do |lock| state.held.get(lock.key, 0) > 0 or state.clamped.include?(lock.key) end
-    return found
-  end
+  return found if pairs.any? do |lock| state.held.get(lock.key, 0) > 0 or state.clamped.include?(lock.key) end
 
   sets = pairs.select do |lock| walker.sets.include?(lock.key) end
-  if sets.empty? or found.key?("#{PAIR_NOT_SET} #{sets.first.key}")
-    return found
-  end
+  return found if sets.empty? or found.key?("#{PAIR_NOT_SET} #{sets.first.key}")
 
   key = sets.first.key
   steps = from_last(item.path, key, true).map do |step| step.text end
   message = "#{walker.body.name} calls #{site.name} with no call of #{set_of(key)} before it on a path"
   path = steps.push("#{site.line}:#{site.column} calls #{site.name}")
-  return found.put("#{PAIR_NOT_SET} #{key}", located(walker.body, PAIR_NOT_SET, message, path))
+  found.put("#{PAIR_NOT_SET} #{key}", located(walker.body, PAIR_NOT_SET, message, path))
 end
 
 def held_lock(walker: Walker, item: Item, key: String) -> Held.Held
   lock = walker.locks.get(key).unwrap_or(Lock(key: key, shown: key))
   steps = from_last(item.path, key, true).map do |step| step.text end
-  return Held.Held(lock: lock, quiet: walker.quiet.include?(key), path: steps)
+  Held.Held(lock: lock, quiet: walker.quiet.include?(key), path: steps)
 end
 
 def stepped(walker: Walker, event: Event, item: Item) -> Moved
@@ -691,35 +658,27 @@ def stepped(walker: Walker, event: Event, item: Item) -> Moved
   roots = walker.roots
   state = item.state
   case event
-    Event.Join -> return Moved.Went(item)
+    Event.Join -> Moved.Went(item)
     Event.Call(site) ->
-      if stops?(site, functions)
-        return Moved.Stopped
-      end
+      return Moved.Stopped if stops?(site, functions)
 
-      return Moved.Went(after_call(item, site))
+      Moved.Went(after_call(item, site))
     Event.Branch(fact) ->
       step = Step(text: "#{fact.line}:#{fact.column} #{truth(fact)}")
-      if not tracked.include?(fact.text)
-        return Moved.Went(item.with(path: item.path.push(step)))
-      end
+      return Moved.Went(item.with(path: item.path.push(step))) if not tracked.include?(fact.text)
 
-      if state.facts.get(fact.text).map do |known| known != fact.value end.unwrap_or(false)
-        return Moved.Stopped
-      end
+      return Moved.Stopped if state.facts.get(fact.text).map do |known| known != fact.value end.unwrap_or(false)
 
       facts = state.facts.put(fact.text, fact.value)
-      return Moved.Went(item.with(state: state.with(facts: facts), path: item.path.push(step)))
-    Event.Writes(names) -> return Moved.Went(item.with(state: state.with(facts: forgotten(state.facts, roots, names))))
-    Event.Note(mark) -> return Moved.Went(item.with(path: item.path.push(marked(mark))))
-    Event.Exit(mark) -> return Moved.Ended(item.path.push(marked(mark)))
-    _ -> return Moved.Went(item)
+      Moved.Went(item.with(state: state.with(facts: facts), path: item.path.push(step)))
+    Event.Writes(names) -> Moved.Went(item.with(state: state.with(facts: forgotten(state.facts, roots, names))))
+    Event.Note(mark) -> Moved.Went(item.with(path: item.path.push(marked(mark))))
+    Event.Exit(mark) -> Moved.Ended(item.path.push(marked(mark)))
+    _ -> Moved.Went(item)
   end
 end
 
-def marked(mark: Mark) -> Step
-  return Step(text: "#{mark.line}:#{mark.column} #{mark.word}")
-end
+def marked(mark: Mark) -> Step = Step(text: "#{mark.line}:#{mark.column} #{mark.word}")
 
 # The state and the path after a call: the locks it takes and releases. The step of a pair names the call.
 def after_call(item: Item, site: Site) -> Item
@@ -755,7 +714,7 @@ def after_call(item: Item, site: Site) -> Item
     steps = steps.push(Step(text: "#{site.line}:#{site.column} #{text}", lock: lock.key, shown: lock.shown))
   end
 
-  return item.with(state: item.state.with(held: held, clamped: clamped), path: steps)
+  item.with(state: item.state.with(held: held, clamped: clamped), path: steps)
 end
 
 # A count of zero leaves the map, so two paths that hold the same locks have the same state.
@@ -769,11 +728,9 @@ def counted(held: Map[String, Int], key: String, by: Int) -> Map[String, Int]
     count = -MAX_COUNT
   end
 
-  if count == 0
-    return held.delete(key)
-  end
+  return held.delete(key) if count == 0
 
-  return held.put(key, count)
+  held.put(key, count)
 end
 
 # The findings of a path that ends: each lock it holds that it took, and each it released and did not take. One finding
@@ -804,7 +761,7 @@ def with_exit(
     end
   end
 
-  return kept
+  kept
 end
 
 # The path starts at the last take of the lock for a lock left held (or a pair not restored), at its last release
@@ -820,12 +777,12 @@ def finding(body: Body, code: String, key: String, restore: String, path: List[S
     message = "#{body.name} calls #{set} and does not call #{restore} after it on every path"
   end
 
-  return located(body, code, message, steps.map do |step| step.text end)
+  located(body, code, message, steps.map do |step| step.text end)
 end
 
 # The set of the lock key of a pair: `mask_signals` for `pair:mask_signals:restore_signals`.
 def set_of(key: String) -> String
-  return key.slice(Flow.PAIR_PREFIX.length, key.length - Flow.PAIR_PREFIX.length).split(":").first
+  key.slice(Flow.PAIR_PREFIX.length, key.length - Flow.PAIR_PREFIX.length).split(":").first
 end
 
 # The steps of a path from the last one that took the lock (`took`) or released it.
@@ -837,14 +794,14 @@ def from_last(path: List[Step], key: String, took: Bool) -> List[Step]
     end
   end
 
-  return path.drop(start)
+  path.drop(start)
 end
 
 # The state as a text, the same for two states with the same locks and conditions whatever their order.
 def encoded(state: State) -> String
   held = state.held.keys.sort.map do |key| "#{key}=#{state.held[key]}" end
   facts = state.facts.keys.sort.map do |text| "#{text}=#{state.facts[text]}" end
-  return "#{held.join(";")}|#{facts.join(";")}|#{state.clamped.to_a.sort.join(";")}"
+  "#{held.join(";")}|#{facts.join(";")}|#{state.clamped.to_a.sort.join(";")}"
 end
 
 # The conditions read from a node, given those read from what follows it: a test of a tracked one adds it, and a write
@@ -857,13 +814,11 @@ def read_before(
 ) -> Set[String]
   case event
     Event.Branch(fact) ->
-      if tracked.include?(fact.text)
-        return reads.add(fact.text)
-      end
+      return reads.add(fact.text) if tracked.include?(fact.text)
 
-      return reads
+      reads
     Event.Writes(names) ->
-      return Set.new(reads.to_a.select do |text| not roots.get(text, []).any? do |root| names.include?(root) end end)
-    _ -> return reads
+      Set.new(reads.to_a.select do |text| not roots.get(text, []).any? do |root| names.include?(root) end end)
+    _ -> reads
   end
 end

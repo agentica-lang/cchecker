@@ -33,9 +33,7 @@ export def parse(text: String) -> List[Diagnostic]
   esc = escape_char()
   found: List[Diagnostic] = []
   for line in text.split("\n")
-    if line.include?(esc)
-      next
-    end
+    next if line.include?(esc)
 
     case Regex.match(line, HEADER)
       ok(m) -> found = found.push(build(m))
@@ -43,7 +41,7 @@ export def parse(text: String) -> List[Diagnostic]
     end
   end
 
-  return found.select do |d| d.severity != "note" end
+  found.select do |d| d.severity != "note" end
 end
 
 ## Returns the lines of a tool's output that look like a diagnostic but that `parse` does not read: a line with an
@@ -63,27 +61,23 @@ export def unparsed(text: String) -> List[String]
     end
   end
 
-  return found
+  found
 end
 
 ## Returns the option name of a diagnostic: the first tag that is not a CWE number, or none.
 export def option(d: Diagnostic) -> Optional[String]
   names = d.tags.select do |tag| not tag.start_with?("CWE-") end
-  if names.empty?
-    return none
-  end
+  return none if names.empty?
 
-  return some(names.first.split(",").first)
+  some(names.first.split(",").first)
 end
 
 # The escape character, ESC, which starts every escape sequence of a terminal.
-def escape_char() -> String
-  return String.from_bytes(Bytes.from_list([27]).unwrap!).unwrap!
-end
+def escape_char() -> String = String.from_bytes(Bytes.from_list([27]).unwrap!).unwrap!
 
 def build(m: Regex.Match) -> Diagnostic
   tagged = split_tags(m.groups[5].text.strip, [])
-  return Diagnostic(
+  Diagnostic(
     file: m.groups[1].text,
     line: m.groups[2].text.to_i.unwrap_or(0),
     column: m.groups[3].text.to_i.unwrap_or(0),
@@ -96,7 +90,7 @@ end
 # Takes the bracketed names off the end of the message, last one first, so the tags keep their order in the line.
 def split_tags(message: String, tags: List[String]) -> Tagged
   case Regex.match(message, TAG)
-    ok(m) -> return split_tags(m.groups[1].text, [m.groups[2].text].concat(tags))
-    error(_) -> return Tagged(message: message, tags: tags)
+    ok(m) -> split_tags(m.groups[1].text, [m.groups[2].text].concat(tags))
+    error(_) -> Tagged(message: message, tags: tags)
   end
 end
