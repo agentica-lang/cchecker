@@ -90,9 +90,6 @@ end
 ## Returns the rules that a call of `body` breaks while the path holds `held`; `at` is the step of the call
 ## (`LINE:COL`).
 export def at_call(rules: Rules, body: Body, held: List[Held], site: Site, at: String) -> List[Breach]
-  # A helper on the side of its flag where it does nothing to a lock: its lock calls run on the other side.
-  return [] if site.idle
-
   under_quiet(rules, body, held, site, at).concat(out_of_order(rules, body, held, site, at))
 end
 
@@ -105,6 +102,10 @@ def under_quiet(rules: Rules, body: Body, held: List[Held], site: Site, at: Stri
   return [] if quiet.empty?
 
   reached = system_call(rules, body, site)
+  if site.idle
+    reached = idle_system(rules, body, site, Set.new([]))
+  end
+
   found: List[Breach] = []
   for h in quiet
     path = reached
@@ -275,7 +276,12 @@ def out_of_order(rules: Rules, body: Body, held: List[Held], site: Site, at: Str
 
   # A function that takes the class of a lock held may take that very lock again, which a lock that counts its nested
   # takes allows: only another class is out of order.
-  for class in reached_by(rules, body, site)
+  classes = reached_by(rules, body, site)
+  if site.idle
+    classes = idle_takes(rules, body, site, Set.new([]))
+  end
+
+  for class in classes
     for h in leveled
       if h.lock.class != class and higher_or_same?(rules, h.lock.class, class)
         found = found.push(
@@ -352,5 +358,135 @@ def level_of(mark: String) -> Optional[Int]
   case inside.to_i
     ok(level) -> some(level)
     error(_) -> none
+  end
+end
+
+# The calls of a helper's body that the side of its flags where it does nothing to a lock (`Site.idle`) makes: all of
+# them but its own lock calls, the takes, the releases and the waits of the lock that its marks name, which the other
+# side makes. A branch that tests the flag of a CC_RELEASES_IF is not followed on its true side, where the flag is 0
+# (the flag is read by the name that the mark gives it: a definition that names the parameter otherwise is followed in
+# full).
+def idle_calls(rules: Rules, helper: Body) -> List[Site]
+  own = own_keys(rules, helper)
+  flags = released_flags(rules, helper.key)
+  found: List[Site] = []
+  seen = Set.new([0])
+  queue = [0]
+  i = 0
+  while i < queue.size
+    node = helper.nodes[queue[i]]
+    i += 1
+    follow = true
+    case node.event
+      Event.Call(call) ->
+        own_call = call.takes.concat(call.drops).concat(call.waits).any? do |lock| own.include?(lock.key) end
+        if not own_call
+          found = found.push(call)
+        end
+
+      Event.Branch(fact) -> follow = not (fact.value and flags.include?(Flow.plain(fact.text)))
+      _ -> follow = true
+    end
+
+    if follow
+      for after in node.next
+        if not seen.include?(after)
+          seen = seen.add(after)
+          queue = queue.push(after)
+        end
+      end
+    end
+  end
+
+  found
+end
+
+# The keys of the locks that a helper's marks name, in the names of its parameters (`Body.acquires` and `releases`) or,
+# when the unit of the definition did not see the marked prototype, as the marks write them.
+def own_keys(rules: Rules, helper: Body) -> Set[String]
+  keys = helper.acquires.concat(helper.releases).select do |key| key != "" end
+  return Set.new(keys) if not keys.empty?
+
+  marks = marks_of(rules, helper.key)
+  texts: List[String] = []
+  for mark in marks
+    for word in ["acquires", "releases", "acquires_if", "releases_if"]
+      if mark.start_with?("#{word}(") and mark.end_with?(")")
+        locks = mark.slice(word.length + 1, mark.length - word.length - 2).split(",")
+        # The second text of a mark by a flag is the flag.
+        if word.end_with?("_if")
+          locks = locks.take(1)
+        end
+
+        texts = texts.concat(locks)
+      end
+    end
+  end
+
+  Set.new(texts.map do |lock| Flow.key_of(lock.strip) end)
+end
+
+# The flags of the CC_RELEASES_IF marks of a function, as its marks write them.
+def released_flags(rules: Rules, key: String) -> Set[String]
+  flagged = marks_of(rules, key).select do |mark| mark.start_with?("releases_if(") and mark.end_with?(")") end
+  texts = flagged.map do |mark| mark.slice(12, mark.length - 13).split(",") end
+  flags = texts.select do |parts| parts.size > 1 end
+  Set.new(flags.map do |parts| parts[1].strip end)
+end
+
+# The marks of a function, merged from all its declarations.
+def marks_of(rules: Rules, key: String) -> List[String]
+  found = rules.graph.functions.get(key).map do |f| f.marks end
+  found.unwrap_or([])
+end
+
+# The call path to a system call of a call on the idle side of a flagged helper: the first one that the calls of
+# its body make (`idle_calls`), other than a release or a wait. A call of another flagged helper that is idle in its
+# turn goes the same way; `seen` stops a helper that calls itself.
+def idle_system(rules: Rules, body: Body, site: Site, seen: Set[String]) -> List[String]
+  case rules.bodies.get(site.key)
+    none -> system_call(rules, body, site)
+    some(helper) ->
+      return [] if seen.include?(site.key)
+
+      for call in idle_calls(rules, helper)
+        path: List[String] = []
+        if call.idle
+          path = idle_system(rules, helper, call, seen.add(site.key))
+        elsif call.drops.concat(call.waits).empty?
+          path = system_call(rules, helper, call)
+        end
+
+        return [site.name].concat(path) if not path.empty?
+      end
+
+      []
+  end
+end
+
+# The classes that a call on the idle side of a flagged helper takes through its body: those of the locks its calls
+# take other than its own, and of the functions they reach.
+def idle_takes(rules: Rules, body: Body, site: Site, seen: Set[String]) -> List[String]
+  case rules.bodies.get(site.key)
+    none -> reached_by(rules, body, site)
+    some(helper) ->
+      return [] if seen.include?(site.key)
+
+      classes: List[String] = []
+      for call in idle_calls(rules, helper)
+        if call.idle
+          classes = classes.concat(idle_takes(rules, helper, call, seen.add(site.key)))
+        else
+          for lock in waited(call)
+            if lock.class != ""
+              classes = classes.push(lock.class)
+            end
+          end
+
+          classes = classes.concat(reached_by(rules, helper, call))
+        end
+      end
+
+      classes.uniq
   end
 end

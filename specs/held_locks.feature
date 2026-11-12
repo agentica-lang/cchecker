@@ -721,3 +721,55 @@ Feature: What runs while a lock is held
       | a system call            |                   | void nest(struct queue *a, struct slot *b) { bool l; pthread_mutex_lock(&a->mu); lock_if(b, &l); b->n++; unlock_if(b, l); pthread_mutex_unlock(&a->mu); } | 1    | includes once    | "code":"CC-PATH-SYSCALL-UNDER-LOCK" |
       | a lock of a lower level  | CC_LOCK_LEVEL(2)  | void nest(struct queue *a, struct slot *b) { bool l; pthread_mutex_lock(&a->mu); lock_if(b, &l); b->n++; unlock_if(b, l); pthread_mutex_unlock(&a->mu); } | 1    | includes once    | "code":"CC-PATH-LOCK-ORDER"               |
       | no lock held             | CC_LOCK_LEVEL(2)  | void nest(struct queue *a, struct slot *b) { bool l; lock_if(b, &l); b->n++; unlock_if(b, l); a->n++; }                              | 0    | does not include | "code":"CC-PATH-                    |
+
+  Scenario Outline: A call of a flagged helper on the side where it does nothing to its lock still follows the rest of its body (<case>)
+    Given the C file "rest.c" holds:
+      """
+      #include "pthread.h" /* found in the system folders */
+      #include <stdbool.h>
+      #include "unistd.h"
+      #include "cchecker.h"
+
+      struct queue { CC_NO_SYSCALL_UNDER() pthread_mutex_t mu; int fd; int n; };
+      <helpers>
+
+      void f(struct queue *a, struct queue *b) { bool l; pthread_mutex_lock(&a->mu); <call>; pthread_mutex_unlock(&a->mu); }
+      """
+    When I run cchecker with "--tools rules --json $DIR/rest.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "code":"CC-PATH-SYSCALL-UNDER-LOCK"
+      """
+
+    Examples:
+      | case                                | helpers                                                                                                                                                                                                                              | call                |
+      | a write before the test of the flag | CC_RELEASES_IF(q->mu, held) void unlock_if(struct queue *q, bool held) { write(q->fd, "x", 1); if (held) pthread_mutex_unlock(&q->mu); }                                                                                              | unlock_if(b, false) |
+      | a write before the take             | CC_ACQUIRES_IF(q->mu, *locked) void lock_if(struct queue *q, bool *locked) { write(q->fd, "x", 1); *locked = false; if (q->n) { pthread_mutex_lock(&q->mu); *locked = true; } }                                                        | lock_if(b, &l); if (l) pthread_mutex_unlock(&b->mu) |
+      | a write before a nested helper      | CC_RELEASES_IF(q->mu, held) void inner(struct queue *q, bool held) { if (held) pthread_mutex_unlock(&q->mu); } CC_RELEASES_IF(q->mu, held) void outer(struct queue *q, bool held) { write(q->fd, "x", 1); inner(q, held); }          | outer(b, false)     |
+
+  Scenario Outline: A call of a flagged helper on the side where it does nothing to its lock still takes the locks its body takes (<case>)
+    Given the C file "order.c" holds:
+      """
+      #include "pthread.h" /* found in the system folders */
+      #include <stdbool.h>
+      #include "cchecker.h"
+
+      struct hold { CC_LOCK_LEVEL(1) pthread_mutex_t mu; int n; };
+      struct slot { CC_LOCK_LEVEL(2) pthread_mutex_t mu; int n; };
+      CC_LOCK_LEVEL(1) pthread_mutex_t other;
+      <helpers>
+
+      void f(struct hold *a, struct slot *b) { bool l; pthread_mutex_lock(&a->mu); <call>; pthread_mutex_unlock(&a->mu); }
+      """
+    When I run cchecker with "--tools rules --json $DIR/order.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "code":"CC-PATH-LOCK-ORDER"
+      """
+
+    Examples:
+      | case                         | helpers                                                                                                                                                                                                       | call                |
+      | a lock taken before the test | CC_RELEASES_IF(s->mu, held) void unlock_if(struct slot *s, bool held) { pthread_mutex_lock(&other); pthread_mutex_unlock(&other); if (held) pthread_mutex_unlock(&s->mu); }                                   | unlock_if(b, false) |
+      | a lock taken before the take | CC_ACQUIRES_IF(s->mu, *locked) void lock_if(struct slot *s, bool *locked) { pthread_mutex_lock(&other); pthread_mutex_unlock(&other); *locked = false; if (s->n) { pthread_mutex_lock(&s->mu); *locked = true; } } | lock_if(b, &l); if (l) pthread_mutex_unlock(&b->mu) |

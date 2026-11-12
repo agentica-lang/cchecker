@@ -292,10 +292,11 @@ that is no such local (`&b->locked`, a pointer the function was passed) splits
 the path with no value a test can read. The flag of a `CC_RELEASES_IF` is read
 as the test of an `if` (`done(q, locked)` releases where `locked` is not 0), and
 a constant takes one side. On the side where the helper does nothing to a lock,
-the rules on what runs while a lock is held do not read its body. A call of a
-`CC_TRIES` goes as a trylock does (above), and never waits for its lock. A mark
-whose flag is no parameter of its declaration, or a `CC_TRIES` with two locks, is
-an error of the tool (exit 2).
+the rules on what runs while a lock is held read its body without its own calls
+of that lock: a system call or a lock taken before the flag is tested is still
+found. A call of a `CC_TRIES` goes as a trylock does (above), and never waits
+for its lock. A mark whose flag is no parameter of its declaration, or a
+`CC_TRIES` with two locks, is an error of the tool (exit 2).
 
 Limits: a lock is counted by its text, so a lock taken in a loop over several
 objects (`lock(&a[i]->mu)`), locks taken hand over hand, or a pointer that is

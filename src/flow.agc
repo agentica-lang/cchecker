@@ -101,7 +101,7 @@ export struct Site
   # Whether the call takes a lock that no text names (`&current()->mu`, `&locks[hash(k)]`): no walk sees it.
   unnamed: Bool = false
   # Whether the call is of a helper on the side of its flags where it takes and releases nothing (`flagged_call`): the
-  # rules of Held do not follow its body, whose lock calls are on the other side.
+  # rules of Held read its body without its own lock calls, which are on the other side.
   idle: Bool = false
 end
 
