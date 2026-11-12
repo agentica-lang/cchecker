@@ -220,7 +220,8 @@ Feature: Time and memory on large generated inputs
   Scenario: A function walked again without its conditions is counted, in its bounds
     18 flags each tested twice under the lock take more than the 200 000 states with their values: the walk without
     them finds the same, and the function is listed, as its paths were not all told apart. The walk that stops at
-    200 000 states, each with the values of 18 flags, needs more memory than the other scenarios.
+    200 000 states, each with the values of 18 flags, needs more memory than the other scenarios; it takes about 12 s,
+    under the 30 s that a scenario may take.
 
     Given the C file "twice.c" holds:
       """
@@ -239,7 +240,7 @@ Feature: Time and memory on large generated inputs
         pthread_mutex_unlock(m);
       }
       """
-    When I run cchecker with "--tools rules --json $DIR/twice.c" in at most 2500 MiB and 40 seconds
+    When I run cchecker with "--tools rules --json $DIR/twice.c" in at most 2500 MiB and 25 seconds
     Then the exit code is 0
     And the output includes:
       """

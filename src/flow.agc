@@ -114,8 +114,8 @@ end
 ## of a trylock kept in a variable, on the side where the call worked and the side where it failed
 ## (`r = pthread_mutex_trylock(&m)`), whose step reads `fails` and names the lock it did not take (`failed`).
 ## `if_tested` is the side where a call failed that fails only on an error (`r = pthread_mutex_lock(&m)`): a path goes
-## there only when the function tests the result (`Locking.tested_of`). `single` is a fact with no node for its other
-## value (a constant, a `case` label).
+## there only when a test of the result can follow (`Locking.tested_after`). `single` is a fact with no node for its
+## other value (a constant, a `case` label).
 export struct Fact
   text: String
   value: Bool
@@ -3268,17 +3268,21 @@ def nonzero_side(split: Split, compared: Compared, keys: Map[String, String]) ->
 end
 
 # The variable that a test reads: for a local set once to another local set once (`int busy = r;`), that one, so a
-# test of the copy is one of the result it copies; the node itself for anything else.
+# test of the copy is one of the result it copies; the node itself for anything else, and for a copy of a local whose
+# value can change behind the code, or into one (`Builder.opaque`: `static`, `volatile`, its address taken).
 def copied(b: Builder, node: Json) -> Json
   bare = see_through(node)
   return node if Ast.kind(bare) != "DeclRefExpr"
 
+  keys = b.owners.places.keys
   case b.aliases.get(Ast.referenced_name(bare))
     some(value) ->
       source = see_through(value)
-      return source if Ast.kind(source) == "DeclRefExpr" and b.aliases.key?(Ast.referenced_name(source))
+      return node if Ast.kind(source) != "DeclRefExpr" or not b.aliases.key?(Ast.referenced_name(source))
 
-      node
+      return node if b.opaque.include?(referenced_key(keys, bare)) or b.opaque.include?(referenced_key(keys, source))
+
+      source
     none -> node
   end
 end

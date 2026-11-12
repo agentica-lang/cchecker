@@ -218,10 +218,12 @@ set once (`int busy = r; if (!busy)`). A new value of the variable forgets the
 result (`r = work(q); if (r == 0) unlock(&q->mu);` is a finding). A path that
 releases the lock where the call failed starts at the call (`6:11 fails`). The
 failure of a call that waits for its lock (`pthread_mutex_lock`) is an error,
-which a path reaches only when the function tests the result (`ret =
-pthread_mutex_lock(&q->mu); ...; return ret;` does not). A wait on a condition
-(`pthread_cond_wait(&cv, &q->mu)`) gives the lock back before it returns, so it
-changes nothing.
+which a path reaches only when a test of the variable can follow the call
+before a new value of it (`ret = pthread_mutex_lock(&q->mu); ...; return ret;`
+does not, nor does a test of `ret` before the call or after `ret = work();`). A
+copy of a `static` or `volatile` local, or of one whose address is taken, is not
+followed. A wait on a condition (`pthread_cond_wait(&cv, &q->mu)`) gives the
+lock back before it returns, so it changes nothing.
 
 A path does not go where a condition that the function tests twice would have to
 be true and false, so `if (locked) lock(); ...; if (locked) unlock();` passes. A
@@ -245,13 +247,13 @@ local (`int ready = q->ready; if (ready) ...`) when the call may change it. A
 condition leaves the state of a path after its last test before a write to one
 of its variables, so a function with many flags, each tested twice around a
 lock, stays in a number of states that grows with the flags when their tests do
-not overlap, not as a power of two. A function whose
-paths would take more than 200 000 states to follow is walked again without
-these conditions, which may follow paths that cannot happen; when that is not
-enough either, its findings are those of the paths followed. Either way the run
-lists it in `incomplete_functions` of `--json` (`file`, `line` and `function`)
-and on standard error (the exit code does not change). A function whose AST has
-more than 20 000 nodes (about four times the largest of the Agentica VM) gets no
+not overlap, not as a power of two. A function whose paths would take more than
+200 000 states to follow is walked again without these conditions, which may
+follow paths that cannot happen; when that is not enough either, its findings
+are those of the paths followed. Either way the run lists it in
+`incomplete_functions` of `--json` (`file`, `line` and `function`) and on
+standard error (the exit code does not change). A function whose AST has more
+than 20 000 nodes (about four times the largest of the Agentica VM) gets no
 graph: that is an error of the `rules` tool on its file, so the exit code is 2,
 and the rest of the run is checked.
 

@@ -36,7 +36,7 @@ Feature: Laws of the rules on generated C files
 
   @slow
   Scenario Outline: The lock walk agrees with the oracle on many functions (<batch>)
-    Then the lock walk agrees with the oracle on 60 generated functions
+    Then the lock walk agrees with the oracle on 40 generated functions
 
     Examples:
       | batch |
@@ -48,6 +48,10 @@ Feature: Laws of the rules on generated C files
       | 6     |
       | 7     |
       | 8     |
+      | 9     |
+      | 10    |
+      | 11    |
+      | 12    |
 
   Scenario: Suppressions hold where the rule says: a trailing comment for its line, one alone for the next line too
     Then suppressions agree with the rule on 15 generated files

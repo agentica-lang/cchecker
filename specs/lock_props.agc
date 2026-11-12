@@ -97,22 +97,26 @@ struct Parsed
 end
 
 # Where each way out of a piece of code goes: the states (`state_of`) of the paths that go on, break, continue, return
-# or jump to `out`.
+# or jump to `out`. In the probe (`Oracle.probe`) a state is the id of a lock that waits kept in `r` whose result no
+# test read yet, and `seen` the ids that a test reads.
 struct Flow
   normal: List[Int] = []
   brk: List[Int] = []
   cont: List[Int] = []
   ret: List[Int] = []
   jump: List[Int] = []
+  seen: List[Int] = []
 end
 
 # What the rules keep of `r` in the whole function (docs/rules.md): its value is followed when the function names it in
 # two places (`known`), that of `r == EBUSY` when two tests are of it (`busy`), and the failure of a lock that waits
-# is a path only when the function tests `r` (`tested`).
+# is a path only when a test of `r` can follow it before a new value of `r` (`live`, the ids of those locks, 0 for the
+# one at the declaration; `probe` is the run that finds them).
 struct Oracle
   known: Bool
   busy: Bool
-  tested: Bool
+  live: List[Int]
+  probe: Bool = false
 end
 
 ## The generator of functions: up to 24 tokens of the body and 3 of the cleanup (lock, unlock, work, or a `return` or
@@ -254,7 +258,7 @@ def exits(generated: Program) -> List[Int]
   if generated.start == 1
     first = tried(o, first, false)
   elsif generated.start == 2
-    first = kept(o, first)
+    first = kept(o, first, 0)
   end
 
   body = run_block(o, generated.body, first)
@@ -280,7 +284,6 @@ def oracle_of(generated: Program) -> Oracle
   end
 
   names = 0
-  tests = 0
   busy = 0
   if generated.start != 0
     names += 1
@@ -290,7 +293,6 @@ def oracle_of(generated: Program) -> Oracle
     kind = stmt.kind
     if kind == TEST
       names += 1
-      tests += 1
       if stmt.id % 6 >= 4
         busy += 1
       end
@@ -298,18 +300,45 @@ def oracle_of(generated: Program) -> Oracle
       names += 1
       if tried_in_test?(stmt)
         names += 1
-        tests += 1
       end
     elsif kind == SET and stmt.id % 3 != 0 and guarded
       names += 1
     elsif kind == ON
       # Its `case 0`, and its `default`, which the `case 0` makes a value of `r` too.
       names += 2
-      tests += 1
     end
   end
 
-  Oracle(known: names >= 2, busy: busy >= 2, tested: tests > 0)
+  first: List[Int] = []
+  if generated.start == 2
+    first = [0]
+  end
+
+  # The probe follows every way through the code, whatever the conditions, as the rules do for this question.
+  probe = Oracle(known: false, busy: false, live: [], probe: true)
+  live = run_block(probe, generated.body, first).seen
+  Oracle(known: names >= 2, busy: busy >= 2, live: live)
+end
+
+# A statement of the probe: a lock that waits kept in `r` starts its id, a new value of `r` ends every id, and a test
+# of `r` reads them (`seen`) and ends them. The other statements go on as in the oracle.
+def probed(o: Oracle, stmt: Stmt, open: List[Int]) -> Flow
+  kind = stmt.kind
+  return Flow(normal: [stmt.id]) if kind == KEEP
+
+  return Flow(normal: []) if kind == TRY or kind == SET
+
+  if kind == TEST or kind == ON
+    ran = joined(run_block(o, stmt.body, []), run_block(o, stmt.other, []))
+    ran = ran.with(seen: merged(ran.seen, open))
+    return ran if kind == TEST
+
+    return ran.with(normal: merged(ran.normal, ran.brk), brk: [])
+  end
+
+  return joined(run_block(o, stmt.body, open), run_block(o, stmt.other, open)) if kind == QTEST
+
+  Flow(normal: open)
 end
 
 # The statements of a list and all those inside them.
@@ -337,12 +366,16 @@ end
 
 def run_stmt(o: Oracle, stmt: Stmt, states: List[Int]) -> Flow
   kind = stmt.kind
+  if o.probe and [LOCK, UNLOCK, WORK, TRY, KEEP, SET, QSET, TEST, ON, QTEST].include?(kind)
+    return probed(o, stmt, states)
+  end
+
   if kind == LOCK or kind == UNLOCK
     return Flow(normal: moved(states, kind == LOCK))
   elsif kind == TRY
     return Flow(normal: tried(o, states, stmt.id % 4 == 3))
   elsif kind == KEEP
-    return Flow(normal: kept(o, states))
+    return Flow(normal: kept(o, states, stmt.id))
   elsif kind == SET
     value = [UNKNOWN, ZERO, NONZERO][stmt.id % 3]
     kept = states.map do |state| state_of(count_of(state), r_value(o, value), UNKNOWN, q_of(state)) end
@@ -397,10 +430,10 @@ def tried(o: Oracle, states: List[Int], flipped: Bool) -> List[Int]
   merged(worked, failed)
 end
 
-# A lock that waits kept in `r`: it failed only on a path of a function that tests `r`.
-def kept(o: Oracle, states: List[Int]) -> List[Int]
+# A lock that waits kept in `r` (`id`): it failed only where a test of `r` can follow it (`Oracle.live`).
+def kept(o: Oracle, states: List[Int], id: Int) -> List[Int]
   worked = moved(states, true).map do |state| state_of(count_of(state), r_value(o, ZERO), UNKNOWN, q_of(state)) end
-  return merged([], worked) if not o.tested
+  return merged([], worked) if not o.live.include?(id)
 
   merged(worked, states.map do |state| state_of(count_of(state), r_value(o, NONZERO), UNKNOWN, q_of(state)) end)
 end
@@ -477,12 +510,15 @@ end
 
 # The head of the loop is reached from before it and after each turn (the end of the body or a `continue`), until no
 # new state comes. The loop ends at the head (its condition false) or at a `break`. Each state of a path goes its own
-# way, so a turn runs only the states that are new at the head.
+# way, so a turn runs only the states that are new at the head. The first turn runs even with no state, as the probe
+# starts ids inside the body.
 def run_loop(o: Oracle, body: List[Stmt], states: List[Int]) -> Flow
   head = merged([], states)
   fresh = head
   out = Flow(normal: [])
-  while not fresh.empty?
+  turns = 0
+  while turns == 0 or not fresh.empty?
+    turns += 1
     turn = run_block(o, body, fresh)
     out = joined(out, turn.with(normal: [], cont: []))
     back = merged(turn.normal, turn.cont)
@@ -490,7 +526,7 @@ def run_loop(o: Oracle, body: List[Stmt], states: List[Int]) -> Flow
     head = merged(head, fresh)
   end
 
-  Flow(normal: merged(head, out.brk), ret: out.ret, jump: out.jump)
+  Flow(normal: merged(head, out.brk), ret: out.ret, jump: out.jump, seen: out.seen)
 end
 
 # Each case is entered from the switch and from the case before it that does not break; with no `default`, the switch
@@ -516,6 +552,7 @@ def joined(a: Flow, b: Flow) -> Flow
     cont: merged(a.cont, b.cont),
     ret: merged(a.ret, b.ret),
     jump: merged(a.jump, b.jump),
+    seen: merged(a.seen, b.seen),
   )
 end
 

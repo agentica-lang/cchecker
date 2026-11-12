@@ -106,8 +106,8 @@ struct Walker
   body: Body
   functions: Map[String, Function]
   tracked: Set[String]
-  # The conditions that the function tests in its code (`Locking.tested_of`).
-  tested: Set[String]
+  # The failure sides of lock calls whose result a test reads after them (`Locking.tested_after`).
+  reached: Set[Int]
   roots: Map[String, List[String]]
   # The tracked conditions that each node can still read (`Locking.live_facts`); the state keeps no other.
   live: Map[Int, Set[String]]
@@ -163,7 +163,7 @@ def checked(body: Body, functions: Map[String, Function]) -> Walk
     body: body,
     functions: functions,
     tracked: tracked,
-    tested: Locking.tested_of(body),
+    reached: Locking.tested_after(body),
     roots: roots,
     live: Locking.live_facts(body, tracked, roots),
   )
@@ -462,7 +462,7 @@ end
 
 # A condition: the known conditions as the lock rules keep them, and the pointers that are null on this side.
 def after_branch(walker: Walker, item: Item, fact: Fact) -> Outcome
-  return Outcome(moved: Moved.Stopped, breaches: []) if fact.if_tested and not walker.tested.include?(fact.text)
+  return Outcome(moved: Moved.Stopped, breaches: []) if fact.if_tested and not walker.reached.include?(item.node)
 
   path = item.path
   if not fact.quiet

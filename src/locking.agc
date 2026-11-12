@@ -89,8 +89,8 @@ struct Walker
   functions: Map[String, Function]
   rules: Held.Rules
   tracked: Set[String]
-  # The conditions that the function tests in its code (`tested_of`).
-  tested: Set[String]
+  # The failure sides of lock calls whose result a test reads after them (`tested_after`).
+  reached: Set[Int]
   roots: Map[String, List[String]]
   # The tracked conditions that each node can still read (`live_facts`); the state keeps no other.
   live: Map[Int, Set[String]]
@@ -210,22 +210,45 @@ export def tracked_of(body: Body) -> Set[String]
   twice
 end
 
-## Returns the conditions that the function tests in its code: those of a node that no write made (`Fact.written`). A
-## lock call that fails only on an error goes to its failure side only when the function tests its result.
-export def tested_of(body: Body) -> Set[String]
+## Returns the nodes of the failure side of a lock call that fails only on an error (`Fact.if_tested`, `ret =
+## pthread_mutex_lock(&m)`) from which a test of the result can come before a new value of the variable: a path goes
+## to such a side only there. A test is a condition in the code, not a fact that a write made (`Fact.written`), and a
+## test of the variable before the call, or after a new value, is not one of its result.
+export def tested_after(body: Body) -> Set[Int]
   tested: Set[String] = Set.new([])
-  for node in body.nodes
-    case node.event
+  failing: List[Int] = []
+  for at in 0...body.nodes.size
+    case body.nodes[at].event
       Event.Branch(fact) ->
         if fact.text != "" and not fact.written
           tested = tested.add(fact.text)
+        end
+
+        if fact.if_tested
+          failing = failing.push(at)
         end
 
       _ -> next
     end
   end
 
-  tested
+  found: Set[Int] = Set.new([])
+  return found if failing.empty? or tested.empty?
+
+  live = live_facts(body, tested, roots_of(body))
+  for at in failing
+    node = body.nodes[at]
+    text = case node.event
+      Event.Branch(fact) -> fact.text
+      _ -> ""
+    end
+
+    if node.next.any? do |after| live.get(after, Set.new([])).include?(text) end
+      found = found.add(at)
+    end
+  end
+
+  found
 end
 
 ## Returns a finding at the function, with its path cut to the first and the last steps when it is long.
@@ -388,7 +411,7 @@ def checked(body: Body, functions: Map[String, Function], rules: Held.Rules, own
     functions: functions,
     rules: rules,
     tracked: tracked,
-    tested: tested_of(body),
+    reached: tested_after(body),
     roots: roots,
     live: live_facts(body, tracked, roots),
     locks: locks_of(body),
@@ -699,7 +722,7 @@ def stepped(walker: Walker, event: Event, item: Item) -> Moved
 
       Moved.Went(after_call(item, site))
     Event.Branch(fact) ->
-      return Moved.Stopped if fact.if_tested and not walker.tested.include?(fact.text)
+      return Moved.Stopped if fact.if_tested and not walker.reached.include?(item.node)
 
       path = item.path
       if not fact.quiet
