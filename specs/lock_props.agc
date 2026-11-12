@@ -259,15 +259,16 @@ def exits(generated: Program) -> List[Int]
 
   body = run_block(o, generated.body, first)
   entry = merged(body.normal, body.jump)
-  cleanup = run_block(o, generated.cleanup, entry)
-  label = merged(entry, cleanup.jump)
-  while label != entry
-    entry = label
-    cleanup = run_block(o, generated.cleanup, entry)
-    label = merged(entry, cleanup.jump)
+  fresh = entry
+  ends = body.ret
+  while not fresh.empty?
+    cleanup = run_block(o, generated.cleanup, fresh)
+    ends = merged(ends, merged(cleanup.ret, cleanup.normal))
+    fresh = merged([], cleanup.jump.select do |state| not entry.include?(state) end)
+    entry = merged(entry, fresh)
   end
 
-  merged(body.ret, merged(cleanup.ret, cleanup.normal))
+  ends
 end
 
 # What the rules keep of `r`, from the places that name it: each test and each kept result once (a test written
@@ -475,18 +476,21 @@ def moved(states: List[Int], take: Bool) -> List[Int]
 end
 
 # The head of the loop is reached from before it and after each turn (the end of the body or a `continue`), until no
-# new state comes. The loop ends at the head (its condition false) or at a `break`.
+# new state comes. The loop ends at the head (its condition false) or at a `break`. Each state of a path goes its own
+# way, so a turn runs only the states that are new at the head.
 def run_loop(o: Oracle, body: List[Stmt], states: List[Int]) -> Flow
-  head = states
-  turn = run_block(o, body, head)
-  next_head = merged(head, merged(turn.normal, turn.cont))
-  while next_head != head
-    head = next_head
-    turn = run_block(o, body, head)
-    next_head = merged(head, merged(turn.normal, turn.cont))
+  head = merged([], states)
+  fresh = head
+  out = Flow(normal: [])
+  while not fresh.empty?
+    turn = run_block(o, body, fresh)
+    out = joined(out, turn.with(normal: [], cont: []))
+    back = merged(turn.normal, turn.cont)
+    fresh = merged([], back.select do |state| not head.include?(state) end)
+    head = merged(head, fresh)
   end
 
-  Flow(normal: merged(head, turn.brk), ret: turn.ret, jump: turn.jump)
+  Flow(normal: merged(head, out.brk), ret: out.ret, jump: out.jump)
 end
 
 # Each case is entered from the switch and from the case before it that does not break; with no `default`, the switch
