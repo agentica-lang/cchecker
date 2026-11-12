@@ -106,18 +106,22 @@ struct Walker
   body: Body
   functions: Map[String, Function]
   tracked: Set[String]
+  # The failure sides of lock calls whose result a test reads after them (`Locking.tested_after`).
+  reached: Set[Int]
   roots: Map[String, List[String]]
   # The tracked conditions that each node can still read (`Locking.live_facts`); the state keeps no other.
   live: Map[Int, Set[String]]
 end
 
+# What a walk found, whether it went through every path, and whether it knew its conditions (`exact`).
 struct Walk
   findings: Map[String, Finding]
   complete: Bool
+  exact: Bool = true
 end
 
-## What the rules found, and the number of functions with more paths than the walk follows, checked on those it went
-## through only.
+## What the rules found, and the functions with more paths than the walk follows with their conditions, checked on
+## those it went through only or without the conditions.
 export struct Checked
   findings: List[Finding]
   incomplete: List[IncompleteFunction]
@@ -139,7 +143,7 @@ export def check(units: List[Unit]) -> Checked
       if body.owns and not done.include?(body.key)
         walk = checked(body, functions)
         findings = findings.concat(walk.findings.values)
-        if not walk.complete
+        if not walk.complete or not walk.exact
           incomplete = incomplete.push(IncompleteFunction(file: body.file, line: body.line, function: body.name))
         end
       end
@@ -159,13 +163,14 @@ def checked(body: Body, functions: Map[String, Function]) -> Walk
     body: body,
     functions: functions,
     tracked: tracked,
+    reached: Locking.tested_after(body),
     roots: roots,
     live: Locking.live_facts(body, tracked, roots),
   )
 
   walk = walked(walker)
   if not walk.complete
-    walk = walked(walker.with(tracked: Set.new([]), live: {}))
+    walk = walked(walker.with(tracked: Set.new([]), live: {})).with(exact: false)
   end
 
   walk
@@ -457,7 +462,13 @@ end
 
 # A condition: the known conditions as the lock rules keep them, and the pointers that are null on this side.
 def after_branch(walker: Walker, item: Item, fact: Fact) -> Outcome
-  step = Step(text: "#{fact.line}:#{fact.column} #{Locking.truth(fact)}")
+  return Outcome(moved: Moved.Stopped, breaches: []) if fact.if_tested and not walker.reached.include?(item.node)
+
+  path = item.path
+  if not fact.quiet
+    path = path.push(Step(text: "#{fact.line}:#{fact.column} #{Locking.truth(fact)}"))
+  end
+
   state = item.state
   if walker.tracked.include?(fact.text)
     contradicted = state.facts.get(fact.text).map do |known| known != fact.value end
@@ -477,7 +488,7 @@ def after_branch(walker: Walker, item: Item, fact: Fact) -> Outcome
     end
   end
 
-  went(item.with(state: state, path: item.path.push(step)))
+  went(item.with(state: state, path: path))
 end
 
 # A pointer that is null owns nothing; when it is the result of a realloc, the pointer it moved owns again. A field

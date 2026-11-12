@@ -162,6 +162,114 @@ Feature: Time and memory on large generated inputs
       "incomplete_functions":[{"file":"$DIR/many.c","line":4,"function":"many"}]
       """
 
+  Scenario: A trylock kept in a variable and a flag set to a constant, 24 times in a loop, stay in their bounds
+    Each kept result is a fact until its test, and each constant until the flag is tested after the loop: a path holds
+    the lock only between a take and its unlock, so the states do not multiply with the uses.
+
+    Given the C file "tries.c" holds, with ITEMS as 24 times " r = pthread_mutex_trylock(&q->mu); if (r == 0) { work(1); pthread_mutex_unlock(&q->mu); done = 1; }":
+      """
+      #include <pthread.h>
+      struct queue { pthread_mutex_t mu; int n; };
+      int work(int n);
+      int pop(struct queue *q) {
+        int r;
+        int done = 0;
+        for (int i = 0; i < q->n; i++) {ITEMS
+        }
+        if (done) work(2);
+        return 0;
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/tries.c" in at most 1500 MiB and 20 seconds
+    Then the exit code is 0
+    And the output includes:
+      """
+      "incomplete_functions":[]
+      """
+
+  Scenario: 20 flags set to constants and tested after a lock, with no lock in their branches, stay in their bounds
+    A constant written to a flag is a fact only when a test of the flag guards a lock call or a way out, so these
+    flags are not followed and the walk does not keep a state for each choice of them.
+
+    Given the C file "flags.c" holds:
+      """
+      #include <pthread.h>
+      int c(int);
+      void w(int);
+      void f(pthread_mutex_t *m) {
+        int f0 = 0, f1 = 0, f2 = 0, f3 = 0, f4 = 0, f5 = 0, f6 = 0, f7 = 0, f8 = 0, f9 = 0, f10 = 0, f11 = 0, f12 = 0, f13 = 0, f14 = 0, f15 = 0, f16 = 0, f17 = 0, f18 = 0, f19 = 0;
+        if (c(0)) f0 = 1; if (c(1)) f1 = 1; if (c(2)) f2 = 1; if (c(3)) f3 = 1; if (c(4)) f4 = 1;
+        if (c(5)) f5 = 1; if (c(6)) f6 = 1; if (c(7)) f7 = 1; if (c(8)) f8 = 1; if (c(9)) f9 = 1;
+        if (c(10)) f10 = 1; if (c(11)) f11 = 1; if (c(12)) f12 = 1; if (c(13)) f13 = 1; if (c(14)) f14 = 1;
+        if (c(15)) f15 = 1; if (c(16)) f16 = 1; if (c(17)) f17 = 1; if (c(18)) f18 = 1; if (c(19)) f19 = 1;
+        pthread_mutex_lock(m);
+        if (f0) w(0); if (f1) w(1); if (f2) w(2); if (f3) w(3); if (f4) w(4);
+        if (f5) w(5); if (f6) w(6); if (f7) w(7); if (f8) w(8); if (f9) w(9);
+        if (f10) w(10); if (f11) w(11); if (f12) w(12); if (f13) w(13); if (f14) w(14);
+        if (f15) w(15); if (f16) w(16); if (f17) w(17); if (f18) w(18); if (f19) w(19);
+        pthread_mutex_unlock(m);
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/flags.c" in at most 1500 MiB and 5 seconds
+    Then the exit code is 0
+    And the output includes:
+      """
+      "incomplete_functions":[]
+      """
+
+  Scenario: A function walked again without its conditions is counted, in its bounds
+    18 flags each tested twice under the lock take more than the 200 000 states with their values: the walk without
+    them finds the same, and the function is listed, as its paths were not all told apart. The walk that stops at
+    200 000 states, each with the values of 18 flags, needs more memory than the other scenarios; it takes about 12 s,
+    under the 30 s that a scenario may take.
+
+    Given the C file "twice.c" holds:
+      """
+      #include <pthread.h>
+      int c(int);
+      void w(int);
+      void f(pthread_mutex_t *m) {
+        int f0 = c(0), f1 = c(1), f2 = c(2), f3 = c(3), f4 = c(4), f5 = c(5), f6 = c(6), f7 = c(7), f8 = c(8), f9 = c(9), f10 = c(10), f11 = c(11), f12 = c(12), f13 = c(13), f14 = c(14), f15 = c(15), f16 = c(16), f17 = c(17);
+        pthread_mutex_lock(m);
+        if (f0) w(0); if (f1) w(1); if (f2) w(2); if (f3) w(3); if (f4) w(4); if (f5) w(5);
+        if (f6) w(6); if (f7) w(7); if (f8) w(8); if (f9) w(9); if (f10) w(10); if (f11) w(11);
+        if (f12) w(12); if (f13) w(13); if (f14) w(14); if (f15) w(15); if (f16) w(16); if (f17) w(17);
+        if (f0) w(0); if (f1) w(1); if (f2) w(2); if (f3) w(3); if (f4) w(4); if (f5) w(5);
+        if (f6) w(6); if (f7) w(7); if (f8) w(8); if (f9) w(9); if (f10) w(10); if (f11) w(11);
+        if (f12) w(12); if (f13) w(13); if (f14) w(14); if (f15) w(15); if (f16) w(16); if (f17) w(17);
+        pthread_mutex_unlock(m);
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/twice.c" in at most 2500 MiB and 25 seconds
+    Then the exit code is 0
+    And the output includes:
+      """
+      "incomplete_functions":[{"file":"$DIR/twice.c","line":4,"function":"f"}]
+      """
+
+  Scenario: A checked lock tested once, then 2000 other tests, stays in its bounds
+    Whether a test of the result of `r = pthread_mutex_lock(&mu)` can follow it reads the tests of `r` only, not each of
+    the 2000 conditions after it (`__COUNTER__` gives each its own number).
+
+    Given the C file "checked.c" holds, with ITEMS as 2000 times " if (x == __COUNTER__) count++;":
+      """
+      #include <pthread.h>
+      pthread_mutex_t mu; int count;
+      int f(int x) {
+        int r = pthread_mutex_lock(&mu);
+        if (r) return r;
+       ITEMS
+        pthread_mutex_unlock(&mu);
+        return 0;
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/checked.c" in at most 1500 MiB and 10 seconds
+    Then the exit code is 0
+    And the output includes:
+      """
+      "incomplete_functions":[]
+      """
+
   Scenario Outline: Blocks that declare a pointer of the same name do not multiply the states of the ownership walk (<case>)
     Given the C file "blocks.c" holds, with ITEMS as 24 times " if (pick()) { <block> }":
       """

@@ -39,7 +39,8 @@ export PAIR_NOT_SET = "CC-PATH-PAIR-NOT-SET"
 MAX_COUNT = 2
 
 # The states the walk of one function may visit, with the conditions and then without them. A function with more
-# paths than this is checked on those it went through only, and counted (`Checked.incomplete`).
+# paths than this is walked again without its conditions, which may follow paths that cannot happen, and is counted
+# (`Checked.incomplete`); with more paths than this again, it is checked on those it went through only.
 MAX_STATES = 200_000
 
 # The most steps of a path a finding shows: the first ones and the last ones.
@@ -57,12 +58,13 @@ struct State
 end
 
 # One step of a path, as the finding shows it, and the key and the text of the lock it took (`took`) or released (""
-# for none).
+# for none), or that a kept trylock did not take (`failed`), where a path that releases it after starts.
 struct Step
   text: String
   lock: String = ""
   shown: String = ""
   took: Bool = false
+  failed: Bool = false
 end
 
 struct Item
@@ -87,6 +89,8 @@ struct Walker
   functions: Map[String, Function]
   rules: Held.Rules
   tracked: Set[String]
+  # The failure sides of lock calls whose result a test reads after them (`tested_after`).
+  reached: Set[Int]
   roots: Map[String, List[String]]
   # The tracked conditions that each node can still read (`live_facts`); the state keeps no other.
   live: Map[Int, Set[String]]
@@ -103,15 +107,16 @@ struct Walker
 end
 
 # What a walk found: the findings by code and lock key, the calls made while a lock is held (by class and place),
-# and whether it went through every path.
+# whether it went through every path, and whether it knew its conditions (`exact`).
 struct Walk
   findings: Map[String, Finding]
   complete: Bool
   sections: Map[String, Section] = {}
+  exact: Bool = true
 end
 
-## The findings of the lock rules, and how many functions had more paths than the walk follows (their findings are
-## those of the paths it went through). `sections` are the calls made while a lock is held, in every function that
+## The findings of the lock rules, and the functions with more paths than the walk follows with their conditions
+## (their findings are those of the paths it went through, or of a walk that does not know the conditions). `sections` are the calls made while a lock is held, in every function that
 ## takes or releases one, helpers included, and `partial` the classes whose sections are not all known: those of the
 ## functions whose paths the walk did not all go through, and those of a lock that a function returns or jumps out
 ## with, or releases without holding it (a helper: one its marks do not name), as its caller holds the lock across code
@@ -168,7 +173,7 @@ export def check(units: List[Unit], owned: List[String] = []) -> Checked
 
         if not helper
           findings = findings.concat(walk.findings.values)
-          if not walk.complete
+          if not walk.complete or not walk.exact
             incomplete = incomplete.push(IncompleteFunction(file: body.file, line: body.line, function: body.name))
           end
         end
@@ -181,14 +186,16 @@ export def check(units: List[Unit], owned: List[String] = []) -> Checked
   Checked(findings: findings, incomplete: incomplete, sections: sections, partial: partial.to_a)
 end
 
-## Returns the conditions that the function tests in two places or more: only those can make a path impossible.
+## Returns the conditions that the function tests, or sets (a constant written to a variable, the result of a trylock
+## kept in one), in two places or more: only those can make a path impossible. A test or a kept result counts by its
+## side where the value is true, a constant or a `case` label by its one node.
 export def tracked_of(body: Body) -> Set[String]
   seen: Set[String] = Set.new([])
   twice: Set[String] = Set.new([])
   for node in body.nodes
     case node.event
       Event.Branch(fact) ->
-        if fact.text != "" and fact.value
+        if fact.text != "" and (fact.value or fact.single)
           if seen.include?(fact.text)
             twice = twice.add(fact.text)
           end
@@ -201,6 +208,51 @@ export def tracked_of(body: Body) -> Set[String]
   end
 
   twice
+end
+
+## Returns the nodes of the failure side of a lock call that fails only on an error (`Fact.if_tested`, `ret =
+## pthread_mutex_lock(&m)`) from which a test of the result can come before a new value of the variable: a path goes
+## to such a side only there. A test is a condition in the code, not a fact that a write made (`Fact.written`), and a
+## test of the variable before the call, or after a new value, is not one of its result.
+export def tested_after(body: Body) -> Set[Int]
+  tested: Set[String] = Set.new([])
+  results: Set[String] = Set.new([])
+  failing: List[Int] = []
+  for at in 0...body.nodes.size
+    case body.nodes[at].event
+      Event.Branch(fact) ->
+        if fact.text != "" and not fact.written
+          tested = tested.add(fact.text)
+        end
+
+        if fact.if_tested
+          failing = failing.push(at)
+          results = results.add(fact.text)
+        end
+
+      _ -> next
+    end
+  end
+
+  # Only the tests of a lock result are followed: the liveness pass grows with the texts it tracks.
+  tested = tested.intersection(results)
+  found: Set[Int] = Set.new([])
+  return found if tested.empty?
+
+  live = live_facts(body, tested, roots_of(body))
+  for at in failing
+    node = body.nodes[at]
+    text = case node.event
+      Event.Branch(fact) -> fact.text
+      _ -> ""
+    end
+
+    if node.next.any? do |after| live.get(after, Set.new([])).include?(text) end
+      found = found.add(at)
+    end
+  end
+
+  found
 end
 
 ## Returns a finding at the function, with its path cut to the first and the last steps when it is long.
@@ -337,8 +389,10 @@ export def jump_source(site: Site, functions: Map[String, Function]) -> String
   ""
 end
 
-## Returns the word of the value of a condition on a step of a path.
+## Returns the word of the value of a condition on a step of a path: that of the test as the code wrote it.
 export def truth(fact: Fact) -> String
+  return fact.word if fact.word != ""
+
   return "true" if fact.value
 
   "false"
@@ -361,6 +415,7 @@ def checked(body: Body, functions: Map[String, Function], rules: Held.Rules, own
     functions: functions,
     rules: rules,
     tracked: tracked,
+    reached: tested_after(body),
     roots: roots,
     live: live_facts(body, tracked, roots),
     locks: locks_of(body),
@@ -373,7 +428,7 @@ def checked(body: Body, functions: Map[String, Function], rules: Held.Rules, own
 
   walk = walked(walker)
   if not walk.complete
-    walk = walked(walker.with(tracked: Set.new([]), live: {}))
+    walk = walked(walker.with(tracked: Set.new([]), live: {})).with(exact: false)
   end
 
   walk
@@ -671,14 +726,20 @@ def stepped(walker: Walker, event: Event, item: Item) -> Moved
 
       Moved.Went(after_call(item, site))
     Event.Branch(fact) ->
-      step = Step(text: "#{fact.line}:#{fact.column} #{truth(fact)}")
-      return Moved.Went(item.with(path: item.path.push(step))) if not tracked.include?(fact.text)
+      return Moved.Stopped if fact.if_tested and not walker.reached.include?(item.node)
+
+      path = item.path
+      if not fact.quiet
+        path = path.push(fact_step(fact))
+      end
+
+      return Moved.Went(item.with(path: path)) if not tracked.include?(fact.text)
 
       contradicted = state.facts.get(fact.text).map do |known| known != fact.value end
       return Moved.Stopped if contradicted.unwrap_or(false)
 
       facts = state.facts.put(fact.text, fact.value)
-      Moved.Went(item.with(state: state.with(facts: facts), path: item.path.push(step)))
+      Moved.Went(item.with(state: state.with(facts: facts), path: path))
     Event.Writes(names) -> Moved.Went(item.with(state: state.with(facts: forgotten(state.facts, roots, names))))
     Event.Note(mark) -> Moved.Went(item.with(path: item.path.push(marked(mark))))
     Event.Exit(mark) -> Moved.Ended(item.path.push(marked(mark)))
@@ -687,6 +748,14 @@ def stepped(walker: Walker, event: Event, item: Item) -> Moved
 end
 
 def marked(mark: Mark) -> Step = Step(text: "#{mark.line}:#{mark.column} #{mark.word}")
+
+# The step of a condition, which names the lock of a kept trylock on the side where it failed.
+def fact_step(fact: Fact) -> Step
+  step = Step(text: "#{fact.line}:#{fact.column} #{truth(fact)}")
+  return step if fact.failed.empty?
+
+  step.with(lock: fact.failed.first.key, shown: fact.failed.first.shown, failed: true)
+end
 
 # The state and the path after a call: the locks it takes and releases. The step of a pair names the call.
 def after_call(item: Item, site: Site) -> Item
@@ -794,11 +863,23 @@ def set_of(key: String) -> String
   key.slice(Flow.PAIR_PREFIX.length, key.length - Flow.PAIR_PREFIX.length).split(":").first
 end
 
-# The steps of a path from the last one that took the lock (`took`) or released it.
+# The steps of a path from the last one that took the lock (`took`) or released it. A release right after a kept
+# trylock that failed on that lock starts where the call failed.
 def from_last(path: List[Step], key: String, took: Bool) -> List[Step]
   start = 0
   for i in 0...path.size
-    if path[i].lock == key and path[i].took == took
+    if path[i].lock == key and path[i].took == took and not path[i].failed
+      start = i
+    end
+  end
+
+  if not took
+    i = start - 1
+    while i >= 0 and path[i].lock != key
+      i -= 1
+    end
+
+    if i >= 0 and path[i].failed
       start = i
     end
   end

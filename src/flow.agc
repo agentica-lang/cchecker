@@ -23,6 +23,12 @@ CHOICES = Set.new(["ConditionalOperator", "BinaryConditionalOperator", "StmtExpr
 
 ASSIGNMENTS = Set.new(["=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "<<=", ">>="])
 
+# The statements with a condition, and the place of the condition among their children (`guarded_of`).
+GUARDS: Map[String, Int] = {"IfStmt": 0, "WhileStmt": 0, "DoStmt": 1, "ForStmt": 2, "SwitchStmt": 0}
+
+# The statements that leave the statement around them.
+WAYS_OUT = Set.new(["ReturnStmt", "GotoStmt", "IndirectGotoStmt", "BreakStmt", "ContinueStmt"])
+
 # The operators a condition or a lock may be written with. Anything else (a call, an assignment) has no text: its
 # value can change between two reads.
 UNARY_TEXT = Set.new(["&", "*", "!", "-", "~"])
@@ -100,6 +106,16 @@ end
 ## for a condition that may change between two reads (a call). `roots` are the variables it reads, by key, so a write
 ## to one forgets it. `nulls` are the pointers that own which are null on this edge (`if (!p)`,
 ## `if ((p = malloc(n)) == NULL)`), and `set` those that are not.
+##
+## A test against 0 is a fact of what it compares (`r == 0` is `r` false), so all the ways C writes a test of one
+## variable are one condition; `word` is then what a path shows ("true" where `r == 0` holds, "case" for a label of a
+## switch on the variable), "" for the value. `quiet` facts show no step in a path. A fact can also come from a write,
+## with no test in the code (`written`): the value of a constant written to a variable (`locked = 1`), and the result
+## of a trylock kept in a variable, on the side where the call worked and the side where it failed
+## (`r = pthread_mutex_trylock(&m)`), whose step reads `fails` and names the lock it did not take (`failed`).
+## `if_tested` is the side where a call failed that fails only on an error (`r = pthread_mutex_lock(&m)`): a path goes
+## there only when a test of the result can follow (`Locking.tested_after`). `single` is a fact with no node for its
+## other value (a constant, a `case` label).
 export struct Fact
   text: String
   value: Bool
@@ -108,6 +124,12 @@ export struct Fact
   column: Int
   nulls: List[String] = []
   set: List[String] = []
+  word: String = ""
+  quiet: Bool = false
+  written: Bool = false
+  if_tested: Bool = false
+  single: Bool = false
+  failed: List[Lock] = []
 end
 
 ## A read of a pointer that owns.
@@ -280,13 +302,17 @@ struct Scope
   outer: List[String] = []
 end
 
-# A loop or a switch, for its `break`, `continue` and `case`. `depth` is the number of blocks open around it.
+# A loop or a switch, for its `break`, `continue` and `case`. `depth` is the number of blocks open around it. The
+# `subject` of a switch is the fact of the value it tests, none when the value has no text, and `zero` whether it has a
+# `case 0` (`label_event`).
 struct Jump
   switch: Bool
   head: Int
   depth: Int
   breaks: List[Int]
   continues: List[Int]
+  subject: Optional[Fact] = none
+  zero: Bool = false
   defaulted: Bool
 end
 
@@ -309,6 +335,10 @@ struct Builder
   pending: List[String] = []
   # A `goto` goes into a block that is not open around it (an indirect one into any block with a label).
   enters: Bool = false
+  # The locals whose value the rules never know (`opaque_of`), and those that a test guarding a lock reads
+  # (`guarded_of`): only those get a fact from a constant written to them.
+  opaque: Set[String]
+  guarded: Set[String]
 end
 
 # The places of a function that keep an owned pointer stored in them: its parameters and local variables (`locals`),
@@ -393,11 +423,18 @@ struct Split
   no: List[Int]
 end
 
-# A call of `Known.TRIES` in a condition, and whether the condition is true when the call gave 0 (`call == 0`) or
-# false (`call`, `call != 0`).
+# A call of `Known.TRIES` in a condition or a value, and whether that is true when the call gave 0 (`call == 0`,
+# `!call`) or false (`call`, `call != 0`).
 struct Tried
   call: Json
   zero_is_true: Bool
+end
+
+# What a comparison with 0 (`zero_compared`) or another whole number (`number`) compares, and whether it is `==`.
+struct Compared
+  operand: Json
+  equal: Bool
+  number: String = ""
 end
 
 ## Returns whether a function body calls something that takes or releases a lock, the only bodies the path rules read.
@@ -436,6 +473,7 @@ export def body_of(ctx: Context, key: String, node: Json) -> Body
   bodies = Ast.children(node).select do |child| Ast.kind(child) == "CompoundStmt" end
   place = Ast.place_of(node)
   owners = owners_of(ctx, key, node)
+  all = descendants(bodies)
   start = Builder(
     ctx: ctx,
     aliases: aliases_of(bodies),
@@ -446,6 +484,8 @@ export def body_of(ctx: Context, key: String, node: Json) -> Body
     labels: {},
     gotos: [],
     owners: owners,
+    opaque: opaque_of(owners.places.keys, all),
+    guarded: guarded_of(ctx, owners.places.keys, all),
   )
 
   built = Built(b: start, exits: [0])
@@ -1418,6 +1458,55 @@ def identifier_char?(c: String) -> Bool
   c == "_" or (code >= 97 and code <= 122) or (code >= 65 and code <= 90) or (code >= 48 and code <= 57)
 end
 
+# The keys of the locals whose value the rules never know: one whose address is taken (`&x`, also in an initializer:
+# a write through the pointer changes it), a `volatile` one, and a `static` one (another call writes it).
+def opaque_of(keys: Map[String, String], nodes: List[Json]) -> Set[String]
+  found: Set[String] = Set.new([])
+  for node in nodes
+    kind = Ast.kind(node)
+    if kind == "VarDecl"
+      type = Ast.text(JSON.get(node, "type").unwrap_or(JSON.from("")), "qualType")
+      if Ast.text(node, "storageClass") == "static" or type.include?("volatile")
+        found = found.add(declared_key(keys, node))
+      end
+    elsif kind == "UnaryOperator" and Ast.text(node, "opcode") == "&"
+      root = storage_root(keys, Ast.children(node).first)
+      if root != ""
+        found = found.add(root)
+      end
+    end
+  end
+
+  found
+end
+
+# The keys of the variables that the condition of an `if`, a loop or a switch reads when the statement holds a call
+# that takes or releases a lock, or a way out (`return`, `goto`, `break`, `continue`): only such a test can change
+# what a path does with a lock, so only its variables get a fact from a constant written to them. The `else if` of an
+# `if` is a statement of its own.
+def guarded_of(ctx: Context, keys: Map[String, String], nodes: List[Json]) -> Set[String]
+  found: Set[String] = Set.new([])
+  for node in nodes
+    at = GUARDS.get(Ast.kind(node), -1)
+    if at >= 0
+      parts = Ast.children(node)
+      inside = parts
+      if Ast.kind(node) == "IfStmt" and parts.size > 2 and Ast.kind(parts[2]) == "IfStmt"
+        inside = parts.take(2)
+      end
+
+      if at < parts.size and inside.any? do |part| locks?(ctx, part) or leaves?(part) end
+        found = found.union(Set.new(roots_of(keys, parts[at])))
+      end
+    end
+  end
+
+  found
+end
+
+# Whether a statement holds a way out of it.
+def leaves?(node: Json) -> Bool = WAYS_OUT.include?(Ast.kind(node)) or Ast.children(node).any?(&leaves?)
+
 # The local variables that are set once, where they are declared, and never written or lent (`&x`) after: a lock
 # named through one of them is the lock of its value.
 def aliases_of(bodies: List[Json]) -> Map[String, Json]
@@ -1716,6 +1805,25 @@ def switch_statement(b: Builder, node: Json, preds: List[Int]) -> Built
   evaluated = expression(b, parts[0], preds)
   value = flushed(evaluated.b, parts[0], evaluated.exits)
   head = add(value.b, Event.Join, value.exits)
+  keys = head.b.owners.places.keys
+  source = copied(head.b, parts[0])
+  text = written_text(head.b, source, false, keys, 0)
+  subject: Optional[Fact] = none
+  if text != ""
+    fact = Fact(
+      text: text,
+      value: false,
+      roots: roots_of(keys, source),
+      line: 0,
+      column: 0,
+      word: "case",
+      single: true,
+    )
+
+    subject = some(fact)
+  end
+
+  zero = zero_case?(parts[1])
   jump = Jump(
     switch: true,
     head: head.exits.first,
@@ -1723,6 +1831,8 @@ def switch_statement(b: Builder, node: Json, preds: List[Int]) -> Built
     breaks: [],
     continues: [],
     defaulted: false,
+    subject: subject,
+    zero: zero,
   )
 
   body = statement(head.b.with(jumps: head.b.jumps.push(jump)), parts[1], [])
@@ -1732,8 +1842,39 @@ def switch_statement(b: Builder, node: Json, preds: List[Int]) -> Built
   return Built(b: closed, exits: exits) if done.defaulted
 
   place = Ast.start_of(node)
-  missed = add(closed, Event.Note(Mark(word: "no case", line: place.line, column: place.column)), head.exits)
+  missed = add(closed, label_event(done, "no case", none, place), head.exits)
   Built(b: missed.b, exits: exits.concat(missed.exits))
+end
+
+# The node where a switch goes to a label (or past its body, "no case"): the value of its subject where the label
+# tells it, a step that shows the label otherwise. `case 0` tells that the subject is 0 and another number (`number`)
+# that it is not, and so do `default` and no case when the switch has a `case 0`.
+def label_event(jump: Jump, word: String, number: Optional[String], place: Ast.Place) -> Event
+  shown = Event.Note(Mark(word: word, line: place.line, column: place.column))
+  case jump.subject
+    some(subject) ->
+      fact = subject.with(value: true, word: word, line: place.line, column: place.column)
+      case number
+        some(value) -> return Event.Branch(fact.with(value: value != "0"))
+        none -> return shown if word == "case" or not jump.zero
+      end
+
+      Event.Branch(fact)
+    none -> shown
+  end
+end
+
+# Whether the body of a switch has a `case 0` of its own, not one of a switch inside it.
+def zero_case?(node: Json) -> Bool
+  return false if Ast.kind(node) == "SwitchStmt"
+
+  parts = Ast.children(node)
+  if Ast.kind(node) == "CaseStmt" and parts.size == 2
+    number = see_through(parts.first)
+    return true if Ast.kind(number) == "IntegerLiteral" and Ast.text(number, "value") == "0"
+  end
+
+  parts.any?(&zero_case?)
 end
 
 def case_label(b: Builder, node: Json, preds: List[Int], word: String) -> Built
@@ -1744,7 +1885,14 @@ def case_label(b: Builder, node: Json, preds: List[Int], word: String) -> Built
   place = Ast.start_of(node)
   # A label in a block inside the body of the switch goes into that block, as a `goto` into it does.
   entering = b.with(enters: b.enters or b.scopes.size > jump.depth + 1)
-  marked = add(entering, Event.Note(Mark(word: word, line: place.line, column: place.column)), [jump.head])
+  parts = Ast.children(node)
+  literal = see_through(parts.first)
+  number: Optional[String] = none
+  if word == "case" and parts.size == 2 and Ast.kind(literal) == "IntegerLiteral"
+    number = some(Ast.text(literal, "value"))
+  end
+
+  marked = add(entering, label_event(jump, word, number, place), [jump.head])
   entry = add(marked.b, Event.Join, preds.concat(marked.exits))
   updated = entry.b.with(jumps: entry.b.jumps.set(at, jump.with(defaulted: jump.defaulted or word == "default")))
   statement(updated, last_child(node), entry.exits)
@@ -1915,9 +2063,14 @@ def declaration(b: Builder, node: Json, preds: List[Int]) -> Built
   elsif not fields.empty? and values.size == 1 and Ast.kind(see_through(values.first)) == "InitListExpr"
     initialized = initializer(b, key, see_through(values.first), preds)
     written = add(initialized.b, Event.Writes([key]), initialized.exits)
+  elsif values.size == 1 and keeps?(b, key) and tried_call(values.first).some?
+    written = kept_result(b, key, tried_call(values.first).unwrap!, preds)
   else
     built = in_order(b, values, preds)
     written = add(built.b, Event.Writes([key]), built.exits)
+    if values.size == 1
+      written = constant_written(written.b, key, values.first, written.exits)
+    end
   end
 
   # The pointers of the block: the variable, or the followed CC_OWNS fields of a struct.
@@ -2083,9 +2236,7 @@ def expression(b: Builder, node: Json, preds: List[Int]) -> Built
         inner = expression(b, operand, preds)
       end
 
-      if opcode == "++" or opcode == "--"
-        return add(inner.b, Event.Writes([target_root(b.owners.places.keys, operand)]), inner.exits)
-      end
+      return add(inner.b, Event.Writes(written_roots(b, operand)), inner.exits) if opcode == "++" or opcode == "--"
 
       # The address of a variable lets a callee change it; the address of `q->mu` does not change `q`.
       root = storage_root(b.owners.places.keys, operand)
@@ -2168,6 +2319,9 @@ def assignment(b: Builder, node: Json, preds: List[Int]) -> Built
     name = variable_key(b.owners.places.keys, parts[0])
     return owner_assigned(b, name, parts[1], preds) if b.owners.names.include?(name)
 
+    kept_try = kept_trial(b, node)
+    return kept_result(b, name, kept_try.unwrap!, preds) if kept_try.some?
+
     # `*p = v` in a CC_FREES parameter that points to the pointer gives the pointer a new value without reading it:
     # null, or a value that goes back to the caller, which the function does not own. A pointer that owns is handed
     # on to the caller there.
@@ -2203,7 +2357,7 @@ def assignment(b: Builder, node: Json, preds: List[Int]) -> Built
         value = expression(b, parts[1], preds)
       end
 
-      written = add(value.b, Event.Writes([pointed]), value.exits)
+      written = add(value.b, Event.Writes([pointed].concat(b.opaque.to_a)), value.exits)
       return add(written.b, Event.Assigns(assign), written.exits)
     end
 
@@ -2220,12 +2374,25 @@ def assignment(b: Builder, node: Json, preds: List[Int]) -> Built
         none -> struct_assigned_after(b, parts[0], parts[1], preds)
       end
 
-      return add(value.b, Event.Writes([target_root(b.owners.places.keys, parts[0])]), value.exits)
+      written = add(value.b, Event.Writes([target_root(b.owners.places.keys, parts[0])]), value.exits)
+      return written if Ast.kind(see_through(parts[0])) != "DeclRefExpr"
+
+      return constant_written(written.b, name, parts[1], written.exits)
     end
   end
 
   value = in_order(b, parts.drop(1).concat(parts.take(1)), preds)
-  add(value.b, Event.Writes([target_root(b.owners.places.keys, parts.first)]), value.exits)
+  add(value.b, Event.Writes(written_roots(b, parts.first)), value.exits)
+end
+
+# The variables a write to `target` changes, by key: its root, and for a write through a pointer (`*p = 1`, `p->n =
+# 0`) every local whose address the function takes (`Builder.opaque`), which the pointer may reach.
+def written_roots(b: Builder, target: Json) -> List[String]
+  keys = b.owners.places.keys
+  root = target_root(keys, target)
+  return [root] if storage_root(keys, target) != "" or b.opaque.empty?
+
+  [root].concat(b.opaque.to_a)
 end
 
 # A value handed on: returned (`into` is none) or stored in a place that hands it on (`into`). A pointer that owns is
@@ -2956,6 +3123,21 @@ def condition(b: Builder, node: Json, preds: List[Int]) -> Split
     return Split(b: b, yes: preds, no: [])
   end
 
+  # `(r = pthread_mutex_trylock(&m)) != 0`: the result kept in `r`, then the test of `r`.
+  compared = zero_compared(bare)
+  if compared.some? and kept_trial(b, compared.unwrap!.operand).some?
+    inner = condition(b, compared.unwrap!.operand, preds)
+    return Split(b: inner.b, yes: inner.no, no: inner.yes) if compared.unwrap!.equal
+
+    return inner
+  end
+
+  kept_try = kept_trial(b, bare)
+  if kept_try.some?
+    kept = kept_result(b, variable_key(b.owners.places.keys, parts.first), kept_try.unwrap!, preds)
+    return condition(kept.b, parts.first, kept.exits)
+  end
+
   case tried_call(bare)
     some(tried) -> trial(b, tried, preds)
     none -> branch(b, bare, preds)
@@ -2998,14 +3180,50 @@ def chain(b: Builder, operands: List[Json], all: Bool, preds: List[Int]) -> Spli
   Split(b: built, yes: out, no: pending)
 end
 
-# A condition of any other form: its calls, then a node for each of its values.
+# A condition of any other form: its calls, then a node for each of its values. A test against 0 is a fact of what it
+# compares (`Fact`).
 def branch(b: Builder, bare: Json, preds: List[Int]) -> Split
   value = expression(b, bare, preds)
   keys = value.b.owners.places.keys
-  text = written_text(value.b, bare, false, keys, 0)
-  roots = roots_of(keys, bare)
+  tested = copied(value.b, bare)
+  text = written_text(value.b, tested, false, keys, 0)
+  roots = roots_of(keys, tested)
   place = Ast.start_of(bare)
   fact = Fact(text: text, value: true, roots: roots, line: place.line, column: place.column)
+  case zero_compared(bare)
+    some(compared) ->
+      source = copied(value.b, compared.operand)
+      operand = written_text(value.b, source, false, keys, 0)
+      if operand != "" and compared.equal
+        fact = fact.with(text: operand, roots: roots_of(keys, source), value: false, word: "true")
+      elsif operand != ""
+        fact = fact.with(text: operand, roots: roots_of(keys, source))
+      end
+
+    none -> fact = fact
+  end
+
+  # `r != EBUSY` is the fact of `r == EBUSY`, the other way round, whichever side the number is on.
+  case compared_with(bare, false)
+    some(compared) ->
+      source = copied(value.b, compared.operand)
+      operand = written_text(value.b, source, false, keys, 0)
+      equal = "#{operand} == #{compared.number}"
+      if operand != "" and compared.equal
+        fact = fact.with(text: equal, roots: roots_of(keys, source))
+      elsif operand != ""
+        fact = fact.with(text: equal, roots: roots_of(keys, source), value: false, word: "true")
+      end
+
+    none -> fact = fact
+  end
+
+  yes_fact = fact
+  no_fact = fact.with(value: not fact.value)
+  if fact.word != ""
+    no_fact = no_fact.with(word: "false")
+  end
+
   null_on_true: List[String] = []
   null_on_false: List[String] = []
   case null_test(value.b, bare)
@@ -3014,9 +3232,80 @@ def branch(b: Builder, bare: Json, preds: List[Int]) -> Split
     none -> null_on_false = []
   end
 
-  yes = add(value.b, Event.Branch(fact.with(nulls: null_on_true, set: null_on_false)), value.exits)
-  no = add(yes.b, Event.Branch(fact.with(value: false, nulls: null_on_false, set: null_on_true)), value.exits)
-  Split(b: no.b, yes: yes.exits, no: no.exits)
+  yes = add(value.b, Event.Branch(yes_fact.with(nulls: null_on_true, set: null_on_false)), value.exits)
+  no = add(yes.b, Event.Branch(no_fact.with(nulls: null_on_false, set: null_on_true)), value.exits)
+  split = Split(b: no.b, yes: yes.exits, no: no.exits)
+  case compared_with(bare, false)
+    some(compared) -> nonzero_side(split, compared, keys)
+    none -> split
+  end
+end
+
+# `r == EBUSY` where it holds, and `r != EBUSY` where it does not, also tell that `r` is not 0: a fact of `r` after
+# that side.
+def nonzero_side(split: Split, compared: Compared, keys: Map[String, String]) -> Split
+  source = copied(split.b, compared.operand)
+  operand = written_text(split.b, source, false, keys, 0)
+  return split if operand == ""
+
+  place = Ast.start_of(compared.operand)
+  fact = Fact(
+    text: operand,
+    value: true,
+    roots: roots_of(keys, source),
+    line: place.line,
+    column: place.column,
+    quiet: true,
+  )
+
+  if compared.equal
+    known = add(split.b, Event.Branch(fact), split.yes)
+    return Split(b: known.b, yes: known.exits, no: split.no)
+  end
+
+  known = add(split.b, Event.Branch(fact), split.no)
+  Split(b: known.b, yes: split.yes, no: known.exits)
+end
+
+# The variable that a test reads: for a local set once to another local set once (`int busy = r;`), that one, so a
+# test of the copy is one of the result it copies; the node itself for anything else, and for a copy of a local whose
+# value can change behind the code, or into one (`Builder.opaque`: `static`, `volatile`, its address taken).
+def copied(b: Builder, node: Json) -> Json
+  bare = see_through(node)
+  return node if Ast.kind(bare) != "DeclRefExpr"
+
+  keys = b.owners.places.keys
+  case b.aliases.get(Ast.referenced_name(bare))
+    some(value) ->
+      source = see_through(value)
+      return node if Ast.kind(source) != "DeclRefExpr" or not b.aliases.key?(Ast.referenced_name(source))
+
+      return node if b.opaque.include?(referenced_key(keys, bare)) or b.opaque.include?(referenced_key(keys, source))
+
+      source
+    none -> node
+  end
+end
+
+# A comparison with 0 (`x == 0`, `0 != x`, `p == NULL`): what it compares, and whether it is `==`.
+def zero_compared(node: Json) -> Optional[Compared] = compared_with(node, true)
+
+# A comparison with 0 (`zero`) or with a whole number other than 0 (`r == EBUSY`).
+def compared_with(node: Json, zero: Bool) -> Optional[Compared]
+  bare = see_through(node)
+  opcode = Ast.text(bare, "opcode")
+  parts = Ast.children(bare)
+  return none if Ast.kind(bare) != "BinaryOperator" or (opcode != "==" and opcode != "!=") or parts.size != 2
+
+  for pair in [[parts[0], parts[1]], [parts[1], parts[0]]]
+    number = see_through(pair[1])
+    nonzero = Ast.kind(number) == "IntegerLiteral" and Ast.text(number, "value") != "0"
+    if (zero and zero?(pair[1])) or (not zero and nonzero)
+      return some(Compared(operand: pair[0], equal: opcode == "==", number: Ast.text(number, "value")))
+    end
+  end
+
+  none
 end
 
 # Whether a condition tells that a pointer that owns is null: `p`, `p = malloc(n)`, and either compared with 0.
@@ -3051,20 +3340,20 @@ def null_test(b: Builder, node: Json) -> Optional[NullTest]
   none
 end
 
+# A call of `Known.TRIES`, alone, negated or compared with 0 (`call`, `!call`, `call == 0`).
 def tried_call(node: Json) -> Optional[Tried]
-  return some(Tried(call: see_through(node), zero_is_true: false)) if try_call?(node)
+  bare = see_through(node)
+  return some(Tried(call: bare, zero_is_true: false)) if try_call?(bare)
 
-  opcode = Ast.text(node, "opcode")
-  parts = Ast.children(node)
-  return none if Ast.kind(node) != "BinaryOperator" or (opcode != "==" and opcode != "!=") or parts.size != 2
-
-  for pair in [[parts[0], parts[1]], [parts[1], parts[0]]]
-    if try_call?(pair[0]) and zero?(pair[1])
-      return some(Tried(call: see_through(pair[0]), zero_is_true: opcode == "=="))
-    end
+  if Ast.kind(bare) == "UnaryOperator" and Ast.text(bare, "opcode") == "!"
+    return tried_call(Ast.children(bare).first).map do |tried| tried.with(zero_is_true: not tried.zero_is_true) end
   end
 
-  none
+  case zero_compared(bare)
+    some(compared) ->
+      tried_call(compared.operand).map do |tried| tried.with(zero_is_true: tried.zero_is_true != compared.equal) end
+    none -> none
+  end
 end
 
 def try_call?(node: Json) -> Bool
@@ -3075,19 +3364,94 @@ end
 # The call, then on the branch where it gave 0 a node that takes its lock.
 def trial(b: Builder, tried: Tried, preds: List[Int]) -> Split
   called = call(b, tried.call, preds, true)
-  args = Ast.children(tried.call).drop(1)
-  name = callee_name(tried.call)
-  passed = args.map do |arg| arg_of(called.b, arg) end
-  site = site_of(called.b, name, passed, Ast.start_of(tried.call), false)
-  taken = add(
-    called.b,
-    Event.Call(site.with(takes: lock_of(passed, 0), tried: Known.NO_WAIT.include?(name))),
-    called.exits,
-  )
-
+  taken = add(called.b, Event.Call(taking_site(called.b, tried.call)), called.exits)
   return Split(b: taken.b, yes: taken.exits, no: called.exits) if tried.zero_is_true
 
   Split(b: taken.b, yes: called.exits, no: taken.exits)
+end
+
+# The take of the lock of a call of `Known.TRIES`, where it gave 0.
+def taking_site(b: Builder, node: Json) -> Site
+  name = callee_name(node)
+  passed = Ast.children(node).drop(1).map do |arg| arg_of(b, arg) end
+  site = site_of(b, name, passed, Ast.start_of(node), false)
+  site.with(takes: lock_of(passed, 0), tried: Known.NO_WAIT.include?(name))
+end
+
+# The call of an assignment that keeps the result of a trylock in a local variable or a parameter (`r =
+# pthread_mutex_trylock(&m)`, `ok = pthread_mutex_trylock(&m) == 0`).
+def kept_trial(b: Builder, node: Json) -> Optional[Tried]
+  bare = see_through(node)
+  parts = Ast.children(bare)
+  return none if Ast.kind(bare) != "BinaryOperator" or Ast.text(bare, "opcode") != "=" or parts.size != 2
+
+  return none if Ast.kind(see_through(parts[0])) != "DeclRefExpr"
+
+  key = variable_key(b.owners.places.keys, parts[0])
+  return none if not keeps?(b, key)
+
+  tried_call(parts[1])
+end
+
+# Whether a write of the local `key` can give it a value that a path knows: not one that owns, nor one whose value the
+# rules never know (`opaque_of`).
+def keeps?(b: Builder, key: String) -> Bool
+  key != "" and not b.owners.names.include?(key) and not b.opaque.include?(key)
+end
+
+# The result of a trylock kept in the variable `key`: the call, the write, then a side where the call worked, which
+# takes the lock, and one where it failed, each with the value of the variable there. A later test of the variable
+# goes the same way, until a write forgets it. The failure of a call that waits for its lock is an error, which a path
+# reaches only when the function tests the result.
+def kept_result(b: Builder, key: String, tried: Tried, preds: List[Int]) -> Built
+  called = call(b, tried.call, preds, true)
+  written = add(called.b, Event.Writes([key]), called.exits)
+  place = Ast.start_of(tried.call)
+  fact = Fact(
+    text: key,
+    value: tried.zero_is_true,
+    roots: [key],
+    line: place.line,
+    column: place.column,
+    quiet: true,
+    written: true,
+  )
+
+  site = taking_site(written.b, tried.call)
+  worked = add(written.b, Event.Branch(fact), written.exits)
+  taken = add(worked.b, Event.Call(site), worked.exits)
+  waits = Known.TAKES.include?(callee_name(tried.call))
+  other = fact.with(value: not tried.zero_is_true, quiet: false, word: "fails", if_tested: waits, failed: site.takes)
+  failed = add(taken.b, Event.Branch(other), written.exits)
+  Built(b: failed.b, exits: taken.exits.concat(failed.exits))
+end
+
+# After the write of a local variable (`key`) with a constant (`locked = 1`, `bool taken = false`), the value of the
+# variable as a fact of its own, when a test of it guards a lock (`guarded_of`); any other write gives none.
+def constant_written(b: Builder, key: String, value: Json, preds: List[Int]) -> Built
+  bare = see_through(value)
+  number = ""
+  case Ast.kind(bare)
+    "IntegerLiteral" -> number = Ast.text(bare, "value")
+    "CharacterLiteral" -> number = "#{Ast.number(bare, "value")}"
+    _ -> number = ""
+  end
+
+  return Built(b: b, exits: preds) if number == "" or not keeps?(b, key) or not b.guarded.include?(key)
+
+  place = Ast.start_of(value)
+  fact = Fact(
+    text: key,
+    value: number != "0",
+    roots: [key],
+    line: place.line,
+    column: place.column,
+    quiet: true,
+    written: true,
+    single: true,
+  )
+
+  add(b, Event.Branch(fact), preds)
 end
 
 # The text of an expression, from the names, fields, constants and operators of `UNARY_TEXT` and `BINARY_TEXT`; ""

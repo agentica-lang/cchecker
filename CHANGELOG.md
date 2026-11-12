@@ -4,6 +4,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking:** the result of a trylock kept in a local variable (`r = pthread_mutex_trylock(&q->mu); if (r == 0)`,
+  also `bool ok = ... == 0` and `if ((r = ...) != 0)`) takes the lock where the call gave 0, and a later test of the
+  variable (`!r`, `r == EBUSY`, `switch (r)`, a copy `int busy = r;`) goes the same way; a new value of the variable
+  forgets it, and a release where the call failed shows the path from the call (`6:11 fails`). A whole number written
+  to a local whose test guards a lock or a way out (`taken = true`) is a value the path knows, so a trylock spin with a
+  blocking fallback passes; a local whose address is taken, a `volatile` and a `static` one never are. Run
+  `--update-baseline` once after upgrading.
+- A function walked again without its conditions, as its paths take more than 200 000 states, is listed in
+  `incomplete_functions`.
+
 ## [0.6.1] - 2026-11-12
 
 ### Fixed
