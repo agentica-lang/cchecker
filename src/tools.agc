@@ -228,7 +228,9 @@ export def run(job: Job) -> Result[Outcome]
     copied = Profile.measure("clang") do Scan.compact(fifo, job.dump, timeout_ms) end
     case copied
       ok(found) -> raws = found
-      error(message) ->
+      error(problem) ->
+        # Agentica 0.31 gives an Error here and 0.30 a String: the interpolation is the text of both.
+        message = "#{problem}"
         _ = Path.remove(job.dump)
         if message == Scan.TIMED_OUT or message.start_with?(Scan.UNSTARTED)
           Process.close(process)

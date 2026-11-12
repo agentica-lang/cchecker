@@ -300,7 +300,7 @@ end
 def error_of(copied: Result[List[String]]) -> String
   case copied
     ok(_) -> "copied"
-    error(message) -> message
+    error(message) -> "#{message}"
   end
 end
 
