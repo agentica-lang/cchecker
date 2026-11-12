@@ -640,9 +640,10 @@ Feature: Time and memory on large generated inputs
       "inferred_short_locks":[]
       """
 
-  Scenario: Flagged helpers that each call the next one twice, 22 deep, under a lock stay in their bounds
+  Scenario: Flagged helpers that each call the next one twice, 22 deep, defined outer first, stay in their bounds
     A call of the helper of the top, on the side where it does nothing to its lock, reads the body of each helper below
-    once, not once for each path down to it.
+    once, not once for each path down to it, and the settling of what they reach does not depend on the order in which
+    they are defined. A lock with a level makes the rules settle the classes the helpers take too.
 
     Given the C file "deep.c" holds:
       """
@@ -650,29 +651,53 @@ Feature: Time and memory on large generated inputs
       #include <stdbool.h>
       #include "cchecker.h"
       struct queue { CC_NO_SYSCALL_UNDER() pthread_mutex_t mu; int n; };
-      CC_RELEASES_IF(q->mu, held) void h0(struct queue *q, bool held) { if (held) pthread_mutex_unlock(&q->mu); }
-      CC_RELEASES_IF(q->mu, held) void h1(struct queue *q, bool held) { h0(q, held); h0(q, held); }
-      CC_RELEASES_IF(q->mu, held) void h2(struct queue *q, bool held) { h1(q, held); h1(q, held); }
-      CC_RELEASES_IF(q->mu, held) void h3(struct queue *q, bool held) { h2(q, held); h2(q, held); }
-      CC_RELEASES_IF(q->mu, held) void h4(struct queue *q, bool held) { h3(q, held); h3(q, held); }
-      CC_RELEASES_IF(q->mu, held) void h5(struct queue *q, bool held) { h4(q, held); h4(q, held); }
-      CC_RELEASES_IF(q->mu, held) void h6(struct queue *q, bool held) { h5(q, held); h5(q, held); }
-      CC_RELEASES_IF(q->mu, held) void h7(struct queue *q, bool held) { h6(q, held); h6(q, held); }
-      CC_RELEASES_IF(q->mu, held) void h8(struct queue *q, bool held) { h7(q, held); h7(q, held); }
-      CC_RELEASES_IF(q->mu, held) void h9(struct queue *q, bool held) { h8(q, held); h8(q, held); }
-      CC_RELEASES_IF(q->mu, held) void h10(struct queue *q, bool held) { h9(q, held); h9(q, held); }
-      CC_RELEASES_IF(q->mu, held) void h11(struct queue *q, bool held) { h10(q, held); h10(q, held); }
-      CC_RELEASES_IF(q->mu, held) void h12(struct queue *q, bool held) { h11(q, held); h11(q, held); }
-      CC_RELEASES_IF(q->mu, held) void h13(struct queue *q, bool held) { h12(q, held); h12(q, held); }
-      CC_RELEASES_IF(q->mu, held) void h14(struct queue *q, bool held) { h13(q, held); h13(q, held); }
-      CC_RELEASES_IF(q->mu, held) void h15(struct queue *q, bool held) { h14(q, held); h14(q, held); }
-      CC_RELEASES_IF(q->mu, held) void h16(struct queue *q, bool held) { h15(q, held); h15(q, held); }
-      CC_RELEASES_IF(q->mu, held) void h17(struct queue *q, bool held) { h16(q, held); h16(q, held); }
-      CC_RELEASES_IF(q->mu, held) void h18(struct queue *q, bool held) { h17(q, held); h17(q, held); }
-      CC_RELEASES_IF(q->mu, held) void h19(struct queue *q, bool held) { h18(q, held); h18(q, held); }
-      CC_RELEASES_IF(q->mu, held) void h20(struct queue *q, bool held) { h19(q, held); h19(q, held); }
-      CC_RELEASES_IF(q->mu, held) void h21(struct queue *q, bool held) { h20(q, held); h20(q, held); }
-      CC_RELEASES_IF(q->mu, held) void h22(struct queue *q, bool held) { h21(q, held); h21(q, held); }
+      struct level { CC_LOCK_LEVEL(1) pthread_mutex_t mu; };
+      CC_RELEASES_IF(q->mu, held) void h0(struct queue *q, bool held);
+      CC_RELEASES_IF(q->mu, held) void h1(struct queue *q, bool held);
+      CC_RELEASES_IF(q->mu, held) void h2(struct queue *q, bool held);
+      CC_RELEASES_IF(q->mu, held) void h3(struct queue *q, bool held);
+      CC_RELEASES_IF(q->mu, held) void h4(struct queue *q, bool held);
+      CC_RELEASES_IF(q->mu, held) void h5(struct queue *q, bool held);
+      CC_RELEASES_IF(q->mu, held) void h6(struct queue *q, bool held);
+      CC_RELEASES_IF(q->mu, held) void h7(struct queue *q, bool held);
+      CC_RELEASES_IF(q->mu, held) void h8(struct queue *q, bool held);
+      CC_RELEASES_IF(q->mu, held) void h9(struct queue *q, bool held);
+      CC_RELEASES_IF(q->mu, held) void h10(struct queue *q, bool held);
+      CC_RELEASES_IF(q->mu, held) void h11(struct queue *q, bool held);
+      CC_RELEASES_IF(q->mu, held) void h12(struct queue *q, bool held);
+      CC_RELEASES_IF(q->mu, held) void h13(struct queue *q, bool held);
+      CC_RELEASES_IF(q->mu, held) void h14(struct queue *q, bool held);
+      CC_RELEASES_IF(q->mu, held) void h15(struct queue *q, bool held);
+      CC_RELEASES_IF(q->mu, held) void h16(struct queue *q, bool held);
+      CC_RELEASES_IF(q->mu, held) void h17(struct queue *q, bool held);
+      CC_RELEASES_IF(q->mu, held) void h18(struct queue *q, bool held);
+      CC_RELEASES_IF(q->mu, held) void h19(struct queue *q, bool held);
+      CC_RELEASES_IF(q->mu, held) void h20(struct queue *q, bool held);
+      CC_RELEASES_IF(q->mu, held) void h21(struct queue *q, bool held);
+      CC_RELEASES_IF(q->mu, held) void h22(struct queue *q, bool held);
+      void h22(struct queue *q, bool held) { h21(q, held); h21(q, held); }
+      void h21(struct queue *q, bool held) { h20(q, held); h20(q, held); }
+      void h20(struct queue *q, bool held) { h19(q, held); h19(q, held); }
+      void h19(struct queue *q, bool held) { h18(q, held); h18(q, held); }
+      void h18(struct queue *q, bool held) { h17(q, held); h17(q, held); }
+      void h17(struct queue *q, bool held) { h16(q, held); h16(q, held); }
+      void h16(struct queue *q, bool held) { h15(q, held); h15(q, held); }
+      void h15(struct queue *q, bool held) { h14(q, held); h14(q, held); }
+      void h14(struct queue *q, bool held) { h13(q, held); h13(q, held); }
+      void h13(struct queue *q, bool held) { h12(q, held); h12(q, held); }
+      void h12(struct queue *q, bool held) { h11(q, held); h11(q, held); }
+      void h11(struct queue *q, bool held) { h10(q, held); h10(q, held); }
+      void h10(struct queue *q, bool held) { h9(q, held); h9(q, held); }
+      void h9(struct queue *q, bool held) { h8(q, held); h8(q, held); }
+      void h8(struct queue *q, bool held) { h7(q, held); h7(q, held); }
+      void h7(struct queue *q, bool held) { h6(q, held); h6(q, held); }
+      void h6(struct queue *q, bool held) { h5(q, held); h5(q, held); }
+      void h5(struct queue *q, bool held) { h4(q, held); h4(q, held); }
+      void h4(struct queue *q, bool held) { h3(q, held); h3(q, held); }
+      void h3(struct queue *q, bool held) { h2(q, held); h2(q, held); }
+      void h2(struct queue *q, bool held) { h1(q, held); h1(q, held); }
+      void h1(struct queue *q, bool held) { h0(q, held); h0(q, held); }
+      void h0(struct queue *q, bool held) { if (held) pthread_mutex_unlock(&q->mu); }
       void f(struct queue *a, struct queue *b) { pthread_mutex_lock(&a->mu); h22(b, false); pthread_mutex_unlock(&a->mu); }
       """
     When I run cchecker with "--tools rules --json $DIR/deep.c -- -I../include" in at most 1500 MiB and 10 seconds

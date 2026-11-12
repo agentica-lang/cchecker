@@ -826,3 +826,30 @@ Feature: What runs while a lock is held
       | case                         | helpers                                                                                                                                                                                                                               |
       | a take and a release before  | CC_RELEASES_IF(q->mu, held) void unlock_if(struct queue *q, bool held) { pthread_mutex_lock(&q->mu); q->n++; pthread_mutex_unlock(&q->mu); if (held) pthread_mutex_unlock(&q->mu); }                                               |
       | a helper that writes first   | CC_RELEASES(q->mu) void drop(struct queue *q) { write(q->fd, "x", 1); pthread_mutex_unlock(&q->mu); } CC_RELEASES_IF(q->mu, held) void unlock_if(struct queue *q, bool held) { if (q->n) drop(q); if (held) pthread_mutex_unlock(&q->mu); } |
+
+  Scenario Outline: A call of a flagged helper that waits on a condition, where it releases nothing, still blocks under another lock (<case>)
+    Given the C file "wait.c" holds:
+      """
+      #include "pthread.h" /* found in the system folders */
+      #include <stdbool.h>
+      #include "cchecker.h"
+
+      struct outer { CC_NO_SYSCALL_UNDER() pthread_mutex_t mu; };
+      struct queue { pthread_mutex_t mu; pthread_cond_t cv; int n; };
+      struct ev { pthread_mutex_t mu; pthread_cond_t cv; int n; };
+      <helpers>
+
+      void use(struct outer *o, struct queue *b, struct ev *e) { pthread_mutex_lock(&e->mu); pthread_mutex_lock(&b->mu); pthread_mutex_lock(&o->mu); <call>; pthread_mutex_unlock(&o->mu); pthread_mutex_unlock(&b->mu); pthread_mutex_unlock(&e->mu); }
+      """
+    When I run cchecker with "--tools rules --json $DIR/wait.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "code":"CC-PATH-SYSCALL-UNDER-LOCK"
+      """
+
+    Examples:
+      | case                         | helpers                                                                                                                                                                                                                                                                                | call                |
+      | a wait on its own lock       | CC_RELEASES_IF(q->mu, rel) void wait_maybe(struct queue *q, bool rel) { while (q->n == 0) pthread_cond_wait(&q->cv, &q->mu); if (rel) pthread_mutex_unlock(&q->mu); }                                                                                                                 | wait_maybe(b, false) |
+      | a wait on another lock       | CC_RELEASES_IF(q->mu, rel) void wait_ev(struct queue *q, struct ev *e, bool rel) { while (e->n == 0) pthread_cond_wait(&e->cv, &e->mu); if (rel) pthread_mutex_unlock(&q->mu); }                                                                                                       | wait_ev(b, e, false) |
+      | a wait of a nested helper    | CC_RELEASES_IF(q->mu, rel) void wait_maybe(struct queue *q, bool rel) { while (q->n == 0) pthread_cond_wait(&q->cv, &q->mu); if (rel) pthread_mutex_unlock(&q->mu); } CC_RELEASES_IF(q->mu, rel) void outer_wait(struct queue *q, bool rel) { wait_maybe(q, rel); } | outer_wait(b, false) |

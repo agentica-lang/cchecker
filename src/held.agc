@@ -28,10 +28,18 @@ export struct Rules
   takes: Map[String, Set[String]]
   bodies: Map[String, Body] = {}
   # What `with_idle` settles for each flagged helper: its calls on the side of its flags where it does nothing to a
-  # lock, the path from the first of them to a system call, and the classes they take.
+  # lock, the system calls they reach, and the classes they take.
   idle: Map[String, List[Site]] = {}
-  idle_paths: Map[String, List[String]] = {}
+  idle_reach: Map[String, List[Reach]] = {}
   idle_classes: Map[String, Set[String]] = {}
+end
+
+## A system call that a call on the idle side of a flagged helper reaches: its call path, and the lock it waits on when
+## it is a wait ("" for any other call). The lock is its class, or its key when it has none. Under that very lock a
+## wait is no finding, since it gives the lock back while it waits.
+export struct Reach
+  path: List[String]
+  waited: String
 end
 
 ## A lock that a path holds at a call, and the steps of the path from its take to the call. `quiet` is a lock that the
@@ -107,16 +115,16 @@ def under_quiet(rules: Rules, body: Body, held: List[Held], site: Site, at: Stri
   return [] if quiet.empty?
 
   reached: List[String] = []
-  if site.idle
-    reached = idle_path(rules, body, site)
-  else
+  if not site.idle
     reached = system_call(rules, body, site)
   end
 
   found: List[Breach] = []
   for h in quiet
     path = reached
-    if site.drops.concat(site.waits).any? do |lock| lock.key == h.lock.key end
+    if site.idle
+      path = idle_path(rules, body, site, h)
+    elsif site.drops.concat(site.waits).any? do |lock| lock.key == h.lock.key end
       path = before_release(rules, body, site, some(h))
     elsif nested_release?(rules, body, held, h, site)
       path = before_release(rules, body, site, none)
@@ -369,9 +377,10 @@ def level_of(mark: String) -> Optional[Int]
 end
 
 # The calls of a helper's body that the side of its flags where it does nothing to a lock (`Site.idle`) makes: all of
-# them but those of its own lock that the other side makes: its takes when it takes by a flag, its releases and its
-# waits. A release of the lock by a function of the project is followed all the same (`own_call?`), and a take by a
-# helper that does not take by a flag is a transient one. A branch that tests the flag of a CC_RELEASES_IF is not
+# them but those of its own lock that the other side makes: its takes when it takes by a flag, and its releases. A
+# release of the lock by a function of the project is followed all the same (`own_call?`), and so are a wait on it and
+# a take by a helper that does not take by a flag (a transient one). A branch that tests the flag of a CC_RELEASES_IF
+# is not
 # followed on its true side, where the flag is 0, unless the body writes the flag anywhere (it may be anything there).
 def idle_calls(rules: Rules, helper: Body) -> List[Site]
   acquired = own_keys(rules, helper, true)
@@ -416,12 +425,13 @@ def idle_calls(rules: Rules, helper: Body) -> List[Site]
 end
 
 # Whether a call of a flagged helper's body is one of the other side of its flags: a call of a flagged helper that
-# touches its lock (a side of it that does nothing is an `idle` call of its own), a take of a lock that the helper
-# takes by a flag, or a release or a wait of its lock by a function of the library. A function of the project that
-# releases the lock is not, since what it runs before the release is run on both sides.
+# takes or releases its lock (the side of it that does nothing is an `idle` call of its own, and its body is not read
+# here: what its own flag guards would be reported), a take of a lock that the helper takes by a flag, or a release of
+# its lock by a function of the library. A wait on the lock is not, since it runs on both sides, and neither is a
+# release by a function of the project, since what it runs before the release is run on both sides.
 def own_call?(rules: Rules, call: Site, acquired: Set[String], own: Set[String]) -> Bool
   taken = call.takes.any? do |lock| own.include?(lock.key) end
-  dropped = call.drops.concat(call.waits).any? do |lock| own.include?(lock.key) end
+  dropped = call.drops.any? do |lock| own.include?(lock.key) end
   return taken or dropped if flagged?(rules, call.key)
 
   return true if call.takes.any? do |lock| acquired.include?(lock.key) end
@@ -473,10 +483,10 @@ def marks_of(rules: Rules, key: String) -> List[String]
 end
 
 # Reads the body of each flagged helper once for all the calls of it (`idle_calls`), and settles for each what a
-# call on its idle side reaches: the path to its first system call (`idle_path`), and the classes it takes
-# (`idle_classes`).
-# A helper that calls an idle helper twice would otherwise be read once for each path down to it. Both are fixed points
-# over the helpers that call each other, a helper that calls itself included.
+# call on
+# its idle side reaches: the system calls it makes (`idle_reach`) and the classes it takes (`idle_classes`, which only
+# the lock order reads). Each helper's own calls are read once, and the helpers that call each other are a fixed point
+# over what they reach, so a helper that calls an idle helper twice is not read once for each path down to it.
 def with_idle(rules: Rules) -> Rules
   idle: Map[String, List[Site]] = {}
   for key in rules.bodies.keys
@@ -486,63 +496,123 @@ def with_idle(rules: Rules) -> Rules
   end
 
   read = rules.with(idle: idle)
-  read.with(idle_paths: settled_paths(read), idle_classes: settled_classes(read))
+  classes: Map[String, Set[String]] = {}
+  if not read.levels.empty?
+    classes = settled_classes(read)
+  end
+
+  read.with(idle_reach: settled_reach(read), idle_classes: classes)
 end
 
-def settled_paths(rules: Rules) -> Map[String, List[String]]
-  paths: Map[String, List[String]] = {}
+# Whether a call of an idle helper's body is of a helper that is idle in its turn, and has a body.
+def nested?(rules: Rules, call: Site) -> Bool = call.idle and rules.idle.key?(call.key)
+
+# The helpers in the order of one pass of a fixed point: forwards and backwards, so that a chain of helpers settles in
+# a pass or two whether its callers are defined before their callees or after.
+def passes(rules: Rules) -> List[String]
+  keys = rules.idle.keys
+  keys.concat(keys.reverse)
+end
+
+def settled_reach(rules: Rules) -> Map[String, List[Reach]]
+  reach: Map[String, List[Reach]] = {}
+  for key in rules.idle.keys
+    reach = reach.put(key, direct_reach(rules, key))
+  end
+
   changed = true
   while changed
     changed = false
-    for key in rules.idle.keys
-      if not paths.key?(key)
-        found = first_system_call(rules, paths, key)
-        if not found.empty?
-          paths = paths.put(key, found)
-          changed = true
+    for key in passes(rules)
+      grown = reach[key]
+      for call in rules.idle[key]
+        if nested?(rules, call)
+          grown = merged(grown, call.name, reach[call.key])
         end
+      end
+
+      if grown.size > reach[key].size
+        reach = reach.put(key, grown)
+        changed = true
       end
     end
   end
 
-  paths
+  reach
 end
 
-# The path to the first system call that a call on the idle side of the helper `key` makes, from its first call: of a
-# nested helper that is idle in its turn, by the path settled so far; a release of its lock by a function of the
-# project, all that function runs before it; any other call, as it is.
-def first_system_call(rules: Rules, paths: Map[String, List[String]], key: String) -> List[String]
+# What the calls of the helper `key` that are no idle helper reach: a call that is, or reaches, a system call; a wait
+# of the library, with the lock it waits on; a release of its lock by a function of the project, all that function
+# runs before the release. A release of another lock by the library is no system call. A call of a flagged helper on
+# the side where it takes or releases its lock is not followed: its body, read through `before_release`, would
+# report what its own flag guards, and its other side is a call of its own.
+def direct_reach(rules: Rules, key: String) -> List[Reach]
   helper = rules.bodies[key]
+  found: List[Reach] = []
   for call in rules.idle[key]
     path: List[String] = []
-    if call.idle and rules.idle.key?(call.key)
-      below = paths.get(call.key).unwrap_or([])
-      if not below.empty?
-        path = [call.name].concat(below)
-      end
-    elsif call.idle or call.drops.concat(call.waits).empty?
+    waited = ""
+    if nested?(rules, call)
+      path = []
+    elsif call.idle or (call.drops.empty? and call.waits.empty?)
       path = system_call(rules, helper, call)
     elsif rules.bodies.key?(call.key)
       path = before_release(rules, helper, call, none)
+    elsif not call.waits.empty?
+      path = system_call(rules, helper, call)
+      waited = lock_name(call.waits.first)
     end
 
-    return path if not path.empty?
+    if not path.empty?
+      found = merged(found, "", [Reach(path: path, waited: waited)])
+    end
   end
 
-  []
+  found
+end
+
+# The reaches of `found` and those of `below`, a call of `name` down: one for each lock that a wait is on, and one for
+# the rest. `name` "" keeps the path.
+def merged(found: List[Reach], name: String, below: List[Reach]) -> List[Reach]
+  grown = found
+  for r in below
+    if not grown.any? do |known| known.waited == r.waited end
+      path = r.path
+      if name != ""
+        path = [name].concat(path)
+      end
+
+      grown = grown.push(Reach(path: path, waited: r.waited))
+    end
+  end
+
+  grown
+end
+
+# The name of a lock that a wait is on, as `Reach.waited` has it: its class, or its key when it has none.
+def lock_name(lock: Lock) -> String
+  return lock.class if lock.class != ""
+
+  lock.key
 end
 
 def settled_classes(rules: Rules) -> Map[String, Set[String]]
   classes: Map[String, Set[String]] = {}
   for key in rules.idle.keys
-    classes = classes.put(key, Set.new([]))
+    classes = classes.put(key, direct_classes(rules, key))
   end
 
   changed = true
   while changed
     changed = false
-    for key in rules.idle.keys
-      grown = taken_on_idle_side(rules, classes, key)
+    for key in passes(rules)
+      grown = classes[key]
+      for call in rules.idle[key]
+        if nested?(rules, call)
+          grown = grown.union(classes[call.key])
+        end
+      end
+
       if grown.size > classes[key].size
         classes = classes.put(key, grown)
         changed = true
@@ -553,15 +623,13 @@ def settled_classes(rules: Rules) -> Map[String, Set[String]]
   classes
 end
 
-# The classes that a call on the idle side of the helper `key` takes: those of the locks its calls take other than its
-# own, and of the functions they reach; of a nested idle helper, those settled so far.
-def taken_on_idle_side(rules: Rules, settled: Map[String, Set[String]], key: String) -> Set[String]
+# The classes that the calls of the helper `key` that are no idle helper take: those of the locks they take other than
+# its own, and of the functions they reach.
+def direct_classes(rules: Rules, key: String) -> Set[String]
   helper = rules.bodies[key]
-  found = settled[key]
+  found: Set[String] = Set.new([])
   for call in rules.idle[key]
-    if call.idle and rules.idle.key?(call.key)
-      found = found.union(settled[call.key])
-    else
+    if not nested?(rules, call)
       for lock in waited(call)
         if lock.class != ""
           found = found.add(lock.class)
@@ -575,13 +643,15 @@ def taken_on_idle_side(rules: Rules, settled: Map[String, Set[String]], key: Str
   found
 end
 
-# The call path to a system call of a call on the idle side of a flagged helper, from the call itself: none
-# for a helper that makes none.
-def idle_path(rules: Rules, body: Body, site: Site) -> List[String]
+# The call path to a system call of a call on the idle side of a flagged helper, from the call itself, while `h` is
+# held: none for a helper that makes none, and a wait on `h` is not one, since it gives the lock back while it waits.
+def idle_path(rules: Rules, body: Body, site: Site, h: Held) -> List[String]
   return system_call(rules, body, site) if not rules.idle.key?(site.key)
 
-  path = rules.idle_paths.get(site.key).unwrap_or([])
-  return [] if path.empty?
+  for r in rules.idle_reach.get(site.key).unwrap_or([])
+    on_h = r.waited != "" and (r.waited == h.lock.key or r.waited == h.lock.class)
+    return [site.name].concat(r.path) if not on_h
+  end
 
-  [site.name].concat(path)
+  []
 end
