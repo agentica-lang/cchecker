@@ -100,6 +100,14 @@ end
 ## for a condition that may change between two reads (a call). `roots` are the variables it reads, by key, so a write
 ## to one forgets it. `nulls` are the pointers that own which are null on this edge (`if (!p)`,
 ## `if ((p = malloc(n)) == NULL)`), and `set` those that are not.
+##
+## A test against 0 is a fact of what it compares (`r == 0` is `r` false), so all the ways C writes a test of one
+## variable are one condition; `word` is then what a path shows ("true" where `r == 0` holds), "" for the value. A fact
+## can also come from a write, with no test in the code (`quiet`, no step in a path): the value of a constant written to
+## a variable (`written`, `locked = 1`), and the result of a trylock kept in a variable, on the side where the call
+## worked and the side where it failed (`r = pthread_mutex_trylock(&m)`). `if_tested` is the side where a call failed
+## that fails only on an error (`r = pthread_mutex_lock(&m)`): a path goes there only when the function tests the
+## result again.
 export struct Fact
   text: String
   value: Bool
@@ -108,6 +116,10 @@ export struct Fact
   column: Int
   nulls: List[String] = []
   set: List[String] = []
+  word: String = ""
+  quiet: Bool = false
+  written: Bool = false
+  if_tested: Bool = false
 end
 
 ## A read of a pointer that owns.
@@ -393,11 +405,17 @@ struct Split
   no: List[Int]
 end
 
-# A call of `Known.TRIES` in a condition, and whether the condition is true when the call gave 0 (`call == 0`) or
-# false (`call`, `call != 0`).
+# A call of `Known.TRIES` in a condition or a value, and whether that is true when the call gave 0 (`call == 0`,
+# `!call`) or false (`call`, `call != 0`).
 struct Tried
   call: Json
   zero_is_true: Bool
+end
+
+# What a comparison with 0 compares (`zero_compared`), and whether it is `==`.
+struct Compared
+  operand: Json
+  equal: Bool
 end
 
 ## Returns whether a function body calls something that takes or releases a lock, the only bodies the path rules read.
@@ -1919,9 +1937,15 @@ def declaration(b: Builder, node: Json, preds: List[Int]) -> Built
   elsif not fields.empty? and values.size == 1 and Ast.kind(see_through(values.first)) == "InitListExpr"
     initialized = initializer(b, key, see_through(values.first), preds)
     written = add(initialized.b, Event.Writes([key]), initialized.exits)
+  elsif values.size == 1 and tried_call(values.first).some?
+    written = kept_result(b, key, tried_call(values.first).unwrap!, preds)
   else
     built = in_order(b, values, preds)
     written = add(built.b, Event.Writes([key]), built.exits)
+    # A static local keeps the value of the last call, not that of its initializer.
+    if values.size == 1 and Ast.text(node, "storageClass") != "static"
+      written = constant_written(written.b, key, values.first, written.exits)
+    end
   end
 
   # The pointers of the block: the variable, or the followed CC_OWNS fields of a struct.
@@ -2176,6 +2200,9 @@ def assignment(b: Builder, node: Json, preds: List[Int]) -> Built
     name = variable_key(b.owners.places.keys, parts[0])
     return owner_assigned(b, name, parts[1], preds) if b.owners.names.include?(name)
 
+    kept_try = kept_trial(b, node)
+    return kept_result(b, name, kept_try.unwrap!, preds) if kept_try.some?
+
     # `*p = v` in a CC_FREES parameter that points to the pointer gives the pointer a new value without reading it:
     # null, or a value that goes back to the caller, which the function does not own. A pointer that owns is handed
     # on to the caller there.
@@ -2228,7 +2255,10 @@ def assignment(b: Builder, node: Json, preds: List[Int]) -> Built
         none -> struct_assigned_after(b, parts[0], parts[1], preds)
       end
 
-      return add(value.b, Event.Writes([target_root(b.owners.places.keys, parts[0])]), value.exits)
+      written = add(value.b, Event.Writes([target_root(b.owners.places.keys, parts[0])]), value.exits)
+      return written if Ast.kind(see_through(parts[0])) != "DeclRefExpr"
+
+      return constant_written(written.b, name, parts[1], written.exits)
     end
   end
 
@@ -2961,6 +2991,21 @@ def condition(b: Builder, node: Json, preds: List[Int]) -> Split
     return Split(b: b, yes: preds, no: [])
   end
 
+  # `(r = pthread_mutex_trylock(&m)) != 0`: the result kept in `r`, then the test of `r`.
+  compared = zero_compared(bare)
+  if compared.some? and kept_trial(b, compared.unwrap!.operand).some?
+    inner = condition(b, compared.unwrap!.operand, preds)
+    return Split(b: inner.b, yes: inner.no, no: inner.yes) if compared.unwrap!.equal
+
+    return inner
+  end
+
+  kept_try = kept_trial(b, bare)
+  if kept_try.some?
+    kept = kept_result(b, variable_key(b.owners.places.keys, parts.first), kept_try.unwrap!, preds)
+    return condition(kept.b, parts.first, kept.exits)
+  end
+
   case tried_call(bare)
     some(tried) -> trial(b, tried, preds)
     none -> branch(b, bare, preds)
@@ -3003,7 +3048,8 @@ def chain(b: Builder, operands: List[Json], all: Bool, preds: List[Int]) -> Spli
   Split(b: built, yes: out, no: pending)
 end
 
-# A condition of any other form: its calls, then a node for each of its values.
+# A condition of any other form: its calls, then a node for each of its values. A test against 0 is a fact of what it
+# compares (`Fact`).
 def branch(b: Builder, bare: Json, preds: List[Int]) -> Split
   value = expression(b, bare, preds)
   keys = value.b.owners.places.keys
@@ -3011,6 +3057,24 @@ def branch(b: Builder, bare: Json, preds: List[Int]) -> Split
   roots = roots_of(keys, bare)
   place = Ast.start_of(bare)
   fact = Fact(text: text, value: true, roots: roots, line: place.line, column: place.column)
+  case zero_compared(bare)
+    some(compared) ->
+      operand = written_text(value.b, compared.operand, false, keys, 0)
+      if operand != "" and compared.equal
+        fact = fact.with(text: operand, value: false, word: "true")
+      elsif operand != ""
+        fact = fact.with(text: operand)
+      end
+
+    none -> fact = fact
+  end
+
+  yes_fact = fact
+  no_fact = fact.with(value: not fact.value)
+  if fact.word != ""
+    no_fact = no_fact.with(word: "false")
+  end
+
   null_on_true: List[String] = []
   null_on_false: List[String] = []
   case null_test(value.b, bare)
@@ -3019,9 +3083,59 @@ def branch(b: Builder, bare: Json, preds: List[Int]) -> Split
     none -> null_on_false = []
   end
 
-  yes = add(value.b, Event.Branch(fact.with(nulls: null_on_true, set: null_on_false)), value.exits)
-  no = add(yes.b, Event.Branch(fact.with(value: false, nulls: null_on_false, set: null_on_true)), value.exits)
-  Split(b: no.b, yes: yes.exits, no: no.exits)
+  yes = add(value.b, Event.Branch(yes_fact.with(nulls: null_on_true, set: null_on_false)), value.exits)
+  no = add(yes.b, Event.Branch(no_fact.with(nulls: null_on_false, set: null_on_true)), value.exits)
+  split = Split(b: no.b, yes: yes.exits, no: no.exits)
+  case compared_with(bare, false)
+    some(compared) -> nonzero_side(split, compared, keys)
+    none -> split
+  end
+end
+
+# `r == EBUSY` where it holds, and `r != EBUSY` where it does not, also tell that `r` is not 0: a fact of `r` after
+# that side.
+def nonzero_side(split: Split, compared: Compared, keys: Map[String, String]) -> Split
+  operand = written_text(split.b, compared.operand, false, keys, 0)
+  return split if operand == ""
+
+  place = Ast.start_of(compared.operand)
+  fact = Fact(
+    text: operand,
+    value: true,
+    roots: roots_of(keys, compared.operand),
+    line: place.line,
+    column: place.column,
+    quiet: true,
+  )
+
+  if compared.equal
+    known = add(split.b, Event.Branch(fact), split.yes)
+    return Split(b: known.b, yes: known.exits, no: split.no)
+  end
+
+  known = add(split.b, Event.Branch(fact), split.no)
+  Split(b: known.b, yes: split.yes, no: known.exits)
+end
+
+# A comparison with 0 (`x == 0`, `0 != x`, `p == NULL`): what it compares, and whether it is `==`.
+def zero_compared(node: Json) -> Optional[Compared] = compared_with(node, true)
+
+# A comparison with 0 (`zero`) or with a whole number other than 0 (`r == EBUSY`).
+def compared_with(node: Json, zero: Bool) -> Optional[Compared]
+  bare = see_through(node)
+  opcode = Ast.text(bare, "opcode")
+  parts = Ast.children(bare)
+  return none if Ast.kind(bare) != "BinaryOperator" or (opcode != "==" and opcode != "!=") or parts.size != 2
+
+  for pair in [[parts[0], parts[1]], [parts[1], parts[0]]]
+    number = see_through(pair[1])
+    nonzero = Ast.kind(number) == "IntegerLiteral" and Ast.text(number, "value") != "0"
+    if (zero and zero?(pair[1])) or (not zero and nonzero)
+      return some(Compared(operand: pair[0], equal: opcode == "=="))
+    end
+  end
+
+  none
 end
 
 # Whether a condition tells that a pointer that owns is null: `p`, `p = malloc(n)`, and either compared with 0.
@@ -3056,20 +3170,20 @@ def null_test(b: Builder, node: Json) -> Optional[NullTest]
   none
 end
 
+# A call of `Known.TRIES`, alone, negated or compared with 0 (`call`, `!call`, `call == 0`).
 def tried_call(node: Json) -> Optional[Tried]
-  return some(Tried(call: see_through(node), zero_is_true: false)) if try_call?(node)
+  bare = see_through(node)
+  return some(Tried(call: bare, zero_is_true: false)) if try_call?(bare)
 
-  opcode = Ast.text(node, "opcode")
-  parts = Ast.children(node)
-  return none if Ast.kind(node) != "BinaryOperator" or (opcode != "==" and opcode != "!=") or parts.size != 2
-
-  for pair in [[parts[0], parts[1]], [parts[1], parts[0]]]
-    if try_call?(pair[0]) and zero?(pair[1])
-      return some(Tried(call: see_through(pair[0]), zero_is_true: opcode == "=="))
-    end
+  if Ast.kind(bare) == "UnaryOperator" and Ast.text(bare, "opcode") == "!"
+    return tried_call(Ast.children(bare).first).map do |tried| tried.with(zero_is_true: not tried.zero_is_true) end
   end
 
-  none
+  case zero_compared(bare)
+    some(compared) ->
+      tried_call(compared.operand).map do |tried| tried.with(zero_is_true: tried.zero_is_true != compared.equal) end
+    none -> none
+  end
 end
 
 def try_call?(node: Json) -> Bool
@@ -3080,19 +3194,77 @@ end
 # The call, then on the branch where it gave 0 a node that takes its lock.
 def trial(b: Builder, tried: Tried, preds: List[Int]) -> Split
   called = call(b, tried.call, preds, true)
-  args = Ast.children(tried.call).drop(1)
-  name = callee_name(tried.call)
-  passed = args.map do |arg| arg_of(called.b, arg) end
-  site = site_of(called.b, name, passed, Ast.start_of(tried.call), false)
-  taken = add(
-    called.b,
-    Event.Call(site.with(takes: lock_of(passed, 0), tried: Known.NO_WAIT.include?(name))),
-    called.exits,
-  )
-
+  taken = add(called.b, Event.Call(taking_site(called.b, tried.call)), called.exits)
   return Split(b: taken.b, yes: taken.exits, no: called.exits) if tried.zero_is_true
 
   Split(b: taken.b, yes: called.exits, no: taken.exits)
+end
+
+# The take of the lock of a call of `Known.TRIES`, where it gave 0.
+def taking_site(b: Builder, node: Json) -> Site
+  name = callee_name(node)
+  passed = Ast.children(node).drop(1).map do |arg| arg_of(b, arg) end
+  site = site_of(b, name, passed, Ast.start_of(node), false)
+  site.with(takes: lock_of(passed, 0), tried: Known.NO_WAIT.include?(name))
+end
+
+# The call of an assignment that keeps the result of a trylock in a local variable or a parameter (`r =
+# pthread_mutex_trylock(&m)`, `ok = pthread_mutex_trylock(&m) == 0`).
+def kept_trial(b: Builder, node: Json) -> Optional[Tried]
+  bare = see_through(node)
+  parts = Ast.children(bare)
+  return none if Ast.kind(bare) != "BinaryOperator" or Ast.text(bare, "opcode") != "=" or parts.size != 2
+
+  return none if Ast.kind(see_through(parts[0])) != "DeclRefExpr"
+
+  key = variable_key(b.owners.places.keys, parts[0])
+  return none if key == "" or b.owners.names.include?(key)
+
+  tried_call(parts[1])
+end
+
+# The result of a trylock kept in the variable `key`: the call, the write, then a side where the call worked, which
+# takes the lock, and one where it failed, each with the value of the variable there. A later test of the variable
+# goes the same way, until a write forgets it. The failure of a call that waits for its lock is an error, which a path
+# reaches only when the function tests the result.
+def kept_result(b: Builder, key: String, tried: Tried, preds: List[Int]) -> Built
+  called = call(b, tried.call, preds, true)
+  written = add(called.b, Event.Writes([key]), called.exits)
+  place = Ast.start_of(tried.call)
+  fact = Fact(text: key, value: tried.zero_is_true, roots: [key], line: place.line, column: place.column, quiet: true)
+
+  worked = add(written.b, Event.Branch(fact), written.exits)
+  taken = add(worked.b, Event.Call(taking_site(worked.b, tried.call)), worked.exits)
+  waits = Known.TAKES.include?(callee_name(tried.call))
+  failed = add(taken.b, Event.Branch(fact.with(value: not tried.zero_is_true, if_tested: waits)), written.exits)
+  Built(b: failed.b, exits: taken.exits.concat(failed.exits))
+end
+
+# After the write of a local variable (`key`) with a constant (`locked = 1`, `bool taken = false`), the value of the
+# variable as a fact of its own; any other write gives none.
+def constant_written(b: Builder, key: String, value: Json, preds: List[Int]) -> Built
+  bare = see_through(value)
+  number = ""
+  case Ast.kind(bare)
+    "IntegerLiteral" -> number = Ast.text(bare, "value")
+    "CharacterLiteral" -> number = "#{Ast.number(bare, "value")}"
+    _ -> number = ""
+  end
+
+  return Built(b: b, exits: preds) if key == "" or number == "" or b.owners.names.include?(key)
+
+  place = Ast.start_of(value)
+  fact = Fact(
+    text: key,
+    value: number != "0",
+    roots: [key],
+    line: place.line,
+    column: place.column,
+    quiet: true,
+    written: true,
+  )
+
+  add(b, Event.Branch(fact), preds)
 end
 
 # The text of an expression, from the names, fields, constants and operators of `UNARY_TEXT` and `BINARY_TEXT`; ""

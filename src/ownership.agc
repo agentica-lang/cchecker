@@ -456,7 +456,11 @@ end
 
 # A condition: the known conditions as the lock rules keep them, and the pointers that are null on this side.
 def after_branch(walker: Walker, item: Item, fact: Fact) -> Outcome
-  step = Step(text: "#{fact.line}:#{fact.column} #{Locking.truth(fact)}")
+  path = item.path
+  if not fact.quiet
+    path = path.push(Step(text: "#{fact.line}:#{fact.column} #{Locking.truth(fact)}"))
+  end
+
   state = item.state
   if walker.tracked.include?(fact.text)
     if state.facts.get(fact.text).map do |known| known != fact.value end.unwrap_or(false)
@@ -464,6 +468,8 @@ def after_branch(walker: Walker, item: Item, fact: Fact) -> Outcome
     end
 
     state = state.with(facts: state.facts.put(fact.text, fact.value))
+  elsif fact.if_tested
+    return Outcome(moved: Moved.Stopped, breaches: [])
   end
 
   for name in fact.nulls
@@ -477,7 +483,7 @@ def after_branch(walker: Walker, item: Item, fact: Fact) -> Outcome
     end
   end
 
-  went(item.with(state: state, path: item.path.push(step)))
+  went(item.with(state: state, path: path))
 end
 
 # A pointer that is null owns nothing; when it is the result of a realloc, the pointer it moved owns again. A field

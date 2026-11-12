@@ -206,30 +206,43 @@ the mutexes, spin locks and read-write locks of pthread, C11 and libuv, and the
 critical sections and SRW locks of Windows (`src/known.agc`). A call that may
 fail to take its lock (`pthread_mutex_trylock`, and `pthread_mutex_lock`, which
 returns an error code) takes it when it is a condition compared with 0, on the
-side where it gave 0: `if (pthread_mutex_trylock(&q->mu) != 0) return;`. A wait
-on a condition (`pthread_cond_wait(&cv, &q->mu)`) gives the lock back before it
-returns, so it changes nothing.
+side where it gave 0: `if (pthread_mutex_trylock(&q->mu) != 0) return;`. Its
+result kept in a local variable or a parameter (`int r =
+pthread_mutex_trylock(&q->mu);`, `bool ok = pthread_mutex_trylock(&q->mu) ==
+0;`, also in a condition: `if ((r = pthread_mutex_trylock(&q->mu)) != 0)`)
+takes the lock on the paths where the call gave 0, and a later test of the
+variable goes the same way as the call: `if (r != 0) return;`, `if (!r)`, `if
+(r == EBUSY)`. A new value of the variable forgets the result (`r = work(q);
+if (r == 0) unlock(&q->mu);` is a finding). The failure of a call that waits
+for its lock (`pthread_mutex_lock`) is an error, which a path reaches only when
+the function tests the result again. A wait on a condition
+(`pthread_cond_wait(&cv, &q->mu)`) gives the lock back before it returns, so it
+changes nothing.
 
 A path does not go where a condition that the function tests twice would have to
-be true and false, so `if (locked) lock(); ...; if (locked) unlock();` passes; a
-write to a variable of the condition, or a call given its address
-(`f(&locked)`), forgets its value; a call given `&q->mu`, or the address of any
-other field (`atomic_store(&q->ready, 0)`, `f(&q->count)`), does not change `q`:
-the values of the conditions are kept by variable (a local that shadows another
-is a variable of its own), not by field, so a condition on `q->ready` keeps its
-value after `atomic_store(&q->ready, 0)`; copy the field to a local first and
-test the local (`int ready = q->ready; if (ready) ...`) when the call may change
-it. A condition leaves the state of a path after its last test before a write to
-one of its variables, so a function with many flags, each tested twice around a
-lock, stays in a number of states that grows with the flags when their tests do
-not overlap, not as a power of two. A function whose paths would take more than
-200 000 states to follow is walked again without these conditions; when that is
-not enough either, its findings are those of the paths followed, and the run
-lists it in `incomplete_functions` of `--json` (`file`, `line` and `function`)
-and on standard error (the exit code does not change). A function whose AST has
-more than 20 000 nodes (about four times the largest of the Agentica VM) gets no
-graph: that is an error of the `rules` tool on its file, so the exit code is 2,
-and the rest of the run is checked.
+be true and false, so `if (locked) lock(); ...; if (locked) unlock();` passes. A
+test against 0 is a test of what it compares (`if (n == 0)` and `if (n)` are one
+condition, and `n == EBUSY` tells that `n` is not 0 where it holds), and a whole
+number written to a local variable or a parameter is a value the path knows
+(`bool taken = false; ...; taken = true;`, `int locked = 0;`), as the kept
+result of a trylock is. A write to a variable of the condition, or a call given
+its address (`f(&locked)`), forgets its value; a call given `&q->mu`, or the
+address of any other field (`atomic_store(&q->ready, 0)`, `f(&q->count)`), does
+not change `q`: the values of the conditions are kept by variable (a local that
+shadows another is a variable of its own), not by field, so a condition on
+`q->ready` keeps its value after `atomic_store(&q->ready, 0)`; copy the field to
+a local first and test the local (`int ready = q->ready; if (ready) ...`) when
+the call may change it. A condition leaves the state of a path after its last
+test before a write to one of its variables, so a function with many flags, each
+tested twice around a lock, stays in a number of states that grows with the
+flags when their tests do not overlap, not as a power of two. A function whose
+paths would take more than 200 000 states to follow is walked again without
+these conditions; when that is not enough either, its findings are those of the
+paths followed, and the run lists it in `incomplete_functions` of `--json`
+(`file`, `line` and `function`) and on standard error (the exit code does not
+change). A function whose AST has more than 20 000 nodes (about four times the
+largest of the Agentica VM) gets no graph: that is an error of the `rules` tool
+on its file, so the exit code is 2, and the rest of the run is checked.
 
 A function that takes a lock for its caller, or releases the caller's lock, says
 so on its prototype: `CC_ACQUIRES(lock)` or `CC_RELEASES(lock)`, with the lock
@@ -248,8 +261,10 @@ the reason. A call through a function pointer does nothing to the locks.
 Limits: a lock is counted by its text, so a lock taken in a loop over several
 objects (`lock(&a[i]->mu)`), locks taken hand over hand, or a pointer that is
 set again between the lock and the unlock (`q = q->next`) can give false
-findings; the result of a lock stored before the test (`r = trylock(&q->mu); if
-(r == 0)`) takes nothing; a global that a called function changes keeps the
+findings; the result of a trylock kept in a field or a global (`q->r =
+trylock(&q->mu)`) takes nothing, and a helper that takes a lock only when it
+returns 0 or sets an out-parameter (`bool *locked`) needs `CC_IGNORE` in its
+body and its callers; a global that a called function changes keeps the
 value the path knew; a lock taken more than twice on a path, with no release
 between, counts as taken twice (and one released more than twice as released
 twice), so such a path can give a false finding or miss one.

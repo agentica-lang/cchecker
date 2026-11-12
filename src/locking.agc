@@ -181,14 +181,16 @@ export def check(units: List[Unit], owned: List[String] = []) -> Checked
   Checked(findings: findings, incomplete: incomplete, sections: sections, partial: partial.to_a)
 end
 
-## Returns the conditions that the function tests in two places or more: only those can make a path impossible.
+## Returns the conditions that the function tests, or sets (a constant written to a variable, the result of a trylock
+## kept in one), in two places or more: only those can make a path impossible. A test or a kept result counts by its
+## side where the value is true, a constant by its one node.
 export def tracked_of(body: Body) -> Set[String]
   seen: Set[String] = Set.new([])
   twice: Set[String] = Set.new([])
   for node in body.nodes
     case node.event
       Event.Branch(fact) ->
-        if fact.text != "" and fact.value
+        if fact.text != "" and (fact.value or fact.written)
           if seen.include?(fact.text)
             twice = twice.add(fact.text)
           end
@@ -333,8 +335,10 @@ export def jump_source(site: Site, functions: Map[String, Function]) -> String
   ""
 end
 
-## Returns the word of the value of a condition on a step of a path.
+## Returns the word of the value of a condition on a step of a path: that of the test as the code wrote it.
 export def truth(fact: Fact) -> String
+  return fact.word if fact.word != ""
+
   return "true" if fact.value
 
   "false"
@@ -664,13 +668,21 @@ def stepped(walker: Walker, event: Event, item: Item) -> Moved
 
       Moved.Went(after_call(item, site))
     Event.Branch(fact) ->
-      step = Step(text: "#{fact.line}:#{fact.column} #{truth(fact)}")
-      return Moved.Went(item.with(path: item.path.push(step))) if not tracked.include?(fact.text)
+      path = item.path
+      if not fact.quiet
+        path = path.push(Step(text: "#{fact.line}:#{fact.column} #{truth(fact)}"))
+      end
+
+      if not tracked.include?(fact.text)
+        return Moved.Stopped if fact.if_tested
+
+        return Moved.Went(item.with(path: path))
+      end
 
       return Moved.Stopped if state.facts.get(fact.text).map do |known| known != fact.value end.unwrap_or(false)
 
       facts = state.facts.put(fact.text, fact.value)
-      Moved.Went(item.with(state: state.with(facts: facts), path: item.path.push(step)))
+      Moved.Went(item.with(state: state.with(facts: facts), path: path))
     Event.Writes(names) -> Moved.Went(item.with(state: state.with(facts: forgotten(state.facts, roots, names))))
     Event.Note(mark) -> Moved.Went(item.with(path: item.path.push(marked(mark))))
     Event.Exit(mark) -> Moved.Ended(item.path.push(marked(mark)))

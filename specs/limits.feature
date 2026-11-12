@@ -162,6 +162,31 @@ Feature: Time and memory on large generated inputs
       "incomplete_functions":[{"file":"$DIR/many.c","line":4,"function":"many"}]
       """
 
+  Scenario: A trylock kept in a variable and a flag set to a constant, 24 times in a loop, stay in their bounds
+    Each kept result is a fact until its test, and each constant until the flag is tested after the loop: a path holds
+    the lock only between a take and its unlock, so the states do not multiply with the uses.
+
+    Given the C file "tries.c" holds, with ITEMS as 24 times " r = pthread_mutex_trylock(&q->mu); if (r == 0) { work(1); pthread_mutex_unlock(&q->mu); done = 1; }":
+      """
+      #include <pthread.h>
+      struct queue { pthread_mutex_t mu; int n; };
+      int work(int n);
+      int pop(struct queue *q) {
+        int r;
+        int done = 0;
+        for (int i = 0; i < q->n; i++) {ITEMS
+        }
+        if (done) work(2);
+        return 0;
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/tries.c" in at most 1500 MiB and 20 seconds
+    Then the exit code is 0
+    And the output includes:
+      """
+      "incomplete_functions":[]
+      """
+
   Scenario Outline: Blocks that declare a pointer of the same name do not multiply the states of the ownership walk (<case>)
     Given the C file "blocks.c" holds, with ITEMS as 24 times " if (pick()) { <block> }":
       """

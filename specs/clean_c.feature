@@ -11,6 +11,8 @@ Feature: C that must stay clean
   Scenario Outline: A common idiom gives no finding (<case>)
     Given the C file "clean.c" holds:
       """
+      #include <pthread.h>
+      #include <stdbool.h>
       #include <stdlib.h>
       #include <string.h>
       #include "cchecker.h"
@@ -25,6 +27,7 @@ Feature: C that must stay clean
       #define TAKE_PTR(p) ({ __typeof__(p) t_ = (p); (p) = NULL; t_; })
       #define TAKE(n) ({ CC_OWNS char *t_ = make(n); t_; })
       #define XMAKE(n) ({ CC_OWNS char *x_ = malloc(n); x_; })
+      pthread_mutex_t mu; int count;
 
       <code>
       """
@@ -213,6 +216,16 @@ Feature: C that must stay clean
       | CC_OWNS struct value passed to a CC_OWNS struct parameter         | CC_OWNS struct pair make_pair(void); void take_pair(CC_OWNS struct pair p); void f(void) { take_pair(make_pair()); }                                       |
       | struct passed through a function pointer                          | void f(int n, void (*g)(struct pair)) { struct pair q = {0}; q.left = make(n); g(q); }                                                                     |
       | struct passed to a variadic function                              | void vtake(int k, ...); void f(int n) { struct pair q = {0}; q.left = make(n); vtake(1, q); }                                                              |
+
+    Examples:
+      | case                                      | code                                                                                                                                                                                                  |
+      | trylock spin with a blocking fallback     | void f(void) { if (pthread_mutex_trylock(&mu) != 0) { bool taken = false; for (int i = 0; i < 9; i++) { if (pthread_mutex_trylock(&mu) == 0) { taken = true; break; } } if (!taken) pthread_mutex_lock(&mu); } count++; pthread_mutex_unlock(&mu); } |
+      | flag set where the lock is taken          | void f(int n) { int locked = 0; if (n) { pthread_mutex_lock(&mu); locked = 1; } count++; if (locked) pthread_mutex_unlock(&mu); }                                                                    |
+      | trylock result retried in a loop          | void f(void) { int r; do { r = pthread_mutex_trylock(&mu); } while (r != 0); count++; pthread_mutex_unlock(&mu); }                                                                                     |
+      | trylock result assigned in a loop test    | void f(void) { int r; while ((r = pthread_mutex_trylock(&mu)) != 0) count++; count++; pthread_mutex_unlock(&mu); }                                                                                     |
+      | trylock result assigned in an if          | int f(void) { int r; if ((r = pthread_mutex_trylock(&mu)) != 0) return r; count++; pthread_mutex_unlock(&mu); return 0; }                                                                             |
+      | trylock result kept as a bool             | int f(void) { bool ok = pthread_mutex_trylock(&mu) == 0; if (!ok) return -1; count++; pthread_mutex_unlock(&mu); return 0; }                                                                          |
+      | trylock result tested before each step    | void f(void) { int r = pthread_mutex_trylock(&mu); if (r == 0) count++; count++; if (r == 0) pthread_mutex_unlock(&mu); }                                                                             |
 
 
   Scenario Outline: The same idiom with one change gives a finding (<case>: <change>)
@@ -412,3 +425,28 @@ Feature: C that must stay clean
       | CC_OWNS struct value passed to a CC_OWNS struct parameter         | the value dropped                    | CC_OWNS struct pair make_pair(void); void take_pair(CC_OWNS struct pair p); void f(void) { make_pair(); }                                                                 |
       | struct passed through a function pointer                          | a return before the call             | void f(int n, void (*g)(struct pair)) { struct pair q = {0}; q.left = make(n); if (n) return; g(q); }                                                                     |
       | struct passed to a variadic function                              | a return before the call             | void vtake(int k, ...); void f(int n) { struct pair q = {0}; q.left = make(n); if (n) return; vtake(1, q); }                                                              |
+
+  Scenario Outline: The same lock idiom with one change gives a finding (<case>: <change>)
+    Given the C file "clean.c" holds:
+      """
+      #include <pthread.h>
+      #include <stdbool.h>
+      pthread_mutex_t mu; int count;
+      <code>
+      """
+    When I run cchecker with "--tools rules --json $DIR/clean.c"
+    Then the exit code is 1
+    And the output includes:
+      """
+      {"code":"<finding>","tool":"rules","file":"$DIR/clean.c","line":4,
+      """
+
+    Examples:
+      | case                                   | change                                 | finding                   | code                                                                                                                                                                                                                  |
+      | trylock spin with a blocking fallback  | the fallback taken when the spin got it | CC-PATH-LOCK-NOT-RELEASED | void f(void) { if (pthread_mutex_trylock(&mu) != 0) { bool taken = false; for (int i = 0; i < 9; i++) { if (pthread_mutex_trylock(&mu) == 0) { taken = true; break; } } if (taken) pthread_mutex_lock(&mu); } count++; pthread_mutex_unlock(&mu); } |
+      | flag set where the lock is taken       | the flag not set                       | CC-PATH-LOCK-NOT-RELEASED | void f(int n) { int locked = 0; if (n) { pthread_mutex_lock(&mu); } count++; if (locked) pthread_mutex_unlock(&mu); }                                                                                                |
+      | trylock result retried in a loop       | no unlock                              | CC-PATH-LOCK-NOT-RELEASED | void f(void) { int r; do { r = pthread_mutex_trylock(&mu); } while (r != 0); count++; }                                                                                                                              |
+      | trylock result assigned in a loop test | the loop ends where the call failed    | CC-PATH-LOCK-NOT-HELD     | void f(void) { int r; while ((r = pthread_mutex_trylock(&mu)) == 0) count++; count++; pthread_mutex_unlock(&mu); }                                                                                                  |
+      | trylock result assigned in an if       | a return where the call worked         | CC-PATH-LOCK-NOT-RELEASED | int f(void) { int r; if ((r = pthread_mutex_trylock(&mu)) == 0) return r; count++; pthread_mutex_unlock(&mu); return 0; }                                                                                          |
+      | trylock result kept as a bool          | a return where the call worked         | CC-PATH-LOCK-NOT-RELEASED | int f(void) { bool ok = pthread_mutex_trylock(&mu) == 0; if (ok) return -1; count++; pthread_mutex_unlock(&mu); return 0; }                                                                                         |
+      | trylock result tested before each step | the unlock where the call failed       | CC-PATH-LOCK-NOT-HELD     | void f(void) { int r = pthread_mutex_trylock(&mu); if (r == 0) count++; count++; if (r != 0) pthread_mutex_unlock(&mu); }                                                                                          |

@@ -129,6 +129,67 @@ Feature: Locks on every path
       | nested continue   | int pop(struct queue *q) { for (int j = 0; j < 2; j++) { pthread_mutex_lock(&q->mu); for (int i = 0; i < q->n; i++) { if (work(q)) continue; q->n--; } pthread_mutex_unlock(&q->mu); } return 0; }             |
       | switch in a loop  | int pop(struct queue *q) { for (int i = 0; i < q->n; i++) { pthread_mutex_lock(&q->mu); switch (work(q)) { case 0: break; default: pthread_mutex_unlock(&q->mu); continue; } pthread_mutex_unlock(&q->mu); } return 0; } |
 
+  Scenario Outline: The result of a trylock kept in a variable holds the lock where it says the call worked (<case>)
+    Given the C file "try.c" holds:
+      """
+      #include <errno.h>
+      #include <pthread.h>
+      #include <stdbool.h>
+      struct queue { pthread_mutex_t mu; int n; };
+      int work(struct queue *q);
+
+      <code>
+      """
+    When I run cchecker with "--tools rules --json $DIR/try.c"
+    Then the exit code is <exit>
+    And the output <found>:
+      """
+      <finding>
+      """
+
+    Examples:
+      | case                           | code                                                                                                                                                       | exit | found            | finding                                                                         |
+      | stored, tested                 | int pop(struct queue *q) { int r = pthread_mutex_trylock(&q->mu); if (r == 0) { q->n--; pthread_mutex_unlock(&q->mu); } return 0; }                      | 0    | does not include | CC-PATH-LOCK                                                                    |
+      | stored, no unlock              | int pop(struct queue *q) { int r = pthread_mutex_trylock(&q->mu); if (r == 0) { q->n--; } return 0; }                                                       | 1    | includes         | "code":"CC-PATH-LOCK-NOT-RELEASED","tool":"rules","file":"$DIR/try.c","line":7 |
+      | direct, tested                 | int pop(struct queue *q) { if (pthread_mutex_trylock(&q->mu) == 0) { q->n--; pthread_mutex_unlock(&q->mu); } return 0; }                                  | 0    | does not include | CC-PATH-LOCK                                                                    |
+      | direct, no unlock              | int pop(struct queue *q) { if (pthread_mutex_trylock(&q->mu) == 0) { q->n--; } return 0; }                                                                 | 1    | includes         | "code":"CC-PATH-LOCK-NOT-RELEASED","tool":"rules","file":"$DIR/try.c","line":7 |
+      | stored, reassigned             | int pop(struct queue *q) { int r = pthread_mutex_trylock(&q->mu); r = work(q); if (r == 0) { q->n--; pthread_mutex_unlock(&q->mu); } return 0; }         | 1    | includes         | "code":"CC-PATH-LOCK-NOT-HELD","tool":"rules","file":"$DIR/try.c","line":7     |
+      | assigned later                 | int pop(struct queue *q) { int r; work(q); r = pthread_mutex_trylock(&q->mu); if (r == 0) { q->n--; pthread_mutex_unlock(&q->mu); } return 0; }          | 0    | does not include | CC-PATH-LOCK                                                                    |
+      | assigned later, reassigned     | int pop(struct queue *q) { int r; r = pthread_mutex_trylock(&q->mu); r = 0; if (r == 0) { q->n--; pthread_mutex_unlock(&q->mu); } return 0; }            | 1    | includes         | "code":"CC-PATH-LOCK-NOT-HELD","tool":"rules","file":"$DIR/try.c","line":7     |
+      | failure returns first          | int pop(struct queue *q) { int r = pthread_mutex_trylock(&q->mu); if (r != 0) return r; q->n--; pthread_mutex_unlock(&q->mu); return 0; }                | 0    | does not include | CC-PATH-LOCK                                                                    |
+      | success returns first          | int pop(struct queue *q) { int r = pthread_mutex_trylock(&q->mu); if (r == 0) return r; q->n--; pthread_mutex_unlock(&q->mu); return 0; }                | 1    | includes         | "code":"CC-PATH-LOCK-NOT-RELEASED","tool":"rules","file":"$DIR/try.c","line":7 |
+      | failure tested bare            | int pop(struct queue *q) { int r = pthread_mutex_trylock(&q->mu); if (r) return r; q->n--; pthread_mutex_unlock(&q->mu); return 0; }                      | 0    | does not include | CC-PATH-LOCK                                                                    |
+      | success tested with !          | int pop(struct queue *q) { int r = pthread_mutex_trylock(&q->mu); if (!r) return r; q->n--; pthread_mutex_unlock(&q->mu); return 0; }                     | 1    | includes         | "code":"CC-PATH-LOCK-NOT-RELEASED","tool":"rules","file":"$DIR/try.c","line":7 |
+      | busy returns first             | int pop(struct queue *q) { int r = pthread_mutex_trylock(&q->mu); if (r == EBUSY) return -1; if (r != 0) return r; q->n--; pthread_mutex_unlock(&q->mu); return 0; } | 0 | does not include | CC-PATH-LOCK                                                   |
+      | not busy returns first         | int pop(struct queue *q) { int r = pthread_mutex_trylock(&q->mu); if (r != EBUSY) return r; q->n--; pthread_mutex_unlock(&q->mu); return 0; }           | 1    | includes         | "code":"CC-PATH-LOCK-NOT-RELEASED","tool":"rules","file":"$DIR/try.c","line":7 |
+      | tested twice                   | int pop(struct queue *q) { int r = pthread_mutex_trylock(&q->mu); work(q); if (r == 0) q->n--; work(q); if (r == 0) pthread_mutex_unlock(&q->mu); return 0; } | 0 | does not include | CC-PATH-LOCK                                                                 |
+      | tested twice, the wrong way    | int pop(struct queue *q) { int r = pthread_mutex_trylock(&q->mu); work(q); if (r == 0) q->n--; work(q); if (r != 0) pthread_mutex_unlock(&q->mu); return 0; } | 1 | includes        | "code":"CC-PATH-LOCK-NOT-HELD","tool":"rules","file":"$DIR/try.c","line":7    |
+      | checked lock stored            | int pop(struct queue *q) { int r = pthread_mutex_lock(&q->mu); if (r != 0) return r; q->n--; pthread_mutex_unlock(&q->mu); return 0; }                   | 0    | does not include | CC-PATH-LOCK                                                                    |
+      | checked lock stored, wrong way | int pop(struct queue *q) { int r = pthread_mutex_lock(&q->mu); if (r == 0) return r; q->n--; pthread_mutex_unlock(&q->mu); return 0; }                   | 1    | includes         | "code":"CC-PATH-LOCK-NOT-RELEASED","tool":"rules","file":"$DIR/try.c","line":7 |
+      | checked lock stored, untested  | int pop(struct queue *q) { int r = pthread_mutex_lock(&q->mu); (void)r; q->n--; pthread_mutex_unlock(&q->mu); return 0; }                                 | 0    | does not include | CC-PATH-LOCK                                                                    |
+      | checked lock untested, no unlock | int pop(struct queue *q) { int r = pthread_mutex_lock(&q->mu); (void)r; q->n--; return 0; }                                                             | 1    | includes         | "code":"CC-PATH-LOCK-NOT-RELEASED","tool":"rules","file":"$DIR/try.c","line":7 |
+
+  Scenario: The path of a trylock kept in a variable shows its take and the test of the result as the code wrote it
+    Given the C file "try.c" holds:
+      """
+      #include <pthread.h>
+
+      struct queue { pthread_mutex_t mu; int n; };
+
+      int pop(struct queue *q) {
+        int r = pthread_mutex_trylock(&q->mu);
+        if (r == 0)
+          q->n--;
+        return 0;
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/try.c"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "path":["6:11 takes q->mu","7:7 true","9:3 returns"]
+      """
+
   Scenario Outline: A lock held at a call that may jump out is not released on that way out (<case>)
     Given the C file "jump.c" holds:
       """

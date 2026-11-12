@@ -184,8 +184,9 @@ export TAKES = Set.new([
   "AcquireSRWLockShared",
 ])
 
-## The calls that take the lock of their first argument only when they return 0: in a condition, the lock is held on
-## the branch where the call gave 0. The calls of `TAKES` that return a number count as these in a condition.
+## The calls that take the lock of their first argument only when they return 0: in a condition, or with the result
+## kept in a local variable, the lock is held on the branch where the call gave 0. The calls of `TAKES` that return a
+## number count as these there.
 export TRIES = Set.new([
   "pthread_mutex_trylock", "pthread_spin_trylock", "pthread_rwlock_tryrdlock", "pthread_rwlock_trywrlock",
   "pthread_mutex_timedlock", "pthread_mutex_clocklock", "pthread_rwlock_timedrdlock", "pthread_rwlock_timedwrlock",
