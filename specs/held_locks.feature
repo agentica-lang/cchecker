@@ -665,3 +665,59 @@ Feature: What runs while a lock is held
       """
       calls unlock_both
       """
+
+  Scenario Outline: A call of a helper whose flag gives it no lock to release is not followed under a CC_NO_SYSCALL_UNDER lock (<case>)
+    Given the C file "flag.c" holds:
+      """
+      #include "pthread.h" /* found in the system folders */
+      #include <stdbool.h>
+      #include "unistd.h"
+      #include "cchecker.h"
+
+      struct queue { CC_NO_SYSCALL_UNDER() pthread_mutex_t mu; int fd; int n; };
+      CC_RELEASES_IF(q->mu, held) void unlock_if(struct queue *q, bool held) { if (held) { write(q->fd, "x", 1); pthread_mutex_unlock(&q->mu); } }
+
+      void f(struct queue *a, struct queue *b) { pthread_mutex_lock(&a->mu); unlock_if(b, <flag>); pthread_mutex_unlock(&a->mu); }
+      """
+    When I run cchecker with "--tools rules --json $DIR/flag.c -- -I../include"
+    Then the exit code is <exit>
+    And the output <found>:
+      """
+      "code":"CC-PATH-SYSCALL-UNDER-LOCK"
+      """
+
+    Examples:
+      | case              | flag  | exit | found            |
+      | the flag is false | false | 0    | does not include |
+      | the flag is true  | true  | 1    | includes         |
+
+  Scenario Outline: A helper that takes a lock by a flag is one finding of a rule under a lock, on the side where it takes (<case>)
+    Given the C file "nest.c" holds:
+      """
+      #include "pthread.h" /* found in the system folders */
+      #include <stdbool.h>
+      #include "cchecker.h"
+
+      struct queue { CC_NO_SYSCALL_UNDER() <mark> pthread_mutex_t mu; int n; };
+      struct slot { CC_LOCK_LEVEL(1) pthread_mutex_t mu; int n; };
+      CC_ACQUIRES_IF(s->mu, *locked) void lock_if(struct slot *s, bool *locked) { pthread_mutex_lock(&s->mu); *locked = true; }
+      CC_RELEASES_IF(s->mu, locked) void unlock_if(struct slot *s, bool locked) { if (locked) pthread_mutex_unlock(&s->mu); }
+
+      <code>
+      """
+    When I run cchecker with "--tools rules --json $DIR/nest.c -- -I../include"
+    Then the exit code is <exit>
+    And the output <found>:
+      """
+      <finding>
+      """
+    And the output does not include:
+      """
+      calls unlock_if
+      """
+
+    Examples:
+      | case                     | mark              | code                                                                                                                                | exit | found            | finding                             |
+      | a system call            |                   | void nest(struct queue *a, struct slot *b) { bool l; pthread_mutex_lock(&a->mu); lock_if(b, &l); b->n++; unlock_if(b, l); pthread_mutex_unlock(&a->mu); } | 1    | includes once    | "code":"CC-PATH-SYSCALL-UNDER-LOCK" |
+      | a lock of a lower level  | CC_LOCK_LEVEL(2)  | void nest(struct queue *a, struct slot *b) { bool l; pthread_mutex_lock(&a->mu); lock_if(b, &l); b->n++; unlock_if(b, l); pthread_mutex_unlock(&a->mu); } | 1    | includes once    | "code":"CC-PATH-LOCK-ORDER"               |
+      | no lock held             | CC_LOCK_LEVEL(2)  | void nest(struct queue *a, struct slot *b) { bool l; lock_if(b, &l); b->n++; unlock_if(b, l); a->n++; }                              | 0    | does not include | "code":"CC-PATH-                    |

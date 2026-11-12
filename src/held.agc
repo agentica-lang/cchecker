@@ -90,6 +90,9 @@ end
 ## Returns the rules that a call of `body` breaks while the path holds `held`; `at` is the step of the call
 ## (`LINE:COL`).
 export def at_call(rules: Rules, body: Body, held: List[Held], site: Site, at: String) -> List[Breach]
+  # A helper on the side of its flag where it does nothing to a lock: its lock calls run on the other side.
+  return [] if site.idle
+
   under_quiet(rules, body, held, site, at).concat(out_of_order(rules, body, held, site, at))
 end
 

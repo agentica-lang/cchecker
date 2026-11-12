@@ -100,6 +100,9 @@ export struct Site
   fills: List[String] = []
   # Whether the call takes a lock that no text names (`&current()->mu`, `&locks[hash(k)]`): no walk sees it.
   unnamed: Bool = false
+  # Whether the call is of a helper on the side of its flags where it takes and releases nothing (`flagged_call`): the
+  # rules of Held do not follow its body, whose lock calls are on the other side.
+  idle: Bool = false
 end
 
 ## The value a condition has on an edge. `text` is the condition with the key of each variable (`variable_key`), ""
@@ -434,6 +437,8 @@ struct Flagged
   exits: List[Int]
   takes: List[Lock]
   drops: List[Lock]
+  # Whether the helper takes or releases a lock on this side, even one that no text names.
+  acts: Bool = false
 end
 
 # A call of `Known.TRIES` in a condition or a value, and whether that is true when the call gave 0 (`call == 0`,
@@ -2997,9 +3002,9 @@ def flagged_call(b: Builder, site: Site, args: List[Json], preds: List[Int]) -> 
     for side in sides
       split = flag_split(split.b, site, lock.takes, locks, args, at, side.exits)
       if not split.yes.empty? and lock.takes
-        grown = grown.push(side.with(exits: split.yes, takes: side.takes.concat(locks)))
+        grown = grown.push(side.with(exits: split.yes, takes: side.takes.concat(locks), acts: true))
       elsif not split.yes.empty?
-        grown = grown.push(side.with(exits: split.yes, drops: side.drops.concat(locks)))
+        grown = grown.push(side.with(exits: split.yes, drops: side.drops.concat(locks), acts: true))
       end
 
       if not split.no.empty?
@@ -3013,9 +3018,10 @@ def flagged_call(b: Builder, site: Site, args: List[Json], preds: List[Int]) -> 
 
   exits: List[Int] = []
   for side in sides
+    idle = not side.acts and site.takes.empty? and site.drops.empty? and site.waits.empty?
     called = add(
       built,
-      Event.Call(site.with(takes: site.takes.concat(side.takes), drops: site.drops.concat(side.drops))),
+      Event.Call(site.with(takes: site.takes.concat(side.takes), drops: site.drops.concat(side.drops), idle: idle)),
       side.exits,
     )
 
