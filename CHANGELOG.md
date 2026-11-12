@@ -12,6 +12,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   On the side where the helper does nothing to its lock, the rules on what runs under a lock skip its releases of its
   own lock and still read the rest of its body.
 
+### Fixed
+
+- The sources compile with the Agentica that gives a failed `Result` an `Error` record and not a String (0.31): the
+  message of an error is read by interpolation, which works on both, so they still build with 0.29.0 and later.
+
 ## [0.7.0] - 2026-11-12
 
 ### Changed
