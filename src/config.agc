@@ -35,7 +35,7 @@ export struct Edge
   callee: String
 end
 
-## A lock wrapper of `[assume] acquires`, `releases` and `short_locks`: `name(N)` or `name@path(N)`, with `N` the place
+## A lock wrapper of `[assume] acquires`, `releases`, `tries` and `short_locks`: `name(N)` or `name@path(N)`, with `N` the place
 ## of the parameter (from 0) that holds the lock. `tail` is the end of the path of the file of `name@path`, "" for a
 ## bare name.
 export struct Wrapper
@@ -57,7 +57,7 @@ end
 ## is `[assume] stop_calls`, the `caller>callee` pairs whose call no walk follows. `fold_ignoring` is `[database]
 ## fold_ignoring`, the defines that do not tell two entries of one file apart, `acquires` and `releases` are `[assume]
 ## acquires` and `releases`, the lock wrappers that take and release the lock of a parameter (as CC_ACQUIRES and
-## CC_RELEASES), `nonblocking` is `[assume] nonblocking`, the functions whose descriptors are non-blocking: their
+## CC_RELEASES), `tries` is `[assume] tries`, those that take it where they return 0 (as CC_TRIES), `nonblocking` is `[assume] nonblocking`, the functions whose descriptors are non-blocking: their
 ## calls of `Known.FD_CALLS` return at once, and `owned_locks` is `[assume] owned_locks`, the pointer fields and globals
 ## that point to a mutex of their own, which no other field or global points to.
 export struct Config
@@ -78,6 +78,7 @@ export struct Config
   fold_ignoring: List[String] = []
   acquires: List[String] = []
   releases: List[String] = []
+  tries: List[String] = []
   nonblocking: List[String] = []
   owned_locks: List[String] = []
 end
@@ -137,6 +138,7 @@ export def from_table(origin: String, prefix: String, table: Toml.Value, note: S
             "short_locks" -> config = config.with(short_locks: try locks_of(origin, path, assume.get(name).unwrap!))
             "acquires" -> config = config.with(acquires: try wrappers_of(origin, path, assume.get(name).unwrap!))
             "releases" -> config = config.with(releases: try wrappers_of(origin, path, assume.get(name).unwrap!))
+            "tries" -> config = config.with(tries: try wrappers_of(origin, path, assume.get(name).unwrap!))
             "stop_fields" -> config = config.with(stop_fields: try names_of(origin, path, assume.get(name).unwrap!))
             "may_jump" -> config = config.with(may_jump: try names_of(origin, path, assume.get(name).unwrap!))
             "jumps" -> config = config.with(jumps: try names_of(origin, path, assume.get(name).unwrap!))
@@ -187,6 +189,7 @@ export def assumes_any?(config: Config) -> Bool
     config.jump_releases.empty? and
     config.acquires.empty? and
     config.releases.empty? and
+    config.tries.empty? and
     config.nonblocking.empty? and
     config.owned_locks.empty?
   )
@@ -334,31 +337,40 @@ def defines_of(origin: String, path: String, value: Toml.Value) -> Result[List[S
   ok(names)
 end
 
-# A function that takes a lock for its caller does not release one too: `acquires` and `releases` name different ones.
+# A function that takes a lock for its caller does not release one too, nor takes it both always and where it returns
+# 0: `acquires`, `releases` and `tries` name different ones.
 def apart(origin: String, prefix: String, config: Config) -> Result[Void]
-  for take in config.acquires
-    for give in config.releases
-      case wrapper_of(take)
-        some(a) ->
-          case wrapper_of(give)
-            some(r) ->
-              if a.name == r.name and (a.tail == "" or r.tail == "" or a.tail == r.tail)
-                return error("#{origin}: #{prefix}assume.acquires and releases both name #{a.name}")
-              end
-
-            none -> next
-          end
-
-        none -> next
-      end
+  names = ["acquires", "releases", "tries"]
+  lists = [config.acquires, config.releases, config.tries]
+  for i in 0...lists.size
+    for j in (i + 1)...lists.size
+      both = shared_wrapper(lists[i], lists[j])
+      return error("#{origin}: #{prefix}assume.#{names[i]} and #{names[j]} both name #{both}") if both != ""
     end
   end
 
   ok()
 end
 
-# The wrappers of `acquires` and `releases`: each `name(N)` or `name@path(N)`, of a function of the project. A known
-# lock call already takes or releases its lock, so naming one would count it twice.
+# The name of a function that two lists of wrappers both name (by the same file, or one of them by none), or "".
+def shared_wrapper(one: List[String], other: List[String]) -> String
+  for text in one
+    for given in other
+      a = wrapper_of(text)
+      r = wrapper_of(given)
+      next if a.none? or r.none?
+
+      x = a.unwrap!
+      y = r.unwrap!
+      return x.name if x.name == y.name and (x.tail == "" or y.tail == "" or x.tail == y.tail)
+    end
+  end
+
+  ""
+end
+
+# The wrappers of `acquires`, `releases` and `tries`: each `name(N)` or `name@path(N)`, of a function of the project.
+# A known lock call already takes or releases its lock, so naming one would count it twice.
 def wrappers_of(origin: String, path: String, value: Toml.Value) -> Result[List[String]]
   names = try names_of(origin, path, value)
   for name in names

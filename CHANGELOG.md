@@ -4,6 +4,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `CC_ACQUIRES_IF(lock, *flag)`, `CC_RELEASES_IF(lock, flag)` and `CC_TRIES(lock)`, and `[assume] tries`: lock helpers
+  that take the lock only where they set a flag (`bool *locked`), release it only where a flag is not 0, or take it
+  where they return 0. A call takes the side of the flag or the result, which later tests of the flag follow.
+
 ## [0.7.0] - 2026-11-12
 
 ### Changed

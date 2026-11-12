@@ -786,9 +786,9 @@ def pointer_classes(body: Body) -> List[String]
   classes
 end
 
-# Whether a wrapper of `acquires` or `releases` names a function with a named parameter at its place, in a declaration
-# whose file ends with the path when it has one: a function with external linkage is one in the whole project, so any
-# of its declarations tells the file.
+# Whether a wrapper of `acquires`, `releases` or `tries` names a function with a named parameter at its place, in a
+# declaration whose file ends with the path when it has one: a function with external linkage is one in the whole
+# project, so any of its declarations tells the file.
 def lock_declared?(text: String, functions: List[Function]) -> Bool
   case Config.wrapper_of(text)
     some(wrapper) ->
@@ -907,6 +907,8 @@ def missing_assumed(units: List[Unit], config: Config.Config) -> List[String]
   acquires = unknown_acquires.map do |text| "#{text} (assume.acquires)" end
   unknown_releases = config.releases.uniq.select do |text| not lock_declared?(text, declared) end
   given_back = unknown_releases.map do |text| "#{text} (assume.releases)" end
+  unknown_tries = config.tries.uniq.select do |text| not lock_declared?(text, declared) end
+  tried = unknown_tries.map do |text| "#{text} (assume.tries)" end
 
   nonblocking = unmatched(config.nonblocking, files).map do |name| "#{name} (assume.nonblocking)" end
   (
@@ -917,6 +919,7 @@ def missing_assumed(units: List[Unit], config: Config.Config) -> List[String]
       .concat(releases)
       .concat(acquires)
       .concat(given_back)
+      .concat(tried)
       .concat(nonblocking)
   )
 end

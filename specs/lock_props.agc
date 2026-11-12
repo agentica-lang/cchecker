@@ -8,6 +8,11 @@
 ## it, until the next write. An oracle runs the function over all its paths, counting the lock as docs/rules.md says
 ## (at most twice either way) with what each path knows of `r` and `q`, and cchecker must report a code of the lock
 ## rules if and only if a path breaks its rule. The law compares the codes only, not the path a finding shows.
+##
+## The marked helpers come in too: `try_m()` (CC_TRIES) is a trylock of `m` in another form of a `TRY`,
+## `take_if(&k)` (CC_ACQUIRES_IF) takes `m` only where it sets `k`, `drop_if(k)` (CC_RELEASES_IF) releases it only
+## where `k` is not 0, and the function also sets `k` and tests it. Its address goes to `take_if` only, so the rules
+## know what is written to it.
 
 import Prop from "pkg/prop/prop"
 import Props from "props"
@@ -39,26 +44,32 @@ KEEP = 16
 ON = 17
 QSET = 18
 QTEST = 19
+# `take_if(&k)` (`TAKEIF`), `drop_if(k)` (`DROPIF`), a new value of `k` (`KSET`) and an if on `k` (`KTEST`).
+TAKEIF = 20
+DROPIF = 21
+KSET = 22
+KTEST = 23
 
 # The tokens a body is drawn from, the lock calls and the blocks more often than the ways out. A token shrinks toward
-# the first, a lock. `KEEP`, `QSET` and `QTEST` come twice, so a function often writes `q` and tests it after, or
-# keeps a lock that waits without a test of `r`.
+# the first, a lock. `KEEP`, `QSET`, `QTEST`, `TAKEIF`, `DROPIF` and `KTEST` come twice, so a function often writes
+# `q` and tests it after, keeps a lock that waits without a test of `r`, or takes the lock by `k` and reads `k` after.
 DRAWN = [
   LOCK, LOCK, LOCK, UNLOCK, UNLOCK, UNLOCK, WORK, IF, IF, ELSE, END, END, END, WHILE, SWITCH, CASE, CASE, BREAK,
-  CONTINUE, RETURN, GOTO, TRY, TRY, TEST, TEST, SET, KEEP, KEEP, ON, QSET, QSET, QTEST, QTEST,
+  CONTINUE, RETURN, GOTO, TRY, TRY, TEST, TEST, SET, KEEP, KEEP, ON, QSET, QSET, QTEST, QTEST, TAKEIF, TAKEIF, DROPIF,
+  DROPIF, KSET, KTEST, KTEST,
 ]
 
 # The tokens whose statement holds a call of the lock or a way out: a test around one of them guards a lock, and only
 # then is a constant written to the variable it tests a fact (docs/rules.md).
-GUARDING = [LOCK, UNLOCK, TRY, KEEP, ON, RETURN, GOTO, BREAK, CONTINUE]
+GUARDING = [LOCK, UNLOCK, TRY, KEEP, ON, TAKEIF, DROPIF, RETURN, GOTO, BREAK, CONTINUE]
 
 # A lock taken more often than this on a path counts as taken this many times, and one released more often as released
 # this many times: the limit of docs/rules.md, so that a loop ends.
 CLAMP = 2
 
 # What a path knows of `r` (`UNKNOWN`, `ZERO`: the trylock worked, `NONZERO`), of `r == EBUSY` (`UNKNOWN`, `YES`,
-# `NO`) and of `q` from its tests (`UNKNOWN`, `ZERO`, `NONZERO`). The state of a path is the count of the lock and the
-# three, as one number (`state_of`).
+# `NO`), of `q` from its tests (`UNKNOWN`, `ZERO`, `NONZERO`) and of `k`. The state of a path is the count of the lock
+# and the four, as one number (`state_of`).
 UNKNOWN = 0
 ZERO = 1
 NONZERO = 2
@@ -111,12 +122,14 @@ end
 # What the rules keep of `r` in the whole function (docs/rules.md): its value is followed when the function names it in
 # two places (`known`), that of `r == EBUSY` when two tests are of it (`busy`), and the failure of a lock that waits
 # is a path only when a test of `r` can follow it before a new value of `r` (`live`, the ids of those locks, 0 for the
-# one at the declaration; `probe` is the run that finds them).
+# one at the declaration; `probe` is the run that finds them). A constant written to `k` is a value of it only where a
+# test of `k` guards a lock (`k_guarded`), as for `r`.
 struct Oracle
   known: Bool
   busy: Bool
   live: List[Int]
   probe: Bool = false
+  k_guarded: Bool = false
 end
 
 ## The generator of functions: up to 24 tokens of the body and 3 of the cleanup (lock, unlock, work, or a `return` or
@@ -145,14 +158,19 @@ export def c_file(generated: Program) -> String
   head = [
     "#include <errno.h>",
     "#include <pthread.h>",
+    "#include \"cchecker.h\"",
     "",
     "pthread_mutex_t m;",
     "int pick(int k);",
     "void work(void);",
+    "CC_TRIES(m) int try_m(void);",
+    "CC_ACQUIRES_IF(m, *locked) void take_if(int *locked);",
+    "CC_RELEASES_IF(m, locked) void drop_if(int locked);",
     "int f(void) {",
     "  int r = #{start};",
     "  int q = pick(-1);",
     "  int *p = &q;",
+    "  int k = pick(-2);",
   ]
 
   lines = head.concat(lines_of(generated.body, 1)).push("out:").concat(lines_of(generated.cleanup, 1))
@@ -175,11 +193,11 @@ def block(tokens: List[Int], at: Int, loop: Bool, breakable: Bool, stops: List[I
     return Parsed(stmts: stmts, at: i + 1, stop: token) if stops.include?(token)
 
     i += 1
-    if [LOCK, UNLOCK, WORK, TRY, SET, KEEP, QSET].include?(token)
+    if [LOCK, UNLOCK, WORK, TRY, SET, KEEP, QSET, TAKEIF, DROPIF, KSET].include?(token)
       stmts = stmts.push(Stmt(kind: token, id: i))
     elsif [RETURN, GOTO].include?(token) or (token == BREAK and breakable) or (token == CONTINUE and loop)
       stmts = stmts.push(Stmt(kind: IF, id: i, body: [Stmt(kind: token)]))
-    elsif [IF, TEST, ON, QTEST].include?(token)
+    elsif [IF, TEST, ON, QTEST, KTEST].include?(token)
       # A `break` in a switch on `r` leaves the switch.
       inner = breakable or token == ON
       taken = block(tokens, i, loop, inner, [END, ELSE])
@@ -254,7 +272,7 @@ end
 # `return` return.
 def exits(generated: Program) -> List[Int]
   o = oracle_of(generated)
-  first = [state_of(0, UNKNOWN, UNKNOWN, UNKNOWN)]
+  first = [state_of(0, UNKNOWN, UNKNOWN, UNKNOWN, UNKNOWN)]
   if generated.start == 1
     first = tried(o, first, false)
   elsif generated.start == 2
@@ -317,7 +335,11 @@ def oracle_of(generated: Program) -> Oracle
   # The probe follows every way through the code, whatever the conditions, as the rules do for this question.
   probe = Oracle(known: false, busy: false, live: [], probe: true)
   live = run_block(probe, generated.body, first).seen
-  Oracle(known: names >= 2, busy: busy >= 2, live: live)
+  k_guarded = stmts.any? do |stmt|
+    stmt.kind == DROPIF or (stmt.kind == KTEST and holds_guard?(stmt.body.concat(stmt.other)))
+  end
+
+  Oracle(known: names >= 2, busy: busy >= 2, live: live, k_guarded: k_guarded)
 end
 
 # A statement of the probe: a lock that waits kept in `r` starts its id, a new value of `r` ends every id, and a test
@@ -336,7 +358,7 @@ def probed(o: Oracle, stmt: Stmt, open: List[Int]) -> Flow
     return ran.with(normal: merged(ran.normal, ran.brk), brk: [])
   end
 
-  return joined(run_block(o, stmt.body, open), run_block(o, stmt.other, open)) if kind == QTEST
+  return joined(run_block(o, stmt.body, open), run_block(o, stmt.other, open)) if kind == QTEST or kind == KTEST
 
   Flow(normal: open)
 end
@@ -366,7 +388,10 @@ end
 
 def run_stmt(o: Oracle, stmt: Stmt, states: List[Int]) -> Flow
   kind = stmt.kind
-  if o.probe and [LOCK, UNLOCK, WORK, TRY, KEEP, SET, QSET, TEST, ON, QTEST].include?(kind)
+  if (
+    o.probe and
+    [LOCK, UNLOCK, WORK, TRY, KEEP, SET, QSET, TEST, ON, QTEST, TAKEIF, DROPIF, KSET, KTEST].include?(kind)
+  )
     return probed(o, stmt, states)
   end
 
@@ -378,11 +403,26 @@ def run_stmt(o: Oracle, stmt: Stmt, states: List[Int]) -> Flow
     return Flow(normal: kept(o, states, stmt.id))
   elsif kind == SET
     value = [UNKNOWN, ZERO, NONZERO][stmt.id % 3]
-    kept = states.map do |state| state_of(count_of(state), r_value(o, value), UNKNOWN, q_of(state)) end
+    kept = states.map do |state| state_of(count_of(state), r_value(o, value), UNKNOWN, q_of(state), k_of(state)) end
     return Flow(normal: merged([], kept))
   elsif kind == QSET
-    forgot = states.map do |state| state_of(count_of(state), r_of(state), busy_of(state), UNKNOWN) end
+    forgot = states.map do |state| state_of(count_of(state), r_of(state), busy_of(state), UNKNOWN, k_of(state)) end
     return Flow(normal: merged([], forgot))
+  elsif kind == TAKEIF
+    return Flow(normal: taken_if(states))
+  elsif kind == DROPIF
+    released = moved(k_knowing(states, NONZERO), false)
+    return Flow(normal: merged(released, k_knowing(states, ZERO)))
+  elsif kind == KSET
+    value = [UNKNOWN, ZERO, NONZERO][stmt.id % 3]
+    if not o.k_guarded
+      value = UNKNOWN
+    end
+
+    return Flow(normal: merged([], states.map do |state| with_k(state, value) end))
+  elsif kind == KTEST
+    taken = run_block(o, stmt.body, k_knowing(states, NONZERO))
+    return joined(taken, run_block(o, stmt.other, k_knowing(states, ZERO)))
   elsif kind == TEST
     form = stmt.id % 6
     taken = run_block(o, stmt.body, test_side(o, states, form, true))
@@ -425,17 +465,30 @@ def tried(o: Oracle, states: List[Int], flipped: Bool) -> List[Int]
     other = ZERO
   end
 
-  worked = moved(states, true).map do |state| state_of(count_of(state), r_value(o, zero), UNKNOWN, q_of(state)) end
-  failed = states.map do |state| state_of(count_of(state), r_value(o, other), UNKNOWN, q_of(state)) end
+  worked = moved(states, true).map do |state|
+    state_of(count_of(state), r_value(o, zero), UNKNOWN, q_of(state), k_of(state))
+  end
+
+  failed = states.map do |state| state_of(count_of(state), r_value(o, other), UNKNOWN, q_of(state), k_of(state)) end
   merged(worked, failed)
+end
+
+# `take_if(&k)`: the lock is taken where the helper sets `k` to a value other than 0, and `k` says which way it went.
+def taken_if(states: List[Int]) -> List[Int]
+  worked = moved(states, true).map do |state| with_k(state, NONZERO) end
+  merged(worked, states.map do |state| with_k(state, ZERO) end)
 end
 
 # A lock that waits kept in `r` (`id`): it failed only where a test of `r` can follow it (`Oracle.live`).
 def kept(o: Oracle, states: List[Int], id: Int) -> List[Int]
-  worked = moved(states, true).map do |state| state_of(count_of(state), r_value(o, ZERO), UNKNOWN, q_of(state)) end
+  worked = moved(states, true).map do |state|
+    state_of(count_of(state), r_value(o, ZERO), UNKNOWN, q_of(state), k_of(state))
+  end
+
   return merged([], worked) if not o.live.include?(id)
 
-  merged(worked, states.map do |state| state_of(count_of(state), r_value(o, NONZERO), UNKNOWN, q_of(state)) end)
+  failed = states.map do |state| state_of(count_of(state), r_value(o, NONZERO), UNKNOWN, q_of(state), k_of(state)) end
+  merged(worked, failed)
 end
 
 # What a path knows of `r` after it learns `value`: nothing when the rules do not follow `r`.
@@ -463,7 +516,7 @@ def knowing(o: Oracle, states: List[Int], value: Int) -> List[Int]
   return states if not o.known
 
   allowed = states.select do |state| r_of(state) == UNKNOWN or r_of(state) == value end
-  merged([], allowed.map do |state| state_of(count_of(state), value, busy_of(state), q_of(state)) end)
+  merged([], allowed.map do |state| state_of(count_of(state), value, busy_of(state), q_of(state), k_of(state)) end)
 end
 
 # The states that can have `r == EBUSY` as `value` says, knowing it from then on.
@@ -471,25 +524,39 @@ def busy_side(o: Oracle, states: List[Int], value: Int) -> List[Int]
   return states if not o.busy
 
   allowed = states.select do |state| busy_of(state) == UNKNOWN or busy_of(state) == value end
-  merged([], allowed.map do |state| state_of(count_of(state), r_of(state), value, q_of(state)) end)
+  merged([], allowed.map do |state| state_of(count_of(state), r_of(state), value, q_of(state), k_of(state)) end)
 end
 
-# One number for a count of the lock (from -CLAMP to CLAMP), what a path knows of `r`, of `r == EBUSY` and of `q`.
-def state_of(count: Int, r: Int, busy: Int, q: Int) -> Int = (((count + CLAMP) * KNOWS + r) * KNOWS + busy) * KNOWS + q
+# One number for a count of the lock (from -CLAMP to CLAMP), what a path knows of `r`, of `r == EBUSY`, of `q` and of
+# `k`.
+def state_of(count: Int, r: Int, busy: Int, q: Int, k: Int) -> Int
+  ((((count + CLAMP) * KNOWS + r) * KNOWS + busy) * KNOWS + q) * KNOWS + k
+end
 
-def count_of(state: Int) -> Int = state / (KNOWS * KNOWS * KNOWS) - CLAMP
+def count_of(state: Int) -> Int = state / (KNOWS * KNOWS * KNOWS * KNOWS) - CLAMP
 
-def r_of(state: Int) -> Int = (state / (KNOWS * KNOWS)) % KNOWS
+def r_of(state: Int) -> Int = (state / (KNOWS * KNOWS * KNOWS)) % KNOWS
 
-def busy_of(state: Int) -> Int = (state / KNOWS) % KNOWS
+def busy_of(state: Int) -> Int = (state / (KNOWS * KNOWS)) % KNOWS
 
-def q_of(state: Int) -> Int = state % KNOWS
+def q_of(state: Int) -> Int = (state / KNOWS) % KNOWS
+
+def k_of(state: Int) -> Int = state % KNOWS
+
+# A state with what a path knows of `k` set to `value`.
+def with_k(state: Int, value: Int) -> Int = state_of(count_of(state), r_of(state), busy_of(state), q_of(state), value)
+
+# The states that can have `k` as `value` says, knowing it from then on: a test of `k`, or a release by it.
+def k_knowing(states: List[Int], value: Int) -> List[Int]
+  allowed = states.select do |state| k_of(state) == UNKNOWN or k_of(state) == value end
+  merged([], allowed.map do |state| with_k(state, value) end)
+end
 
 # The states that can have `q` as `value` says, knowing it from then on: a test of `q` is one of a variable that the
 # rules follow, though they never know a value written to it, as its address is taken (`QSET` forgets it).
 def q_knowing(states: List[Int], value: Int) -> List[Int]
   allowed = states.select do |state| q_of(state) == UNKNOWN or q_of(state) == value end
-  merged([], allowed.map do |state| state_of(count_of(state), r_of(state), busy_of(state), value) end)
+  merged([], allowed.map do |state| state_of(count_of(state), r_of(state), busy_of(state), value, k_of(state)) end)
 end
 
 # Each state after a take (or a release), its count held within CLAMP.
@@ -503,7 +570,7 @@ def moved(states: List[Int], take: Bool) -> List[Int]
     [],
     states.map do |state|
       count = [[count_of(state) + by, CLAMP].min.unwrap_or(0), -CLAMP].max.unwrap_or(0)
-      state_of(count, r_of(state), busy_of(state), q_of(state))
+      state_of(count, r_of(state), busy_of(state), q_of(state), k_of(state))
     end,
   )
 end
@@ -571,15 +638,17 @@ def stmt_lines(stmt: Stmt, depth: Int) -> List[String]
     RETURN: "return 0;",
     GOTO: "goto out;",
     KEEP: "r = pthread_mutex_lock(&m);",
+    TAKEIF: "take_if(&k);",
+    DROPIF: "drop_if(k);",
   }
 
   if kind == TRY
-    forms = [
-      "r = pthread_mutex_trylock(&m);", "if ((r = pthread_mutex_trylock(&m)) != 0) work();",
-      "r = pthread_mutex_trylock(&m) != 0;", "r = pthread_mutex_trylock(&m) == 0;",
-    ]
+    forms = ["r = TRIAL;", "if ((r = TRIAL) != 0) work();", "r = TRIAL != 0;", "r = TRIAL == 0;"]
 
-    return ["#{pad}#{forms[stmt.id % 4]}"]
+    trial = ["pthread_mutex_trylock(&m)", "try_m()"][(stmt.id / 4) % 2]
+    return ["#{pad}#{forms[stmt.id % 4].replace("TRIAL", trial)}"]
+  elsif kind == KSET
+    return ["#{pad}k = #{["pick(#{stmt.id})", "0", "1"][stmt.id % 3]};"]
   elsif kind == SET
     return ["#{pad}r = #{["pick(#{stmt.id})", "0", "1"][stmt.id % 3]};"]
   elsif kind == QSET
@@ -591,12 +660,14 @@ def stmt_lines(stmt: Stmt, depth: Int) -> List[String]
     end
 
     return lines.push("#{pad}default: {").concat(lines_of(stmt.other, depth + 1)).push("#{pad}}").push("#{pad}}")
-  elsif [IF, TEST, QTEST].include?(kind)
+  elsif [IF, TEST, QTEST, KTEST].include?(kind)
     test = "pick(#{stmt.id})"
     if kind == TEST
       test = ["r == 0", "r != 0", "!r", "r", "r == EBUSY", "r != EBUSY"][stmt.id % 6]
     elsif kind == QTEST
       test = "q"
+    elsif kind == KTEST
+      test = "k"
     end
 
     lines = ["#{pad}if (#{test}) {"].concat(lines_of(stmt.body, depth + 1))

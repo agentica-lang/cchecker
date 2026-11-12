@@ -237,6 +237,10 @@ Feature: C that must stay clean
       | checked lock result in a reused variable  | int poll_once(void); int f(void) { int ret; ret = poll_once(); if (ret) goto out; ret = pthread_mutex_lock(&mu); count++; pthread_mutex_unlock(&mu); out: return ret; } |
       | checked lock result, variable reused after | int poll_once(void); int f(void) { int ret = pthread_mutex_lock(&mu); count++; pthread_mutex_unlock(&mu); ret = poll_once(); if (ret) return -1; return 0; } |
       | checked lock result reused in a loop      | int poll_once(void); int f(int n) { int ret = 0; for (int i = 0; i < n; i++) { ret = poll_once(); if (ret) break; ret = pthread_mutex_lock(&mu); count++; pthread_mutex_unlock(&mu); } return ret; } |
+      | buffer locked by a helper while it is read | CC_ACQUIRES_IF(mu, *locked) char *at(int k, bool *locked); CC_RELEASES_IF(mu, locked) void done(bool locked); int f(int k) { bool locked; char *p = at(k, &locked); int v = *p; done(locked); return v; } |
+      | buffer write that takes the lock the helper did not | CC_ACQUIRES_IF(mu, *locked) char *at(int k, bool *locked); CC_RELEASES_IF(mu, locked) void done(bool locked); void f(int k, int buf) { bool locked; char *p = at(k, &locked); if (!locked && buf) { pthread_mutex_lock(&mu); locked = true; } *p = 1; done(locked); } |
+      | helpers that take and drop a lock by a flag | CC_ACQUIRES_IF(mu, *locked) int at(int k, bool *locked) { *locked = k > 0; if (k > 0) pthread_mutex_lock(&mu); return k; } CC_RELEASES_IF(mu, locked) void done(bool locked) { if (locked) pthread_mutex_unlock(&mu); } |
+      | wrapper of a trylock                      | CC_TRIES(mu) int grab(void); void f(void) { if (grab() == 0) { count++; pthread_mutex_unlock(&mu); } } |
 
 
   Scenario Outline: The same idiom with one change gives a finding (<case>: <change>)
@@ -444,14 +448,15 @@ Feature: C that must stay clean
       #include <errno.h>
       #include <pthread.h>
       #include <stdbool.h>
+      #include "cchecker.h"
       pthread_mutex_t mu; int count;
       <code>
       """
-    When I run cchecker with "--tools rules --json $DIR/clean.c"
+    When I run cchecker with "--tools rules --json $DIR/clean.c -- -I../include"
     Then the exit code is 1
     And the output includes:
       """
-      {"code":"<finding>","tool":"rules","file":"$DIR/clean.c","line":6,
+      {"code":"<finding>","tool":"rules","file":"$DIR/clean.c","line":7,
       """
 
     Examples:
@@ -473,3 +478,7 @@ Feature: C that must stay clean
       | checked lock result in a reused variable | the result tested after the lock     | CC-PATH-LOCK-NOT-HELD     | int poll_once(void); int f(void) { int ret; ret = poll_once(); if (ret) goto out; ret = pthread_mutex_lock(&mu); if (!ret) count++; pthread_mutex_unlock(&mu); out: return ret; } |
       | checked lock result, variable reused after | the result tested before the new value | CC-PATH-LOCK-NOT-HELD | int poll_once(void); int f(void) { int ret = pthread_mutex_lock(&mu); count++; pthread_mutex_unlock(&mu); if (ret) return -1; ret = poll_once(); return ret; } |
       | checked lock result reused in a loop   | the result tested at the next turn     | CC-PATH-LOCK-NOT-HELD     | int f(int n) { int ret = 0; for (int i = 0; i < n; i++) { if (ret) break; ret = pthread_mutex_lock(&mu); count++; pthread_mutex_unlock(&mu); } return ret; } |
+      | buffer locked by a helper while it is read | the release left out                 | CC-PATH-LOCK-NOT-RELEASED | CC_ACQUIRES_IF(mu, *locked) char *at(int k, bool *locked); int f(int k) { bool locked; char *p = at(k, &locked); int v = *p; return v; } |
+      | buffer write that takes the lock the helper did not | the flag not set where it takes the lock | CC-PATH-LOCK-NOT-RELEASED | CC_ACQUIRES_IF(mu, *locked) char *at(int k, bool *locked); CC_RELEASES_IF(mu, locked) void done(bool locked); void f(int k, int buf) { bool locked; char *p = at(k, &locked); if (!locked && buf) pthread_mutex_lock(&mu); *p = 1; done(locked); } |
+      | helpers that take and drop a lock by a flag | the marks left out                  | CC-PATH-LOCK-NOT-RELEASED | int at(int k, bool *locked) { *locked = k > 0; if (k > 0) pthread_mutex_lock(&mu); return k; } |
+      | wrapper of a trylock                   | the unlock where it failed             | CC-PATH-LOCK-NOT-HELD     | CC_TRIES(mu) int grab(void); void f(void) { if (grab() != 0) { count++; pthread_mutex_unlock(&mu); } } |

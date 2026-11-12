@@ -217,12 +217,16 @@ def stop_keys(rules: Rules, helper: Body, site: Site, h: Held) -> Set[String]
   Set.new(same_lock.map do |i| helper.releases[i] end)
 end
 
-# The keys of the locks of a function's CC_RELEASES marks, merged from all its declarations, as written.
+# The keys of the locks of a function's CC_RELEASES and CC_RELEASES_IF marks, merged from all its declarations, as
+# written.
 def marked_releases(rules: Rules, key: String) -> List[String]
   found = rules.graph.functions.get(key).map do |f| f.marks end
   marks = found.unwrap_or([])
   releases = marks.select do |mark| mark.start_with?("releases(") and mark.end_with?(")") end
   locks = releases.flat_map do |mark| mark.slice(9, mark.length - 10).split(",") end
+  # `releases_if(lock, flag)` releases its first text.
+  flagged = marks.select do |mark| mark.start_with?("releases_if(") and mark.end_with?(")") end
+  locks = locks.concat(flagged.map do |mark| mark.slice(12, mark.length - 13).split(",").first end)
   locks.map do |lock| Flow.key_of(lock.strip) end
 end
 

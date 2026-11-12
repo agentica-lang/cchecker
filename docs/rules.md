@@ -9,6 +9,7 @@ collector. The codes are listed in the README and described below and in
 
 `include/cchecker.h` defines the macros that the rules read: `CC_SHORT`,
 `CC_BLOCKING`, `CC_HOT`, `CC_ACQUIRES(lock)`, `CC_RELEASES(lock)`,
+`CC_ACQUIRES_IF(lock, *flag)`, `CC_RELEASES_IF(lock, flag)`, `CC_TRIES(lock)`,
 `CC_NORETURN`, `CC_MAY_JUMP`, `CC_JUMPS`, `CC_CATCHES`, `CC_JUMP_RELEASES`,
 `CC_NO_SYSCALL_UNDER(lock)`, `CC_LOCK_LEVEL(n)`, `CC_PAIR(set, restore)`,
 `CC_OWNS`, `CC_FREES`, `CC_OWNS_OUT`, `CC_GC`, `CC_GC_ALLOC`, `CC_ASSUME_SHORT`
@@ -170,7 +171,7 @@ false` turns the inference off (see [Settings](settings.md)).
 
 A lock helper may write down the lock it takes (for example how many times it
 took it, or which lock it holds), so that the code that catches a jump can
-release it. Mark such a `CC_ACQUIRES` or `CC_RELEASES` helper
+release it. Mark such a `CC_ACQUIRES` or `CC_RELEASES` helper (or one below)
 `CC_JUMP_RELEASES`, or name it in `[assume] jump_releases`; for a helper that
 takes or releases two locks, the mark holds for both. A lock that a function
 takes and releases only through such helpers is no finding at a jump, held
@@ -267,18 +268,39 @@ spin before the wait), and its callers are checked. Without an annotation, a
 function that takes a lock and returns with it is a finding, so a forgotten
 unlock never passes for a helper. Put the annotation on the prototype that the
 callers include: a caller sees the declarations of its own file. A function that
-takes or releases a lock only on some of its returns (`false` when it dropped
-the lock) is beyond these rules: suppress its findings with `CC_IGNORE`, with
-the reason. A call through a function pointer does nothing to the locks.
+takes or releases a lock only on some of its returns, other than by the marks
+below (`false` when it dropped the lock), is beyond these rules: suppress its
+findings with `CC_IGNORE`, with the reason. A call through a function pointer
+does nothing to the locks.
+
+A helper that takes or releases the lock on one side only says which, and is a
+lock helper too (its body is trusted). `CC_ACQUIRES_IF(lock, *flag)` is on a
+function that returns with the lock held only when it set `*flag`, a parameter,
+to a value other than 0 (`CC_ACQUIRES_IF(q->mu, *locked) char *at(struct queue
+*q, int k, bool *locked)`); `CC_RELEASES_IF(lock, flag)` on one that releases it
+only when `flag`, a parameter, is not 0; `CC_TRIES(lock)` on one that takes it
+where it returns 0, as `pthread_mutex_trylock` does (`[assume] tries` names such
+a function that the project cannot mark, see [Settings](settings.md)). A call of
+a `CC_ACQUIRES_IF` takes the lock on one side (`9:3 takes q->mu`) and not on the
+other (`9:3 does not take q->mu`, where a path that releases it starts), and the
+flag is a local whose address the call gets (`at(q, k, &locked)`): it gets the
+value of that side, which a later test of it reads, as for a trylock kept in a
+variable, until a new value (`locked = true;` after a take of its own is one).
+The address passed there does not make it a local whose value the rules never
+know; its address taken anywhere else, `volatile` and `static` still do. A flag
+that is no such local (`&b->locked`, a pointer the function was passed) splits
+the path with no value a test can read. The flag of a `CC_RELEASES_IF` is read
+as the test of an `if` (`done(q, locked)` releases where `locked` is not 0), and
+a constant takes one side. A call of a `CC_TRIES` goes as a trylock does
+(above), and never waits for its lock. A mark whose flag is no parameter of its
+declaration, or a `CC_TRIES` with two locks, is an error of the tool (exit 2).
 
 Limits: a lock is counted by its text, so a lock taken in a loop over several
 objects (`lock(&a[i]->mu)`), locks taken hand over hand, or a pointer that is
 set again between the lock and the unlock (`q = q->next`) can give false
 findings; the result of a trylock kept in a field or a global (`q->r =
-trylock(&q->mu)`) takes nothing, and a helper that takes a lock only when it
-returns 0 or sets an out-parameter (`bool *locked`) needs `CC_IGNORE` in its
-body and its callers; a global that a called function changes keeps the
-value the path knew; a lock taken more than twice on a path, with no release
+trylock(&q->mu)`) takes nothing; a global that a called function changes keeps
+the value the path knew; a lock taken more than twice on a path, with no release
 between, counts as taken twice (and one released more than twice as released
 twice), so such a path can give a false finding or miss one.
 
@@ -394,10 +416,10 @@ Two pairs on one `set` are two pairs (both restores are needed), and one
 `restore` of two sets restores both; the same pair written twice counts once. A
 pair holds in the files that see its declaration, as the lock annotations do. A
 `CC_PAIR` that names a function the file does not declare does nothing. A `set`
-that can fail (and so needs no `restore` when it failed) is beyond the rule, as
-a trylock helper is: suppress the finding with `CC_IGNORE`. When the restore
-happens in a function that the code calls (`finish(ctx)` calls
-`restore_signals`), name that function: `CC_PAIR(mask_signals, finish)`.
+that can fail (and so needs no `restore` when it failed) is beyond the rule:
+suppress the finding with `CC_IGNORE`. When the restore happens in a function
+that the code calls (`finish(ctx)` calls `restore_signals`), name that function:
+`CC_PAIR(mask_signals, finish)`.
 
 ## The AST dump
 

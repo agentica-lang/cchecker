@@ -437,6 +437,7 @@ def plan_for(
                 target: target,
                 acquires: config.acquires,
                 releases: config.releases,
+                tries: config.tries,
               ),
             )
           end

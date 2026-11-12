@@ -4,7 +4,8 @@
 ## The body of a set with its own CC_PAIR is how the pair works, and may leave another pair set for its caller, except
 ## on a return of an error value, after which the caller does not restore. A function with CC_ACQUIRES or CC_RELEASES
 ## is a helper that takes or drops a lock for its callers: its body is how the lock works (a count of nested takes, a
-## spin before the wait), and the rules trust it and check its callers.
+## spin before the wait), and the rules trust it and check its callers. So is one with CC_ACQUIRES_IF, CC_RELEASES_IF
+## or CC_TRIES, which does so on one side only: its callers take the side of its flag or of its result.
 ##
 ## The walk follows the graph of `Flow` in breadth, with the state of each path: how many times it took each lock less
 ## the times it released it, and the value of the conditions it went through that the function tests twice (`if
@@ -48,6 +49,9 @@ MAX_PATH = 24
 
 # The most functions of the chain of an inferred jump that its step names.
 MAX_VIA = 3
+
+# The marks of a helper that takes or releases a lock for its callers: its body is how the lock works.
+HELPER_MARKS = ["acquires", "releases", "acquires_if", "releases_if", "tries"]
 
 # The state of a path: for each lock key, the takes less the releases, and the known value of each tracked condition.
 struct State
@@ -398,10 +402,11 @@ export def truth(fact: Fact) -> String
   "false"
 end
 
+# Whether a function takes or releases a lock for its callers, always or on one side (HELPER_MARKS).
 def helper?(function: Optional[Function]) -> Bool
   looked_up = function.map do |f| f.marks end
   marks = looked_up.unwrap_or([])
-  marks.any? do |mark| mark.start_with?("acquires(") or mark.start_with?("releases(") end
+  marks.any? do |mark| HELPER_MARKS.any? do |word| mark.start_with?("#{word}(") end end
 end
 
 # The findings of one function: with the conditions it tests twice, or without them when there are too many paths.
@@ -562,12 +567,19 @@ def annotated_keys(body: Body, function: Optional[Function]) -> Set[String]
 
   looked_up = function.map do |f| f.marks end
   marks = looked_up.unwrap_or([])
-  inside = marks.flat_map do |mark|
-    prefixes = ["acquires(", "releases("].select do |prefix| mark.start_with?(prefix) and mark.end_with?(")") end
-    prefixes.map do |prefix| mark.slice(prefix.length, mark.length - prefix.length - 1) end
+  texts = marks.flat_map do |mark|
+    words = HELPER_MARKS.select do |word| mark.start_with?("#{word}(") and mark.end_with?(")") end
+    words.flat_map do |word|
+      locks = mark.slice(word.length + 1, mark.length - word.length - 2).split(",")
+      # The second text of a mark by a flag is the flag.
+      if word.end_with?("_if")
+        locks = locks.take(1)
+      end
+
+      locks
+    end
   end
 
-  texts = inside.flat_map do |text| text.split(",") end
   Set.new(texts.map do |lock| Flow.key_of(lock.strip) end)
 end
 
