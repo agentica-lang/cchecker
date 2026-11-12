@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `CC_ACQUIRES_IF(lock, *flag)`, `CC_RELEASES_IF(lock, flag)` and `CC_TRIES(lock)`, and `[assume] tries`: lock helpers
   that take the lock only where they set a flag (`bool *locked`), release it only where a flag is not 0, or take it
   where they return 0. A call takes the side of the flag or the result, which later tests of the flag follow.
+## [0.7.0] - 2026-11-12
 
 ### Changed
 
@@ -265,7 +266,8 @@ The first release.
   take 17.9 s and 411 MB at `-j 2`, and a chain of 3000 else-if 4 s and 170 MB. `-j` defaults to the number of cores,
   and the jobs of the largest files start first.
 
-[Unreleased]: https://github.com/agentica-lang/cchecker/compare/0.6.1...HEAD
+[Unreleased]: https://github.com/agentica-lang/cchecker/compare/0.7.0...HEAD
+[0.7.0]: https://github.com/agentica-lang/cchecker/compare/0.6.1...0.7.0
 [0.6.1]: https://github.com/agentica-lang/cchecker/compare/0.6.0...0.6.1
 [0.6.0]: https://github.com/agentica-lang/cchecker/compare/0.5.0...0.6.0
 [0.5.0]: https://github.com/agentica-lang/cchecker/compare/0.4.0...0.5.0
