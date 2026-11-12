@@ -155,7 +155,8 @@ end
 ## Returns the text of the baseline file, one line for each entry. `tools` are written as they come: see
 ## `updated_tools`.
 export def render(entries: List[Entry], tools: Map[String, String]) -> String
-  body = entries.map do |entry| "    #{JSON.encode(entry)}" end.join(",\n")
+  lines = entries.map do |entry| "    #{JSON.encode(entry)}" end
+  body = lines.join(",\n")
   "{\n  \"version\": #{VERSION},\n  \"tools\": #{JSON.encode(tools)},\n  \"findings\": [\n#{body}\n  ]\n}\n"
 end
 

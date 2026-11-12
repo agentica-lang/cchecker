@@ -196,7 +196,8 @@ export def plain_array?(type: String) -> Bool
   return false if not type.include?("[") or type.include?("(") or type.include?("*")
 
   words = type.replace("\"", " ").replace("[", " [").split(" ")
-  words.select do |word| word != "" and not word.start_with?("[") end.all? do |word| PLAIN_WORDS.include?(word) end
+  named = words.select do |word| word != "" and not word.start_with?("[") end
+  named.all? do |word| PLAIN_WORDS.include?(word) end
 end
 
 # The scan of `step` in C, for speed: the dump of one file is tens of MiB. The module is built from native/ by

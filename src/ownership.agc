@@ -280,7 +280,7 @@ def stepped(walker: Walker, event: Event, item: Item) -> Outcome
       # A clear of the whole struct: the fields are its own again, null until the clear's own values come.
       state = item.state
       for name in names
-        if state.owns.get(name).map do |own| own == ESCAPED end.unwrap_or(false)
+        if state.owns.get(name, "") == ESCAPED
           state = state.with(owns: state.owns.delete(name))
         end
       end
@@ -324,7 +324,7 @@ def closed(body: Body, item: Item, closing: Closing) -> Outcome
       next
     end
 
-    if state.owns.get(name).map do |own| own == OWNED end.unwrap_or(false)
+    if state.owns.get(name, "") == OWNED
       message = "#{body.name} does not free or hand on #{plain(name)} on every path"
       breaches = breaches.push(
         Breach(code: LEAK, name: name, message: message, path: from_last(item.path, name, true).push(step)),
@@ -350,7 +350,8 @@ def released(state: State) -> State
 
   named = Set.new(state.aliases.values.concat(state.links.values))
   for name in state.kept.to_a.sort
-    owns = state.owns.get(name).map do |own| own == OWNED or own == FILLED end.unwrap_or(false)
+    own = state.owns.get(name, "")
+    owns = own == OWNED or own == FILLED
     if not named.include?(name) and not owns
       state = state.with(
         owns: state.owns.delete(name),
@@ -413,7 +414,7 @@ def after_call(body: Body, item: Item, site: Site) -> Outcome
     state = current.state
     if kept_by_alias?(state, name)
       state = handed_over(state, name)
-    elsif state.owns.get(name).map do |own| own == OWNED end.unwrap_or(false)
+    elsif state.owns.get(name, "") == OWNED
       breaches = breaches.push(overwritten(body, current, name, step))
     end
 
@@ -459,9 +460,8 @@ def after_branch(walker: Walker, item: Item, fact: Fact) -> Outcome
   step = Step(text: "#{fact.line}:#{fact.column} #{Locking.truth(fact)}")
   state = item.state
   if walker.tracked.include?(fact.text)
-    if state.facts.get(fact.text).map do |known| known != fact.value end.unwrap_or(false)
-      return Outcome(moved: Moved.Stopped, breaches: [])
-    end
+    contradicted = state.facts.get(fact.text).map do |known| known != fact.value end
+    return Outcome(moved: Moved.Stopped, breaches: []) if contradicted.unwrap_or(false)
 
     state = state.with(facts: state.facts.put(fact.text, fact.value))
   end
@@ -472,7 +472,7 @@ def after_branch(walker: Walker, item: Item, fact: Fact) -> Outcome
 
   for name in fact.set
     root = owner(state, name)
-    if state.owns.get(root).map do |own| own == CLEARED end.unwrap_or(false)
+    if state.owns.get(root, "") == CLEARED
       state = state.with(owns: state.owns.put(root, FREED))
     end
   end
@@ -483,15 +483,13 @@ end
 # A pointer that is null owns nothing; when it is the result of a realloc, the pointer it moved owns again. A field
 # of a struct that escaped stays so: a value stored in it after the test is handed on too.
 def nulled(state: State, name: String) -> State
-  return state if state.owns.get(name).map do |own| own == ESCAPED end.unwrap_or(false)
+  return state if state.owns.get(name, "") == ESCAPED
 
   cleared = state.with(owns: state.owns.delete(name))
   case state.links.get(name)
     some(source) ->
       restored = cleared.with(links: cleared.links.delete(name))
-      if restored.owns.get(source).map do |own| own == MOVED end.unwrap_or(false)
-        return restored.with(owns: restored.owns.put(source, OWNED))
-      end
+      return restored.with(owns: restored.owns.put(source, OWNED)) if restored.owns.get(source, "") == MOVED
 
       restored
     none -> cleared
@@ -537,7 +535,7 @@ def after_assign(body: Body, item: Item, assign: Assign) -> Outcome
   step = Step(text: "#{at} #{plain(assign.name)} = #{assign.shown}", name: assign.name, origin: true)
   breaches: List[Breach] = []
   state = item.state
-  owned = state.owns.get(assign.name).map do |own| own == OWNED end.unwrap_or(false)
+  owned = state.owns.get(assign.name, "") == OWNED
   # A realloc moves the old value itself (`resized`).
   if assign.value != "resized" and kept_by_alias?(state, assign.name)
     state = handed_over(state, assign.name)
@@ -554,7 +552,7 @@ def after_assign(body: Body, item: Item, assign: Assign) -> Outcome
     state = state.with(kept: state.kept.delete(assign.name))
   end
 
-  was_escaped = state.owns.get(assign.name).map do |own| own == ESCAPED end.unwrap_or(false)
+  was_escaped = state.owns.get(assign.name, "") == ESCAPED
   state = state.with(owns: state.owns.delete(assign.name))
   case assign.value
     "owned" -> state = state.with(owns: state.owns.put(assign.name, OWNED))

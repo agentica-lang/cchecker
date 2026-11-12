@@ -120,7 +120,8 @@ end
 export def version_line(report: Report) -> Optional[String]
   return none if report.version_changes.empty?
 
-  changed = report.version_changes.map do |c| "#{c.tool} was #{c.baseline}, is #{c.current}" end.join("; ")
+  changes = report.version_changes.map do |c| "#{c.tool} was #{c.baseline}, is #{c.current}" end
+  changed = changes.join("; ")
   line = (
     "cchecker: warning: the tools are not the ones that made the baseline (#{changed}); " +
     "its new and fixed findings may come from that"
@@ -193,7 +194,8 @@ end
 
 def summary(report: Report) -> String
   count = report.findings.size
-  files = report.findings.map do |f| f.file end.uniq.size
+  found_files = report.findings.map do |f| f.file end
+  files = found_files.uniq.size
   notes: List[String] = []
   if report.baselined > 0
     notes = notes.push("#{report.baselined} baselined")

@@ -75,8 +75,10 @@ OPTIONS = [
   Opt(name: "all-paths", kind: Kind.Flag, help: "a finding of the rules for each bad call a root reaches, not one"),
 ]
 
-VALUE_LONG = Set.new(OPTIONS.select do |o| o.kind != Kind.Flag end.map do |o| o.name end)
-VALUE_SHORT = Set.new(OPTIONS.select do |o| o.kind != Kind.Flag and o.short != "" end.map do |o| o.short end)
+VALUE_OPTIONS = OPTIONS.select do |o| o.kind != Kind.Flag end
+SHORT_VALUE_OPTIONS = VALUE_OPTIONS.select do |o| o.short != "" end
+VALUE_LONG = Set.new(VALUE_OPTIONS.map do |o| o.name end)
+VALUE_SHORT = Set.new(SHORT_VALUE_OPTIONS.map do |o| o.short end)
 
 # The words before `--`, told apart: the FILEs and the words for option_parser.
 struct Words
@@ -206,7 +208,10 @@ def tool_list(text: String) -> Result[List[Tool]]
   ok(tools)
 end
 
-def names(text: String) -> List[String] = text.split(",").map do |name| name.strip end.select do |name| name != "" end
+def names(text: String) -> List[String]
+  stripped = text.split(",").map do |name| name.strip end
+  stripped.select do |name| name != "" end
+end
 
 # option_parser has no variable-length positional argument, so the files are told apart here: a word that does not
 # start with "-" and is not the value of the option before it. option_parser takes a value that starts with "-" for an

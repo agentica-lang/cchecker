@@ -112,9 +112,10 @@ export def run(options: Options) -> Result[Int]
 
   incomplete = collected.incomplete_functions
   if not incomplete.empty?
+    places = incomplete.map do |f| "#{f.file}:#{f.line} #{f.function}" end
     IO.warn(
       "cchecker: the findings of these functions are those of the paths followed, as they have more paths than the " +
-      "path rules follow: #{incomplete.map do |f| "#{f.file}:#{f.line} #{f.function}" end.join(", ")}",
+      "path rules follow: #{places.join(", ")}",
     )
   end
 
@@ -637,12 +638,15 @@ def collect(options: Options, config: Config.Config, jobs: List[Tools.Job], cwd:
   end
 
   owned = Profile.measure("ownership") do Ownership.check(units) end
+  from_units = units.flat_map do |unit| unit.collected end
+  unchecked_groups = unchecked.group_by do |u| "#{u.file}\n#{u.missing}" end
+  unchecked_once = unchecked_groups.values.map do |same| same.first end
   Collected(
     findings: (
       findings.concat(checked.findings)
         .concat(locked.findings)
         .concat(owned.findings)
-        .concat(units.flat_map do |unit| unit.collected end.select do |f| not config.off.include?(f.source) end)
+        .concat(from_units.select do |f| not config.off.include?(f.source) end)
     ),
     errors: once(errors),
     ran: ran,
@@ -655,10 +659,7 @@ def collect(options: Options, config: Config.Config, jobs: List[Tools.Job], cwd:
     unknown_targets: checked.unknown_targets,
     short_locks: checked.short_locks,
     locks: not locked.sections.empty?,
-    unchecked: unchecked.group_by do |u| "#{u.file}\n#{u.missing}" end
-      .values
-      .map do |same| same.first end
-      .sort_by do |u| u.file end,
+    unchecked: unchecked_once.sort_by do |u| u.file end,
   )
 end
 
@@ -670,7 +671,8 @@ def ignores_of(
   units: List[Unit],
   cwd: String,
 ) -> Result[List[Suppressions.Ignore]]
-  files = findings.map do |f| f.file end.concat(plan.jobs.map do |job| job.shown end).uniq
+  found_files = findings.map do |f| f.file end
+  files = found_files.concat(plan.jobs.map do |job| job.shown end).uniq
   ignores: List[Suppressions.Ignore] = []
   for file in files
     case Files.read_all(file)
@@ -714,10 +716,9 @@ end
 # that includes it), in the order of the files, with paths shown as findings are.
 def incomplete_of(functions: List[IncompleteFunction], cwd: String) -> List[IncompleteFunction]
   shown = functions.map do |f| f.with(file: Paths.inside(cwd, f.file).unwrap_or(f.file)) end
-  shown.group_by do |f| "#{f.file}\n#{Findings.pad(f.line)}\n#{f.function}" end
-    .values
-    .map do |same| same.first end
-    .sort_by do |f| "#{f.file}\n#{Findings.pad(f.line)}" end
+  groups = shown.group_by do |f| "#{f.file}\n#{Findings.pad(f.line)}\n#{f.function}" end
+  once = groups.values.map do |same| same.first end
+  once.sort_by do |f| "#{f.file}\n#{Findings.pad(f.line)}" end
 end
 
 # Shortens the paths to be relative to the working directory, and drops what is outside it (system and third-party
