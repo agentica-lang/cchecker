@@ -194,9 +194,9 @@ end
 
 ## Returns the flags of `[library]` that a run knows, in the order of docs/settings.md.
 export def flags() -> List[String]
+  families = Known.BLOCKING_FAMILIES.map do |family| family.flag end
   (
-    Known.BLOCKING_FAMILIES.map do |family| family.flag end
-      .push(Known.CALLBACKS_FLAG)
+    families.push(Known.CALLBACKS_FLAG)
       .push(Known.LIBGC_ALLOC_FLAG)
       .push(Known.NONBLOCKING_FLAG)
       .push(Known.JUMP_CALLERS_FLAG)

@@ -355,14 +355,13 @@ def context_of(tables: Tables, nodes: List[Json], wrappers: Wrappers) -> Flow.Co
     types = param_types_of(node)
     # A definition inherits the annotations of the prototype before it, in the names of the prototype's parameters:
     # only the declaration that wrote an annotation knows what its names are.
-    locks = own_marks(node)
-      .flat_map do |mark| annotated(mark, params) end
-      .map do |lock|
-        lock.with(
-          class: class_of_text(tables, globals, lock.text, params, types),
-          through: through_text?(tables, pointers, lock.text, params, types),
-        )
-      end
+    annotations = own_marks(node).flat_map do |mark| annotated(mark, params) end
+    locks = annotations.map do |lock|
+      lock.with(
+        class: class_of_text(tables, globals, lock.text, params, types),
+        through: through_text?(tables, pointers, lock.text, params, types),
+      )
+    end
 
     stops = function.noreturn
     if not locks.empty? or stops
@@ -432,7 +431,8 @@ def owning_of(tables: Tables, nodes: List[Json]) -> Flow.Owning
 
   # The records of the unit, those declared in a function body too.
   bodies = declarations.flat_map do |n| Ast.children(n).select do |child| Ast.kind(child) == "CompoundStmt" end end
-  inner = Flow.descendants(bodies).select do |n| Ast.kind(n) == "DeclStmt" end.flat_map(&Ast.children)
+  declared_stmts = Flow.descendants(bodies).select do |n| Ast.kind(n) == "DeclStmt" end
+  inner = declared_stmts.flat_map(&Ast.children)
   fields: Set[String] = Set.new([])
   unions: Set[String] = Set.new([])
   for nested in record_decls(nodes, "").concat(record_decls(inner, ""))
@@ -478,7 +478,8 @@ def owning_of(tables: Tables, nodes: List[Json]) -> Flow.Owning
   records: Map[String, Flow.OwnedRecord] = {}
   for id in owning.to_a
     record = all_records[id]
-    nested = record.field_ids.map do |f| found.get(f, "") end.map do |r| owning_or_none(owning, r) end
+    nested_ids = record.field_ids.map do |f| found.get(f, "") end
+    nested = nested_ids.map do |r| owning_or_none(owning, r) end
     records = records.put(id, Flow.OwnedRecord(ids: record.field_ids, names: record.fields, nested: nested))
   end
 
@@ -492,8 +493,10 @@ def owning_of(tables: Tables, nodes: List[Json]) -> Flow.Owning
   # A global by the ids of all its declarations, so that the mark of one holds in the others and a local of the same
   # name is not it.
   variables = nodes.select do |n| Ast.kind(n) == "VarDecl" end
-  marked = Set.new(variables.select do |n| own_marks(n).include?(OWNS) end.map do |n| Ast.text(n, "name") end)
-  globals = variables.select do |n| marked.include?(Ast.text(n, "name")) end.map do |n| Ast.text(n, "id") end
+  owned_vars = variables.select do |n| own_marks(n).include?(OWNS) end
+  marked = Set.new(owned_vars.map do |n| Ast.text(n, "name") end)
+  marked_vars = variables.select do |n| marked.include?(Ast.text(n, "name")) end
+  globals = marked_vars.map do |n| Ast.text(n, "id") end
   Flow.Owning(
     returns: returns,
     takes: takes,
@@ -516,7 +519,8 @@ def collector_marks(tables: Tables, nodes: List[Json]) -> Collector.Marks
   types: Set[String] = Set.new([])
   for nested in record_decls(nodes, "")
     if own_marks(nested.node).include?(GC)
-      types = types.add(tables.record_ids.get(Ast.text(nested.node, "id")).map do |r| r.name end.unwrap_or(""))
+      gc_record = tables.record_ids.get(Ast.text(nested.node, "id")).map do |r| r.name end
+      types = types.add(gc_record.unwrap_or(""))
     end
   end
 
@@ -527,7 +531,8 @@ def collector_marks(tables: Tables, nodes: List[Json]) -> Collector.Marks
     case Ast.kind(node)
       "TypedefDecl" ->
         # A typedef of a marked record is marked too: clang does not desugar the pointee of `obj_t *`.
-        named = tables.record_ids.get(own_record_id(node)).map do |r| r.name end.unwrap_or("")
+        named_record = tables.record_ids.get(own_record_id(node)).map do |r| r.name end
+        named = named_record.unwrap_or("")
         if marks.include?(GC) or types.include?(named)
           types = types.add(Ast.text(node, "name")).add(named)
         end
@@ -749,8 +754,8 @@ def lock_marks_of(tables: Tables, nodes: List[Json]) -> LockMarks
   end
 
   locks = marks.select do |found| lock_mark?(found.mark) end
-  errors = locks.select do |found| mark_error(found) != "" end
-    .map do |found| MarkError(file: found.file, message: mark_error(found)) end
+  bad_marks = locks.select do |found| mark_error(found) != "" end
+  errors = bad_marks.map do |found| MarkError(file: found.file, message: mark_error(found)) end
 
   LockMarks(marks: locks.select do |found| mark_error(found) == "" end, errors: errors)
 end
@@ -784,7 +789,8 @@ def annotated(mark: String, params: List[String]) -> List[Flow.Annotated]
   for word in LOCK_MARKS.keys
     if mark.start_with?("#{word}(") and mark.end_with?(")")
       inside = mark.slice(word.length + 1, mark.length - word.length - 2)
-      texts = inside.split(",").map do |text| text.strip end.select do |text| text != "" end
+      stripped = inside.split(",").map do |text| text.strip end
+      texts = stripped.select do |text| text != "" end
       return texts.map do |text| Flow.Annotated(text: text, params: params, takes: LOCK_MARKS[word]) end
     end
   end
@@ -875,7 +881,8 @@ end
 
 # The marks of the wrappers of `[assume]` on a function, as `CC_ACQUIRES` and `CC_RELEASES` would put them.
 def with_assumed_marks(ctx: Flow.Context, function: Function) -> Function
-  locks = ctx.callees.get(function.key).map do |c| c.locks end.unwrap_or([])
+  callee_locks = ctx.callees.get(function.key).map do |c| c.locks end
+  locks = callee_locks.unwrap_or([])
   marks = function.marks
   for lock in locks
     if lock.text == ASSUMED_LOCK
@@ -1187,7 +1194,8 @@ def typed_in(t: Typing, node: Json, given: String) -> Typing
       end
 
       items = Ast.children(node)
-      fields = t.records.get(id).map do |record| record.field_ids end.unwrap_or([])
+      record_fields = t.records.get(id).map do |record| record.field_ids end
+      fields = record_fields.unwrap_or([])
       for i in 0...items.size
         member = ""
         if i < fields.size
@@ -1208,7 +1216,8 @@ def typed_in(t: Typing, node: Json, given: String) -> Typing
       walked = t
       if not Ast.flag?(node, "isArrow") and Ast.kind(base) == "DeclRefExpr"
         var = Ast.referenced_id(base)
-        fields = t.records.get(t.found.get(var, "")).map do |record| record.field_ids end.unwrap_or([])
+        var_fields = t.records.get(t.found.get(var, "")).map do |record| record.field_ids end
+        fields = var_fields.unwrap_or([])
         if t.found.key?(var) and not fields.include?(Ast.text(node, "referencedMemberDecl"))
           walked = walked.with(unfit: walked.unfit.add(var))
         end
@@ -1465,11 +1474,13 @@ end
 def function_of(tables: Tables, node: Json) -> Function
   name = Ast.text(node, "name")
   place = Ast.place_of(node)
-  marks = Ast.children(node)
-    .select do |child| Ast.kind(child) == "DeprecatedAttr" and Ast.text(child, "message").start_with?(MARK_PREFIX) end
-    .map do |child|
-      Ast.text(child, "message").slice(MARK_PREFIX.length, Ast.text(child, "message").length - MARK_PREFIX.length)
-    end
+  mark_attrs = Ast.children(node).select do |child|
+    Ast.kind(child) == "DeprecatedAttr" and Ast.text(child, "message").start_with?(MARK_PREFIX)
+  end
+
+  marks = mark_attrs.map do |child|
+    Ast.text(child, "message").slice(MARK_PREFIX.length, Ast.text(child, "message").length - MARK_PREFIX.length)
+  end
 
   Function(
     key: function_key(tables, name),
@@ -1498,9 +1509,8 @@ def in_function(tables: Tables, key: String, node: Json, found: Found) -> Found
   end
 
   bodies = Ast.children(node).select do |child| Ast.kind(child) == "CompoundStmt" end
-  locals = Set.new(
-    Flow.descendants(bodies).select do |n| Ast.kind(n) == "VarDecl" end.map do |n| Ast.text(n, "name") end,
-  )
+  locals_found = Flow.descendants(bodies).select do |n| Ast.kind(n) == "VarDecl" end
+  locals = Set.new(locals_found.map do |n| Ast.text(n, "name") end)
 
   scope = Scope(caller: key, params: params, locals: locals, bodies: bodies)
   walked = found
@@ -1704,7 +1714,8 @@ def first_on_every_path?(bodies: List[Json], call: Json, id: String) -> Bool
     if Ast.kind(block) == "CompoundStmt"
       parts = Ast.children(block)
       inner = Ast.text(chain[i + 1], "id")
-      at = parts.take_while do |part| Ast.text(part, "id") != inner end.size
+      before = parts.take_while do |part| Ast.text(part, "id") != inner end
+      at = before.size
       # The nearest store: a `case` between it and the call is between any earlier one and the call too.
       j = at - 1
       while j >= 0

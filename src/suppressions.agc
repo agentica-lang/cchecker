@@ -320,7 +320,8 @@ def parsed(file: String, line: Int, column: Int, text: String, function: Bool) -
   case text.index_of(":")
     some(at) ->
       spaced = text.slice(0, at).replace(",", " ").replace("\t", " ").replace("\r", " ")
-      codes = spaced.split(" ").select do |code| code != "" end.uniq
+      words = spaced.split(" ").select do |code| code != "" end
+      codes = words.uniq
       reason = text.slice(at + 1, text.length - at - 1).strip
       if codes.empty? or reason == "" or not codes.all? do |code| known_code?(code) end
         return error("#{file}:#{line}: #{USAGE}")
@@ -377,8 +378,16 @@ def tool_of(code: String) -> String = Baseline.tool_of(code.replace("*", ""))
 # The findings of a suppression with codes that matched nothing (`stale`), each code tracked on its own: one for each
 # tool of those codes, so a baseline or a filter by tool sees it.
 def unused(ignore: Ignore, stale: List[String]) -> List[Finding]
-  stale.map do |code| tool_of(code) end.uniq.map do |tool|
+  tools = stale.map do |code| tool_of(code) end
+  tools.uniq.map do |tool|
     codes = stale.select do |code| tool_of(code) == tool end
-    Finding(code: UNUSED, tool: tool, file: ignore.file, line: ignore.line, column: ignore.column, message: "the suppression of #{codes.join(", ")} matches no finding: #{ignore.reason}")
+    Finding(
+      code: UNUSED,
+      tool: tool,
+      file: ignore.file,
+      line: ignore.line,
+      column: ignore.column,
+      message: "the suppression of #{codes.join(", ")} matches no finding: #{ignore.reason}",
+    )
   end
 end

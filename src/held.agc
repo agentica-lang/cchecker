@@ -169,7 +169,8 @@ end
 def before_release(rules: Rules, body: Body, site: Site, quiet: Optional[Held]) -> List[String]
   case rules.bodies.get(site.key)
     some(helper) ->
-      stops_at = quiet.map do |h| stop_keys(rules, helper, site, h) end.unwrap_or(Set.new([]))
+      quiet_stops = quiet.map do |h| stop_keys(rules, helper, site, h) end
+      stops_at = quiet_stops.unwrap_or(Set.new([]))
       seen = Set.new([0])
       queue = [0]
       i = 0
@@ -212,17 +213,17 @@ def stop_keys(rules: Rules, helper: Body, site: Site, h: Held) -> Set[String]
 
   return Set.new(helper.releases) if helper.releases.size != site.drops.size
 
-  Set.new(
-    (0...site.drops.size).to_a.select do |i| site.drops[i].key == h.lock.key end.map do |i| helper.releases[i] end,
-  )
+  same_lock = (0...site.drops.size).to_a.select do |i| site.drops[i].key == h.lock.key end
+  Set.new(same_lock.map do |i| helper.releases[i] end)
 end
 
 # The keys of the locks of a function's CC_RELEASES marks, merged from all its declarations, as written.
 def marked_releases(rules: Rules, key: String) -> List[String]
-  marks = rules.graph.functions.get(key).map do |f| f.marks end.unwrap_or([])
-  marks.select do |mark| mark.start_with?("releases(") and mark.end_with?(")") end
-    .flat_map do |mark| mark.slice(9, mark.length - 10).split(",") end
-    .map do |lock| Flow.key_of(lock.strip) end
+  found = rules.graph.functions.get(key).map do |f| f.marks end
+  marks = found.unwrap_or([])
+  releases = marks.select do |mark| mark.start_with?("releases(") and mark.end_with?(")") end
+  locks = releases.flat_map do |mark| mark.slice(9, mark.length - 10).split(",") end
+  locks.map do |lock| Flow.key_of(lock.strip) end
 end
 
 # The call path from the call to a system call: [the call] for a system or blocking call (a CC_BLOCKING function
@@ -305,7 +306,8 @@ def reached_by(rules: Rules, body: Body, site: Site) -> List[String]
   return reached_takes(rules, site.key) if not site.pointer
 
   targets = Effects.pointer_targets(rules.graph, body.key, site.line, site.column)
-  targets.flat_map do |target| reached_takes(rules, target) end.uniq
+  reached = targets.flat_map do |target| reached_takes(rules, target) end
+  reached.uniq
 end
 
 # The classes that a function of the project takes, in its body or in the functions it reaches.
