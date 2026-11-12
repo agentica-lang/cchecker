@@ -292,11 +292,14 @@ that is no such local (`&b->locked`, a pointer the function was passed) splits
 the path with no value a test can read. The flag of a `CC_RELEASES_IF` is read
 as the test of an `if` (`done(q, locked)` releases where `locked` is not 0), and
 a constant takes one side. On the side where the helper does nothing to a lock,
-the rules on what runs while a lock is held read its body without its
-releases of that lock (and its takes, when it takes by a flag): a
-system call or a lock taken before the flag is tested is still found, and so is
-one after a write to the flag in the body. A call of a `CC_TRIES` goes as a
-trylock does (above), and never waits for its lock. A mark whose flag is no
+the rules on what runs while a lock is held read its body without its releases
+of that lock (and its takes, when it takes by a flag): a system call or a lock
+taken before the flag is tested is still found, and so is one after a write to
+the flag in the body. A wait there is no finding only when the call passes the
+lock held for the parameter it waits on (`w(&o->mu, 0)` for
+`pthread_cond_wait(&cv, m)`), and the body does not change that parameter; a
+wait on a global, a local or another lock is one. A call of a `CC_TRIES` goes as
+a trylock does (above), and never waits for its lock. A mark whose flag is no
 parameter of its declaration, or a `CC_TRIES` with two locks, is an error of the
 tool (exit 2).
 

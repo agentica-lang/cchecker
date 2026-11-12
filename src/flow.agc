@@ -103,6 +103,8 @@ export struct Site
   # Whether the call is of a helper on the side of its flags where it takes and releases nothing (`flagged_call`): the
   # rules of Held read its body without its own lock calls, which are on the other side.
   idle: Bool = false
+  # The texts of the arguments of an idle call, which put the locks its body waits on in the names of the caller.
+  args: List[String] = []
 end
 
 ## The value a condition has on an edge. `text` is the condition with the key of each variable (`variable_key`), ""
@@ -227,6 +229,9 @@ export struct Body
   # The keys, in the definition, of its parameters that are the flag of a CC_RELEASES_IF: the parameter at the place
   # where the mark names the flag, whatever the definition calls it.
   flags: List[String] = []
+  # The names of its parameters, in order, that a lock text of the body names as the caller's argument: "" for one that
+  # the body writes or takes the address of, or whose name another variable of the body has.
+  params: List[String] = []
   # A `goto` goes into a block from outside it (past the declarations before its label).
   enters: Bool = false
 end
@@ -527,6 +532,7 @@ export def body_of(ctx: Context, key: String, node: Json) -> Body
   dropped = plain.concat(flagged)
   taken_locks = ctx.callees.get(key).map do |callee| callee.locks.select do |lock| lock.takes end end
   taken = taken_locks.unwrap_or([])
+  keys = keys_of(node, all)
   Body(
     key: key,
     name: Ast.text(node, "name"),
@@ -538,7 +544,8 @@ export def body_of(ctx: Context, key: String, node: Json) -> Body
     owns: owners.calls or not owners.names.empty?,
     releases: dropped.map do |lock| released_key(lock, names) end,
     acquires: taken.map do |lock| released_key(lock, names) end,
-    flags: flag_keys(flagged, node, keys_of(node, all)),
+    flags: flag_keys(flagged, node, keys),
+    params: mapped_params(node, keys, all),
     enters: linked.enters,
   )
 end
@@ -573,6 +580,20 @@ export def substituted(lock: String, params: List[String], args: List[String]) -
   end
 
   prefix + written
+end
+
+## Returns the variable that a lock text starts from, after its `&` and `*`: `q` for `&q->mu`.
+export def lock_root(lock: String) -> String
+  written = lock.replace(" ", "")
+  while written.start_with?("&") or written.start_with?("*")
+    written = written.slice(1, written.length - 1)
+  end
+
+  for i in 0...written.length
+    return written.slice(0, i) if not identifier_char?(written.slice(i, 1))
+  end
+
+  written
 end
 
 ## Returns the key of a lock text: the object, without the `&` or `*&` in front, and `->` read as `.`.
@@ -3023,11 +3044,12 @@ def flagged_call(b: Builder, site: Site, args: List[Json], preds: List[Int]) -> 
   exits: List[Int] = []
   for side in sides
     idle = not side.acts and site.takes.empty? and site.drops.empty? and site.waits.empty?
-    called = add(
-      built,
-      Event.Call(site.with(takes: site.takes.concat(side.takes), drops: site.drops.concat(side.drops), idle: idle)),
-      side.exits,
-    )
+    call = site.with(takes: site.takes.concat(side.takes), drops: site.drops.concat(side.drops), idle: idle)
+    if idle
+      call = call.with(args: texts)
+    end
+
+    called = add(built, Event.Call(call), side.exits)
 
     built = called.b
     exits = exits.concat(called.exits)
@@ -3232,6 +3254,36 @@ def flag_keys(locks: List[Annotated], node: Json, keys: Map[String, String]) -> 
   end
 
   found.select do |key| key != "" end
+end
+
+# The names of the parameters of a definition (`Body.params`), "" for one whose own storage the body writes or takes
+# the address of (`m = &other`, `&m`), or whose name another variable has (`keys`: a later one is `m#2`).
+def mapped_params(node: Json, keys: Map[String, String], all: List[Json]) -> List[String]
+  stored: Set[String] = Set.new([])
+  for n in all
+    parts = Ast.children(n)
+    kind = Ast.kind(n)
+    assigned = kind == "CompoundAssignOperator" or (kind == "BinaryOperator" and Ast.text(n, "opcode") == "=")
+    changed = kind == "UnaryOperator" and ["++", "--", "&"].include?(Ast.text(n, "opcode"))
+    if (assigned or changed) and not parts.empty?
+      stored = stored.add(storage_root(keys, parts.first))
+    end
+  end
+
+  named = keys.values.map do |key| plain(key) end
+  params = Ast.children(node).select do |child| Ast.kind(child) == "ParmVarDecl" end
+  found: List[String] = []
+  for param in params
+    name = Ast.text(param, "name")
+    shared = named.select do |other| other == name end
+    if keys.get(Ast.text(param, "id"), "") != name or stored.include?(name) or shared.size > 1
+      name = ""
+    end
+
+    found = found.push(name)
+  end
+
+  found
 end
 
 # The key of a lock of CC_RELEASES in the names of the parameters of the definition, which may not be those of the

@@ -853,3 +853,26 @@ Feature: What runs while a lock is held
       | a wait on its own lock       | CC_RELEASES_IF(q->mu, rel) void wait_maybe(struct queue *q, bool rel) { while (q->n == 0) pthread_cond_wait(&q->cv, &q->mu); if (rel) pthread_mutex_unlock(&q->mu); }                                                                                                                 | wait_maybe(b, false) |
       | a wait on another lock       | CC_RELEASES_IF(q->mu, rel) void wait_ev(struct queue *q, struct ev *e, bool rel) { while (e->n == 0) pthread_cond_wait(&e->cv, &e->mu); if (rel) pthread_mutex_unlock(&q->mu); }                                                                                                       | wait_ev(b, e, false) |
       | a wait of a nested helper    | CC_RELEASES_IF(q->mu, rel) void wait_maybe(struct queue *q, bool rel) { while (q->n == 0) pthread_cond_wait(&q->cv, &q->mu); if (rel) pthread_mutex_unlock(&q->mu); } CC_RELEASES_IF(q->mu, rel) void outer_wait(struct queue *q, bool rel) { wait_maybe(q, rel); } | outer_wait(b, false) |
+
+  Scenario Outline: A wait on the idle side of a flagged helper is a finding unless the call passes the lock held for it (<case>)
+    Given the C file "wait.c" holds:
+      """
+      #include "pthread.h" /* found in the system folders */
+      #include "cchecker.h"
+
+      struct node { CC_NO_SYSCALL_UNDER() pthread_mutex_t mu; pthread_cond_t cv; int n; };
+      struct queue { pthread_mutex_t mu; };
+      pthread_cond_t cv;
+      <code>
+      """
+    When I run cchecker with "--tools rules --json $DIR/wait.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "code":"CC-PATH-SYSCALL-UNDER-LOCK"
+      """
+
+    Examples:
+      | case                                | code |
+      | another lock of the class held      | CC_RELEASES_IF(q->mu, r) void w(struct queue *q, struct node *e, int r) { while (e->n == 0) pthread_cond_wait(&e->cv, &e->mu); if (r) pthread_mutex_unlock(&q->mu); } void use(struct node *o, struct node *x, struct queue *b) { pthread_mutex_lock(&b->mu); pthread_mutex_lock(&o->mu); w(b, x, 0); pthread_mutex_unlock(&o->mu); pthread_mutex_unlock(&b->mu); } |
+      | a parameter named as the lock held  | CC_RELEASES_IF(q->mu, r) void w(struct queue *q, pthread_mutex_t *m, int r) { pthread_cond_wait(&cv, m); if (r) pthread_mutex_unlock(&q->mu); } CC_NO_SYSCALL_UNDER(m) void use(struct queue *b, pthread_mutex_t *m, pthread_mutex_t *other) { pthread_mutex_lock(&b->mu); pthread_mutex_lock(m); w(b, other, 0); pthread_mutex_unlock(m); pthread_mutex_unlock(&b->mu); } |

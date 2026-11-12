@@ -18,6 +18,10 @@ export LOCK_ORDER = "CC-PATH-LOCK-ORDER"
 QUIET_MARK = "no_syscall_under()"
 LEVEL_PREFIX = "lock_level("
 
+# The most waits on distinct locks that a helper's reaches keep: a helper that passes on a longer lock each time
+# (`f(x->next)` in `f`) would add one for each pass; the next one is a wait on a lock it cannot name.
+MAX_WAITS = 8
+
 ## What the rules know of the project: its call graph, the classes of the locks marked CC_NO_SYSCALL_UNDER(), the level
 ## of each class with CC_LOCK_LEVEL, the classes each function takes in its own body, and the graphs of the functions
 ## that take or release a lock, by key.
@@ -34,9 +38,10 @@ export struct Rules
   idle_classes: Map[String, Set[String]] = {}
 end
 
-## A system call that a call on the idle side of a flagged helper reaches: its call path, and the lock it waits on when
-## it is a wait ("" for any other call). The lock is its class, or its key when it has none. Under that very lock a
-## wait is no finding, since it gives the lock back while it waits.
+## A system call that a call on the idle side of a flagged helper reaches: its call path, and the key of the lock it
+## waits on when it is a wait on a lock that starts from a parameter of the helper (`Body.params`), in their names; ""
+## for any other call or wait. A call puts its arguments in the place of the parameters: under that very lock a wait is
+## no finding, since it gives the lock back while it waits.
 export struct Reach
   path: List[String]
   waited: String
@@ -527,7 +532,8 @@ def settled_reach(rules: Rules) -> Map[String, List[Reach]]
       grown = reach[key]
       for call in rules.idle[key]
         if nested?(rules, call)
-          grown = merged(grown, call.name, reach[call.key])
+          below = reach[call.key].map do |r| r.with(waited: passed_lock(rules, call, r.waited, rules.bodies[key])) end
+          grown = merged(grown, call.name, below)
         end
       end
 
@@ -542,10 +548,10 @@ def settled_reach(rules: Rules) -> Map[String, List[Reach]]
 end
 
 # What the calls of the helper `key` that are no idle helper reach: a call that is, or reaches, a system call; a wait
-# of the library, with the lock it waits on; a release of its lock by a function of the project, all that function
-# runs before the release. A release of another lock by the library is no system call. A call of a flagged helper on
-# the side where it takes or releases its lock is not followed: its body, read through `before_release`, would
-# report what its own flag guards, and its other side is a call of its own.
+# of the library, with the lock it waits on when that starts from a parameter; a release of its lock by a function of
+# the project, all that function runs before the release. A release of another lock by the library is no system call.
+# A call of a flagged helper on the side where it takes or releases its lock is not followed: its body, read through
+# `before_release`, would report what its own flag guards, and its other side is a call of its own.
 def direct_reach(rules: Rules, key: String) -> List[Reach]
   helper = rules.bodies[key]
   found: List[Reach] = []
@@ -560,7 +566,7 @@ def direct_reach(rules: Rules, key: String) -> List[Reach]
       path = before_release(rules, helper, call, none)
     elsif not call.waits.empty?
       path = system_call(rules, helper, call)
-      waited = lock_name(call.waits.first)
+      waited = param_lock(helper, call.waits.first.key)
     end
 
     if not path.empty?
@@ -571,29 +577,51 @@ def direct_reach(rules: Rules, key: String) -> List[Reach]
   found
 end
 
-# The reaches of `found` and those of `below`, a call of `name` down: one for each lock that a wait is on, and one for
-# the rest. `name` "" keeps the path.
+# The reaches of `found` and those of `below`, a call of `name` down: one for each lock that a wait is on, up to
+# `MAX_WAITS`, and one for the rest. `name` "" keeps the path.
 def merged(found: List[Reach], name: String, below: List[Reach]) -> List[Reach]
   grown = found
   for r in below
-    if not grown.any? do |known| known.waited == r.waited end
+    waited = r.waited
+    waits = grown.select do |known| known.waited != "" end
+    if waits.size >= MAX_WAITS
+      waited = ""
+    end
+
+    if not grown.any? do |known| known.waited == waited end
       path = r.path
       if name != ""
         path = [name].concat(path)
       end
 
-      grown = grown.push(Reach(path: path, waited: r.waited))
+      grown = grown.push(Reach(path: path, waited: waited))
     end
   end
 
   grown
 end
 
-# The name of a lock that a wait is on, as `Reach.waited` has it: its class, or its key when it has none.
-def lock_name(lock: Lock) -> String
-  return lock.class if lock.class != ""
+# The key of a lock in the names of a helper's parameters when it starts from one of them that `Body.params` keeps;
+# "" for any other: a global, a local, a parameter that the body changes.
+def param_lock(helper: Body, key: String) -> String
+  root = Flow.lock_root(key)
+  return key if root != "" and helper.params.include?(root)
 
-  lock.key
+  ""
+end
+
+# The key of a lock that the body of an idle call waits on (`Reach.waited`), in the names of the caller: the argument
+# in the place of the parameter, in the names of the caller's own parameters when `caller` is a helper too.
+def passed_lock(rules: Rules, call: Site, waited: String, caller: Body) -> String
+  return "" if waited == ""
+
+  param_lock(caller, caller_key(rules, call, waited))
+end
+
+# The key of a lock in the names of the helper that `call` calls (`Reach.waited`), in the names of the caller: "" when
+# the call passes no text for its parameter.
+def caller_key(rules: Rules, call: Site, waited: String) -> String
+  Flow.key_of(Flow.substituted(waited, rules.bodies[call.key].params, call.args))
 end
 
 def settled_classes(rules: Rules) -> Map[String, Set[String]]
@@ -644,12 +672,13 @@ def direct_classes(rules: Rules, key: String) -> Set[String]
 end
 
 # The call path to a system call of a call on the idle side of a flagged helper, from the call itself, while `h` is
-# held: none for a helper that makes none, and a wait on `h` is not one, since it gives the lock back while it waits.
+# held: none for a helper that makes none, and a wait on the lock that the call passes for `h` is not one, since it
+# gives the lock back while it waits.
 def idle_path(rules: Rules, body: Body, site: Site, h: Held) -> List[String]
   return system_call(rules, body, site) if not rules.idle.key?(site.key)
 
   for r in rules.idle_reach.get(site.key).unwrap_or([])
-    on_h = r.waited != "" and (r.waited == h.lock.key or r.waited == h.lock.class)
+    on_h = r.waited != "" and caller_key(rules, site, r.waited) == h.lock.key
     return [site.name].concat(r.path) if not on_h
   end
 
