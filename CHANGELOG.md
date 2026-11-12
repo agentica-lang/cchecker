@@ -4,6 +4,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `c = b; zap(&b);` (a call that frees and clears `b` through its address) no longer clears `c` too: `free(c)` or
+  `work(c)` after it is a CC-OWN-DOUBLE-FREE or a CC-OWN-USE-AFTER-FREE.
+- A self-assignment of an owning pointer or field (`p.right = p.right`) is no longer a false CC-OWN-LEAK.
+
 ## [0.6.0] - 2026-11-10
 
 ### Changed

@@ -115,7 +115,11 @@ parameter or a global, or the same name in two blocks) are two variables: each
 pointer has its own state, and a condition on one is not a condition on the
 other. A local that gets a pointer already freed or handed on (`free(b); char
 *c = b;`) is a CC-OWN-USE-AFTER-FREE there, and a call that clears only the
-local (`zap(&c)` at a `CC_FREES` parameter) frees the pointer it stands for. A
+local (`zap(&c)` at a `CC_FREES` parameter) frees the pointer it stands for.
+The other way, `c = b; zap(&b);` frees the pointer too, and `c` still holds it:
+`free(c)` after it is a CC-OWN-DOUBLE-FREE and `work(c)` a
+CC-OWN-USE-AFTER-FREE, unless `c` got another value first. A store of the value
+a pointer already holds (`p.right = p.right`) changes nothing. A
 local that stands for a pointer holds the old value when the pointer
 gets a new one (`old = p; p = make();`, `take(&p)` at a `CC_OWNS_OUT`
 parameter, `old = *p; *p = v;` through a `CC_FREES` parameter), except after

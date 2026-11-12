@@ -384,7 +384,8 @@ def after_call(body: Body, item: Item, site: Site) -> Outcome
           Breach(code: DOUBLE_FREE, name: root, message: message, path: ended_path(current, root, step)),
         )
       some(state) if state == CLEARED or state == ESCAPED -> next
-      some(_) if site.clears.include?(name) and root == name -> current = ended(current, root, CLEARED, step)
+      some(_) if site.clears.include?(name) and root == name ->
+        current = aliases_freed(ended(current, root, CLEARED, step), root, step)
       some(_) if site.clears.include?(name) ->
         # The call set only the alias to null (`zap(&p.left)`, `pair_free(&p)`): the pointer it stood for is freed.
         freed = ended(current, root, FREED, step)
@@ -527,6 +528,11 @@ end
 
 # A new value of a pointer: one that still owns loses what it owned. (A realloc of it moved it first.)
 def after_assign(body: Body, item: Item, assign: Assign) -> Outcome
+  # A pointer that gets the value it already holds (`p.right = p.right`, or `b = c` where `c` stands for `b`) loses
+  # nothing and stays as it was.
+  copies = assign.value == "moved" or assign.value == "alias"
+  return went(item) if copies and owner(item.state, assign.from) == owner(item.state, assign.name)
+
   at = "#{assign.line}:#{assign.column}"
   step = Step(text: "#{at} #{plain(assign.name)} = #{assign.shown}", name: assign.name, origin: true)
   breaches: List[Breach] = []
@@ -588,7 +594,7 @@ def kept_by_alias?(state: State, name: String) -> Bool = state.aliases.values.in
 # `old = *p; *p = v;` in a CC_FREES parameter, `old = p; p = q;` or `old = p; take(&p);`: the locals that stood for the
 # pointer keep its old value, in the state it had; the first one holds it and the others stand for it.
 def handed_over(state: State, name: String) -> State
-  keepers = state.aliases.keys.sort.select do |alias| state.aliases[alias] == name end
+  keepers = keepers_of(state, name)
   holder = keepers.first
   aliases = state.aliases.delete(holder)
   for other in keepers.drop(1)
@@ -599,6 +605,20 @@ def handed_over(state: State, name: String) -> State
     some(own) -> state.with(aliases: aliases, owns: state.owns.put(holder, own))
     none -> state.with(aliases: aliases)
   end
+end
+
+# `c = b; zap(&b)`: the call freed `name` and set it alone to null, so the locals that stood for it still hold the
+# pointer it freed (after `handed_over`, the first holds it and the others stand for that one).
+def aliases_freed(item: Item, name: String, step: Step) -> Item
+  return item if not kept_by_alias?(item.state, name)
+
+  holder = keepers_of(item.state, name).first
+  ended(item.with(state: handed_over(item.state, name)), holder, FREED, step.with(name: holder))
+end
+
+# The locals that stand for the pointer `name`, in the order of their names.
+def keepers_of(state: State, name: String) -> List[String]
+  state.aliases.keys.sort.select do |alias| state.aliases[alias] == name end
 end
 
 # The result of a realloc owns; the pointer it moved owns again where the result is null.
