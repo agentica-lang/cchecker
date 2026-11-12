@@ -619,7 +619,7 @@ def collect(options: Options, config: Config.Config, jobs: List[Tools.Job], cwd:
         end
 
       error(message) ->
-        errors = errors.push(ToolError(tool: ToolKind.name(job.tool), file: job.entry.file, message: message))
+        errors = errors.push(ToolError(tool: ToolKind.name(job.tool), file: job.entry.file, message: "#{message}"))
     end
   end
 

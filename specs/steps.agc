@@ -172,7 +172,7 @@ def folder_empty(ctx: BDD.Context, args: List[String]) -> BDD.Context
   path = host_path(ctx, args[0])
   case Dir.list(path)
     ok(names) -> BDD.assert(ctx, names.empty?, "#{path} holds #{names.join(", ")}")
-    error(message) -> BDD.assert(ctx, false, message)
+    error(message) -> BDD.assert(ctx, false, "#{message}")
   end
 end
 
@@ -353,7 +353,7 @@ def remove_folder(ctx: BDD.Context) -> Result[Void] = Path.remove("#{SPECS}/#{fo
 def check(ctx: BDD.Context, result: Result[Void]) -> BDD.Context
   case result
     ok(_) -> ctx
-    error(message) -> BDD.assert(ctx, false, message)
+    error(message) -> BDD.assert(ctx, false, "#{message}")
   end
 end
 
