@@ -189,10 +189,12 @@ Feature: The settings of a project
       | [assume]   | acquires = ["uv_mutex_lock(0)"]           | assume.acquires        |
       | [assume]   | releases = ["pthread_mutex_unlock(0)"]    | assume.releases        |
       | [assume]   | acquires = ["uv_mutex_trylock(0)"]        | assume.acquires        |
+      | [assume]   | tries = ["pthread_mutex_trylock(0)"]      | assume.tries           |
+      | [assume]   | tries = ["lock"]                          | assume.tries           |
       | [database] | fold_ignoring = ["A,B"]                   | database.fold_ignoring |
       | [database] | fold_ignoring = ["1A"]                    | database.fold_ignoring |
 
-  Scenario: A function in acquires and releases at once is an error
+  Scenario: A function in two of acquires, releases and tries at once is an error
     Given the C file "blocks.c" holds:
       """
       void tick(void) {}
@@ -208,6 +210,18 @@ Feature: The settings of a project
     And the errors include:
       """
       cchecker.toml: assume.acquires and releases both name lock
+      """
+    Given the file "cchecker.toml" holds:
+      """
+      [assume]
+      releases = ["unlock(0)"]
+      tries = ["unlock@a.c(0)"]
+      """
+    When I run cchecker in its folder with "--tools rules blocks.c"
+    Then the exit code is 2
+    And the errors include:
+      """
+      cchecker.toml: assume.releases and tries both name unlock
       """
     Given the file "cchecker.toml" holds:
       """

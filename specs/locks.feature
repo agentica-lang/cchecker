@@ -233,6 +233,103 @@ Feature: Locks on every path
       "path":["6:11 fails","7:7 true","8:5 releases q->mu","9:3 returns"]
       """
 
+  Scenario Outline: A helper that takes or releases a lock by a flag, or tries it, does so on that side only (<case>)
+    Given the C file "cond.c" holds:
+      """
+      #include <pthread.h>
+      #include <stdbool.h>
+      #include "cchecker.h"
+      struct queue { pthread_mutex_t mu; int n; };
+      CC_ACQUIRES_IF(q->mu, *locked) void lock_if(struct queue *q, bool *locked);
+      CC_RELEASES_IF(q->mu, locked) void unlock_if(struct queue *q, bool locked);
+      CC_TRIES(q->mu) int try_lock(struct queue *q);
+      int work(struct queue *q);
+
+      <code>
+      """
+    When I run cchecker with "--tools rules --json $DIR/cond.c -- -I../include"
+    Then the exit code is <exit>
+    And the output <found>:
+      """
+      <finding>
+      """
+
+    Examples:
+      | case                                | code                                                                                                                                                                         | exit | found            | finding                                                                          |
+      | flag tested, released               | int pop(struct queue *q) { bool locked; lock_if(q, &locked); q->n--; if (locked) pthread_mutex_unlock(&q->mu); return 0; }                                                 | 0    | does not include | CC-PATH-LOCK                                                                     |
+      | flag never tested                   | int pop(struct queue *q) { bool locked; lock_if(q, &locked); q->n--; return 0; }                                                                                             | 1    | includes         | "code":"CC-PATH-LOCK-NOT-RELEASED","tool":"rules","file":"$DIR/cond.c","line":10 |
+      | released whatever the flag          | int pop(struct queue *q) { bool locked; lock_if(q, &locked); q->n--; pthread_mutex_unlock(&q->mu); return 0; }                                                               | 1    | includes         | "code":"CC-PATH-LOCK-NOT-HELD","tool":"rules","file":"$DIR/cond.c","line":10     |
+      | released by the flag                | int pop(struct queue *q) { bool locked; lock_if(q, &locked); q->n--; unlock_if(q, locked); return 0; }                                                                       | 0    | does not include | CC-PATH-LOCK                                                                     |
+      | released by another flag            | int pop(struct queue *q, bool held) { bool locked; lock_if(q, &locked); q->n--; unlock_if(q, held); return 0; }                                                              | 1    | includes         | "code":"CC-PATH-LOCK-NOT-RELEASED","tool":"rules","file":"$DIR/cond.c","line":10 |
+      | released by a flag, nothing taken   | void drop(struct queue *q, bool held) { unlock_if(q, held); }                                                                                                                | 1    | includes         | "code":"CC-PATH-LOCK-NOT-HELD","tool":"rules","file":"$DIR/cond.c","line":10     |
+      | flag set where it took the lock     | int pop(struct queue *q) { bool locked; lock_if(q, &locked); if (!locked && q->n) { pthread_mutex_lock(&q->mu); locked = true; } work(q); unlock_if(q, locked); return 0; } | 0    | does not include | CC-PATH-LOCK                                                                     |
+      | flag not set where it took the lock | int pop(struct queue *q) { bool locked; lock_if(q, &locked); if (!locked && q->n) pthread_mutex_lock(&q->mu); work(q); unlock_if(q, locked); return 0; }                   | 1    | includes         | "code":"CC-PATH-LOCK-NOT-RELEASED","tool":"rules","file":"$DIR/cond.c","line":10 |
+      | constant flag                       | int pop(struct queue *q) { pthread_mutex_lock(&q->mu); work(q); unlock_if(q, true); return 0; }                                                                             | 0    | does not include | CC-PATH-LOCK                                                                     |
+      | constant flag, nothing taken        | int pop(struct queue *q) { work(q); unlock_if(q, 1); return 0; }                                                                                                             | 1    | includes         | "code":"CC-PATH-LOCK-NOT-HELD","tool":"rules","file":"$DIR/cond.c","line":10     |
+      | flag written after the take         | int pop(struct queue *q) { bool locked; lock_if(q, &locked); locked = work(q); unlock_if(q, locked); return 0; }                                                            | 1    | includes         | "code":"CC-PATH-LOCK-NOT-RELEASED","tool":"rules","file":"$DIR/cond.c","line":10 |
+      | flag lent elsewhere                 | int pop(struct queue *q) { bool locked; bool *p = &locked; lock_if(q, &locked); *p = false; if (locked) pthread_mutex_unlock(&q->mu); return 0; }                          | 1    | includes         | "code":"CC-PATH-LOCK-NOT-RELEASED","tool":"rules","file":"$DIR/cond.c","line":10 |
+      | volatile flag                       | int pop(struct queue *q) { volatile bool locked; lock_if(q, (bool *)&locked); if (locked) pthread_mutex_unlock(&q->mu); return 0; }                                        | 1    | includes         | "code":"CC-PATH-LOCK-NOT-RELEASED","tool":"rules","file":"$DIR/cond.c","line":10 |
+      | flag in a field                     | struct box { bool locked; }; int pop(struct queue *q, struct box *b) { lock_if(q, &b->locked); if (b->locked) pthread_mutex_unlock(&q->mu); return 0; }                   | 1    | includes         | "code":"CC-PATH-LOCK-NOT-RELEASED","tool":"rules","file":"$DIR/cond.c","line":10 |
+      | tried, tested                       | int pop(struct queue *q) { if (try_lock(q) == 0) { q->n--; pthread_mutex_unlock(&q->mu); } return 0; }                                                                      | 0    | does not include | CC-PATH-LOCK                                                                     |
+      | tried, kept                         | int pop(struct queue *q) { int r = try_lock(q); if (r) return r; q->n--; pthread_mutex_unlock(&q->mu); return 0; }                                                          | 0    | does not include | CC-PATH-LOCK                                                                     |
+      | tried, no unlock                    | int pop(struct queue *q) { if (!try_lock(q)) q->n--; return 0; }                                                                                                             | 1    | includes         | "code":"CC-PATH-LOCK-NOT-RELEASED","tool":"rules","file":"$DIR/cond.c","line":10 |
+      | tried, released where it failed     | int pop(struct queue *q) { if (try_lock(q)) pthread_mutex_unlock(&q->mu); return 0; }                                                                                        | 1    | includes         | "code":"CC-PATH-LOCK-NOT-HELD","tool":"rules","file":"$DIR/cond.c","line":10     |
+      | tried, kept and never tested        | int pop(struct queue *q) { int r = try_lock(q); work(q); pthread_mutex_unlock(&q->mu); return r; }                                                                          | 1    | includes         | "code":"CC-PATH-LOCK-NOT-HELD","tool":"rules","file":"$DIR/cond.c","line":10     |
+
+  Scenario: The path of a helper that takes a lock by a flag shows the take, and where it did not take it
+    Given the C file "cond.c" holds:
+      """
+      #include <pthread.h>
+      #include <stdbool.h>
+      #include "cchecker.h"
+      struct queue { pthread_mutex_t mu; int n; };
+      CC_ACQUIRES_IF(q->mu, *locked) void lock_if(struct queue *q, bool *locked);
+
+      int pop(struct queue *q) {
+        bool locked;
+        lock_if(q, &locked);
+        if (q->n)
+          return 1;
+        pthread_mutex_unlock(&q->mu);
+        return 0;
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/cond.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "path":["9:3 takes q->mu","10:7 true","11:5 returns"]
+      """
+    And the output includes:
+      """
+      "path":["9:3 does not take q->mu","10:7 false","12:3 releases q->mu","13:3 returns"]
+      """
+
+  Scenario Outline: A lock mark of a function that cannot be read is an error of the tool (<case>)
+    Given the C file "marks.c" holds:
+      """
+      #include "pthread.h" /* found in the system folders */
+      #include "cchecker.h"
+      struct queue { pthread_mutex_t mu; int n; };
+
+      <code>
+      void touch(void) { }
+      """
+    When I run cchecker with "--tools rules --json $DIR/marks.c -- -I../include"
+    Then the exit code is 2
+    And the output includes:
+      """
+      "errors":[{"tool":"rules","file":"$DIR/marks.c","message":"<message>"}]
+      """
+
+    Examples:
+      | case                         | code                                                                         | message                                                                                          |
+      | a flag that is no parameter  | CC_ACQUIRES_IF(q->mu, *done) void lock_if(struct queue *q, int *locked);     | lock_if: CC_ACQUIRES_IF(lock, *flag) needs a parameter as its flag: acquires_if(q->mu, *done)    |
+      | a flag not through a pointer | CC_ACQUIRES_IF(q->mu, locked) void lock_if(struct queue *q, int *locked);    | lock_if: CC_ACQUIRES_IF(lock, *flag) needs a parameter as its flag: acquires_if(q->mu, locked)   |
+      | no flag                      | CC_RELEASES_IF(q->mu) void unlock_if(struct queue *q, int locked);           | unlock_if: CC_RELEASES_IF(lock, flag) needs a parameter as its flag: releases_if(q->mu)          |
+      | a flag through a pointer     | CC_RELEASES_IF(q->mu, *locked) void unlock_if(struct queue *q, int *locked); | unlock_if: CC_RELEASES_IF(lock, flag) needs a parameter as its flag: releases_if(q->mu, *locked) |
+      | two locks tried              | CC_TRIES(q->mu, q->n) int try_lock(struct queue *q);                         | try_lock: CC_TRIES(lock) names one lock: tries(q->mu, q->n)                                      |
+
   Scenario Outline: A lock held at a call that may jump out is not released on that way out (<case>)
     Given the C file "jump.c" holds:
       """

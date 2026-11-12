@@ -51,6 +51,7 @@ catches = ["run_protected"]
 jump_releases = ["take_recorded"]
 acquires = ["my_lock(0)"]
 releases = ["my_unlock(0)"]
+tries = ["my_trylock(0)"]
 nonblocking = ["uv__read"]
 ```
 
@@ -124,8 +125,8 @@ file of the definition. It works in every list of `[roots]` and in `short`,
 `[assume]`, and on each side of a `stop_calls` pair (`stop_fields`,
 `short_locks` and `owned_locks` name fields and locks), and a `name@path` that
 matches no function is an error (exit 2) like a bare name that does. `acquires`,
-`releases` and the wrappers of `short_locks` add the place of the parameter:
-`name@path(0)`.
+`releases`, `tries` and the wrappers of `short_locks` add the place of the
+parameter: `name@path(0)`.
 
 `[assume]` says what the project knows of its own functions and cchecker cannot
 see in the C, as `CC_ASSUME_SHORT` and `CC_STOP` do on a declaration. `short`
@@ -227,6 +228,14 @@ one external `lock` both ways, and `grab@a.c(0)` for a static `grab` of `a.c`
 also marks an external `grab` of another file. A wrapper that no declaration
 matches, or whose `N` no declaration reaches, is an error (exit 2)
 (`my_lock(0) (assume.acquires)`).
+
+`tries` names the same way a wrapper that takes the lock of its parameter `N`
+only where it returns 0, as `CC_TRIES` does on a declaration (`my_trylock(0)`
+for `int my_trylock(pthread_mutex_t *m) { return pthread_mutex_trylock(m); }`):
+a call of it is a trylock for its callers
+([Locks](rules.md#locks-on-every-path)). A function is in only one of
+`acquires`, `releases` and `tries`, and an entry that no declaration matches is
+an error (exit 2) (`my_trylock(0) (assume.tries)`).
 
 A short lock is one held for a few instructions: a lock whose field or global is
 marked `CC_NO_SYSCALL_UNDER()`, or whose class `[assume] short_locks` names:

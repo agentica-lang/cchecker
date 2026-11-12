@@ -26,6 +26,12 @@ ASSUMED_LOCK = "__cc_lock"
 # The annotations that name locks, and whether the function takes them.
 LOCK_MARKS = {"acquires": true, "releases": false}
 
+# The annotations of a function that takes or releases a lock on one side only: by a flag (CC_ACQUIRES_IF,
+# CC_RELEASES_IF), or where it returns 0 (CC_TRIES).
+ACQUIRES_IF_MARK = "acquires_if"
+RELEASES_IF_MARK = "releases_if"
+TRIES_MARK = "tries"
+
 ## The start of the mark of CC_PAIR(set, restore).
 export PAIR_MARK = "pair("
 
@@ -188,10 +194,11 @@ export struct Unit
   target: String = ""
 end
 
-# The lock wrappers of `[assume] acquires` and `releases`.
+# The lock wrappers of `[assume] acquires`, `releases` and `tries`.
 struct Wrappers
   acquires: List[Config.Wrapper]
   releases: List[Config.Wrapper]
+  tries: List[Config.Wrapper] = []
 end
 
 # A struct or union: its name (a typedef name for an anonymous one), the ids and names of its fields, their types
@@ -266,14 +273,18 @@ struct Found
 end
 
 ## Returns the unit of the declarations that `Scan` kept, a JSON array.
-export def read(decls: Json) -> Result[Unit] = read_with(decls, [], [])
+export def read(decls: Json) -> Result[Unit] = read_with(decls, [], [], [])
 
-## Returns the unit of the declarations, with the lock wrappers of `[assume] acquires` and `releases` (`name(N)` or
-## `name@path(N)`) marked as CC_ACQUIRES and CC_RELEASES of their parameter `N` would: the C of a library cannot be
-## edited, so the settings say it.
-export def read_with(decls: Json, acquires: List[String], releases: List[String]) -> Result[Unit]
+## Returns the unit of the declarations, with the lock wrappers of `[assume] acquires`, `releases` and `tries`
+## (`name(N)` or `name@path(N)`) marked as CC_ACQUIRES, CC_RELEASES and CC_TRIES of their parameter `N` would: the C of
+## a library cannot be edited, so the settings say it.
+export def read_with(decls: Json, acquires: List[String], releases: List[String], tries: List[String]) -> Result[Unit]
   nodes = try JSON.list(decls)
-  wrappers = Wrappers(acquires: parsed_wrappers(acquires), releases: parsed_wrappers(releases))
+  wrappers = Wrappers(
+    acquires: parsed_wrappers(acquires),
+    releases: parsed_wrappers(releases),
+    tries: parsed_wrappers(tries),
+  )
 
   tables = tables_of(nodes)
   ctx = context_of(tables, nodes, wrappers)
@@ -756,8 +767,70 @@ def lock_marks_of(tables: Tables, nodes: List[Json]) -> LockMarks
   locks = marks.select do |found| lock_mark?(found.mark) end
   bad_marks = locks.select do |found| mark_error(found) != "" end
   errors = bad_marks.map do |found| MarkError(file: found.file, message: mark_error(found)) end
+  functions = nodes.select do |node| Ast.kind(node) == "FunctionDecl" end
+  for node in functions
+    params = Flow.params_named(node)
+    for mark in own_marks(node)
+      message = function_mark_error(mark, params)
+      if message != ""
+        errors = errors.push(
+          MarkError(file: Ast.place_of(node).file, message: "#{Ast.text(node, "name")}: #{message}"),
+        )
+      end
+    end
+  end
 
   LockMarks(marks: locks.select do |found| mark_error(found) == "" end, errors: errors)
+end
+
+# What is wrong with a mark of a function that takes or releases a lock on one side only, or "": its flag must be a
+# parameter (`*flag` for CC_ACQUIRES_IF), and CC_TRIES names one lock.
+def function_mark_error(mark: String, params: List[String]) -> String
+  if mark.start_with?("#{ACQUIRES_IF_MARK}(") and flagged(mark, ACQUIRES_IF_MARK, params).empty?
+    return "CC_ACQUIRES_IF(lock, *flag) needs a parameter as its flag: #{mark}"
+  end
+
+  if mark.start_with?("#{RELEASES_IF_MARK}(") and flagged(mark, RELEASES_IF_MARK, params).empty?
+    return "CC_RELEASES_IF(lock, flag) needs a parameter as its flag: #{mark}"
+  end
+
+  return "CC_TRIES(lock) names one lock: #{mark}" if mark.start_with?("#{TRIES_MARK}(") and tried(mark).empty?
+
+  ""
+end
+
+# The lock and the flag of a mark `acquires_if(lock, *flag)` or `releases_if(lock, flag)` (`word`), with the flag a
+# parameter of `params`: [lock, flag], or [] when the mark is not of that form.
+def flagged(mark: String, word: String, params: List[String]) -> List[String]
+  parts = inside_of(mark, word)
+  return [] if parts.size != 2 or parts[0] == ""
+
+  flag = parts[1]
+  if word == ACQUIRES_IF_MARK
+    return [] if not flag.start_with?("*")
+
+    flag = flag.slice(1, flag.length - 1).strip
+  end
+
+  return [] if not params.include?(flag)
+
+  [parts[0], flag]
+end
+
+# The lock of a mark `tries(lock)`, or [] when it does not name one lock.
+def tried(mark: String) -> List[String]
+  parts = inside_of(mark, TRIES_MARK)
+  return [] if parts.size != 1 or parts[0] == ""
+
+  parts
+end
+
+# The texts between the commas of a mark `word(a, b)`, stripped; [] for another mark.
+def inside_of(mark: String, word: String) -> List[String]
+  return [] if not mark.start_with?("#{word}(") or not mark.end_with?(")")
+
+  inside = mark.slice(word.length + 1, mark.length - word.length - 2)
+  inside.split(",").map do |text| text.strip end
 end
 
 def lock_mark?(mark: String) -> Bool = mark.start_with?("#{QUIET_MARK}(") or mark.start_with?("#{LEVEL_MARK}(")
@@ -784,8 +857,19 @@ def mark_error(mark: LockMark) -> String
   ""
 end
 
-# The locks of an annotation `acquires(a, b)` or `releases(a)`; none for another one.
+# The locks of an annotation `acquires(a, b)` or `releases(a)`, and the lock of `acquires_if(lock, *flag)`,
+# `releases_if(lock, flag)` or `tries(lock)` when it can be read (`function_mark_error`); none for another one.
 def annotated(mark: String, params: List[String]) -> List[Flow.Annotated]
+  for word in [ACQUIRES_IF_MARK, RELEASES_IF_MARK]
+    found = flagged(mark, word, params)
+    if not found.empty?
+      return [Flow.Annotated(text: found[0], params: params, takes: word == ACQUIRES_IF_MARK, flag: found[1])]
+    end
+  end
+
+  tries = tried(mark)
+  return [Flow.Annotated(text: tries[0], params: params, takes: true, tries: true)] if not tries.empty?
+
   for word in LOCK_MARKS.keys
     if mark.start_with?("#{word}(") and mark.end_with?(")")
       inside = mark.slice(word.length + 1, mark.length - word.length - 2)
@@ -811,12 +895,13 @@ def parsed_wrappers(texts: List[String]) -> List[Config.Wrapper]
   found
 end
 
-# The lock of each wrapper of `[assume] acquires` and `releases` that the unit declares, as the mark would give it:
-# the parameter at the place of the entry. A function gets one, whatever the number of its declarations: not when it
-# has a lock of that kind from the C already (CC_ACQUIRES, CC_RELEASES), and not twice when it is listed twice. A
-# bare name is every function of that name; `name@path` tells static functions apart, by the file of their key, and
-# a function with external linkage is one in the whole project, so its path is only checked against the declarations
-# of the project (`Effects.missing_assumed`). A declaration with fewer named parameters than the place gets none.
+# The lock of each wrapper of `[assume] acquires`, `releases` and `tries` that the unit declares, as the mark would
+# give it: the parameter at the place of the entry. A function gets one, whatever the number of its declarations: not
+# when it has a lock of that kind from the C already (CC_ACQUIRES, CC_RELEASES), and not twice when it is listed
+# twice. A bare name is every function of that name; `name@path` tells static functions apart, by the file of their
+# key, and a function with external linkage is one in the whole project, so its path is only checked against the
+# declarations of the project (`Effects.missing_assumed`). A declaration with fewer named parameters than the place
+# gets none.
 def with_assumed_locks(
   callees: Map[String, Flow.Callee],
   tables: Tables,
@@ -833,6 +918,10 @@ def with_assumed_locks(
     found = with_assumed_lock(found, tables, globals, declarations, wrapper, false)
   end
 
+  for wrapper in wrappers.tries
+    found = with_assumed_lock(found, tables, globals, declarations, wrapper, true, true)
+  end
+
   found
 end
 
@@ -843,6 +932,7 @@ def with_assumed_lock(
   declarations: List[Json],
   wrapper: Config.Wrapper,
   takes: Bool,
+  tries: Bool = false,
 ) -> Map[String, Flow.Callee]
   found = callees
   for node in declarations
@@ -861,7 +951,7 @@ def with_assumed_lock(
 
     params = names.take(wrapper.index).concat([ASSUMED_LOCK]).concat(names.drop(wrapper.index + 1))
     class = class_of_text(tables, globals, ASSUMED_LOCK, params, param_types_of(node))
-    lock = Flow.Annotated(text: ASSUMED_LOCK, params: params, takes: takes, class: class)
+    lock = Flow.Annotated(text: ASSUMED_LOCK, params: params, takes: takes, class: class, tries: tries)
     found = found.put(key, Flow.Callee(locks: known.locks.push(lock), stops: known.stops))
   end
 
@@ -879,7 +969,8 @@ def static_file_matches?(key: String, tail: String) -> Bool
   end
 end
 
-# The marks of the wrappers of `[assume]` on a function, as `CC_ACQUIRES` and `CC_RELEASES` would put them.
+# The marks of the wrappers of `[assume]` on a function, as `CC_ACQUIRES`, `CC_RELEASES` and `CC_TRIES` would put
+# them.
 def with_assumed_marks(ctx: Flow.Context, function: Function) -> Function
   callee_locks = ctx.callees.get(function.key).map do |c| c.locks end
   locks = callee_locks.unwrap_or([])
@@ -887,7 +978,9 @@ def with_assumed_marks(ctx: Flow.Context, function: Function) -> Function
   for lock in locks
     if lock.text == ASSUMED_LOCK
       word = "releases"
-      if lock.takes
+      if lock.tries
+        word = TRIES_MARK
+      elsif lock.takes
         word = "acquires"
       end
 

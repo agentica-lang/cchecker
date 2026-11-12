@@ -226,7 +226,10 @@ export struct Body
 end
 
 ## A lock of a CC_ACQUIRES (`takes`) or a CC_RELEASES, as written, with the names of the parameters of the
-## declaration that carries it; or the lock of a CC_PAIR that a set takes and its restore (`pair`) releases.
+## declaration that carries it; or the lock of a CC_PAIR that a set takes and its restore (`pair`) releases. A lock of a
+## CC_ACQUIRES_IF or a CC_RELEASES_IF has the parameter of its flag (`flag`): the call takes the lock only where it set
+## `*flag` to a value other than 0, and releases it only where `flag` is not 0. A lock of a CC_TRIES (`tries`) is taken
+## where the call returns 0, as a trylock does.
 export struct Annotated
   text: String
   params: List[String]
@@ -234,6 +237,8 @@ export struct Annotated
   class: String = ""
   pair: String = ""
   through: Bool = false
+  flag: String = ""
+  tries: Bool = false
 end
 
 ## What a function of the translation unit says about locks, from all its declarations, and whether it never returns.
@@ -423,6 +428,14 @@ struct Split
   no: List[Int]
 end
 
+# A side of the flags of a call (`flagged_call`): the nodes it goes on from, and the locks the call takes and releases
+# there besides those of its site.
+struct Flagged
+  exits: List[Int]
+  takes: List[Lock]
+  drops: List[Lock]
+end
+
 # A call of `Known.TRIES` in a condition or a value, and whether that is true when the call gave 0 (`call == 0`,
 # `!call`) or false (`call`, `call != 0`).
 struct Tried
@@ -484,7 +497,7 @@ export def body_of(ctx: Context, key: String, node: Json) -> Body
     labels: {},
     gotos: [],
     owners: owners,
-    opaque: opaque_of(owners.places.keys, all),
+    opaque: opaque_of(owners.places.keys, all, flag_addresses(ctx, all)),
     guarded: guarded_of(ctx, owners.places.keys, all),
   )
 
@@ -498,8 +511,12 @@ export def body_of(ctx: Context, key: String, node: Json) -> Body
 
   linked = with_gotos(built.b)
   names = params_named(node)
+  # The locks a call drops on one side come after the others on its site (`flagged_call`), and so here.
   dropped_locks = ctx.callees.get(key).map do |callee| callee.locks.select do |lock| not lock.takes end end
   dropped = dropped_locks.unwrap_or([])
+  flagged = dropped.select do |lock| lock.flag != "" end
+  plain = dropped.select do |lock| lock.flag == "" end
+  dropped = plain.concat(flagged)
   taken_locks = ctx.callees.get(key).map do |callee| callee.locks.select do |lock| lock.takes end end
   taken = taken_locks.unwrap_or([])
   Body(
@@ -1459,8 +1476,10 @@ def identifier_char?(c: String) -> Bool
 end
 
 # The keys of the locals whose value the rules never know: one whose address is taken (`&x`, also in an initializer:
-# a write through the pointer changes it), a `volatile` one, and a `static` one (another call writes it).
-def opaque_of(keys: Map[String, String], nodes: List[Json]) -> Set[String]
+# a write through the pointer changes it), a `volatile` one, and a `static` one (another call writes it). The address
+# passed as the flag of a CC_ACQUIRES_IF (`flags`, by the id of the `&x`) is not one: the call sets the flag, and the
+# mark says what it means.
+def opaque_of(keys: Map[String, String], nodes: List[Json], flags: Set[String]) -> Set[String]
   found: Set[String] = Set.new([])
   for node in nodes
     kind = Ast.kind(node)
@@ -1469,7 +1488,7 @@ def opaque_of(keys: Map[String, String], nodes: List[Json]) -> Set[String]
       if Ast.text(node, "storageClass") == "static" or type.include?("volatile")
         found = found.add(declared_key(keys, node))
       end
-    elsif kind == "UnaryOperator" and Ast.text(node, "opcode") == "&"
+    elsif kind == "UnaryOperator" and Ast.text(node, "opcode") == "&" and not flags.include?(Ast.text(node, "id"))
       root = storage_root(keys, Ast.children(node).first)
       if root != ""
         found = found.add(root)
@@ -1483,7 +1502,7 @@ end
 # The keys of the variables that the condition of an `if`, a loop or a switch reads when the statement holds a call
 # that takes or releases a lock, or a way out (`return`, `goto`, `break`, `continue`): only such a test can change
 # what a path does with a lock, so only its variables get a fact from a constant written to them. The `else if` of an
-# `if` is a statement of its own.
+# `if` is a statement of its own. The flag passed to a CC_RELEASES_IF is such a test too.
 def guarded_of(ctx: Context, keys: Map[String, String], nodes: List[Json]) -> Set[String]
   found: Set[String] = Set.new([])
   for node in nodes
@@ -1498,10 +1517,51 @@ def guarded_of(ctx: Context, keys: Map[String, String], nodes: List[Json]) -> Se
       if at < parts.size and inside.any? do |part| locks?(ctx, part) or leaves?(part) end
         found = found.union(Set.new(roots_of(keys, parts[at])))
       end
+    elsif Ast.kind(node) == "CallExpr"
+      # The flag of a CC_RELEASES_IF is a test that guards its release.
+      args = Ast.children(node).drop(1)
+      for i in flag_places(ctx, callee_name(node), false)
+        if i < args.size
+          found = found.union(Set.new(roots_of(keys, args[i])))
+        end
+      end
     end
   end
 
   found
+end
+
+# The ids of the `&x` that the calls among `nodes` pass as the flag of a CC_ACQUIRES_IF (`lock_if(q, &locked)`).
+def flag_addresses(ctx: Context, nodes: List[Json]) -> Set[String]
+  found: Set[String] = Set.new([])
+  for node in nodes
+    next if Ast.kind(node) != "CallExpr"
+
+    args = Ast.children(node).drop(1)
+    for at in flag_places(ctx, callee_name(node), true)
+      next if at >= args.size
+
+      arg = see_through(args[at])
+      if Ast.kind(arg) == "UnaryOperator" and Ast.text(arg, "opcode") == "&"
+        found = found.add(Ast.text(arg, "id"))
+      end
+    end
+  end
+
+  found
+end
+
+# The places of the parameters that a function names as the flag of its CC_ACQUIRES_IF (`takes`) or its
+# CC_RELEASES_IF.
+def flag_places(ctx: Context, name: String, takes: Bool) -> List[Int]
+  return [] if name == ""
+
+  case ctx.callees.get(key_of_function(ctx, name))
+    some(callee) ->
+      flagged = callee.locks.select do |lock| lock.flag != "" and lock.takes == takes end
+      flagged.flat_map do |lock| (0...lock.params.size).to_a.select do |i| lock.params[i] == lock.flag end end
+    none -> []
+  end
 end
 
 # Whether a statement holds a way out of it.
@@ -2063,8 +2123,8 @@ def declaration(b: Builder, node: Json, preds: List[Int]) -> Built
   elsif not fields.empty? and values.size == 1 and Ast.kind(see_through(values.first)) == "InitListExpr"
     initialized = initializer(b, key, see_through(values.first), preds)
     written = add(initialized.b, Event.Writes([key]), initialized.exits)
-  elsif values.size == 1 and keeps?(b, key) and tried_call(values.first).some?
-    written = kept_result(b, key, tried_call(values.first).unwrap!, preds)
+  elsif values.size == 1 and keeps?(b, key) and tried_call(b, values.first).some?
+    written = kept_result(b, key, tried_call(b, values.first).unwrap!, preds)
   else
     built = in_order(b, values, preds)
     written = add(built.b, Event.Writes([key]), built.exits)
@@ -2898,12 +2958,137 @@ def call(b: Builder, node: Json, preds: List[Int], tried: Bool) -> Built
     hands: site.hands.concat(struct_handed),
   )
 
-  called = add(built.b, Event.Call(site), built.exits)
+  called = flagged_call(built.b, site, args, built.exits)
   return Built(b: called.b, exits: []) if site.stops
 
   return cleared(called.b, clearing, node, called.exits) if not clearing.empty?
 
   called
+end
+
+# The call of `site`, on each side of the flags of the CC_ACQUIRES_IF and CC_RELEASES_IF of its function: before the
+# call, a node for each value of the flag, then the call with the lock taken or released where the flag is not 0. A
+# function with no such mark is one call. The flag of a take is the local whose address the call gets (`&locked`): it
+# gets the value there, as a write, which a later test of it reads; a flag that is no local of the function (`&b->f`,
+# a pointer it was passed) splits the path with no value a test can read. The flag of a release is a test of the
+# argument, as an `if` reads it, and a constant flag takes one side.
+def flagged_call(b: Builder, site: Site, args: List[Json], preds: List[Int]) -> Built
+  flagged = case b.ctx.callees.get(site.key)
+    some(callee) -> callee.locks.select do |lock| lock.flag != "" end
+    none -> []
+  end
+
+  return add(b, Event.Call(site), preds) if flagged.empty?
+
+  texts = args.map do |arg| text_of(b, arg, true) end
+  sides = [Flagged(exits: preds, takes: [], drops: [])]
+  built = b
+  for lock in flagged
+    locks = annotated_lock(lock, texts)
+    places = (0...lock.params.size).to_a.select do |i| lock.params[i] == lock.flag end
+    # The mark names a parameter (`Unit.function_mark_error`); with none, the flag is no argument of the call.
+    at = args.size
+    if not places.empty?
+      at = places.first
+    end
+
+    split = Split(b: built, yes: [], no: [])
+    grown: List[Flagged] = []
+    for side in sides
+      split = flag_split(split.b, site, lock.takes, locks, args, at, side.exits)
+      if not split.yes.empty? and lock.takes
+        grown = grown.push(side.with(exits: split.yes, takes: side.takes.concat(locks)))
+      elsif not split.yes.empty?
+        grown = grown.push(side.with(exits: split.yes, drops: side.drops.concat(locks)))
+      end
+
+      if not split.no.empty?
+        grown = grown.push(side.with(exits: split.no))
+      end
+    end
+
+    built = split.b
+    sides = grown
+  end
+
+  exits: List[Int] = []
+  for side in sides
+    called = add(
+      built,
+      Event.Call(site.with(takes: site.takes.concat(side.takes), drops: site.drops.concat(side.drops))),
+      side.exits,
+    )
+
+    built = called.b
+    exits = exits.concat(called.exits)
+  end
+
+  Built(b: built, exits: exits)
+end
+
+# The two sides of the flag of one lock of a call (`at` is the place of the argument): where the call takes (`takes`)
+# or releases `locks`, and where it does not.
+def flag_split(
+  b: Builder,
+  site: Site,
+  takes: Bool,
+  locks: List[Lock],
+  args: List[Json],
+  at: Int,
+  preds: List[Int],
+) -> Split
+  place_fact = Fact(text: "", value: true, roots: [], line: site.line, column: site.column, quiet: true)
+  if at >= args.size
+    yes = add(b, Event.Branch(place_fact), preds)
+    no = add(yes.b, Event.Branch(place_fact.with(value: false)), preds)
+    return Split(b: no.b, yes: yes.exits, no: no.exits)
+  end
+
+  return released_split(b, place_fact, args[at], preds) if not takes
+
+  arg = see_through(args[at])
+  keys = b.owners.places.keys
+  written = Built(b: b, exits: preds)
+  fact = place_fact.with(written: true)
+  if Ast.kind(arg) == "UnaryOperator" and Ast.text(arg, "opcode") == "&"
+    target = Ast.children(arg).first
+    written = add(b, Event.Writes(written_roots(b, target)), preds)
+    key = variable_key(keys, target)
+    if Ast.kind(see_through(target)) == "DeclRefExpr" and keeps?(b, key)
+      fact = fact.with(text: key, roots: [key])
+    end
+  else
+    # A pointer the function was passed: the call writes what it points to, which any local whose address the
+    # function takes may be.
+    written = add(b, Event.Writes([target_root(keys, arg)].concat(b.opaque.to_a)), preds)
+  end
+
+  shown = locks.map do |lock| lock.shown end
+  taken = add(written.b, Event.Branch(fact), written.exits)
+  word = "does not take #{shown.join(", ")}"
+  if shown.empty?
+    word = "does not take its lock"
+  end
+
+  other = fact.with(value: false, quiet: false, word: word, failed: locks)
+  missed = add(taken.b, Event.Branch(other), written.exits)
+  Split(b: missed.b, yes: taken.exits, no: missed.exits)
+end
+
+# The two sides of the flag of a CC_RELEASES_IF: the argument read as the test of an `if` (`fact_of`), quiet, as the
+# call tests it; a constant takes one side.
+def released_split(b: Builder, place_fact: Fact, arg: Json, preds: List[Int]) -> Split
+  bare = see_through(arg)
+  if Ast.kind(bare) == "IntegerLiteral"
+    return Split(b: b, yes: [], no: preds) if Ast.text(bare, "value") == "0"
+
+    return Split(b: b, yes: preds, no: [])
+  end
+
+  fact = fact_of(b, bare).with(line: place_fact.line, column: place_fact.column, quiet: true)
+  yes = add(b, Event.Branch(fact), preds)
+  no = add(yes.b, Event.Branch(fact.with(value: not fact.value)), preds)
+  Split(b: no.b, yes: yes.exits, no: no.exits)
 end
 
 # The followed CC_OWNS fields of the items after the one whose address an argument is (`&a[0]` of `a[2]`): a CC_FREES
@@ -2990,8 +3175,10 @@ def site_of(b: Builder, name: String, args: List[Arg], place: Ast.Place, noretur
   case b.ctx.callees.get(key)
     some(callee) ->
       texts = args.map do |arg| arg.text end
-      taken = callee.locks.select do |lock| lock.takes end
-      dropped = callee.locks.select do |lock| not lock.takes end
+      # A lock that the call takes or releases on one side only is not on the site: `flagged_call` and `trial` add it.
+      plain = callee.locks.select do |lock| lock.flag == "" and not lock.tries end
+      taken = plain.select do |lock| lock.takes end
+      dropped = plain.select do |lock| not lock.takes end
       site.with(
         unnamed: unnamed or taken.any? do |lock| annotated_lock(lock, texts).empty? end,
         takes: takes.concat(taken.flat_map do |lock| annotated_lock(lock, texts) end),
@@ -3138,7 +3325,7 @@ def condition(b: Builder, node: Json, preds: List[Int]) -> Split
     return condition(kept.b, parts.first, kept.exits)
   end
 
-  case tried_call(bare)
+  case tried_call(b, bare)
     some(tried) -> trial(b, tried, preds)
     none -> branch(b, bare, preds)
   end
@@ -3185,39 +3372,7 @@ end
 def branch(b: Builder, bare: Json, preds: List[Int]) -> Split
   value = expression(b, bare, preds)
   keys = value.b.owners.places.keys
-  tested = copied(value.b, bare)
-  text = written_text(value.b, tested, false, keys, 0)
-  roots = roots_of(keys, tested)
-  place = Ast.start_of(bare)
-  fact = Fact(text: text, value: true, roots: roots, line: place.line, column: place.column)
-  case zero_compared(bare)
-    some(compared) ->
-      source = copied(value.b, compared.operand)
-      operand = written_text(value.b, source, false, keys, 0)
-      if operand != "" and compared.equal
-        fact = fact.with(text: operand, roots: roots_of(keys, source), value: false, word: "true")
-      elsif operand != ""
-        fact = fact.with(text: operand, roots: roots_of(keys, source))
-      end
-
-    none -> fact = fact
-  end
-
-  # `r != EBUSY` is the fact of `r == EBUSY`, the other way round, whichever side the number is on.
-  case compared_with(bare, false)
-    some(compared) ->
-      source = copied(value.b, compared.operand)
-      operand = written_text(value.b, source, false, keys, 0)
-      equal = "#{operand} == #{compared.number}"
-      if operand != "" and compared.equal
-        fact = fact.with(text: equal, roots: roots_of(keys, source))
-      elsif operand != ""
-        fact = fact.with(text: equal, roots: roots_of(keys, source), value: false, word: "true")
-      end
-
-    none -> fact = fact
-  end
-
+  fact = fact_of(value.b, bare)
   yes_fact = fact
   no_fact = fact.with(value: not fact.value)
   if fact.word != ""
@@ -3239,6 +3394,50 @@ def branch(b: Builder, bare: Json, preds: List[Int]) -> Split
     some(compared) -> nonzero_side(split, compared, keys)
     none -> split
   end
+end
+
+# The fact of a condition where it is true. A test against 0 is a fact of what it compares, and `r != EBUSY` the fact
+# of `r == EBUSY`, the other way round, whichever side the number is on.
+def fact_of(b: Builder, bare: Json) -> Fact
+  keys = b.owners.places.keys
+  tested = copied(b, bare)
+  place = Ast.start_of(bare)
+  fact = Fact(
+    text: written_text(b, tested, false, keys, 0),
+    value: true,
+    roots: roots_of(keys, tested),
+    line: place.line,
+    column: place.column,
+  )
+
+  case zero_compared(bare)
+    some(compared) ->
+      source = copied(b, compared.operand)
+      operand = written_text(b, source, false, keys, 0)
+      if operand != "" and compared.equal
+        fact = fact.with(text: operand, roots: roots_of(keys, source), value: false, word: "true")
+      elsif operand != ""
+        fact = fact.with(text: operand, roots: roots_of(keys, source))
+      end
+
+    none -> fact = fact
+  end
+
+  case compared_with(bare, false)
+    some(compared) ->
+      source = copied(b, compared.operand)
+      operand = written_text(b, source, false, keys, 0)
+      equal = "#{operand} == #{compared.number}"
+      if operand != "" and compared.equal
+        fact = fact.with(text: equal, roots: roots_of(keys, source))
+      elsif operand != ""
+        fact = fact.with(text: equal, roots: roots_of(keys, source), value: false, word: "true")
+      end
+
+    none -> fact = fact
+  end
+
+  fact
 end
 
 # `r == EBUSY` where it holds, and `r != EBUSY` where it does not, also tell that `r` is not 0: a fact of `r` after
@@ -3340,25 +3539,39 @@ def null_test(b: Builder, node: Json) -> Optional[NullTest]
   none
 end
 
-# A call of `Known.TRIES`, alone, negated or compared with 0 (`call`, `!call`, `call == 0`).
-def tried_call(node: Json) -> Optional[Tried]
+# A call of `Known.TRIES` or of a function with CC_TRIES, alone, negated or compared with 0 (`call`, `!call`,
+# `call == 0`).
+def tried_call(b: Builder, node: Json) -> Optional[Tried]
   bare = see_through(node)
-  return some(Tried(call: bare, zero_is_true: false)) if try_call?(bare)
+  return some(Tried(call: bare, zero_is_true: false)) if try_call?(b, bare)
 
   if Ast.kind(bare) == "UnaryOperator" and Ast.text(bare, "opcode") == "!"
-    return tried_call(Ast.children(bare).first).map do |tried| tried.with(zero_is_true: not tried.zero_is_true) end
+    return tried_call(b, Ast.children(bare).first).map do |tried| tried.with(zero_is_true: not tried.zero_is_true) end
   end
 
   case zero_compared(bare)
     some(compared) ->
-      tried_call(compared.operand).map do |tried| tried.with(zero_is_true: tried.zero_is_true != compared.equal) end
+      tried_call(b, compared.operand).map do |tried| tried.with(zero_is_true: tried.zero_is_true != compared.equal) end
     none -> none
   end
 end
 
-def try_call?(node: Json) -> Bool
+def try_call?(b: Builder, node: Json) -> Bool
   bare = see_through(node)
-  Ast.kind(bare) == "CallExpr" and Known.TRIES.include?(callee_name(bare))
+  return false if Ast.kind(bare) != "CallExpr"
+
+  name = callee_name(bare)
+  Known.TRIES.include?(name) or not marked_tries(b, name).empty?
+end
+
+# The locks of the CC_TRIES of a function, by name; none for another function.
+def marked_tries(b: Builder, name: String) -> List[Annotated]
+  return [] if name == ""
+
+  case b.ctx.callees.get(key_of_function(b.ctx, name))
+    some(callee) -> callee.locks.select do |lock| lock.tries end
+    none -> []
+  end
 end
 
 # The call, then on the branch where it gave 0 a node that takes its lock.
@@ -3370,11 +3583,20 @@ def trial(b: Builder, tried: Tried, preds: List[Int]) -> Split
   Split(b: taken.b, yes: called.exits, no: taken.exits)
 end
 
-# The take of the lock of a call of `Known.TRIES`, where it gave 0.
+# The take of the lock of a call of `Known.TRIES`, or of the locks of a CC_TRIES, where it gave 0. A CC_TRIES never
+# waits for its lock.
 def taking_site(b: Builder, node: Json) -> Site
   name = callee_name(node)
   passed = Ast.children(node).drop(1).map do |arg| arg_of(b, arg) end
   site = site_of(b, name, passed, Ast.start_of(node), false)
+  marked = marked_tries(b, name)
+  if not marked.empty?
+    texts = passed.map do |arg| arg.text end
+    # The call itself is the node before this one (`trial`), with what it does to the pointers that own.
+    taken = site.with(frees: [], hands: [], clears: [], fills: [], lost: false, drops: [], waits: [])
+    return taken.with(takes: marked.flat_map do |lock| annotated_lock(lock, texts) end, tried: true)
+  end
+
   site.with(takes: lock_of(passed, 0), tried: Known.NO_WAIT.include?(name))
 end
 
@@ -3390,7 +3612,7 @@ def kept_trial(b: Builder, node: Json) -> Optional[Tried]
   key = variable_key(b.owners.places.keys, parts[0])
   return none if not keeps?(b, key)
 
-  tried_call(parts[1])
+  tried_call(b, parts[1])
 end
 
 # Whether a write of the local `key` can give it a value that a path knows: not one that owns, nor one whose value the

@@ -187,6 +187,35 @@ Feature: Time and memory on large generated inputs
       "incomplete_functions":[]
       """
 
+  Scenario: Helpers that take and release a lock by a flag or a result, 24 times in a loop, stay in their bounds
+    The flag of each take is a fact until its release reads it, and the result of each try until its test, so the
+    states do not multiply with the calls.
+
+    Given the C file "flags.c" holds, with ITEMS as 24 times " lock_if(q, &locked); if (!locked && q->n) { pthread_mutex_lock(&q->mu); locked = true; } work(1); unlock_if(q, locked); r = try_lock(q); if (r == 0) { work(2); pthread_mutex_unlock(&q->mu); }":
+      """
+      #include <pthread.h>
+      #include <stdbool.h>
+      #include "cchecker.h"
+      struct queue { pthread_mutex_t mu; int n; };
+      CC_ACQUIRES_IF(q->mu, *locked) void lock_if(struct queue *q, bool *locked);
+      CC_RELEASES_IF(q->mu, locked) void unlock_if(struct queue *q, bool locked);
+      CC_TRIES(q->mu) int try_lock(struct queue *q);
+      int work(int n);
+      int pop(struct queue *q) {
+        bool locked;
+        int r;
+        for (int i = 0; i < q->n; i++) {ITEMS
+        }
+        return 0;
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/flags.c -- -I../include" in at most 1500 MiB and 20 seconds
+    Then the exit code is 0
+    And the output includes:
+      """
+      "incomplete_functions":[]
+      """
+
   Scenario: 20 flags set to constants and tested after a lock, with no lock in their branches, stay in their bounds
     A constant written to a flag is a fact only when a test of the flag guards a lock call or a way out, so these
     flags are not followed and the walk does not keep a state for each choice of them.

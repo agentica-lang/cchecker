@@ -729,6 +729,66 @@ Feature: What the project assumes of its functions
       | listed           | acquires = ["my_lock(0)"]         | releases = ["my_unlock(0)"]         | does not include | does not include | includes         |
       | listed by file   | acquires = ["my_lock@wrap.c(0)"]  | releases = ["my_unlock@wrap.c(0)"]  | does not include | does not include | includes         |
 
+  Scenario Outline: [assume] tries marks a wrapper that takes the lock of a parameter where it returns 0 (<case>)
+    Given the C file "try.c" holds:
+      """
+      #include "pthread.h"
+      int my_try(pthread_mutex_t *m) { return pthread_mutex_trylock(m); }
+      void work(pthread_mutex_t *m) { if (my_try(m) == 0) pthread_mutex_unlock(m); }
+      int leak(pthread_mutex_t *m) { if (my_try(m) == 0) return 1; return 0; }
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [assume]
+      <list>
+      """
+    When I run cchecker in its folder with "--tools rules --json try.c"
+    Then the exit code is 1
+    And the output <work>:
+      """
+      "CC-PATH-LOCK-NOT-HELD","tool":"rules","file":"try.c","line":3,
+      """
+    And the output <leak>:
+      """
+      "CC-PATH-LOCK-NOT-RELEASED","tool":"rules","file":"try.c","line":4,
+      """
+
+    Examples:
+      | case           | list                         | work             | leak             |
+      | not listed     | stop = ["unused"]            | includes         | does not include |
+      | listed         | tries = ["my_try(0)"]        | does not include | includes         |
+      | listed by file | tries = ["my_try@try.c(0)"]  | does not include | includes         |
+
+  Scenario: A wrapper of tries that no function has is an error
+    Given the C file "try.c" holds:
+      """
+      #include "pthread.h"
+      int my_try(pthread_mutex_t *m) { return pthread_mutex_trylock(m); }
+      """
+    And the file "compile_commands.json" holds:
+      """
+      [{"directory": ".", "file": "try.c", "arguments": ["cc", "-c", "try.c"]}]
+      """
+    And the file "cchecker.toml" holds:
+      """
+      [assume]
+      tries = ["my_try(0)", "my_tri(0)", "my_try(1)"]
+      """
+    When I run cchecker in its folder with "--tools rules"
+    Then the exit code is 2
+    And the errors include:
+      """
+      my_tri(0) (assume.tries)
+      """
+    And the errors include:
+      """
+      my_try(1) (assume.tries)
+      """
+    And the errors do not include:
+      """
+      my_try(0) (assume
+      """
+
   Scenario Outline: [assume] short_locks takes a wrapper whose locks are short (<case>)
     Given the C file "short.c" holds:
       """
