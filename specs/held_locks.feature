@@ -665,3 +665,214 @@ Feature: What runs while a lock is held
       """
       calls unlock_both
       """
+
+  Scenario Outline: A call of a helper whose flag gives it no lock to release is not followed under a CC_NO_SYSCALL_UNDER lock (<case>)
+    Given the C file "flag.c" holds:
+      """
+      #include "pthread.h" /* found in the system folders */
+      #include <stdbool.h>
+      #include "unistd.h"
+      #include "cchecker.h"
+
+      struct queue { CC_NO_SYSCALL_UNDER() pthread_mutex_t mu; int fd; int n; };
+      CC_RELEASES_IF(q->mu, held) void unlock_if(struct queue *q, bool held) { if (held) { write(q->fd, "x", 1); pthread_mutex_unlock(&q->mu); } }
+
+      void f(struct queue *a, struct queue *b) { pthread_mutex_lock(&a->mu); unlock_if(b, <flag>); pthread_mutex_unlock(&a->mu); }
+      """
+    When I run cchecker with "--tools rules --json $DIR/flag.c -- -I../include"
+    Then the exit code is <exit>
+    And the output <found>:
+      """
+      "code":"CC-PATH-SYSCALL-UNDER-LOCK"
+      """
+
+    Examples:
+      | case              | flag  | exit | found            |
+      | the flag is false | false | 0    | does not include |
+      | the flag is true  | true  | 1    | includes         |
+
+  Scenario Outline: A helper that takes a lock by a flag is one finding of a rule under a lock, on the side where it takes (<case>)
+    Given the C file "nest.c" holds:
+      """
+      #include "pthread.h" /* found in the system folders */
+      #include <stdbool.h>
+      #include "cchecker.h"
+
+      struct queue { CC_NO_SYSCALL_UNDER() <mark> pthread_mutex_t mu; int n; };
+      struct slot { CC_LOCK_LEVEL(1) pthread_mutex_t mu; int n; };
+      CC_ACQUIRES_IF(s->mu, *locked) void lock_if(struct slot *s, bool *locked) { pthread_mutex_lock(&s->mu); *locked = true; }
+      CC_RELEASES_IF(s->mu, locked) void unlock_if(struct slot *s, bool locked) { if (locked) pthread_mutex_unlock(&s->mu); }
+
+      <code>
+      """
+    When I run cchecker with "--tools rules --json $DIR/nest.c -- -I../include"
+    Then the exit code is <exit>
+    And the output <found>:
+      """
+      <finding>
+      """
+    And the output does not include:
+      """
+      calls unlock_if
+      """
+
+    Examples:
+      | case                     | mark              | code                                                                                                                                | exit | found            | finding                             |
+      | a system call            |                   | void nest(struct queue *a, struct slot *b) { bool l; pthread_mutex_lock(&a->mu); lock_if(b, &l); b->n++; unlock_if(b, l); pthread_mutex_unlock(&a->mu); } | 1    | includes once    | "code":"CC-PATH-SYSCALL-UNDER-LOCK" |
+      | a lock of a lower level  | CC_LOCK_LEVEL(2)  | void nest(struct queue *a, struct slot *b) { bool l; pthread_mutex_lock(&a->mu); lock_if(b, &l); b->n++; unlock_if(b, l); pthread_mutex_unlock(&a->mu); } | 1    | includes once    | "code":"CC-PATH-LOCK-ORDER"               |
+      | no lock held             | CC_LOCK_LEVEL(2)  | void nest(struct queue *a, struct slot *b) { bool l; lock_if(b, &l); b->n++; unlock_if(b, l); a->n++; }                              | 0    | does not include | "code":"CC-PATH-                    |
+
+  Scenario Outline: A call of a flagged helper on the side where it does nothing to its lock still follows the rest of its body (<case>)
+    Given the C file "rest.c" holds:
+      """
+      #include "pthread.h" /* found in the system folders */
+      #include <stdbool.h>
+      #include "unistd.h"
+      #include "cchecker.h"
+
+      struct queue { CC_NO_SYSCALL_UNDER() pthread_mutex_t mu; int fd; int n; };
+      <helpers>
+
+      void f(struct queue *a, struct queue *b) { bool l; pthread_mutex_lock(&a->mu); <call>; pthread_mutex_unlock(&a->mu); }
+      """
+    When I run cchecker with "--tools rules --json $DIR/rest.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "code":"CC-PATH-SYSCALL-UNDER-LOCK"
+      """
+
+    Examples:
+      | case                                | helpers                                                                                                                                                                                                                              | call                |
+      | a write before the test of the flag | CC_RELEASES_IF(q->mu, held) void unlock_if(struct queue *q, bool held) { write(q->fd, "x", 1); if (held) pthread_mutex_unlock(&q->mu); }                                                                                              | unlock_if(b, false) |
+      | a write before the take             | CC_ACQUIRES_IF(q->mu, *locked) void lock_if(struct queue *q, bool *locked) { write(q->fd, "x", 1); *locked = false; if (q->n) { pthread_mutex_lock(&q->mu); *locked = true; } }                                                        | lock_if(b, &l); if (l) pthread_mutex_unlock(&b->mu) |
+      | a write before a nested helper      | CC_RELEASES_IF(q->mu, held) void inner(struct queue *q, bool held) { if (held) pthread_mutex_unlock(&q->mu); } CC_RELEASES_IF(q->mu, held) void outer(struct queue *q, bool held) { write(q->fd, "x", 1); inner(q, held); }          | outer(b, false)     |
+
+  Scenario Outline: A call of a flagged helper on the side where it does nothing to its lock still takes the locks its body takes (<case>)
+    Given the C file "order.c" holds:
+      """
+      #include "pthread.h" /* found in the system folders */
+      #include <stdbool.h>
+      #include "cchecker.h"
+
+      struct hold { CC_LOCK_LEVEL(1) pthread_mutex_t mu; int n; };
+      struct slot { CC_LOCK_LEVEL(2) pthread_mutex_t mu; int n; };
+      CC_LOCK_LEVEL(1) pthread_mutex_t other;
+      <helpers>
+
+      void f(struct hold *a, struct slot *b) { bool l; pthread_mutex_lock(&a->mu); <call>; pthread_mutex_unlock(&a->mu); }
+      """
+    When I run cchecker with "--tools rules --json $DIR/order.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "code":"CC-PATH-LOCK-ORDER"
+      """
+
+    Examples:
+      | case                         | helpers                                                                                                                                                                                                       | call                |
+      | a lock taken before the test | CC_RELEASES_IF(s->mu, held) void unlock_if(struct slot *s, bool held) { pthread_mutex_lock(&other); pthread_mutex_unlock(&other); if (held) pthread_mutex_unlock(&s->mu); }                                   | unlock_if(b, false) |
+      | a lock taken before the take | CC_ACQUIRES_IF(s->mu, *locked) void lock_if(struct slot *s, bool *locked) { pthread_mutex_lock(&other); pthread_mutex_unlock(&other); *locked = false; if (s->n) { pthread_mutex_lock(&s->mu); *locked = true; } } | lock_if(b, &l); if (l) pthread_mutex_unlock(&b->mu) |
+
+  Scenario Outline: A call of a flagged helper whose flag the body rewrites, or that the mark does not name, still follows the write (<case>)
+    Given the C file "rewrite.c" holds:
+      """
+      #include "pthread.h" /* found in the system folders */
+      #include <stdbool.h>
+      #include "unistd.h"
+      #include "cchecker.h"
+
+      struct queue { CC_NO_SYSCALL_UNDER() pthread_mutex_t mu; int fd; int n; };
+      <helpers>
+
+      void f(struct queue *a, struct queue *b) { pthread_mutex_lock(&a->mu); unlock_if(b, false); pthread_mutex_unlock(&a->mu); }
+      """
+    When I run cchecker with "--tools rules --json $DIR/rewrite.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "code":"CC-PATH-SYSCALL-UNDER-LOCK"
+      """
+
+    Examples:
+      | case                              | helpers                                                                                                                                                                                                                                   |
+      | the flag set after a test         | CC_RELEASES_IF(q->mu, held) void unlock_if(struct queue *q, bool held) { if (q->n) held = 1; if (held) { write(q->fd, "x", 1); pthread_mutex_unlock(&q->mu); } }                                                                          |
+      | the flag set to a constant        | CC_RELEASES_IF(q->mu, held) void unlock_if(struct queue *q, bool held) { held = true; if (held) { write(q->fd, "x", 1); pthread_mutex_unlock(&q->mu); } }                                                                                 |
+      | the flag set to a field           | CC_RELEASES_IF(q->mu, held) void unlock_if(struct queue *q, bool held) { held = q->n; if (held) { write(q->fd, "x", 1); pthread_mutex_unlock(&q->mu); } }                                                                                |
+      | the flag or a field               | CC_RELEASES_IF(q->mu, held) void unlock_if(struct queue *q, bool held) { held = held \|\| q->n; if (held) { write(q->fd, "x", 1); pthread_mutex_unlock(&q->mu); } }                                                                        |
+      | a local of the name of the flag   | CC_RELEASES_IF(q->mu, held) void unlock_if(struct queue *q, bool held); void unlock_if(struct queue *q, bool h) { bool held = q->n; if (held) { write(q->fd, "x", 1); } if (h) pthread_mutex_unlock(&q->mu); }                           |
+
+  Scenario Outline: A call of a flagged helper that takes its own lock for a moment, or reaches a helper that releases it, still follows what it runs (<case>)
+    Given the C file "own.c" holds:
+      """
+      #include "pthread.h" /* found in the system folders */
+      #include <stdbool.h>
+      #include "unistd.h"
+      #include "cchecker.h"
+
+      struct queue { CC_NO_SYSCALL_UNDER() pthread_mutex_t mu; int fd; int n; };
+      <helpers>
+
+      void f(struct queue *a, struct queue *b) { pthread_mutex_lock(&a->mu); unlock_if(b, false); pthread_mutex_unlock(&a->mu); }
+      """
+    When I run cchecker with "--tools rules --json $DIR/own.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "code":"CC-PATH-SYSCALL-UNDER-LOCK"
+      """
+
+    Examples:
+      | case                         | helpers                                                                                                                                                                                                                               |
+      | a take and a release before  | CC_RELEASES_IF(q->mu, held) void unlock_if(struct queue *q, bool held) { pthread_mutex_lock(&q->mu); q->n++; pthread_mutex_unlock(&q->mu); if (held) pthread_mutex_unlock(&q->mu); }                                               |
+      | a helper that writes first   | CC_RELEASES(q->mu) void drop(struct queue *q) { write(q->fd, "x", 1); pthread_mutex_unlock(&q->mu); } CC_RELEASES_IF(q->mu, held) void unlock_if(struct queue *q, bool held) { if (q->n) drop(q); if (held) pthread_mutex_unlock(&q->mu); } |
+
+  Scenario Outline: A call of a flagged helper that waits on a condition, where it releases nothing, still blocks under another lock (<case>)
+    Given the C file "wait.c" holds:
+      """
+      #include "pthread.h" /* found in the system folders */
+      #include <stdbool.h>
+      #include "cchecker.h"
+
+      struct outer { CC_NO_SYSCALL_UNDER() pthread_mutex_t mu; };
+      struct queue { pthread_mutex_t mu; pthread_cond_t cv; int n; };
+      struct ev { pthread_mutex_t mu; pthread_cond_t cv; int n; };
+      <helpers>
+
+      void use(struct outer *o, struct queue *b, struct ev *e) { pthread_mutex_lock(&e->mu); pthread_mutex_lock(&b->mu); pthread_mutex_lock(&o->mu); <call>; pthread_mutex_unlock(&o->mu); pthread_mutex_unlock(&b->mu); pthread_mutex_unlock(&e->mu); }
+      """
+    When I run cchecker with "--tools rules --json $DIR/wait.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "code":"CC-PATH-SYSCALL-UNDER-LOCK"
+      """
+
+    Examples:
+      | case                         | helpers                                                                                                                                                                                                                                                                                | call                |
+      | a wait on its own lock       | CC_RELEASES_IF(q->mu, rel) void wait_maybe(struct queue *q, bool rel) { while (q->n == 0) pthread_cond_wait(&q->cv, &q->mu); if (rel) pthread_mutex_unlock(&q->mu); }                                                                                                                 | wait_maybe(b, false) |
+      | a wait on another lock       | CC_RELEASES_IF(q->mu, rel) void wait_ev(struct queue *q, struct ev *e, bool rel) { while (e->n == 0) pthread_cond_wait(&e->cv, &e->mu); if (rel) pthread_mutex_unlock(&q->mu); }                                                                                                       | wait_ev(b, e, false) |
+      | a wait of a nested helper    | CC_RELEASES_IF(q->mu, rel) void wait_maybe(struct queue *q, bool rel) { while (q->n == 0) pthread_cond_wait(&q->cv, &q->mu); if (rel) pthread_mutex_unlock(&q->mu); } CC_RELEASES_IF(q->mu, rel) void outer_wait(struct queue *q, bool rel) { wait_maybe(q, rel); } | outer_wait(b, false) |
+
+  Scenario Outline: A wait on the idle side of a flagged helper is a finding unless the call passes the lock held for it (<case>)
+    Given the C file "wait.c" holds:
+      """
+      #include "pthread.h" /* found in the system folders */
+      #include "cchecker.h"
+
+      struct node { CC_NO_SYSCALL_UNDER() pthread_mutex_t mu; pthread_cond_t cv; int n; };
+      struct queue { pthread_mutex_t mu; };
+      pthread_cond_t cv;
+      <code>
+      """
+    When I run cchecker with "--tools rules --json $DIR/wait.c -- -I../include"
+    Then the exit code is 1
+    And the output includes:
+      """
+      "code":"CC-PATH-SYSCALL-UNDER-LOCK"
+      """
+
+    Examples:
+      | case                                | code |
+      | another lock of the class held      | CC_RELEASES_IF(q->mu, r) void w(struct queue *q, struct node *e, int r) { while (e->n == 0) pthread_cond_wait(&e->cv, &e->mu); if (r) pthread_mutex_unlock(&q->mu); } void use(struct node *o, struct node *x, struct queue *b) { pthread_mutex_lock(&b->mu); pthread_mutex_lock(&o->mu); w(b, x, 0); pthread_mutex_unlock(&o->mu); pthread_mutex_unlock(&b->mu); } |
+      | a parameter named as the lock held  | CC_RELEASES_IF(q->mu, r) void w(struct queue *q, pthread_mutex_t *m, int r) { pthread_cond_wait(&cv, m); if (r) pthread_mutex_unlock(&q->mu); } CC_NO_SYSCALL_UNDER(m) void use(struct queue *b, pthread_mutex_t *m, pthread_mutex_t *other) { pthread_mutex_lock(&b->mu); pthread_mutex_lock(m); w(b, other, 0); pthread_mutex_unlock(m); pthread_mutex_unlock(&b->mu); } |
