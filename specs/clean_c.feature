@@ -11,6 +11,8 @@ Feature: C that must stay clean
   Scenario Outline: A common idiom gives no finding (<case>)
     Given the C file "clean.c" holds:
       """
+      #include <assert.h>
+      #include <errno.h>
       #include <pthread.h>
       #include <stdbool.h>
       #include <stdlib.h>
@@ -226,6 +228,12 @@ Feature: C that must stay clean
       | trylock result assigned in an if          | int f(void) { int r; if ((r = pthread_mutex_trylock(&mu)) != 0) return r; count++; pthread_mutex_unlock(&mu); return 0; }                                                                             |
       | trylock result kept as a bool             | int f(void) { bool ok = pthread_mutex_trylock(&mu) == 0; if (!ok) return -1; count++; pthread_mutex_unlock(&mu); return 0; }                                                                          |
       | trylock result tested before each step    | void f(void) { int r = pthread_mutex_trylock(&mu); if (r == 0) count++; count++; if (r == 0) pthread_mutex_unlock(&mu); }                                                                             |
+      | switch on a trylock result                | int f(void) { int r = pthread_mutex_trylock(&mu); switch (r) { case 0: count++; pthread_mutex_unlock(&mu); return 0; case EBUSY: return 1; default: return -1; } }                                    |
+      | trylock result copied to a flag           | void f(void) { int r = pthread_mutex_trylock(&mu); int busy = r; if (!busy) { count++; pthread_mutex_unlock(&mu); } }                                                                                 |
+      | checked lock result returned              | int f(void) { int ret = 0; ret = pthread_mutex_lock(&mu); count++; pthread_mutex_unlock(&mu); return ret; }                                                                                           |
+      | checked lock result asserted              | void f(void) { int r = pthread_mutex_lock(&mu); assert(r == 0); count++; pthread_mutex_unlock(&mu); }                                                                                                 |
+      | trylock on one side, busy by default      | void f(int n) { int r = 1; if (n) r = pthread_mutex_trylock(&mu); if (r == 0) { count++; pthread_mutex_unlock(&mu); } }                                                                               |
+      | flag that keeps a lock across a loop      | void f(int n) { int locked = 0; for (int i = 0; i < n; i++) { if (!locked) { pthread_mutex_lock(&mu); locked = 1; } count++; if (count > n) { pthread_mutex_unlock(&mu); locked = 0; } } if (locked) pthread_mutex_unlock(&mu); } |
 
 
   Scenario Outline: The same idiom with one change gives a finding (<case>: <change>)
@@ -429,6 +437,8 @@ Feature: C that must stay clean
   Scenario Outline: The same lock idiom with one change gives a finding (<case>: <change>)
     Given the C file "clean.c" holds:
       """
+      #include <assert.h>
+      #include <errno.h>
       #include <pthread.h>
       #include <stdbool.h>
       pthread_mutex_t mu; int count;
@@ -438,7 +448,7 @@ Feature: C that must stay clean
     Then the exit code is 1
     And the output includes:
       """
-      {"code":"<finding>","tool":"rules","file":"$DIR/clean.c","line":4,
+      {"code":"<finding>","tool":"rules","file":"$DIR/clean.c","line":6,
       """
 
     Examples:
@@ -450,3 +460,10 @@ Feature: C that must stay clean
       | trylock result assigned in an if       | a return where the call worked         | CC-PATH-LOCK-NOT-RELEASED | int f(void) { int r; if ((r = pthread_mutex_trylock(&mu)) == 0) return r; count++; pthread_mutex_unlock(&mu); return 0; }                                                                                          |
       | trylock result kept as a bool          | a return where the call worked         | CC-PATH-LOCK-NOT-RELEASED | int f(void) { bool ok = pthread_mutex_trylock(&mu) == 0; if (ok) return -1; count++; pthread_mutex_unlock(&mu); return 0; }                                                                                         |
       | trylock result tested before each step | the unlock where the call failed       | CC-PATH-LOCK-NOT-HELD     | void f(void) { int r = pthread_mutex_trylock(&mu); if (r == 0) count++; count++; if (r != 0) pthread_mutex_unlock(&mu); }                                                                                          |
+      | switch on a trylock result             | no unlock on the case 0                | CC-PATH-LOCK-NOT-RELEASED | int f(void) { int r = pthread_mutex_trylock(&mu); switch (r) { case 0: count++; return 0; case EBUSY: return 1; default: return -1; } }                                                                           |
+      | trylock result copied to a flag        | the unlock where the copy is not 0     | CC-PATH-LOCK-NOT-HELD     | void f(void) { int r = pthread_mutex_trylock(&mu); int busy = r; if (busy) { count++; pthread_mutex_unlock(&mu); } }                                                                                                |
+      | checked lock result returned           | no unlock                              | CC-PATH-LOCK-NOT-RELEASED | int f(void) { int ret = 0; ret = pthread_mutex_lock(&mu); count++; return ret; }                                                                                                                                     |
+      | flag set where the lock is taken       | the flag written through a pointer     | CC-PATH-LOCK-NOT-RELEASED | void f(int n) { int locked = 0; int *p = &locked; if (n) { pthread_mutex_lock(&mu); *p = 1; } count++; if (locked) pthread_mutex_unlock(&mu); }                                                                     |
+      | checked lock result asserted           | no unlock                              | CC-PATH-LOCK-NOT-RELEASED | void f(void) { int r = pthread_mutex_lock(&mu); assert(r == 0); count++; }                                                                                                                                           |
+      | trylock on one side, busy by default   | 0 by default                           | CC-PATH-LOCK-NOT-HELD     | void f(int n) { int r = 0; if (n) r = pthread_mutex_trylock(&mu); if (r == 0) { count++; pthread_mutex_unlock(&mu); } }                                                                                              |
+      | flag that keeps a lock across a loop   | the flag kept after the unlock         | CC-PATH-LOCK-NOT-HELD     | void f(int n) { int locked = 0; for (int i = 0; i < n; i++) { if (!locked) { pthread_mutex_lock(&mu); locked = 1; } count++; if (count > n) pthread_mutex_unlock(&mu); } if (locked) pthread_mutex_unlock(&mu); } |
