@@ -259,7 +259,8 @@ export def with_jumps(units: List[Unit], cwd: String) -> List[Unit]
     end
   end
 
-  queue = graph.functions.values.select(&jumping?).map do |f| f.key end.sort
+  jumping = graph.functions.values.select(&jumping?).map do |f| f.key end
+  queue = jumping.sort
   via: Map[String, List[String]] = {}
   for key in queue
     via = via.put(key, [])
@@ -281,7 +282,8 @@ export def with_jumps(units: List[Unit], cwd: String) -> List[Unit]
         name = name_of_key(graph.functions, key)
         shown = name
         if counts.get(name).unwrap_or(0) > 1
-          file = graph.functions.get(key).map do |f| f.file end.unwrap_or("")
+          found = graph.functions.get(key).map do |f| f.file end
+          file = found.unwrap_or("")
           shown = "#{name}@#{Paths.inside(cwd, file).unwrap_or(file)}"
         end
 
@@ -363,7 +365,8 @@ end
 ## Returns the functions that a call through a pointer at `line`:`column` of `caller` reaches: those stored in its slot.
 export def pointer_targets(graph: Graph, caller: String, line: Int, column: Int) -> List[String]
   slots = graph.pointers.get("#{caller} #{line}:#{column}").unwrap_or([])
-  slots.flat_map do |slot| graph.slots.get(slot).unwrap_or([]) end.uniq
+  targets = slots.flat_map do |slot| graph.slots.get(slot).unwrap_or([]) end
+  targets.uniq
 end
 
 ## Returns the functions that a function calls, directly or through a slot.
@@ -381,7 +384,8 @@ end
 
 ## Returns whether the project defines the function.
 export def defined?(graph: Graph, key: String) -> Bool
-  graph.functions.get(key).map do |f| f.defined end.unwrap_or(false)
+  found = graph.functions.get(key).map do |f| f.defined end
+  found.unwrap_or(false)
 end
 
 ## Returns the call graph of the units.
@@ -457,9 +461,9 @@ end
 # The classes of the short locks: those marked CC_NO_SYSCALL_UNDER() and those of `[assume] short_locks`. An entry
 # `name(N)` is a wrapper (see `wrappers_of`), not a class.
 def short_locks_of(units: List[Unit], config: Config.Config) -> Set[String]
-  marked = units.flat_map do |unit| unit.lock_marks end
-    .select do |m| m.mark == SHORT_LOCK_MARK end
-    .map do |m| m.class end
+  lock_marks = units.flat_map do |unit| unit.lock_marks end
+  short = lock_marks.select do |m| m.mark == SHORT_LOCK_MARK end
+  marked = short.map do |m| m.class end
 
   Set.new(marked.concat(config.short_locks.select do |entry| not entry.include?("(") end))
 end
@@ -520,7 +524,8 @@ def quiet_classes(
   classes: List[String],
 ) -> List[String]
   sections = classes.flat_map do |class| by_class.get(class).unwrap_or([]) end
-  keys = sections.flat_map do |section| targets_of(graph, section) end.uniq
+  targets = sections.flat_map do |section| targets_of(graph, section) end
+  keys = targets.uniq
   blocking = Set.new(
     keys.select do |key|
       has?(graph, walk.families, key, Effect.Blocks) or not search(graph, walk, key, Effect.Blocks).empty?
@@ -733,10 +738,9 @@ end
 def missing_locks(units: List[Unit], graph: Graph, config: Config.Config) -> List[String]
   return [] if config.short_locks.empty? and config.owned_locks.empty?
 
-  classes = graph.locks
-    .values
-    .flat_map do |found| found end
-    .concat(units.flat_map do |unit| unit.lock_marks end.map do |m| m.class end)
+  taken = graph.locks.values.flat_map do |found| found end
+  lock_marks = units.flat_map do |unit| unit.lock_marks end
+  classes = taken.concat(lock_marks.map do |m| m.class end)
 
   known = Set.new(classes.concat(classes.map(&bare_class)))
   files = files_by_name(units.flat_map do |unit| unit.functions end)
@@ -747,7 +751,8 @@ def missing_locks(units: List[Unit], graph: Graph, config: Config.Config) -> Lis
     )
   end
 
-  missing.map do |c| "#{c} (assume.short_locks)" end.concat(missing_owned(units, config))
+  short = missing.map do |c| "#{c} (assume.short_locks)" end
+  short.concat(missing_owned(units, config))
 end
 
 # The classes of `[assume] owned_locks` that no lock through a pointer has, with their key: the name of a mutex that
@@ -755,7 +760,8 @@ end
 def missing_owned(units: List[Unit], config: Config.Config) -> List[String]
   return [] if config.owned_locks.empty?
 
-  classes = units.flat_map do |unit| unit.bodies end.flat_map(&pointer_classes)
+  bodies = units.flat_map do |unit| unit.bodies end
+  classes = bodies.flat_map(&pointer_classes)
   known = Set.new(classes.concat(classes.map(&bare_class)))
   missing = config.owned_locks.uniq.select do |c|
     not known.include?(c) and not classes.any? do |class| in_file?(c, class) end
@@ -829,7 +835,8 @@ def jumping?(function: Function) -> Bool = function.marks.include?(MAY_JUMP) or 
 
 # Whether the inference stops at a function: it catches the jump, or no rule walks into it.
 def catches?(function: Optional[Function]) -> Bool
-  marks = function.map do |f| f.marks end.unwrap_or([])
+  found = function.map do |f| f.marks end
+  marks = found.unwrap_or([])
   marks.include?(CATCHES) or marks.include?(STOP)
 end
 
@@ -843,7 +850,8 @@ end
 
 # The name of a function by key, or the key itself for one the units do not declare.
 def name_of_key(functions: Map[String, Function], key: String) -> String
-  functions.get(key).map do |f| f.name end.unwrap_or(key)
+  found = functions.get(key).map do |f| f.name end
+  found.unwrap_or(key)
 end
 
 # A function with the marks of `[assume]` that name it.
@@ -895,15 +903,10 @@ def missing_assumed(units: List[Unit], config: Config.Config) -> List[String]
   catches = unmatched(config.catches, files).map do |name| "#{name} (assume.catches)" end
   releases = unmatched(config.jump_releases, files).map do |name| "#{name} (assume.jump_releases)" end
   declared = units.flat_map do |unit| unit.functions end
-  acquires = config.acquires
-    .uniq
-    .select do |text| not lock_declared?(text, declared) end
-    .map do |text| "#{text} (assume.acquires)" end
-
-  given_back = config.releases
-    .uniq
-    .select do |text| not lock_declared?(text, declared) end
-    .map do |text| "#{text} (assume.releases)" end
+  unknown_acquires = config.acquires.uniq.select do |text| not lock_declared?(text, declared) end
+  acquires = unknown_acquires.map do |text| "#{text} (assume.acquires)" end
+  unknown_releases = config.releases.uniq.select do |text| not lock_declared?(text, declared) end
+  given_back = unknown_releases.map do |text| "#{text} (assume.releases)" end
 
   nonblocking = unmatched(config.nonblocking, files).map do |name| "#{name} (assume.nonblocking)" end
   (
@@ -943,7 +946,8 @@ def matches_any?(entry: Entry, files: Map[String, List[String]]) -> Bool
 end
 
 def marked?(graph: Graph, key: String, mark: String) -> Bool
-  graph.functions.get(key).map do |f| f.marks.include?(mark) end.unwrap_or(false)
+  found = graph.functions.get(key).map do |f| f.marks.include?(mark) end
+  found.unwrap_or(false)
 end
 
 # The entries of `[roots]` that no function of the graph defines.
@@ -964,8 +968,8 @@ end
 
 # The callbacks in the order of their places, so that the root of a function passed at several places is the first.
 def inferred_of(graph: Graph, units: List[Unit], cwd: String) -> Inferred
-  callbacks = units.flat_map do |unit| unit.callbacks end
-    .sort_by do |c| "#{c.file}\n#{padded(c.line)}:#{c.argument}" end
+  found = units.flat_map do |unit| unit.callbacks end
+  callbacks = found.sort_by do |c| "#{c.file}\n#{padded(c.line)}:#{c.argument}" end
 
   roots: Map[String, String] = {}
   unresolved: List[UnresolvedCallback] = []
@@ -1162,7 +1166,8 @@ end
 
 def has?(graph: Graph, families: List[Known.Family], key: String, effect: Effect) -> Bool
   name = name_of(graph, key)
-  marked = graph.functions.get(key).map do |f| f.marks.include?("blocking") end.unwrap_or(false)
+  found = graph.functions.get(key).map do |f| f.marks.include?("blocking") end
+  marked = found.unwrap_or(false)
   library = not defined?(graph, key)
   case effect
     Effect.Blocks -> marked or (library and families.any? do |family| family.calls.include?(name) end)
@@ -1184,7 +1189,10 @@ def source_of(graph: Graph, families: List[Known.Family], key: String, effect: E
   ""
 end
 
-def name_of(graph: Graph, key: String) -> String = graph.functions.get(key).map do |f| f.name end.unwrap_or(key)
+def name_of(graph: Graph, key: String) -> String
+  found = graph.functions.get(key).map do |f| f.name end
+  found.unwrap_or(key)
+end
 
 def code_of(effect: Effect) -> String
   case effect

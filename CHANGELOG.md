@@ -4,8 +4,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-12
+
 ### Fixed
 
+- The sources compile with the next Agentica, which refuses a method call right after the `end` of a `do` block
+  (`CHECK-CHAIN-AFTER-END`); they still need Agentica 0.29.0 or later.
 - `c = b; zap(&b);` (a call that frees and clears `b` through its address) no longer clears `c` too: `free(c)` or
   `work(c)` after it is a CC-OWN-DOUBLE-FREE or a CC-OWN-USE-AFTER-FREE.
 - A self-assignment of an owning pointer or field (`p.right = p.right`) is no longer a false CC-OWN-LEAK.
@@ -243,7 +247,8 @@ The first release.
   take 17.9 s and 411 MB at `-j 2`, and a chain of 3000 else-if 4 s and 170 MB. `-j` defaults to the number of cores,
   and the jobs of the largest files start first.
 
-[Unreleased]: https://github.com/agentica-lang/cchecker/compare/0.6.0...HEAD
+[Unreleased]: https://github.com/agentica-lang/cchecker/compare/0.6.1...HEAD
+[0.6.1]: https://github.com/agentica-lang/cchecker/compare/0.6.0...0.6.1
 [0.6.0]: https://github.com/agentica-lang/cchecker/compare/0.5.0...0.6.0
 [0.5.0]: https://github.com/agentica-lang/cchecker/compare/0.4.0...0.5.0
 [0.4.0]: https://github.com/agentica-lang/cchecker/compare/0.3.0...0.4.0

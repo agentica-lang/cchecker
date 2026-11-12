@@ -458,8 +458,10 @@ export def body_of(ctx: Context, key: String, node: Json) -> Body
 
   linked = with_gotos(built.b)
   names = params_named(node)
-  dropped = ctx.callees.get(key).map do |callee| callee.locks.select do |lock| not lock.takes end end.unwrap_or([])
-  taken = ctx.callees.get(key).map do |callee| callee.locks.select do |lock| lock.takes end end.unwrap_or([])
+  dropped_locks = ctx.callees.get(key).map do |callee| callee.locks.select do |lock| not lock.takes end end
+  dropped = dropped_locks.unwrap_or([])
+  taken_locks = ctx.callees.get(key).map do |callee| callee.locks.select do |lock| lock.takes end end
+  taken = taken_locks.unwrap_or([])
   Body(
     key: key,
     name: Ast.text(node, "name"),
@@ -692,12 +694,14 @@ end
 export def owned_params(ctx: Context, key: String, node: Json) -> List[String]
   names = params_named(node)
   indices = ctx.owning.takes.get(key, []).concat(ctx.owning.frees.get(key, [])).uniq.sort
-  indices.select do |i| i < names.size end.map do |i| names[i] end
+  in_range = indices.select do |i| i < names.size end
+  in_range.map do |i| names[i] end
 end
 
 ## Returns the names of the parameters of a function, in order.
 export def params_named(node: Json) -> List[String]
-  Ast.children(node).select do |child| Ast.kind(child) == "ParmVarDecl" end.map do |child| Ast.text(child, "name") end
+  params = Ast.children(node).select do |child| Ast.kind(child) == "ParmVarDecl" end
+  params.map do |child| Ast.text(child, "name") end
 end
 
 # The pointers of a function that own, or may stand for one that does. A local is one when it gets an owned value (a
@@ -709,13 +713,8 @@ def owners_of(ctx: Context, key: String, node: Json) -> Owners
   names_of_params = params_named(node)
   params = owned_params(ctx, key, node)
   takes = ctx.owning.takes.get(key, [])
-  freed = Set.new(
-    ctx.owning
-      .frees
-      .get(key, [])
-      .select do |i| i < names_of_params.size and not takes.include?(i) end
-      .map do |i| names_of_params[i] end,
-  )
+  frees_kept = ctx.owning.frees.get(key, []).select do |i| i < names_of_params.size and not takes.include?(i) end
+  freed = Set.new(frees_kept.map do |i| names_of_params[i] end)
 
   declared = keys_of(node, all)
   followed = owned_fields(ctx, all, declared, taken_structs(ctx, key, node))
@@ -726,9 +725,11 @@ def owners_of(ctx: Context, key: String, node: Json) -> Owners
 
   # A struct passed by value to a CC_OWNS parameter is no pointer: its followed fields own from the entry instead, and
   # one that is not followed owns nothing.
-  structs = Ast.children(node)
-    .select do |child| Ast.kind(child) == "ParmVarDecl" and not pointer_type?(child) and record_type?(child) end
-    .map do |child| declared_key(declared, child) end
+  record_params = Ast.children(node).select do |child|
+    Ast.kind(child) == "ParmVarDecl" and not pointer_type?(child) and record_type?(child)
+  end
+
+  structs = record_params.map do |child| declared_key(declared, child) end
 
   params = params.select do |name| not structs.include?(name) end
   for name in structs
@@ -736,20 +737,13 @@ def owners_of(ctx: Context, key: String, node: Json) -> Owners
   end
 
   decls = all.select do |n| Ast.kind(n) == "VarDecl" end
-  locals = Set.new(
-    names_of_params.concat(
-      decls.select do |n| Ast.text(n, "storageClass") != "static" end.map do |n| declared_key(keys, n) end,
-    ),
-  )
-
-  marked = Set.new(
-    decls.select do |n| marked_owner?(n) and Ast.text(n, "storageClass") != "static" end
-      .map do |n| declared_key(keys, n) end,
-  ).union(Set.new(followed.of.values.flat_map do |places| places end))
-
-  outs = Set.new(
-    ctx.owning.outs.get(key, []).select do |i| i < names_of_params.size end.map do |i| names_of_params[i] end,
-  )
+  public_decls = decls.select do |n| Ast.text(n, "storageClass") != "static" end
+  locals = Set.new(names_of_params.concat(public_decls.map do |n| declared_key(keys, n) end))
+  marked_decls = public_decls.select do |n| marked_owner?(n) end
+  marked_keys = Set.new(marked_decls.map do |n| declared_key(keys, n) end)
+  marked = marked_keys.union(Set.new(followed.of.values.flat_map do |places| places end))
+  out_kept = ctx.owning.outs.get(key, []).select do |i| i < names_of_params.size end
+  outs = Set.new(out_kept.map do |i| names_of_params[i] end)
 
   written = writes_of(all, locals, keys)
   names = Set.new(params).union(marked).union(filled_locals(ctx, all, locals, keys))
@@ -764,7 +758,8 @@ def owners_of(ctx: Context, key: String, node: Json) -> Owners
     end
   end
 
-  allocated = written.select do |w| allocation?(w.value) end.map do |w| w.name end
+  allocations = written.select do |w| allocation?(w.value) end
+  allocated = allocations.map do |w| w.name end
   places = Places(
     locals: locals,
     freed: freed,
@@ -792,7 +787,8 @@ end
 def taken_structs(ctx: Context, key: String, node: Json) -> List[Json]
   params = Ast.children(node).select do |child| Ast.kind(child) == "ParmVarDecl" end
   takes = ctx.owning.takes.get(key, [])
-  (0...params.size).to_a.select do |i| takes.include?(i) end.map do |i| params[i] end
+  taken_params = (0...params.size).to_a.select do |i| takes.include?(i) end
+  taken_params.map do |i| params[i] end
 end
 
 # Whether the type of a declaration or an expression is a struct or a union itself, as written or behind a typedef.
@@ -897,7 +893,8 @@ def kept_calls(ctx: Context, all: List[Json], places: Places) -> Set[String]
       "InitListExpr" ->
         # An initializer or a compound literal keeps what it gives a CC_OWNS field.
         owning = owning_items(ctx, n)
-        values = (0...parts.size).to_a.select do |i| owning.include?(i) end.map do |i| parts[i] end
+        owning_at = (0...parts.size).to_a.select do |i| owning.include?(i) end
+        values = owning_at.map do |i| parts[i] end
       "ReturnStmt" -> values = parts
       "BinaryOperator" ->
         target = parts[0]
@@ -1508,14 +1505,13 @@ def statement(b: Builder, node: Json, preds: List[Int]) -> Built
       built = Built(b: b, exits: preds)
       inside = descendants(Ast.children(node))
       # The item of an array that a field is in (`a[0].left`) and the array under it are no read of the array either.
-      bases = Set.new(
-        inside.select do |n| struct_of(n) != "" end
-          .map do |n| see_through(Ast.children(n).first) end
-          .flat_map do |base|
-            [base].concat(Ast.children(base).take(1).flat_map do |under| [under, see_through(under)] end)
-          end
-          .map do |base| Ast.text(base, "id") end,
-      )
+      fields = inside.select do |n| struct_of(n) != "" end
+      structs = fields.map do |n| see_through(Ast.children(n).first) end
+      under_structs = structs.flat_map do |base|
+        [base].concat(Ast.children(base).take(1).flat_map do |under| [under, see_through(under)] end)
+      end
+
+      bases = Set.new(under_structs.map do |base| Ast.text(base, "id") end)
 
       refs = inside.select do |n|
         (Ast.kind(n) == "DeclRefExpr" or whole_key(b, n) != "") and not bases.include?(Ast.text(n, "id"))
@@ -1946,12 +1942,8 @@ def declaration(b: Builder, node: Json, preds: List[Int]) -> Built
     owner = key
   end
 
-  var = Arg(
-    text: "&#{local_text(written.b, name)}",
-    class: written.b.aliases.get(name).map do |value| class_of(written.b, value) end.unwrap_or(""),
-    owner: owner,
-    address: true,
-  )
+  aliased_class = written.b.aliases.get(name).map do |value| class_of(written.b, value) end
+  var = Arg(text: "&#{local_text(written.b, name)}", class: aliased_class.unwrap_or(""), owner: owner, address: true)
 
   # A cleanup function of a followed struct frees each of its CC_OWNS fields at the end of the block.
   site = site_of(written.b, function, [var], place, false)
@@ -2281,7 +2273,8 @@ end
 def handed_on(b: Builder, into: Optional[String], value: Json, preds: List[Int]) -> Built
   given = owner_named(b, value)
   place = Ast.start_of(value)
-  word = into.map do |shown| "stores #{plain(given)} in #{shown}" end.unwrap_or("returns")
+  stored = into.map do |shown| "stores #{plain(given)} in #{shown}" end
+  word = stored.unwrap_or("returns")
 
   add(b, Event.Gives(Give(name: given, word: word, line: place.line, column: place.column)), preds)
 end
@@ -2851,7 +2844,8 @@ end
 
 # The pointers that own among the arguments at `indices`.
 def owners_at(args: List[Arg], indices: List[Int]) -> List[String]
-  indices.select do |i| i < args.size and args[i].owner != "" end.map do |i| args[i].owner end
+  owning = indices.select do |i| i < args.size and args[i].owner != "" end
+  owning.map do |i| args[i].owner end
 end
 
 # The lock of the argument at `index`, if the call has it and it names an object.
@@ -2936,7 +2930,8 @@ end
 
 # The locks of lock texts; a text that is "" (an expression that names no object, such as a call) is no lock.
 def locks_of(texts: List[String]) -> List[Lock]
-  texts.select do |text| text != "" end.map do |text| Lock(key: key_of(text), shown: shown_of(text)) end
+  named = texts.select do |text| text != "" end
+  named.map do |text| Lock(key: key_of(text), shown: shown_of(text)) end
 end
 
 # A condition: the nodes after it when it is true and when it is false. `!`, `&&` and `||` split it, a constant
@@ -3109,7 +3104,8 @@ def written_text(b: Builder, node: Json, aliases: Bool, keys: Map[String, String
       name = Ast.referenced_name(bare)
       aliased = ""
       if aliases and depth < ALIAS_DEPTH
-        aliased = b.aliases.get(name).map do |value| written_text(b, value, aliases, keys, depth + 1) end.unwrap_or("")
+        found = b.aliases.get(name).map do |value| written_text(b, value, aliases, keys, depth + 1) end
+        aliased = found.unwrap_or("")
       end
 
       return aliased if aliased != ""
@@ -3163,10 +3159,12 @@ def roots_of(keys: Map[String, String], node: Json) -> List[String]
 
   # A followed CC_OWNS field of a local struct is a variable of its own, besides the struct.
   if Ast.kind(node) == "MemberExpr" and keys.key?(Ast.text(node, "id"))
-    return [keys[Ast.text(node, "id")]].concat(Ast.children(node).flat_map do |child| roots_of(keys, child) end).uniq
+    under = Ast.children(node).flat_map do |child| roots_of(keys, child) end
+    return [keys[Ast.text(node, "id")]].concat(under).uniq
   end
 
-  Ast.children(node).flat_map do |child| roots_of(keys, child) end.uniq
+  roots = Ast.children(node).flat_map do |child| roots_of(keys, child) end
+  roots.uniq
 end
 
 # The variable an assignment writes, by key (`referenced_key`): the root of `x`, `x->a.b` or `x[i]`.

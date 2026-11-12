@@ -190,7 +190,8 @@ def oracle(lines: List[Line]) -> Outcome
     else
       suppressed = suppressed.push("#{SHORT_BLOCKS}@#{at}")
       for ignore in holding
-        used = used.concat(ignore.codes.select do |code| matches?(code) end.map do |code| "#{ignore.line} #{code}" end)
+        matching = ignore.codes.select do |code| matches?(code) end
+        used = used.concat(matching.map do |code| "#{ignore.line} #{code}" end)
       end
     end
   end

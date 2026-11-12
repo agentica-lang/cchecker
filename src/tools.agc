@@ -300,7 +300,8 @@ end
 ## Returns the line that says why a tool stopped: a fatal error (gcc says so when cc1 is killed), else the first error,
 ## else the first line.
 export def first_line(text: String) -> String
-  lines = text.split("\n").map do |line| line.strip end.select do |line| line != "" end
+  stripped = text.split("\n").map do |line| line.strip end
+  lines = stripped.select do |line| line != "" end
   return "no output" if lines.empty?
 
   for marker in ["fatal error:", "error"]
@@ -601,12 +602,13 @@ def where(job: Job, d: Diagnostics.Diagnostic) -> String
 end
 
 def finding(job: Job, d: Diagnostics.Diagnostic) -> Finding
+  words = d.message.split(" ").select do |word| word != "" end
   Finding(
     code: code_of(job.tool, Diagnostics.option(d)),
     tool: ToolKind.name(job.tool),
     file: Paths.absolute(job.entry.directory, d.file).unwrap_or(d.file),
     line: d.line,
     column: d.column,
-    message: d.message.split(" ").select do |word| word != "" end.join(" "),
+    message: words.join(" "),
   )
 end
