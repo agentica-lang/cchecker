@@ -224,6 +224,9 @@ export struct Body
   owns: Bool = false
   releases: List[String] = []
   acquires: List[String] = []
+  # The keys, in the definition, of its parameters that are the flag of a CC_RELEASES_IF: the parameter at the place
+  # where the mark names the flag, whatever the definition calls it.
+  flags: List[String] = []
   # A `goto` goes into a block from outside it (past the declarations before its label).
   enters: Bool = false
 end
@@ -535,6 +538,7 @@ export def body_of(ctx: Context, key: String, node: Json) -> Body
     owns: owners.calls or not owners.names.empty?,
     releases: dropped.map do |lock| released_key(lock, names) end,
     acquires: taken.map do |lock| released_key(lock, names) end,
+    flags: flag_keys(flagged, node, keys_of(node, all)),
     enters: linked.enters,
   )
 end
@@ -3213,6 +3217,21 @@ def lock_of(args: List[Arg], index: Int) -> List[Lock]
   return [] if index >= args.size
 
   locks_of([args[index].text]).map do |lock| lock.with(class: args[index].class, through: args[index].through) end
+end
+
+# The keys of the parameters of a definition at the places where the marks of `locks` name their flag.
+def flag_keys(locks: List[Annotated], node: Json, keys: Map[String, String]) -> List[String]
+  params = Ast.children(node).select do |child| Ast.kind(child) == "ParmVarDecl" end
+  found: List[String] = []
+  for lock in locks
+    for i in 0...lock.params.size
+      if lock.params[i] == lock.flag and i < params.size
+        found = found.push(keys.get(Ast.text(params[i], "id"), ""))
+      end
+    end
+  end
+
+  found.select do |key| key != "" end
 end
 
 # The key of a lock of CC_RELEASES in the names of the parameters of the definition, which may not be those of the
