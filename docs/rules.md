@@ -221,9 +221,9 @@ failure of a call that waits for its lock (`pthread_mutex_lock`) is an error,
 which a path reaches only when a test of the variable can follow the call
 before a new value of it (`ret = pthread_mutex_lock(&q->mu); ...; return ret;`
 does not, nor does a test of `ret` before the call or after `ret = work();`). A
-copy of a `static` or `volatile` local, or of one whose address is taken, is not
-followed. A wait on a condition (`pthread_cond_wait(&cv, &q->mu)`) gives the
-lock back before it returns, so it changes nothing.
+copy of, or into, a `static` or `volatile` local, or one whose address is taken,
+is not followed. A wait on a condition (`pthread_cond_wait(&cv, &q->mu)`) gives
+the lock back before it returns, so it changes nothing.
 
 A path does not go where a condition that the function tests twice would have to
 be true and false, so `if (locked) lock(); ...; if (locked) unlock();` passes. A

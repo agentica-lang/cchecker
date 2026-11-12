@@ -216,6 +216,7 @@ end
 ## test of the variable before the call, or after a new value, is not one of its result.
 export def tested_after(body: Body) -> Set[Int]
   tested: Set[String] = Set.new([])
+  results: Set[String] = Set.new([])
   failing: List[Int] = []
   for at in 0...body.nodes.size
     case body.nodes[at].event
@@ -226,14 +227,17 @@ export def tested_after(body: Body) -> Set[Int]
 
         if fact.if_tested
           failing = failing.push(at)
+          results = results.add(fact.text)
         end
 
       _ -> next
     end
   end
 
+  # Only the tests of a lock result are followed: the liveness pass grows with the texts it tracks.
+  tested = tested.intersection(results)
   found: Set[Int] = Set.new([])
-  return found if failing.empty? or tested.empty?
+  return found if tested.empty?
 
   live = live_facts(body, tested, roots_of(body))
   for at in failing

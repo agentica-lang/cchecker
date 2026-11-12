@@ -247,6 +247,29 @@ Feature: Time and memory on large generated inputs
       "incomplete_functions":[{"file":"$DIR/twice.c","line":4,"function":"f"}]
       """
 
+  Scenario: A checked lock tested once, then 2000 other tests, stays in its bounds
+    Whether a test of the result of `r = pthread_mutex_lock(&mu)` can follow it reads the tests of `r` only, not each of
+    the 2000 conditions after it (`__COUNTER__` gives each its own number).
+
+    Given the C file "checked.c" holds, with ITEMS as 2000 times " if (x == __COUNTER__) count++;":
+      """
+      #include <pthread.h>
+      pthread_mutex_t mu; int count;
+      int f(int x) {
+        int r = pthread_mutex_lock(&mu);
+        if (r) return r;
+       ITEMS
+        pthread_mutex_unlock(&mu);
+        return 0;
+      }
+      """
+    When I run cchecker with "--tools rules --json $DIR/checked.c" in at most 1500 MiB and 10 seconds
+    Then the exit code is 0
+    And the output includes:
+      """
+      "incomplete_functions":[]
+      """
+
   Scenario Outline: Blocks that declare a pointer of the same name do not multiply the states of the ownership walk (<case>)
     Given the C file "blocks.c" holds, with ITEMS as 24 times " if (pick()) { <block> }":
       """
