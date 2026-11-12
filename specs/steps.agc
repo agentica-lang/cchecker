@@ -17,6 +17,9 @@ SPECS = "specs"
 SCRATCH = "scratch"
 PROGRAM = "../cchecker.agc"
 RUN_MS = 120_000
+# The wait of the step `the process written in ... has ended`: the limit, and the pause between two checks.
+PROCESS_END_MS = 500
+PROCESS_POLL_MS = 20
 # The seed of the property steps: CCHECKER_PROP_SEED replays the cases of a failure, whose message gives its seed.
 PROP_SEED = "CCHECKER_PROP_SEED"
 
@@ -294,8 +297,20 @@ def process_ended(ctx: BDD.Context, args: List[String]) -> BDD.Context
   path = host_path(ctx, args[0])
   text = File.read_text(path).unwrap_or("").strip
   found = BDD.assert(ctx, text.to_i.ok?, "#{path} does not hold a pid: #{text}")
-  Task.sleep(500)
-  BDD.assert(found, ended?(text), "process #{text} is still running")
+  BDD.assert(found, ended_within?(text, PROCESS_END_MS), "process #{text} is still running")
+end
+
+# Polls every PROCESS_POLL_MS until the process has ended or `limit_ms` has passed, so a step waits only as long as the
+# process needs to go away.
+def ended_within?(pid: String, limit_ms: Int) -> Bool
+  deadline = Time.now_ms() + limit_ms
+  while not ended?(pid)
+    return false if Time.now_ms() >= deadline
+
+    Task.sleep(PROCESS_POLL_MS)
+  end
+
+  true
 end
 
 def ended?(pid: String) -> Bool
