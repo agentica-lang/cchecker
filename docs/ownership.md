@@ -14,6 +14,8 @@ struct conn { CC_OWNS char *buf; };         /* a store into the field hands the 
 
 int load(int n) {
   CC_OWNS char *buf = malloc(n);            /* the local owns its value */
+  ...
+}
 ```
 
 The rules follow every path of a function that has a pointer that owns, with the
@@ -21,72 +23,16 @@ graph and the walk of the [locks](rules.md#locks-on-every-path) and their limits
 (a function with too many paths is listed once in `incomplete_functions`). A
 parameter marked `CC_OWNS` or `CC_FREES` owns from the entry, a local marked
 `CC_OWNS` owns the value it gets (other than `NULL`), and a local that gets the
-value of a `CC_OWNS` function owns it without a mark. On every path that
-returns, each one is freed or handed on: returned, stored in a `CC_OWNS` field
-(or an item of one, `q->items[i] = p`, or a `CC_OWNS` global), or passed to a
-`CC_OWNS` parameter. A call of a function that may jump out (`CC_MAY_JUMP`,
-`[assume] may_jump`, or a function that calls one and does not catch the jump,
-see [Locks](rules.md#locks-on-every-path)) is a way out too: each one that still
-owns after the call is a leak, with the call as the last step of `path`. A call
-of a function that always jumps out and never returns (`CC_JUMPS`, `[assume]
-jumps`, or `CC_MAY_JUMP` on a function that never returns) is that way out
-alone: the leaks are checked there and the path ends, so a pointer freed before
-the call is not freed twice by the code after it. What the call itself frees or
-takes (a `CC_FREES` or `CC_OWNS` parameter) is the callee's from the call on,
-jump or not. A jump does not run the `cleanup(f)` functions of the variables,
-and a call through a function pointer never jumps. Stored anywhere else or
-passed to another parameter, it is lent and still owns. A condition that tells
-that a pointer is null (`if (!p)`, `if ((p = malloc(n)) == NULL)`) leaves it
-owning nothing on that side.
-A pointer declared in an inner block is checked where a path leaves the block
-(its end, a `break`, `continue`, `goto` or `return`): one that still owns there
-leaks, with that point as the last step of `path`, unless a pointer outside the
-block stands for it (`t = s`, `r = realloc(s, n)`). It then leaves the walk once
-nothing stands for it and it owns nothing, unless a `goto` of the function goes
-into a block, past the declarations before its label; one that still owns leaks
-where the path ends, as one finding on the pointer of the block. A known gap: a
-`case` label inside a nested block of a `switch` is not such a jump yet, so a
-pointer declared before it can leave the walk too early
-([#111](https://github.com/agentica-lang/cchecker/issues/111)). The pointers of
-a statement expression (`({ ...; p; })`) are checked so at the end of the
-statement around it, and its cleanup functions run at its own end.
-
-A local without a mark that gets a pointer that owns (`char *c = p`) stands for
-it: freeing `c` frees `p`; a `malloc` into it later owns nothing, as in any
-local without a mark. A local marked `CC_OWNS` that gets one takes it over, and
-`p` owns no more. Each side of `?:` gives its own value (`p = n ? make(n) :
-NULL` owns where `n` is true, `p = q ?: make(n)` where `q` is null), and a
-statement expression gives the value of its last expression (`({ char *q =
-make(n); ...; q; })`). In a `CC_FREES` parameter that points to the pointer
-(`release(CC_FREES char **p)`, a cleanup function), `*p` is the pointer:
-`free(*p)` frees it, `if (*p)` tests it, `*p = NULL` sets it to null, and `*p =
-v` gives the caller a value that the function does not own: a pointer that owns
-is handed on there, and a local that stood for the old value (`old = *p`) owns
-it. `t = realloc(p, n)` moves `p` to `t`, and `p` owns again where `t` is null;
-`p = realloc(p, n)` keeps `p` owning. A pointer lent to be set (`fill(&p)`)
-without `CC_OWNS_OUT` (below) owns what the call left in it, which the rules do
-not know: no finding says it leaks. The marks of the parameters of a prototype
-hold in the definition and in every caller that includes it.
-
-`CC_OWNS_OUT` on a parameter that points to a pointer (`int take(CC_OWNS_OUT
-char **out)`) says that the function may hand an owned pointer out to the caller
-through it; the parameter itself owns nothing. `*out = p` (or `out[0] = p`)
-hands `p` on, and `*out = make(n)` keeps the value. In the caller, a local whose
-address the call gets there (`take(&p)`, marked or not) is filled: a value that
-it still owned leaks, and `path` starts at the call (`9:7 take sets p`). A call
-that failed may have left nothing there, so a filled pointer owns from the first
-time the path reads it (passes it, tests it, stores it): from then on a return
-or a jump that does not free or hand it on leaks it. Before that, no exit and no
-new value (another `take(&p)`, in a retry loop) leaks it. With `CC_FREES` too
-(`renew(CC_FREES CC_OWNS_OUT char **p)`), the call frees the old value and fills
-a new one.
-
-A store of a pointer that owns, or of the value of a `CC_OWNS` function, into an
-item of an array that owns hands it on to the array, as a store into a `CC_OWNS`
-field does: `argv[i] = p`, where `argv` owns or stands for a pointer that does,
-is marked `CC_OWNS`, or is a local that got `malloc`, `calloc` or `realloc`. In
-a store or a return that hands a pointer on, each side of `?:` gives its own
-value (`x->held = n ? p : NULL`, `return n ? p : NULL`).
+value of a `CC_OWNS` function owns it without a mark. A `malloc` into a local
+without a mark is not checked (`gcc -fanalyzer` reports those leaks). On every
+path that returns, each pointer that owns is freed or handed on: returned (even
+in a function with no `CC_OWNS` mark), stored in a `CC_OWNS` field (or an item
+of one, `q->items[i] = p`, or a `CC_OWNS` global), or passed to a `CC_OWNS`
+parameter. Stored anywhere else or passed to another parameter, it is lent and
+still owns. A condition that tells a pointer is null (`if (!p)`, `if ((p =
+malloc(n)) == NULL)`) leaves it owning nothing on that side. The marks of the
+parameters of a prototype hold in the definition and in every caller that
+includes it.
 
 | Code | |
 |---|---|
@@ -103,179 +49,143 @@ src/load.c:6:5 CC-OWN-LEAK load does not free or hand on buf on every path: 9:21
 src/conf.c:9:5 CC-OWN-LEAK start does not free or hand on c on every path: 10:28 c = malloc -> 11:8 true -> 14:13 may jump in as_mode
 ```
 
-A `malloc` into a local without a mark is not checked: `gcc -fanalyzer` reports
-those leaks, and the mark makes the contract part of the code. The rules do not
-follow a pointer into a struct or an array (a store into a `CC_OWNS` field is
-where they stop, but for the fields of a local struct or array of structs, or
-of a `CC_OWNS` struct parameter, below), through a
-function pointer, or out through a parameter without `CC_OWNS_OUT`
-(`int open_buf(char **out)`: the caller lends `&p` to be set). Two
-variables of the same name in one function (a local that shadows another, a
-parameter or a global, or the same name in two blocks) are two variables: each
-pointer has its own state, and a condition on one is not a condition on the
-other. A local that gets a pointer already freed or handed on (`free(b); char
-*c = b;`) is a CC-OWN-USE-AFTER-FREE there, and a call that clears only the
-local (`zap(&c)` at a `CC_FREES` parameter) frees the pointer it stands for.
-The other way, `c = b; zap(&b);` frees the pointer too, and `c` still holds it:
-`free(c)` after it is a CC-OWN-DOUBLE-FREE and `work(c)` a
-CC-OWN-USE-AFTER-FREE, unless `c` got another value first. A store of the value
-a pointer already holds (`p.right = p.right`) changes nothing. A
-local that stands for a pointer holds the old value when the pointer
-gets a new one (`old = p; p = make();`, `take(&p)` at a `CC_OWNS_OUT`
-parameter, `old = *p; *p = v;` through a `CC_FREES` parameter), except after
-`p = realloc(p, n)`, which is trusted to work. `return p` hands `p` on even when
-the function has no `CC_OWNS` mark. A pointer stored
-in a field without `CC_OWNS` is not followed, one that an initializer or a
-compound literal puts in a `CC_OWNS` field is handed on there (in any other
-field or item it is only read), and only one level of pointer is (`*p` of a
-`char **p`, not `**p`). A
-pointer freed through its address (`free_and_null(&p)`, a cleanup function) is
-freed or null: it may be read and freed again (`free(NULL)`), and where a
-condition says it is not null it is freed. The rules assume that a helper that
-frees through `&p` sets the pointer to null; one that only frees leaves a later
-double free or use unreported.
+### Jumps and blocks
+
+A call of a function that may jump out (`CC_MAY_JUMP`, `[assume] may_jump`, or a
+function that calls one and does not catch the jump, see
+[Jumps](rules.md#jumps)) is a way out: each pointer that still owns after the
+call is a leak, with the call as the last step of `path`. What the call itself
+frees or takes (a `CC_FREES` or `CC_OWNS` parameter) is the callee's from the
+call on. A call of a function that always jumps out (`CC_JUMPS`, `[assume]
+jumps`) is that way out alone and the path ends, so a pointer freed before the
+call is not freed twice by the code after it.
+
+A pointer declared in an inner block is checked where a path leaves the block
+(its end, `break`, `continue`, `goto` or `return`): one that still owns there
+leaks, with that point as the last step of `path`, unless a pointer outside the
+block stands for it (`t = s`, `r = realloc(s, n)`). Known gap: a `case` label
+inside a nested block of a `switch` is not a jump into the block yet, so a
+pointer declared before it can leave the walk too early
+([#111](https://github.com/agentica-lang/cchecker/issues/111)). The pointers of
+a statement expression are checked at the end of the statement around it.
+
+### Aliases, reallocation and out parameters
+
+- A local without a mark that gets a pointer that owns (`char *c = p`) stands
+  for it: freeing `c` frees `p`, and a `malloc` into it later owns nothing. A
+  local marked `CC_OWNS` that gets one takes it over, and `p` owns no more. A
+  local that stands for a pointer holds the old value when the pointer gets a
+  new one (`old = p; p = make();`), except after `p = realloc(p, n)`, which is
+  trusted to work.
+- Each side of `?:` gives its own value (`p = n ? make(n) : NULL` owns where `n`
+  is true; also in a store or a return that hands a pointer on), and a statement
+  expression gives the value of its last expression.
+- `t = realloc(p, n)` moves `p` to `t`, and `p` owns again where `t` is null; `p
+  = realloc(p, n)` keeps `p` owning.
+- In a `CC_FREES` parameter that points to the pointer (`release(CC_FREES char
+  **p)`, a cleanup function), `*p` is the pointer: `free(*p)` frees it, `*p =
+  NULL` sets it to null, and `*p = v` gives the caller a value the function does
+  not own. A pointer freed through its address (`free_and_null(&p)`) is freed or
+  null: it may be read and freed again, and where a condition says it is not
+  null it is freed. The rules assume that a helper that frees through `&p` sets
+  the pointer to null.
+- `CC_OWNS_OUT` on a parameter that points to a pointer (`int take(CC_OWNS_OUT
+  char **out)`) says that the function may hand an owned pointer out through it;
+  the parameter itself owns nothing. `*out = p` hands `p` on. In the caller, a
+  local whose address the call gets (`take(&p)`) is filled: a value it still
+  owned leaks, and `path` starts at the call (`9:7 take sets p`). A call that
+  failed may have left nothing there, so a filled pointer owns from the first
+  time the path reads it (passes it, tests it, stores it); before that, no exit
+  and no new value leaks it, and a filled pointer that is never read is not
+  reported (`take(&b); return 0;`). With `CC_FREES` too (`renew(CC_FREES
+  CC_OWNS_OUT char **p)`), the call frees the old value and fills a new one. A
+  pointer lent to be set (`fill(&p)`) without `CC_OWNS_OUT` owns what the call
+  left in it, which the rules do not know: no finding says it leaks.
+- Two variables of the same name (a shadowing local, a parameter or global, the
+  same name in two blocks) are two variables. A local that gets a pointer
+  already freed or handed on (`free(b); char *c = b;`) is a use after free
+  there; `c = b; zap(&b);` frees the pointer too, and `c` still holds it, so
+  `free(c)` after it is a double free unless `c` got another value first. A
+  store of the value a pointer already holds (`p.right = p.right`) changes
+  nothing.
+- Not followed: a pointer into a struct or an array, except as below (a store
+  into a `CC_OWNS` field is where they stop), through a function pointer, or out
+  through a parameter without `CC_OWNS_OUT`; a pointer stored in a field without
+  `CC_OWNS`; more than one level of pointer (`*p` of a `char **p`, not `**p`);
+  the items of an array after the store (an array freed without its items is not
+  reported, nor are the items of a local array without a mark that is never
+  freed). An initializer or a compound literal that puts a pointer in a
+  `CC_OWNS` field hands it on there; in any other field or item it is only read.
+  A store through `*argv` is not one into an item (`argv[0]` is). A store into
+  an item of an array that owns (`argv[i] = p`, where `argv` is `CC_OWNS`,
+  stands for one, or is a local that got `malloc`, `calloc` or `realloc`) hands
+  the pointer on to the array.
+
+### Structs in a local
 
 The one struct the rules follow is a local one: its `CC_OWNS` fields are
 pointers of their own. After `struct pair p = {0}; p.left = make();` or `struct
 pair p = { .left = make() };`, `p.left` owns and is freed or handed on on every
-path, as a `CC_OWNS` local, and the findings name it `p.left`. A struct in it by
-value is followed the same way, up to 8 levels of structs in it and 16 `CC_OWNS`
-fields in all (each field is a pointer of the walk, and a path that lends the
-structs in it one by one keeps a state for each choice). Over either bound only
-the struct's own `CC_OWNS` fields are followed, and a struct in it is a field
-that does not own: a store into its fields hands the pointer on, and `&p.inner`
-stops following the whole struct. Within the bounds: with `struct outer { int n;
-struct pair inner; };`, `p.inner.left` is a pointer of its own, and `t.a.left`
-and `t.b.left` are two, when `a` and `b` are both a `struct pair`. So is a field
-of an unnamed struct member (`c.buf` in `struct conn { int fd; struct { CC_OWNS
-char *buf; }; }`). A struct reached through a pointer (`p.ptr->left`) or in a
-union is not: a store into its `CC_OWNS` fields hands the pointer on. The fields
-are followed up to where the struct escapes, which is any read of the whole
-struct: its address passed or stored (`keep(&p)`, `init(&p)`, `memcmp(&p, &q,
-sizeof p)`), a copy (`q = p`, `struct pair q = p`, a snapshot), a by-value
-argument (`take(p)`), `return p`, `(void)p`, an operand of `asm` that names the
-struct, or a new value of the whole struct (`p = q`). There every field is
-handed on, so a leak before the escape is found and the escape is clean; a new
-value of the whole struct first loses what a field still owns (a leak, as for a
-`CC_OWNS` pointer). A struct in it escapes alone, with the same forms:
-`keep(&p.inner)`, `q = p.inner`, `take(p.inner)` or `p.inner = q` hand on the
-fields of `p.inner` only, while `keep(&p.inner.left)` lends one pointer. The
-address of a struct in it (`&p.inner`) is taken to reach only that struct: a
-callee that goes back to the outer struct (`container_of`) is not seen, while
-the address of a field that does not own (`&p.n`, `&p.inner.n`) stops following
-the whole struct. After the escape the fields belong to whoever got the struct,
-and the rules check nothing more about them in the function: a double free, a
-use after free, or a leak of a pointer stored into a field afterwards is not
-found. `sizeof p` and a field that does not own (`p.n`) are no escape; a
-`CC_OWNS` field in an operand of `asm` (`"r"(p.left)`) is only read, so the
-field still owns after it.
+path, as a `CC_OWNS` local, and the findings name it `p.left`. The cases are in
+`specs/ownership.feature`.
 
-The struct of a variable is the one its type names where the variable is
-declared, as C finds a tag or a typedef in the blocks around it (a tag declared
-in the clauses of a `for`, or in the condition of an `if`, `while`, `do` or
-`switch`, is seen only inside that statement): one of a block that shadows
-another of the same name is its own struct, and so is an unnamed one. A field set from a
-local (`p.left = b`, `struct pair p = { .left = b }`) stands for that local, as
-an unmarked local does: a free of either frees the one pointer (a free of both is
-a CC-OWN-DOUBLE-FREE), a leak names the local, and a local already freed or
-handed on is a CC-OWN-USE-AFTER-FREE there. A clear of the field alone
-(`zap(&p.left)`, `pair_free(&p)`) frees the local. When the struct escapes, the
-local is lent with it, as by `lend(&b)`: whoever got the struct may have freed
-or kept it, so a lookup key on the stack (`struct entry key = { .name = name };
-find(&key); free(name);`) is clean, and so is `keep(&p);` with no free of `b`,
-while a second free of `b` or a use after its free is found.
-
-Some uses of the whole struct are no escape. A `cleanup` function on the struct
-frees every field at the end of its block: its body is not read, so a cleanup
-function that frees only some fields can give a false CC-OWN-DOUBLE-FREE after
-an explicit free of another one, and the leak of the fields it skips is not
-found. Each of the clears and frees below works on a struct in it too
-(`pair_free(&p.inner)`, `memset(&p.inner, 0, sizeof p.inner)`, `p.inner =
-(struct pair){0}`), on the fields of that struct only, and a nested initializer
-(`{ .inner = { .left = b } }`, `{ 1, { b } }`) gives each nested field its item.
-A call that passes `&p` to a `CC_FREES` parameter (`pair_free(&p)`) frees
-every field and, as `free_and_null(&p)` of a pointer, is taken to set them to
-null: a following `free(p.left)`, a use of `p.left` or a second `pair_free(&p)`
-is not reported, which a helper that only frees would make a double free or a
-use after free. This caller rule is for a helper that the rules do not read,
-defined in another unit: in its own function a `CC_FREES` parameter that points
-to a struct is still one pointer to free, so a helper that frees only the fields
-(`pair_done`) is checked as one that leaks the struct; leave such a helper
-unmarked and give it as a `cleanup` function, or call it on a struct that then
-escapes. `memset(&p, 0, sizeof p)` (the fill `0` or `'\0'`, the size `sizeof p`
-or `sizeof` of a type that names the same struct, as `sizeof(struct pair)` or
-`sizeof(pair_t)` with `typedef struct pair pair_t`; any other size is an
-escape) and a compound literal
-(`p = (struct pair){0}`, `p = (struct pair){ .left = q }`) clear the struct:
-each field gets null or its item, also after an escape, so the struct is
-followed again, and a field that still owns leaks there. An item that is a field
-of the same struct, also through a cast or parentheses, is read before the
-store, as C does, so `p = (struct pair){ .left = p.right, .right = p.left }`
-swaps the fields; one that reads a field in any other way
-(`p.left ? p.left : q`, `steal(p.left)`) is read before the store too. `&p.left`
-of a
-`CC_OWNS` field is the address of that pointer, as `&b` of a local:
-`free_and_null(&p.left)` at a `CC_FREES` parameter frees and clears it,
-`take(&p.left)` at a `CC_OWNS_OUT` parameter fills it, and any other call is
-lent it.
-
-A struct whose field that does not own has its address taken (`&p.n`, which may
-reach the whole struct) is not followed, nor a static one, a union, or one whose
-struct is not known (an unnamed struct through `__typeof__`, a tag defined
-inside a `sizeof` or a cast in a function body) or does not fit how
-the function uses it (a field it reads or an item of its initializer that the
-struct does not have: clang's AST has no node for a tag declared in a parameter
-list, `void f(struct pair { int k; } x)`, so its name finds the struct of the
-file): a store into their `CC_OWNS` fields hands the pointer on, as an
-initializer does, also of a union (`union u v = { .p = b };`).
-
-A local array of structs of a constant size (`struct pair a[2]`) is followed
-item by item when the function names its items by constant indexes only: each
-item is a struct of its own, `a[0].left` is a pointer of its own, and the
-findings name it so. The bound counts every item: the items times the
-`CC_OWNS` fields of each (with those of the structs in it) are at most 16. An
-index is a constant when it is a number, or `+`, `-` or `*` of numbers
-(`a[N - 1]` of a macro), up to 1048576; an enum constant or a `const` variable
-is not, and an index out of range names no item. An array that the function
-also reads in another way is not followed in the whole function: by an index
-that is not a constant (`a[i]`), whole (`keep(a)`, `a + 1`, `q = a`), or by the
-address of an item (`&a[0]`, which reaches the others), anywhere but in a
-`sizeof`, as the array that `memset` gets, or as an item at a `CC_FREES`
-parameter. Such a read may reach any item, and the walk also takes the path on
-which a loop does not run, where a loop that frees every item would leak them
-all. Nor is an array over the bound followed, or one of a variable length
-(`struct pair a[n]`), of two dimensions (`a[2][2]`), in a struct
-(`p.items[0]`), or a static one: a store into their `CC_OWNS` fields hands the
-pointer on. An item named whole (`take(a[0])`, `a[0] = a[1]`, `a[0] = (struct
-pair){0}`, `pair_free(&a[0])`, `memset(&a[0], 0, sizeof a[0])`) works as a
-struct in a struct does, on that item only, but `&a[k]` at a `CC_FREES`
-parameter may free the items after it too (`pairs_free(&a[0], n)`): those
-escape there. `memset(a, 0, sizeof a)` clears
-every item, `sizeof a` is no escape, an initializer gives each item its list
-(`{ { b }, { c } }`, `{ [1] = { .left = b } }`, with the rule of a field set
-from a local), and a `cleanup` function on the array frees every item.
-
-`CC_OWNS` on a struct parameter passed by value (`void f(CC_OWNS struct pair
-p)`) says that the function owns its `CC_OWNS` fields: the parameter is
-followed as a local struct is, and each field owns from the entry, so it is
-freed or handed on on every path, or the struct escapes (`keep(&p)`, `return
-p`). Without the mark the parameter is not followed, as before, and the mark on
-a struct with no `CC_OWNS` field, or whose struct the rules do not know (a tag
-declared in the parameter list), owns nothing. A caller that passes a followed
-struct there (`take_pair(q)`, or an item, `take_pair(a[0])`) hands its fields
-on: a later `free(q.left)` is a CC-OWN-DOUBLE-FREE, no leak of `q.left` is
-reported, and a field that stands for a local hands the local on. A struct
-passed through a function pointer or to the `...` of a variadic function is a
-by-value argument, an escape. As for every parameter, the mark on any
-declaration of the function holds in its definition and its callers.
-
-A filled pointer that the path never reads is not reported (`take(&b); return
-0;`): telling it from what a call that failed left would need a mark that says
-on which result the pointer is set. The items of an array are not followed one
-by one after the store: an array freed without its items is not reported, nor
-are the items of an array in a local without a mark (`char **v = calloc(n,
-sizeof *v)`) that is never freed, as for any `malloc` into such a local. A store
-through `*argv` is not one into an item (`argv[0]` is).
+- Nested: a struct in it by value is followed the same way (`p.inner.left`; a
+  field of an unnamed struct member too), up to 8 levels and 16 `CC_OWNS` fields
+  in all. Over a bound only the struct's own `CC_OWNS` fields are followed, and
+  a store into the fields of a struct in it hands the pointer on.
+- Not followed: a struct reached through a pointer (`p.ptr->left`), in a union,
+  `static`, of an unknown type (an unnamed struct through `__typeof__`, a tag
+  defined in a `sizeof`, a cast or a parameter list), or whose fields the
+  function uses in a way the struct does not fit. A store into their `CC_OWNS`
+  fields hands the pointer on. The address of a field that does not own (`&p.n`)
+  stops following the whole struct.
+- Escape: the fields are followed up to where the struct escapes, which is any
+  read of the whole struct: its address passed or stored (`keep(&p)`), a copy
+  (`q = p`), a by-value argument (`take(p)`), `return p`, `(void)p`, an `asm`
+  operand that names it, or a new value of the whole struct (`p = q`). There
+  every field is handed on: a leak before the escape is found, the escape is
+  clean, and nothing more is checked after it. A struct in it escapes alone
+  (`keep(&p.inner)`), while `keep(&p.inner.left)` lends one pointer. `sizeof p`,
+  a field that does not own and a `CC_OWNS` field as an `asm` operand are no
+  escape.
+- A field set from a local (`p.left = b`) stands for that local: a free of
+  either frees the one pointer (of both, a double free) and a leak names the
+  local. When the struct escapes the local is lent with it, so `struct entry key
+  = { .name = name }; find(&key); free(name);` is clean.
+- Clears: a `cleanup` function on the struct frees every field at the end of its
+  block (its body is not read: one that frees only some fields can give a false
+  double free). A call that passes `&p` to a `CC_FREES` parameter
+  (`pair_free(&p)`) frees every field and is taken to set them to null, for a
+  helper defined in another unit; in its own function a `CC_FREES` parameter
+  that points to a struct is one pointer to free, so a helper that frees only
+  the fields is checked as one that leaks the struct (leave it unmarked and give
+  it as a `cleanup` function). `memset(&p, 0, sizeof p)` (fill `0`, size `sizeof
+  p` or of a type naming the same struct; another size is an escape) and a
+  compound literal (`p = (struct pair){0}`) clear the struct: each field gets
+  null or its item, so the struct is followed again and a field that still owns
+  leaks there. All of these work on a struct in it too, on its fields only.
+  `&p.left` of a `CC_OWNS` field is the address of that pointer, as `&b` of a
+  local (`take(&p.left)` at a `CC_OWNS_OUT` parameter fills it).
+- `CC_OWNS` on a struct parameter passed by value (`void f(CC_OWNS struct pair
+  p)`): the function owns its `CC_OWNS` fields, each from the entry, and the
+  parameter is followed as a local struct. Without the mark it is not followed.
+  A caller that passes a followed struct there (`take_pair(q)`,
+  `take_pair(a[0])`) hands its fields on: a later `free(q.left)` is a double
+  free and no leak is reported. A struct passed through a function pointer or to
+  a `...` is a by-value argument, an escape.
+- A local array of structs of a constant size (`struct pair a[2]`) is followed
+  item by item (`a[0].left`), within the same bound of 16 fields in all, when
+  the function names its items by constant indexes only (a number or `+`, `-`,
+  `*` of numbers, up to 1048576; an enum constant or a `const` variable is not
+  one). Any other read of the array (`a[i]`, `keep(a)`, `q = a`, `&a[0]`) leaves
+  it unfollowed in the whole function, as it may reach any item, except in a
+  `sizeof`, as the array `memset` gets, or as an item at a `CC_FREES` parameter.
+  Not followed either: an array over the bound, of a variable length, of two
+  dimensions, in a struct or `static`. An item named whole (`take(a[0])`,
+  `pair_free(&a[0])`) works as a struct in a struct, but `&a[k]` at a `CC_FREES`
+  parameter may free the items after it (`pairs_free(&a[0], n)`): those escape.
+  `memset(a, 0, sizeof a)` clears every item, and an initializer or a `cleanup`
+  function on the array covers each item.
 
 ## Values of the collector
 
@@ -286,7 +196,7 @@ keep the value alive. The rule keeps them out of both. `CC_GC` on a struct, a
 union or a typedef says that the collector manages its values, and `CC_GC_ALLOC`
 on a function that it returns memory of the collector; the allocators of the
 Boehm collector (`GC_malloc`, `GC_malloc_atomic`, `GC_realloc`, ...) are known
-(`[library]` `libgc_alloc`; see [Settings](settings.md)).
+(`[library] libgc_alloc`; see [Settings](settings.md#library)).
 
 ```c
 struct CC_GC object { ... };                     /* a struct object, or a pointer to one */
@@ -312,12 +222,11 @@ src/table.c:6:8 CC-OWN-GC-IN-MALLOC table stores a value of the collector in mem
 ```
 
 A variable of static storage of a collector type is a finding at the variable (a
-global or a file static, at its definition, not at an `extern`), and at the
+global or file static, at its definition, not at an `extern`), and at the
 function for a static local. The rule does not follow the paths: a local that
 got memory from `malloc` anywhere in the function points to it everywhere in it.
 Memory it cannot tell (a parameter that is not marked, a field that is not
 `CC_OWNS`) is not reported, nor is a copy that is no store (`memcpy`, a value
 passed to a function that stores it), a store of `NULL` or `0`, or a constant
-static (`static const value none`), which only ever holds its initializer. A
-typedef of a pointer (`typedef struct object *object_ref`) is read through to
-the type it names.
+static (`static const value none`). A typedef of a pointer (`typedef struct
+object *object_ref`) is read through to the type it names.
