@@ -25,9 +25,9 @@ other findings in it); only a full run lowers it.
 when a tool failed, when the database has a file that was skipped (outside the
 working directory), with `--checks` (a baseline made with other checks would
 lose the findings of the default ones), and, when the rules run, with
-`--no-infer`, a `[library]` flag set to false, or a file of `-c` that leaves out
-a name of `short` or `hot` of the project's `[roots]` (only `[roots]` is
-compared, not `follow_cold` or `[assume]`).
+`--no-infer`, a `[library]` flag other than `short_lock_sections` set to false,
+or a file of `-c` that leaves out a name of `short` or `hot` of the project's
+`[roots]` (only `[roots]` is compared, not `follow_cold` or `[assume]`).
 
 A baseline entry whose finding is gone is stale: a new finding of the same code,
 file and message would match it later and be accepted unseen. A run names each
@@ -38,9 +38,9 @@ they make the run exit `1` (and `clean` false); an entry outside the scope never
 fails the run. `--strict-baseline` needs `--baseline` and the default `--checks`
 (fewer checks make the entries of the others look stale), and does not go with
 `--update-baseline`. With a check of the rules off (`--no-infer`, a `[library]`
-flag set to false, a file of `-c` that leaves out the project's `[roots]`), the
-stale entries of the rules do not fail the run, with a warning on standard
-error; those of the other tools still do.
+flag other than `short_lock_sections` set to false, a file of `-c` that leaves
+out the project's `[roots]`), the stale entries of the rules do not fail the
+run, with a warning on standard error; those of the other tools still do.
 
 ### Versions of the tools
 
@@ -67,7 +67,9 @@ counts as every file of gcc; FILEs and `--exclude` do not): a partial update
 keeps the stored versions. After an update of every file, a tool that ran and
 printed no version loses its stored one (the update says so on standard error),
 and a tool that did not run keeps it. A baseline with no `tools` reads with no
-warning, and the next update of every file adds them.
+warning, and the next update of every file adds them. The format is stable
+across versions: the file stays `"version": 1`, and an older cchecker reads a
+file with `tools` and ignores them.
 
 ## Suppressions
 
@@ -105,9 +107,9 @@ it.
 |---|---|
 | `CC-UNUSED-IGNORE` | a code of a suppression matches no finding, once the run covered the tool of that code on that file (for the rules, a full run of a compile database) |
 
-It is at the comment or the function, one for each suppression, naming its stale
-codes. It never goes into the baseline: the fix is to edit or remove the
-comment.
+The finding is at the comment or the function, one for each suppression, naming
+its stale codes. It never goes into the baseline: the fix is to edit or remove
+the comment.
 
 A suppression is per code, not per message: one `CC-GCC-ANALYZER-MALLOC-LEAK` on
 a line hides every leak of that line, a new one too, so name only the codes that

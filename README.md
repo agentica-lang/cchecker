@@ -52,6 +52,10 @@ cchecker: ignore CODE: reason`. Mark functions with the macros of
 
 ## Documentation
 
+The codes are stable: the naming of the analyzer codes (`CC-GCC-...`,
+`CC-TIDY-...`) is in [docs/usage.md](docs/usage.md#files-and-codes), and the
+codes of the rules are in the Rules and Ownership pages below.
+
 - [Output, options and exit codes](docs/usage.md): `--json`, every option,
   timeouts.
 - [Baseline and suppressions](docs/suppressions.md): `--update-baseline`,
@@ -61,7 +65,7 @@ cchecker: ignore CODE: reason`. Mark functions with the macros of
 - [Rules](docs/rules.md): the annotations, effects, locks and pairs of calls,
   with their codes.
 - [Ownership and the collector](docs/ownership.md): `CC_OWNS`, `CC_FREES`,
-  `CC_OWNS_OUT`, `CC_GC`, `CC_GC_ALLOC`.
+  `CC_OWNS_OUT`, `CC_GC`, `CC_GC_ALLOC`, and their codes.
 
 ## Development
 

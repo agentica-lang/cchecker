@@ -108,6 +108,7 @@ and `clang-analyzer-security.*` (without `insecureAPI`), and the bugprone checks
 
 A timeout stops the tool and everything it started (gcc runs `cc1` as a child)
 when `timeout` of coreutils is installed, and kills what ignores the signal two
-seconds later. Without it (macOS has none) only the tool itself is stopped.
-Ctrl-C on cchecker does not stop the tools that are running: they end by
-themselves or at the timeout.
+seconds later. Without it (macOS has none) only the tool itself is stopped. A
+SIGINT to cchecker stops the tool that is running the same way: with `timeout`
+the tool and its children (gcc and its `cc1`) end with it; without it only the
+tool itself ends, and a child it started keeps running until it ends by itself.

@@ -62,10 +62,11 @@ counts them fixed.
 The walk does not go into a function that never returns or is cold: `_Noreturn`,
 `[[noreturn]]`, `CC_NORETURN`, `CC_JUMPS`, `__attribute__((noreturn))` (in its
 type too, behind a typedef) or `__attribute__((cold))` on any declaration, and a
-library call that never returns (`abort`, `exit`, `longjmp`, `pthread_exit`,
-...). Such a call is an error exit, not the path the rules are about; `[effects]
-follow_cold = true` follows it. A `CC_BLOCKING` mark on such a function wins.
-The lock rules follow every call whatever it says.
+library call that never returns (`abort`, `exit`, `_exit`, `longjmp`,
+`pthread_exit`, ...), though `_exit` enters the kernel. Such a call is an error
+exit, not the path the rules are about; `[effects] follow_cold = true` follows
+it. A `CC_BLOCKING` mark on such a function wins. The lock rules follow every
+call whatever it says.
 
 The known calls are those of libc, pthread, libuv, OpenSSL and the Boehm
 collector that block, allocate or enter the kernel; the lists are in
@@ -161,18 +162,19 @@ lock helper too:
 A call of a `CC_ACQUIRES_IF` takes the lock on one side (`9:3 takes q->mu`) and
 not on the other (`9:3 does not take q->mu`). The flag is a local whose address
 the call gets (`at(q, k, &locked)`): it gets the value of that side, which a
-later test reads, until a new value (a flag of another kind, such as
-`&b->locked`, splits the path with no value a test can read). The flag of a
-`CC_RELEASES_IF` is read as the test of an `if`; a constant takes one side. On
-the side where the helper does nothing to a lock, the rules on what runs under a
-lock read its body without its releases of that lock (and its takes, when it
-takes by a flag): a system call, or a lock taken before the flag is tested or
-after a write to it, is still found. A wait there is no finding only when the
-call passes the lock held for the parameter it waits on (`w(&o->mu, 0)` for
-`pthread_cond_wait(&cv, m)`) and the body does not change that parameter. A
-`CC_TRIES` goes as a trylock does and never waits. A mark whose flag is no
-parameter of its declaration, or a `CC_TRIES` with two locks, is an error of the
-tool (exit 2).
+later test reads, until a new value (that address does not make it a local whose
+value is never known; its address taken anywhere else, `volatile` and `static`
+still do; a flag of another kind, such as `&b->locked`, splits the path with no
+value a test can read). The flag of a `CC_RELEASES_IF` is read as the test of an
+`if`; a constant takes one side. On the side where the helper does nothing to a
+lock, the rules on what runs under a lock read its body without its releases of
+that lock (and its takes, when it takes by a flag): a system call, or a lock
+taken before the flag is tested or after a write to it, is still found. A wait
+there is no finding only when the call passes the lock held for the parameter it
+waits on (`w(&o->mu, 0)` for `pthread_cond_wait(&cv, m)`) and the body does not
+change that parameter. A `CC_TRIES` goes as a trylock does and never waits. A
+mark whose flag is no parameter of its declaration, or a `CC_TRIES` with two
+locks, is an error of the tool (exit 2).
 
 ### Trylock and conditions
 
@@ -185,29 +187,37 @@ goes the same way (`if (r != 0)`, `if (!r)`, `if (r == EBUSY)`, `switch (r)`, a
 copy set once). A new value of the variable forgets the result. A path that
 releases the lock where the call failed starts at the call (`6:11 fails`). The
 failure of a call that waits (`pthread_mutex_lock`) is reached only when a test
-of the variable can follow the call before a new value. A `static` or `volatile`
-local, or one whose address is taken, is not followed.
+of the variable can follow the call before a new value (`ret =
+pthread_mutex_lock(&q->mu); ...; return ret;` does not, nor does a test of `ret`
+before the call or after `ret = work();`). A `static` or `volatile` local, or
+one whose address is taken, is not followed.
 
 A path does not go where a condition that the function tests twice would be true
 and false, so `if (locked) lock(); ...; if (locked) unlock();` passes. A test
 against 0 is a test of what it compares, and a whole number written to a local
 or a parameter is a value the path knows (`taken = true;`), when a test of the
 variable guards a lock call or a way out (`return`, `goto`, `break`,
-`continue`): other flags cost no states. A local whose address is taken, a
-`volatile` one and a `static` one never have a known value. A write to a
-variable of the condition, a write through a pointer, or a call given its
-address (`f(&locked)`) forgets its value. A call given the address of a field
-(`atomic_store(&q->ready, 0)`) does not change `q`: conditions are kept by
-variable, not by field, so copy the field to a local and test the local when a
+`continue`): other flags cost no states. A local whose address is taken anywhere
+in the function (`int *p = &locked;`), a `volatile` one and a `static` one never
+have a known value, and a write through a pointer (`*p = 1`) forgets what their
+tests told. A write to a variable of the condition, a write through a pointer,
+or a call given its address (`f(&locked)`) forgets its value. A call given the
+address of a field (`atomic_store(&q->ready, 0)`) does not change `q`:
+conditions are kept by variable (a local that shadows another is a variable of
+its own), not by field, so copy the field to a local and test the local when a
 call may change it.
 
-A function whose paths would take more than 200 000 states is walked again
-without these conditions (which may follow paths that cannot happen); when that
-is not enough either, its findings are those of the paths followed. Either way
-it is listed in `incomplete_functions` of `--json` (`file`, `line` and
-`function`) and on standard error, and the exit code does not change. A function
-whose AST has more than 20 000 nodes gets no graph: an error of the `rules` tool
-on its file (exit 2), and the rest of the run is checked.
+A condition leaves the state of a path after its last test before a write to one
+of its variables, so a function with many flags, each tested twice around a
+lock, stays in a number of states that grows with the flags when their tests do
+not overlap, not as a power of two. A function whose paths would take more than
+200 000 states is walked again without these conditions (which may follow paths
+that cannot happen); when that is not enough either, its findings are those of
+the paths followed. Either way it is listed in `incomplete_functions` of
+`--json` (`file`, `line` and `function`) and on standard error, and the exit
+code does not change. A function whose AST has more than 20 000 nodes gets no
+graph: an error of the `rules` tool on its file (exit 2), and the rest of the
+run is checked.
 
 Limits: a lock is counted by its text, so a lock taken in a loop over several
 objects (`lock(&a[i]->mu)`), hand over hand, or through a pointer set again
@@ -226,12 +236,13 @@ on that way out (a `CC_PAIR` set and not restored is
 `CC-PATH-PAIR-NOT-RESTORED`), with the call as the last step of `path` (`7:72
 may jump in check_size`): the code that catches the jump does not know the lock.
 Release it before the call, or check what may fail first. A jump does not run
-`cleanup(f)` functions. Only a direct call can jump, never one through a
-function pointer.
+`cleanup(f)` functions, so a lock that only a cleanup function releases is held
+on the jump. Only a direct call can jump, never one through a function pointer.
 
 A call of a function that always jumps out and never returns, marked `CC_JUMPS`
 or named in `[assume] jumps`, is that way out alone: the path ends there (`jumps
-in check_size`). `CC_MAY_JUMP` on a function that never returns is the same.
+in check_size`). `CC_MAY_JUMP` on a function that never returns is the same. A
+jump adds no state to the walk, so the limits above do not change.
 
 A function that directly calls one that may jump or jumps (marked, listed, or
 found so in turn) may jump out too, unless it catches the jump: it calls
@@ -243,22 +254,23 @@ that no rule walks into (`CC_STOP`, `[assume] stop`) does not jump either. The
 last step of `path` names a shortest chain of calls to the marked function, at
 most three (`7:72 may jump in sized (check_size)`, `may jump in z (y, x, w,
 ...)`; `helper@src/a.c` when static functions of two files share a name); a
-function that never returns says so (`may jump in bad_signature (fail), never
-returns`). The jump of a function that catches still counts at its own calls. A
-finding at an inferred jump has `may_jump_callers` in `source` of `--json`;
-`[library] may_jump_callers = false` turns the inference off.
+function that never returns and reaches a jump is a way out where the path ends,
+as at a `CC_JUMPS` call, and says so (`may jump in bad_signature (fail), never
+returns`; it may also exit). The jump of a function that catches still counts at
+its own calls. A finding at an inferred jump has `may_jump_callers` in `source`
+of `--json`; `[library] may_jump_callers = false` turns the inference off.
 
 A lock helper that writes down the lock it takes, so that the code that catches
 a jump can release it, is marked `CC_JUMP_RELEASES` on a `CC_ACQUIRES` or
 `CC_RELEASES` helper (or one below), or named in `[assume] jump_releases`; for a
 helper of two locks the mark holds for both. A lock taken and released only
-through such helpers is no finding at a jump, and is still checked on every
-return. A lock that the function also takes or releases another way
-(`pthread_mutex_lock`, a helper without the mark) is checked at the jumps as
-before. The mark is on the helper, not on the class of the lock, and it is about
-locks: a `CC_PAIR` set is still `CC-PATH-PAIR-NOT-RESTORED` at a jump. A
-suppression of the code on the function hides the findings of its jumps and of
-its returns.
+through such helpers is no finding at a jump, held (`NOT-RELEASED`) or released
+before it (`NOT-HELD`), and is still checked on every return. A lock that the
+function also takes or releases another way (`pthread_mutex_lock`, a helper
+without the mark) is checked at the jumps as before. The mark is on the helper,
+not on the class of the lock, and it is about locks: a `CC_PAIR` set is still
+`CC-PATH-PAIR-NOT-RESTORED` at a jump. A suppression of the code on the function
+hides the findings of its jumps and of its returns.
 
 ## What runs while a lock is held
 
@@ -299,7 +311,8 @@ struct runq { CC_NO_SYSCALL_UNDER() CC_LOCK_LEVEL(3) pthread_mutex_t lock; ... }
   it); what it does after is no finding. A helper that releases a lock taken
   under the quiet lock, or the restore of a `CC_PAIR` whose set ran under it, is
   held to all its system calls. An unlock or a wait in a helper is a release,
-  never its system call.
+  never its system call, and a call through a function pointer releases nothing,
+  so it is never such a release.
 - Limits: a lock taken under the quiet lock is told by the order of the takes on
   the path, so the release of a quiet lock taken again (a recursive mutex)
   counts as the release of the quiet lock, a lock taken both before and after it
@@ -342,10 +355,12 @@ CC_PAIR(gc_pause, gc_resume) int copy_out(struct heap *h);                  /* i
 The path goes from the call of `set` to the return (`7:3 calls mask_signals ->
 8:7 true -> 9:5 returns`).
 
-- A restore that a path reaches around the set (`if (bad) goto out; gc_pause();
-  ... out: gc_resume();`) is a finding. A restore of two pairs is a finding only
-  when it restores neither. A set made more than twice on a path counts as
-  twice.
+- A `restore` with no `set` before it on the path is a finding in a function
+  that calls `set` on some path (`gc_pause(); gc_resume(); gc_resume();`), and
+  does nothing in one that never calls it. That includes a restore that a path
+  reaches around the set (`if (bad) goto out; gc_pause(); ... out:
+  gc_resume();`). A restore of two pairs is a finding only when it restores
+  neither. A set made more than twice on a path counts as twice.
 - The walk does not tie a variable to the set it records, so `if (paused)
   gc_resume();` after a conditional `gc_pause()`, and a toggle (`if (on) set();
   else restore();`), give findings, even when the restore is harmless to repeat:

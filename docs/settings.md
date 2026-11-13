@@ -77,7 +77,7 @@ that a later libuv adds is not known until they are updated.
 | `libgc_blocking` | `GC_gcollect` of the Boehm collector, which stops the world |
 | `libuv_callbacks_short` | a `CC_SHORT` root for each function passed as a callback that libuv runs on the loop thread (`uv_timer_start`, `uv_read_start`, `uv_write`, `uv_close`, the callback of a `uv_fs_*` request, the `after_work_cb` of `uv_queue_work` but never its `work_cb`, ...; `LOOP_CALLBACKS` has each call and the place of its callback), and a function stored in the `exit_cb` field of `uv_process_options_t` (by an assignment or an initializer; the root names `uv_process_options_t.exit_cb`). See [Roots](#roots) |
 | `libgc_alloc` | the allocators of the Boehm collector (`GC_malloc`, `GC_malloc_atomic`, `GC_realloc`, `GC_strdup`, their `GC_debug_` forms) to the allocators of `CC_GC_ALLOC` (`source` `libgc_alloc`) |
-| `libc_nonblocking_flags` | the flags that make a blocking call return at once, so that it is not blocking for `CC_SHORT`: `open` and `openat` with `O_NONBLOCK`, `recv`, `send`, `recvfrom` and `sendto` with `MSG_DONTWAIT`, `waitpid`, `wait3`, `wait4` and `waitid` with `WNOHANG`, and `uv_run` with `UV_RUN_NOWAIT` alone (not `UV_RUN_ONCE`, `UV_RUN_DEFAULT` or a mix) |
+| `libc_nonblocking_flags` | the flags that make a blocking call return at once, so that it is not blocking for `CC_SHORT`: `open` and `openat` with `O_NONBLOCK`, `recv`, `send`, `recvfrom` and `sendto` with `MSG_DONTWAIT`, `waitpid`, `wait3`, `wait4` and `waitid` with `WNOHANG`, and `uv_run` with `UV_RUN_NOWAIT` alone (not `UV_RUN_ONCE`, `UV_RUN_DEFAULT` or a mix of them; its value is the same on every target, so the target does not matter for it) |
 | `may_jump_callers` | the inference of jumps through the calls ([Jumps](rules.md#jumps)); a finding at such a call has this flag in `source`. Not library knowledge, but turned off the same way |
 | `short_lock_sections` | off by default, experimental: a lock is short when none of its critical sections reaches a blocking call (see [Short locks](#short-locks)). Not library knowledge, and the one flag that is false unless the settings set it true |
 
@@ -86,16 +86,16 @@ A blocking flag changes only the blocking calls of `CC_SHORT`: `CC_HOT` and
 the flags.
 
 `libc_nonblocking_flags` applies when the flag argument is a constant, or a
-local that gets only constants (no `&`, `++` or `op=`) and gets one before the
-call on every path: a statement before the call in a block that holds it, with
-no `case` of an outer switch between them and no `goto` in the function. Another
-variable leaves the call blocking. `open` with `O_NONBLOCK` is meant for FIFOs
-and devices: on a regular file it can still wait for the disk, and the rules do
-not tell the two apart. The values are those of the target clang builds for
-(Linux, but on MIPS, SPARC, Alpha and PA-RISC, and macOS); on another target
-only a flag that the C library defines as a constant of an enum (glibc's
-`MSG_DONTWAIT`) counts, and the run says on standard error that it does not know
-the values.
+local that gets only constants (no `&`, `++` or `op=`; a flag must be in all of
+them) and gets one before the call on every path: a statement before the call in
+a block that holds it, with no `case` of an outer switch between them and no
+`goto` in the function. Another variable leaves the call blocking. `open` with
+`O_NONBLOCK` is meant for FIFOs and devices: on a regular file it can still wait
+for the disk, and the rules do not tell the two apart. The values are those of
+the target clang builds for (Linux, but on MIPS, SPARC, Alpha and PA-RISC, and
+macOS); on another target only a flag that the C library defines as a constant
+of an enum (glibc's `MSG_DONTWAIT`) counts, and the run says on standard error
+that it does not know the values.
 
 ## `[effects]`
 
@@ -268,14 +268,18 @@ handle yet.
 - Only a full run of a compile database infers (no `FILE`, no `--exclude`, no
   error, no file left unchecked); another run says on standard error that it did
   not. `inferred_short_locks` of `--json` lists the classes (only with the
-  inference on).
+  inference on), and the text report says how many on standard error.
 - It trusts no class whose sections it cannot all see: a lock that a function
-  returns or jumps out with, or releases without holding it; a function with
-  more paths than the lock walk follows; a lock taken through a parameter or
-  reached through a pointer field, global or array of pointers (`c->lk` of
-  `pthread_mutex_t *lk`), which may be any class; a take that names no object
-  (`&locks[hash(k)]`). A call through a pointer that the run stores no function
-  in, or through a `stop_fields` field, counts as blocking in a section. A lock
+  returns or jumps out with, or releases without holding it (for a helper, a
+  lock its marks do not name), as its caller holds it across code no walk reads;
+  a function with more paths than the lock walk follows; a lock taken through a
+  parameter or reached through a pointer field, global or array of pointers
+  (`c->lk` of `pthread_mutex_t *lk`), which may be any class: when one of its
+  sections blocks, or is not all seen, no class is inferred; a take that names
+  no object (`&locks[hash(k)]`) is not seen at all. A call through a pointer
+  that the run stores no function in, counts as blocking in a section, and so
+  does a call through a `stop_fields` field made in a section (in a function
+  that the section reaches it reaches nothing, as for the short rule). A lock
   taken by a `CC_JUMP_RELEASES` helper gives no finding at a jump.
 - `owned_locks` names the pointer fields and globals that point to a mutex of
   their own, which no other field or global points to (`lock.mutex` of `struct
@@ -284,15 +288,17 @@ handle yet.
   check the stores into the pointer: one that shares its mutex with another
   class may let the inference call that mutex short while a section of it
   blocks, which hides a `CC-EFFECT-SHORT-BLOCKS`. Names are classes, as in
-  `short_locks`; a name in both lists is short by the setting. A name that no
-  lock through a pointer has is an error (exit 2).
+  `short_locks`; a name in both lists is short by the setting, and its sections
+  do not stop the inference of the others. A name that no lock through a pointer
+  has is an error (exit 2).
 - An inferred class is matched as it is (inferring the global `lock` does not
   make a static `lock` of another file short) and is short for `CC_SHORT` only,
   not for `CC_NO_SYSCALL_UNDER`.
 - It changes findings both ways: a root that only took short locks before its
   blocking call reports that call, not the take (another baseline key), and a
   run that does not infer reports the takes of the inferred locks as new against
-  a baseline of a run that did.
+  a baseline of a run that did. The inference does not stop `--update-baseline`
+  or `--strict-baseline` when it is off.
 
 ### `stop_fields` and `stop_calls`
 
