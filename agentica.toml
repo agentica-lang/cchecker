@@ -12,4 +12,4 @@ build = { sources = ["native/scan.c"] }
 # Property tests of the features (specs/props.agc).
 [dependencies]
 prop = { git = "https://github.com/agentica-lang/packages", tag = "prop-0.3.0", subdir = "prop" }
-native-gen = { git = "https://github.com/agentica-lang/packages", tag = "native-gen-0.3.0", subdir = "native-gen" }
+native-gen = { git = "https://github.com/agentica-lang/packages", tag = "native-gen-0.4.0", subdir = "native-gen" }
