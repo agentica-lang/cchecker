@@ -4,6 +4,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-13
+
 ### Added
 
 - `CC_ACQUIRES_IF(lock, *flag)`, `CC_RELEASES_IF(lock, flag)` and `CC_TRIES(lock)`, and `[assume] tries`: lock helpers
@@ -275,7 +277,8 @@ The first release.
   take 17.9 s and 411 MB at `-j 2`, and a chain of 3000 else-if 4 s and 170 MB. `-j` defaults to the number of cores,
   and the jobs of the largest files start first.
 
-[Unreleased]: https://github.com/agentica-lang/cchecker/compare/0.7.0...HEAD
+[Unreleased]: https://github.com/agentica-lang/cchecker/compare/0.8.0...HEAD
+[0.8.0]: https://github.com/agentica-lang/cchecker/compare/0.7.0...0.8.0
 [0.7.0]: https://github.com/agentica-lang/cchecker/compare/0.6.1...0.7.0
 [0.6.1]: https://github.com/agentica-lang/cchecker/compare/0.6.0...0.6.1
 [0.6.0]: https://github.com/agentica-lang/cchecker/compare/0.5.0...0.6.0
