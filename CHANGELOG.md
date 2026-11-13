@@ -4,6 +4,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-13
+
 ### Added
 
 - `CC_ACQUIRES_IF(lock, *flag)`, `CC_RELEASES_IF(lock, flag)` and `CC_TRIES(lock)`, and `[assume] tries`: lock helpers
@@ -12,10 +14,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   On the side where the helper does nothing to its lock, the rules on what runs under a lock skip its releases of its
   own lock and still read the rest of its body.
 
-### Fixed
+### Changed
 
-- The sources compile with the Agentica that gives a failed `Result` an `Error` record and not a String (0.31): the
-  message of an error is read by interpolation, which works on both, so they still build with 0.29.0 and later.
+- **Breaking:** needs Agentica 0.31.0 (`agentica = "0.31.0"` in `agentica.toml`; an older one stops with
+  `PKG-AGENTICA-TOO-OLD`), and the packages `prop-0.3.0` and `native-gen-0.4.0`. CI tests with Agentica 0.31.0. The
+  findings, the codes and the options are the same.
 
 ## [0.7.0] - 2026-11-12
 
@@ -274,7 +277,8 @@ The first release.
   take 17.9 s and 411 MB at `-j 2`, and a chain of 3000 else-if 4 s and 170 MB. `-j` defaults to the number of cores,
   and the jobs of the largest files start first.
 
-[Unreleased]: https://github.com/agentica-lang/cchecker/compare/0.7.0...HEAD
+[Unreleased]: https://github.com/agentica-lang/cchecker/compare/0.8.0...HEAD
+[0.8.0]: https://github.com/agentica-lang/cchecker/compare/0.7.0...0.8.0
 [0.7.0]: https://github.com/agentica-lang/cchecker/compare/0.6.1...0.7.0
 [0.6.1]: https://github.com/agentica-lang/cchecker/compare/0.6.0...0.6.1
 [0.6.0]: https://github.com/agentica-lang/cchecker/compare/0.5.0...0.6.0
