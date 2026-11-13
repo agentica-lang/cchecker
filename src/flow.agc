@@ -13,10 +13,583 @@ import Known from "known"
 
 ## The start of the key of the lock that stands for a CC_PAIR(set, restore): `pair:set:restore`, which the calls of
 ## `set` take and the calls of `restore` release: no lock expression of the code looks like it.
-export PAIR_PREFIX = "pair:"
+PAIR_PREFIX = "pair:"
 
 ## The nodes that do not change the value of the expression inside them: casts and parentheses.
-export SEE_THROUGH = Set.new(["ImplicitCastExpr", "CStyleCastExpr", "ParenExpr", "ConstantExpr", "ExprWithCleanups"])
+SEE_THROUGH = Set.new(["ImplicitCastExpr", "CStyleCastExpr", "ParenExpr", "ConstantExpr", "ExprWithCleanups"])
+
+## A lock: `key` is what tells two locks apart (`q.mu` for `&q->mu`, `q->mu` and `(&q->mu)`), `shown` how the code
+## wrote it, and `class` the field it is (`queue.mu`, by struct and field name) or the global, which the marks of
+## CC_NO_SYSCALL_UNDER() and CC_LOCK_LEVEL name; "" when the rules cannot tell. `pair` is the restore of the lock of
+## a CC_PAIR, "" for a lock of the code. `through` says that the field or global of the class is a pointer to the
+## mutex, not the mutex: two classes may then be one mutex (`c->lk` pointing at `s->lock`).
+struct Lock
+  key: String
+  shown: String
+  class: String = ""
+  pair: String = ""
+  through: Bool = false
+end
+
+## A call of a function, by name and key (`name@file` for a static one), and what it does to the locks: those it takes,
+## releases, and waits on (a condition wait gives its lock back while it waits). A call through a function pointer
+## (`pointer`) has the text of the pointer as its name and no key. `tried` is a trylock, which never waits for its lock.
+## For ownership: the pointers that own which it frees and which it takes (`hands`), whether it returns an owned
+## value that nothing keeps (`lost`), those it frees through their address (`clears`, `free_and_null(&p)`), which
+## are freed or null after it, and those whose address it gets at a CC_OWNS_OUT parameter (`fills`), which own what
+## it left in them.
+struct Site
+  name: String
+  key: String
+  line: Int
+  column: Int
+  takes: List[Lock]
+  drops: List[Lock]
+  stops: Bool
+  waits: List[Lock] = []
+  pointer: Bool = false
+  tried: Bool = false
+  frees: List[String] = []
+  hands: List[String] = []
+  lost: Bool = false
+  clears: List[String] = []
+  fills: List[String] = []
+  # Whether the call takes a lock that no text names (`&current()->mu`, `&locks[hash(k)]`): no walk sees it.
+  unnamed: Bool = false
+  # Whether the call is of a helper on the side of its flags where it takes and releases nothing (`flagged_call`): the
+  # rules of Held read its body without its own lock calls, which are on the other side.
+  idle: Bool = false
+  # The texts of the arguments of an idle call, which put the locks its body waits on in the names of the caller.
+  args: List[String] = []
+end
+
+## The value a condition has on an edge. `text` is the condition with the key of each variable (`variable_key`), ""
+## for a condition that may change between two reads (a call). `roots` are the variables it reads, by key, so a write
+## to one forgets it. `nulls` are the pointers that own which are null on this edge (`if (!p)`,
+## `if ((p = malloc(n)) == NULL)`), and `set` those that are not.
+##
+## A test against 0 is a fact of what it compares (`r == 0` is `r` false), so all the ways C writes a test of one
+## variable are one condition; `word` is then what a path shows ("true" where `r == 0` holds, "case" for a label of a
+## switch on the variable), "" for the value. `quiet` facts show no step in a path. A fact can also come from a write,
+## with no test in the code (`written`): the value of a constant written to a variable (`locked = 1`), and the result
+## of a trylock kept in a variable, on the side where the call worked and the side where it failed
+## (`r = pthread_mutex_trylock(&m)`), whose step reads `fails` and names the lock it did not take (`failed`).
+## `if_tested` is the side where a call failed that fails only on an error (`r = pthread_mutex_lock(&m)`): a path goes
+## there only when a test of the result can follow (`Locking.tested_after`). `single` is a fact with no node for its
+## other value (a constant, a `case` label).
+struct Fact
+  text: String
+  value: Bool
+  roots: List[String]
+  line: Int
+  column: Int
+  nulls: List[String] = []
+  set: List[String] = []
+  word: String = ""
+  quiet: Bool = false
+  written: Bool = false
+  if_tested: Bool = false
+  single: Bool = false
+  failed: List[Lock] = []
+end
+
+## A read of a pointer that owns.
+struct Use
+  name: String
+  line: Int
+  column: Int
+end
+
+## A new value of a pointer that owns, or that may stand for one, and how it got it (`value`): "null"; "owned" (from a
+## call that returns owned memory, or any value for a CC_OWNS local); "moved" (from `from`, which owns no more);
+## "alias" (an unmarked local that points where `from` does, which still owns); "resized" (from a realloc of `from`,
+## which owns again where the new value is null); or "other" (it owns nothing). `shown` names the source, and
+## `through` says that the value was written through a CC_FREES parameter (`*p = v`) and goes back to the caller.
+struct Assign
+  name: String
+  value: String
+  from: String
+  shown: String
+  line: Int
+  column: Int
+  through: Bool = false
+end
+
+## A pointer that owns, handed on outside a call: returned (`word` is "returns"), or stored in a CC_OWNS field or
+## global (`word` is "stores p in x->f").
+struct Give
+  name: String
+  word: String
+  line: Int
+  column: Int
+end
+
+## A point of a path worth naming in a finding: `returns`, `ends`, `case`, `default`, `no case`. `failed` is true for a
+## return of an error value (see `error_value?`).
+struct Mark
+  word: String
+  line: Int
+  column: Int
+  failed: Bool = false
+end
+
+## What happens at a node. `Writes` names the variables a node writes, by key (see `variable_key`), `Escapes` the
+## followed CC_OWNS fields of a local struct that escapes there (`&p`, a copy, a by-value argument, `return p`,
+## `p = q`), `Resets` those that a clear of the whole struct follows again (`memset(&p, 0, sizeof p)`,
+## `p = (struct pair){0}`), and `Closes` the pointers of the blocks that a path leaves (`Closing`).
+enum Event
+  Join
+  Call(Site)
+  Branch(Fact)
+  Writes(List[String])
+  Note(Mark)
+  Exit(Mark)
+  Uses(Use)
+  Assigns(Assign)
+  Gives(Give)
+  Lends(List[String])
+  Escapes(List[String])
+  Resets(List[String])
+  Closes(Closing)
+end
+
+## The pointers that own, or may stand for one, of the blocks that a path leaves (`names`, by key), and where it leaves
+## them (`mark`): the end of a block, or the statement that jumps out. Nothing names them after.
+struct Closing
+  names: List[String]
+  mark: Mark
+end
+
+struct Node
+  event: Event
+  next: List[Int]
+end
+
+## The graph of one function, at the place of its definition. `owned` are its parameters that own what the caller
+## passes (for a CC_OWNS struct passed by value, its CC_OWNS fields: `p.left`), and `owns` says whether the ownership
+## rules read the function: it has a pointer that owns, or calls a function that returns one. `releases` are the keys
+## of the locks of its CC_RELEASES in the names of its parameters, in the order of its marks ("" for the restore of a
+## pair), and `acquires` those of its CC_ACQUIRES ("" for the set of a pair). `enters` says that a `goto`, or a `case`
+## or `default` label, goes into a block from outside it.
+struct Body
+  key: String
+  name: String
+  file: String
+  line: Int
+  column: Int
+  nodes: List[Node]
+  owned: List[String] = []
+  owns: Bool = false
+  releases: List[String] = []
+  acquires: List[String] = []
+  # The keys, in the definition, of its parameters that are the flag of a CC_RELEASES_IF: the parameter at the place
+  # where the mark names the flag, whatever the definition calls it.
+  flags: List[String] = []
+  # The names of its parameters, in order, that a lock text of the body names as the caller's argument: "" for one that
+  # the body writes or takes the address of, or whose name another variable of the body has.
+  params: List[String] = []
+  # A `goto` goes into a block from outside it (past the declarations before its label).
+  enters: Bool = false
+end
+
+## A lock of a CC_ACQUIRES (`takes`) or a CC_RELEASES, as written, with the names of the parameters of the
+## declaration that carries it; or the lock of a CC_PAIR that a set takes and its restore (`pair`) releases. A lock of a
+## CC_ACQUIRES_IF or a CC_RELEASES_IF has the parameter of its flag (`flag`): the call takes the lock only where it set
+## `*flag` to a value other than 0, and releases it only where `flag` is not 0. A lock of a CC_TRIES (`tries`) is taken
+## where the call returns 0, as a trylock does.
+struct Annotated
+  text: String
+  params: List[String]
+  takes: Bool
+  class: String = ""
+  pair: String = ""
+  through: Bool = false
+  flag: String = ""
+  tries: Bool = false
+end
+
+## What a function of the translation unit says about locks, from all its declarations, and whether it never returns.
+struct Callee
+  locks: List[Annotated]
+  stops: Bool
+end
+
+## What the functions of a translation unit say about ownership: the keys of those that return an owned pointer
+## (CC_OWNS on the function), their parameters that take (CC_OWNS) or free (CC_FREES) what a call passes, by index,
+## those that hand an owned pointer out to the caller (`outs`, CC_OWNS_OUT), and the fields (by id) and the globals
+## (by the ids of their declarations) that own what is stored in them. `unions` are those of the fields that belong
+## to a union, `records` the structs with a CC_OWNS field or a field of such a struct, by the id of their
+## declaration, and `typed` the record of the type of each local variable, initializer and `sizeof` of a type of the
+## function bodies, and of each field, that names one of them, by the id of the node. `lengths` are the number of
+## items of each local array of such structs (`struct pair a[2]`, whose `typed` is the record of its items).
+struct Owning
+  returns: Set[String]
+  takes: Map[String, List[Int]]
+  frees: Map[String, List[Int]]
+  outs: Map[String, List[Int]]
+  fields: Set[String]
+  globals: Set[String]
+  unions: Set[String]
+  records: Map[String, OwnedRecord]
+  typed: Map[String, String]
+  lengths: Map[String, Int] = {}
+end
+
+## A struct with a CC_OWNS field, or with a field of such a struct: the ids and names of all its fields, in the order
+## of the items of an initializer, and for each the id of such a struct that the field is by value ("" for any other).
+struct OwnedRecord
+  ids: List[String]
+  names: List[String]
+  nested: List[String] = []
+end
+
+## What the graphs of one translation unit need: the functions that say something about locks, by key, the keys of
+## its static functions by name, the class of each field by id (`queue.mu`), the class of each global variable by
+## the id of its declaration (its name, `name@file` for a static one), so a local of the same name is not it, and
+## what its functions say about ownership.
+struct Context
+  callees: Map[String, Callee]
+  statics: Map[String, String]
+  fields: Map[String, String]
+  globals: Map[String, String]
+  owning: Owning
+end
+
+## A local variable or a parameter that gets a value: at its declaration or in an assignment.
+struct Written
+  name: String
+  value: JSON.Value
+end
+
+## Returns whether a function body calls something that takes or releases a lock, the only bodies the path rules read.
+def locks?(ctx: Context, node: JSON.Value) -> Bool
+  name = ""
+  if Ast.kind(node) == "CallExpr"
+    name = callee_name(node)
+  elsif Ast.kind(node) == "CleanupAttr"
+    name = Ast.text(JSON.get(node, "cleanup_function").unwrap_or(JSON.from("")), "name")
+  end
+
+  return true if Known.TAKES.include?(name) or Known.TRIES.include?(name) or Known.DROPS.include?(name)
+
+  return true if name != "" and ctx.callees.key?(key_of_function(ctx, name))
+
+  Ast.children(node).any? do |child| locks?(ctx, child) end
+end
+
+## Returns whether the ownership rules read a function definition, whose key is `key`: it has a pointer that owns or
+## a parameter that hands one out, or calls a function that returns one or hands one out.
+def owns?(ctx: Context, key: String, node: JSON.Value) -> Bool
+  return true if ctx.owning.takes.key?(key) or ctx.owning.frees.key?(key) or ctx.owning.outs.key?(key)
+
+  return true if Ast.children(node).any? do |child| owning_node?(ctx, child) end
+
+  # A local struct whose CC_OWNS fields the rules follow (`owned_fields`), which only the whole function tells.
+  return false if not Ast.children(node).any? do |child| field_access?(ctx, child) end
+
+  bodies = Ast.children(node).select do |child| Ast.kind(child) == "CompoundStmt" end
+  all = descendants(bodies)
+  not owned_fields(ctx, all, keys_of(node, all)).of.empty?
+end
+
+## Returns the graph of a function definition, whose key is `key`.
+def body_of(ctx: Context, key: String, node: JSON.Value) -> Body
+  bodies = Ast.children(node).select do |child| Ast.kind(child) == "CompoundStmt" end
+  place = Ast.place_of(node)
+  owners = owners_of(ctx, key, node)
+  all = descendants(bodies)
+  start = Builder(
+    ctx: ctx,
+    aliases: aliases_of(bodies),
+    label_blocks: label_blocks(bodies, []),
+    nodes: [Node(event: Event.Join, next: [])],
+    scopes: [],
+    jumps: [],
+    labels: {},
+    gotos: [],
+    owners: owners,
+    opaque: opaque_of(owners.places.keys, all, flag_addresses(ctx, all)),
+    guarded: guarded_of(ctx, owners.places.keys, all),
+  )
+
+  built = Built(b: start, exits: [0])
+  for body in bodies
+    built = statement(built.b, body, built.exits)
+    end_place = Ast.end_of(body)
+    built = add(built.b, Event.Exit(Mark(word: "ends", line: end_place.line, column: end_place.column)), built.exits)
+    built = Built(b: built.b, exits: [])
+  end
+
+  linked = with_gotos(built.b)
+  names = params_named(node)
+  # The locks a call drops on one side come after the others on its site (`flagged_call`), and so here.
+  dropped_locks = ctx.callees.get(key).map do |callee| callee.locks.select do |lock| not lock.takes end end
+  dropped = dropped_locks.unwrap_or([])
+  flagged = dropped.select do |lock| lock.flag != "" end
+  plain = dropped.select do |lock| lock.flag == "" end
+  dropped = plain.concat(flagged)
+  taken_locks = ctx.callees.get(key).map do |callee| callee.locks.select do |lock| lock.takes end end
+  taken = taken_locks.unwrap_or([])
+  keys = keys_of(node, all)
+  Body(
+    key: key,
+    name: Ast.text(node, "name"),
+    file: place.file,
+    line: place.line,
+    column: place.column,
+    nodes: linked.nodes,
+    owned: owners.params,
+    owns: owners.calls or not owners.names.empty?,
+    releases: dropped.map do |lock| released_key(lock, names) end,
+    acquires: taken.map do |lock| released_key(lock, names) end,
+    flags: flag_keys(flagged, node, keys),
+    params: mapped_params(node, keys, all),
+    enters: linked.enters,
+  )
+end
+
+## Returns the lock text of an annotation (`q->mu`) for a call that passes `args`, the texts of its arguments, to a
+## function whose parameters are `params`; "" when the lock names a parameter that the call passes no text for.
+def substituted(lock: String, params: List[String], args: List[String]) -> String
+  whole = lock.replace(" ", "")
+  marks = 0
+  while marks < whole.length and ["&", "*"].include?(whole.slice(marks, 1))
+    marks += 1
+  end
+
+  prefix = whole.slice(0, marks)
+  written = whole.slice(marks, whole.length - marks)
+
+  root = written.length
+  for i in 0...written.length
+    if not identifier_char?(written.slice(i, 1))
+      root = i
+      break
+    end
+  end
+
+  name = written.slice(0, root)
+  for i in 0...params.size
+    if params[i] == name
+      return "" if i >= args.size or args[i] == ""
+
+      return prefix + args[i] + written.slice(root, written.length - root)
+    end
+  end
+
+  prefix + written
+end
+
+## Returns the variable that a lock text starts from, after its `&` and `*`: `q` for `&q->mu`.
+def lock_root(lock: String) -> String
+  written = lock.replace(" ", "")
+  while written.start_with?("&") or written.start_with?("*")
+    written = written.slice(1, written.length - 1)
+  end
+
+  for i in 0...written.length
+    return written.slice(0, i) if not identifier_char?(written.slice(i, 1))
+  end
+
+  written
+end
+
+## Returns the key of a lock text: the object, without the `&` or `*&` in front, and `->` read as `.`.
+def key_of(lock: String) -> String = shown_of(lock).replace("->", ".")
+
+## Returns a lock text as a finding shows it: without the `&` or `*&` in front.
+def shown_of(lock: String) -> String
+  written = lock.replace(" ", "").replace("(", "").replace(")", "")
+  while written.start_with?("*&") or written.start_with?("&")
+    if written.start_with?("*&")
+      written = written.slice(2, written.length - 2)
+    else
+      written = written.slice(1, written.length - 1)
+    end
+  end
+
+  written
+end
+
+## Returns whether a declaration is marked CC_OWNS.
+def marked_owner?(node: JSON.Value) -> Bool
+  Ast.children(node).any? do |child|
+    Ast.kind(child) == "DeprecatedAttr" and Ast.text(child, "message") == OWNS_MARK
+  end
+end
+
+## Returns the values that the local variables and the parameters (`locals`, by key) get among the nodes `all`: at
+## their declaration and in a plain assignment.
+def writes_of(all: List[JSON.Value], locals: Set[String], keys: Map[String, String]) -> List[Written]
+  found: List[Written] = []
+  for n in all
+    if Ast.kind(n) == "VarDecl"
+      values = Ast.children(n).select do |child| not Ast.kind(child).end_with?("Attr") end
+      if values.size == 1
+        found = found.push(Written(name: declared_key(keys, n), value: values.first))
+      end
+    elsif Ast.kind(n) == "BinaryOperator" and Ast.text(n, "opcode") == "="
+      parts = Ast.children(n)
+      name = variable_key(keys, parts.first)
+      if locals.include?(name)
+        found = found.push(Written(name: name, value: parts[1]))
+      end
+    end
+  end
+
+  found
+end
+
+## Returns whether an expression is a call of a function that returns an owned pointer (CC_OWNS on the function).
+def owning_call?(ctx: Context, node: JSON.Value) -> Bool
+  bare = see_through(node)
+  return false if Ast.kind(bare) != "CallExpr"
+
+  name = callee_name(bare)
+  name != "" and ctx.owning.returns.include?(key_of_function(ctx, name))
+end
+
+## Returns the name of the local variable or the parameter that an expression is, through casts and parentheses; ""
+## for any other.
+def variable_name(node: JSON.Value) -> String
+  bare = see_through(node)
+  return Ast.referenced_name(bare) if Ast.kind(bare) == "DeclRefExpr" and VARIABLES.include?(Ast.referenced_kind(bare))
+
+  ""
+end
+
+## Returns the key of the local variable or parameter that an expression is, through casts and parentheses: the key
+## that `keys` gives its declaration; "" for any other expression, and for a variable the function does not declare (a
+## global). Two variables of one function never share a key, so a local that shadows another has a state of its own.
+## A CC_OWNS field of a local struct that the rules follow (`p.left`) has the key that `keys` gives the expression.
+def variable_key(keys: Map[String, String], node: JSON.Value) -> String
+  bare = see_through(node)
+  if Ast.kind(bare) == "DeclRefExpr" and VARIABLES.include?(Ast.referenced_kind(bare))
+    return keys.get(Ast.referenced_id(bare), "")
+  end
+
+  return keys.get(Ast.text(bare, "id"), "") if Ast.kind(bare) == "MemberExpr"
+
+  ""
+end
+
+## Returns the key of a variable at its declaration (see `variable_key`).
+def declared_key(keys: Map[String, String], decl: JSON.Value) -> String
+  keys.get(Ast.text(decl, "id"), Ast.text(decl, "name"))
+end
+
+## Returns the name that a key stands for: what the code calls the variable (`p` for `p#2`, `p.left` for `p#2.left`).
+def plain(key: String) -> String
+  parts = key.split(KEY_MARK)
+  return key if parts.size < 2
+
+  rest = parts[1]
+  digits = 0
+  while digits < rest.length and DIGITS.include?(rest.slice(digits, 1))
+    digits += 1
+  end
+
+  parts[0] + rest.slice(digits, rest.length - digits)
+end
+
+## Returns every node under the given ones, each before the nodes inside it.
+def descendants(nodes: List[JSON.Value]) -> List[JSON.Value]
+  found: List[JSON.Value] = []
+  for node in nodes
+    found = with_descendants(found, node)
+  end
+
+  found
+end
+
+## Returns an expression without the casts and parentheses around it.
+def see_through(node: JSON.Value) -> JSON.Value
+  bare = node
+  while SEE_THROUGH.include?(Ast.kind(bare)) and not Ast.children(bare).empty?
+    bare = Ast.children(bare).first
+  end
+
+  bare
+end
+
+## Returns the name of the function that a call names, or "" for a call through a pointer.
+def callee_name(node: JSON.Value) -> String
+  parts = Ast.children(node)
+  return "" if parts.empty?
+
+  callee = see_through(parts.first)
+  return "" if Ast.kind(callee) != "DeclRefExpr" or Ast.referenced_kind(callee) != "FunctionDecl"
+
+  Ast.referenced_name(callee)
+end
+
+## Returns the key of a function of the unit by name: `name@file` for a static one.
+def key_of_function(ctx: Context, name: String) -> String = ctx.statics.get(name).unwrap_or(name)
+
+## Returns whether a returned value is an error by the usual C convention: a negative integer constant (or a negated
+## enum constant), a null pointer constant, or a false bool, by the type after typedefs. Any other value, 0 of an int
+## and a variable included, may be a success.
+def error_value?(node: JSON.Value) -> Bool
+  type_node = JSON.get(node, "type").unwrap_or(JSON.from(""))
+  type = Ast.text(type_node, "desugaredQualType")
+  if type == ""
+    type = Ast.text(type_node, "qualType")
+  end
+
+  type = unqualified(type)
+  bare = see_through(node)
+  if type.end_with?("*") or type == "_Bool" or type == "bool"
+    return (
+      zero?(node) or
+      Ast.kind(bare) == "CXXNullPtrLiteralExpr" or
+      (Ast.kind(bare) == "CXXBoolLiteralExpr" and not Ast.flag?(bare, "value"))
+    )
+  end
+
+  return false if Ast.kind(bare) != "UnaryOperator" or Ast.text(bare, "opcode") != "-" or Ast.children(bare).empty?
+
+  value = see_through(Ast.children(bare).first)
+  constant = Ast.kind(value) == "DeclRefExpr" and Ast.referenced_kind(value) == "EnumConstantDecl"
+  constant or (Ast.kind(value) == "IntegerLiteral" and Ast.text(value, "value") != "0")
+end
+
+## Returns whether an expression is the constant 0, through casts and parentheses.
+def zero?(node: JSON.Value) -> Bool
+  bare = see_through(node)
+  Ast.kind(bare) == "IntegerLiteral" and Ast.text(bare, "value") == "0"
+end
+
+## Returns a type without the qualifiers at its end, and out of `_Atomic(...)`: `char *` for `char *const volatile`.
+## clang writes no space between the star and the qualifier.
+def unqualified(type: String) -> String
+  text = type.strip
+  return unqualified(text.slice(8, text.length - 9)) if text.start_with?("_Atomic(") and text.end_with?(")")
+
+  for word in ["const", "volatile", "restrict", "__restrict"]
+    if text.end_with?(" #{word}") or text.end_with?("*#{word}")
+      return unqualified(text.slice(0, text.length - word.length))
+    end
+  end
+
+  text
+end
+
+## Returns the names of the parameters of a function definition, whose key is `key`, that own what the caller passes
+## (CC_OWNS or CC_FREES), in the order of the parameters.
+def owned_params(ctx: Context, key: String, node: JSON.Value) -> List[String]
+  names = params_named(node)
+  indices = ctx.owning.takes.get(key, []).concat(ctx.owning.frees.get(key, [])).uniq.sort
+  in_range = indices.select do |i| i < names.size end
+  in_range.map do |i| names[i] end
+end
+
+## Returns the names of the parameters of a function, in order.
+def params_named(node: JSON.Value) -> List[String]
+  params = Ast.children(node).select do |child| Ast.kind(child) == "ParmVarDecl" end
+  params.map do |child| Ast.text(child, "name") end
+end
+
+private
 
 # The expressions whose value is one of several (`values_of`).
 CHOICES = Set.new(["ConditionalOperator", "BinaryConditionalOperator", "StmtExpr"])
@@ -62,243 +635,6 @@ MAX_INDEX = 1048576
 # The digits of the number in a key.
 DIGITS = Set.new(["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"])
 
-## A lock: `key` is what tells two locks apart (`q.mu` for `&q->mu`, `q->mu` and `(&q->mu)`), `shown` how the code
-## wrote it, and `class` the field it is (`queue.mu`, by struct and field name) or the global, which the marks of
-## CC_NO_SYSCALL_UNDER() and CC_LOCK_LEVEL name; "" when the rules cannot tell. `pair` is the restore of the lock of
-## a CC_PAIR, "" for a lock of the code. `through` says that the field or global of the class is a pointer to the
-## mutex, not the mutex: two classes may then be one mutex (`c->lk` pointing at `s->lock`).
-export struct Lock
-  key: String
-  shown: String
-  class: String = ""
-  pair: String = ""
-  through: Bool = false
-end
-
-## A call of a function, by name and key (`name@file` for a static one), and what it does to the locks: those it takes,
-## releases, and waits on (a condition wait gives its lock back while it waits). A call through a function pointer
-## (`pointer`) has the text of the pointer as its name and no key. `tried` is a trylock, which never waits for its lock.
-## For ownership: the pointers that own which it frees and which it takes (`hands`), whether it returns an owned
-## value that nothing keeps (`lost`), those it frees through their address (`clears`, `free_and_null(&p)`), which
-## are freed or null after it, and those whose address it gets at a CC_OWNS_OUT parameter (`fills`), which own what
-## it left in them.
-export struct Site
-  name: String
-  key: String
-  line: Int
-  column: Int
-  takes: List[Lock]
-  drops: List[Lock]
-  stops: Bool
-  waits: List[Lock] = []
-  pointer: Bool = false
-  tried: Bool = false
-  frees: List[String] = []
-  hands: List[String] = []
-  lost: Bool = false
-  clears: List[String] = []
-  fills: List[String] = []
-  # Whether the call takes a lock that no text names (`&current()->mu`, `&locks[hash(k)]`): no walk sees it.
-  unnamed: Bool = false
-  # Whether the call is of a helper on the side of its flags where it takes and releases nothing (`flagged_call`): the
-  # rules of Held read its body without its own lock calls, which are on the other side.
-  idle: Bool = false
-  # The texts of the arguments of an idle call, which put the locks its body waits on in the names of the caller.
-  args: List[String] = []
-end
-
-## The value a condition has on an edge. `text` is the condition with the key of each variable (`variable_key`), ""
-## for a condition that may change between two reads (a call). `roots` are the variables it reads, by key, so a write
-## to one forgets it. `nulls` are the pointers that own which are null on this edge (`if (!p)`,
-## `if ((p = malloc(n)) == NULL)`), and `set` those that are not.
-##
-## A test against 0 is a fact of what it compares (`r == 0` is `r` false), so all the ways C writes a test of one
-## variable are one condition; `word` is then what a path shows ("true" where `r == 0` holds, "case" for a label of a
-## switch on the variable), "" for the value. `quiet` facts show no step in a path. A fact can also come from a write,
-## with no test in the code (`written`): the value of a constant written to a variable (`locked = 1`), and the result
-## of a trylock kept in a variable, on the side where the call worked and the side where it failed
-## (`r = pthread_mutex_trylock(&m)`), whose step reads `fails` and names the lock it did not take (`failed`).
-## `if_tested` is the side where a call failed that fails only on an error (`r = pthread_mutex_lock(&m)`): a path goes
-## there only when a test of the result can follow (`Locking.tested_after`). `single` is a fact with no node for its
-## other value (a constant, a `case` label).
-export struct Fact
-  text: String
-  value: Bool
-  roots: List[String]
-  line: Int
-  column: Int
-  nulls: List[String] = []
-  set: List[String] = []
-  word: String = ""
-  quiet: Bool = false
-  written: Bool = false
-  if_tested: Bool = false
-  single: Bool = false
-  failed: List[Lock] = []
-end
-
-## A read of a pointer that owns.
-export struct Use
-  name: String
-  line: Int
-  column: Int
-end
-
-## A new value of a pointer that owns, or that may stand for one, and how it got it (`value`): "null"; "owned" (from a
-## call that returns owned memory, or any value for a CC_OWNS local); "moved" (from `from`, which owns no more);
-## "alias" (an unmarked local that points where `from` does, which still owns); "resized" (from a realloc of `from`,
-## which owns again where the new value is null); or "other" (it owns nothing). `shown` names the source, and
-## `through` says that the value was written through a CC_FREES parameter (`*p = v`) and goes back to the caller.
-export struct Assign
-  name: String
-  value: String
-  from: String
-  shown: String
-  line: Int
-  column: Int
-  through: Bool = false
-end
-
-## A pointer that owns, handed on outside a call: returned (`word` is "returns"), or stored in a CC_OWNS field or
-## global (`word` is "stores p in x->f").
-export struct Give
-  name: String
-  word: String
-  line: Int
-  column: Int
-end
-
-## A point of a path worth naming in a finding: `returns`, `ends`, `case`, `default`, `no case`. `failed` is true for a
-## return of an error value (see `error_value?`).
-export struct Mark
-  word: String
-  line: Int
-  column: Int
-  failed: Bool = false
-end
-
-## What happens at a node. `Writes` names the variables a node writes, by key (see `variable_key`), `Escapes` the
-## followed CC_OWNS fields of a local struct that escapes there (`&p`, a copy, a by-value argument, `return p`,
-## `p = q`), `Resets` those that a clear of the whole struct follows again (`memset(&p, 0, sizeof p)`,
-## `p = (struct pair){0}`), and `Closes` the pointers of the blocks that a path leaves (`Closing`).
-export enum Event
-  Join
-  Call(Site)
-  Branch(Fact)
-  Writes(List[String])
-  Note(Mark)
-  Exit(Mark)
-  Uses(Use)
-  Assigns(Assign)
-  Gives(Give)
-  Lends(List[String])
-  Escapes(List[String])
-  Resets(List[String])
-  Closes(Closing)
-end
-
-## The pointers that own, or may stand for one, of the blocks that a path leaves (`names`, by key), and where it leaves
-## them (`mark`): the end of a block, or the statement that jumps out. Nothing names them after.
-export struct Closing
-  names: List[String]
-  mark: Mark
-end
-
-export struct Node
-  event: Event
-  next: List[Int]
-end
-
-## The graph of one function, at the place of its definition. `owned` are its parameters that own what the caller
-## passes (for a CC_OWNS struct passed by value, its CC_OWNS fields: `p.left`), and `owns` says whether the ownership
-## rules read the function: it has a pointer that owns, or calls a function that returns one. `releases` are the keys
-## of the locks of its CC_RELEASES in the names of its parameters, in the order of its marks ("" for the restore of a
-## pair), and `acquires` those of its CC_ACQUIRES ("" for the set of a pair). `enters` says that a `goto`, or a `case`
-## or `default` label, goes into a block from outside it.
-export struct Body
-  key: String
-  name: String
-  file: String
-  line: Int
-  column: Int
-  nodes: List[Node]
-  owned: List[String] = []
-  owns: Bool = false
-  releases: List[String] = []
-  acquires: List[String] = []
-  # The keys, in the definition, of its parameters that are the flag of a CC_RELEASES_IF: the parameter at the place
-  # where the mark names the flag, whatever the definition calls it.
-  flags: List[String] = []
-  # The names of its parameters, in order, that a lock text of the body names as the caller's argument: "" for one that
-  # the body writes or takes the address of, or whose name another variable of the body has.
-  params: List[String] = []
-  # A `goto` goes into a block from outside it (past the declarations before its label).
-  enters: Bool = false
-end
-
-## A lock of a CC_ACQUIRES (`takes`) or a CC_RELEASES, as written, with the names of the parameters of the
-## declaration that carries it; or the lock of a CC_PAIR that a set takes and its restore (`pair`) releases. A lock of a
-## CC_ACQUIRES_IF or a CC_RELEASES_IF has the parameter of its flag (`flag`): the call takes the lock only where it set
-## `*flag` to a value other than 0, and releases it only where `flag` is not 0. A lock of a CC_TRIES (`tries`) is taken
-## where the call returns 0, as a trylock does.
-export struct Annotated
-  text: String
-  params: List[String]
-  takes: Bool
-  class: String = ""
-  pair: String = ""
-  through: Bool = false
-  flag: String = ""
-  tries: Bool = false
-end
-
-## What a function of the translation unit says about locks, from all its declarations, and whether it never returns.
-export struct Callee
-  locks: List[Annotated]
-  stops: Bool
-end
-
-## What the functions of a translation unit say about ownership: the keys of those that return an owned pointer
-## (CC_OWNS on the function), their parameters that take (CC_OWNS) or free (CC_FREES) what a call passes, by index,
-## those that hand an owned pointer out to the caller (`outs`, CC_OWNS_OUT), and the fields (by id) and the globals
-## (by the ids of their declarations) that own what is stored in them. `unions` are those of the fields that belong
-## to a union, `records` the structs with a CC_OWNS field or a field of such a struct, by the id of their
-## declaration, and `typed` the record of the type of each local variable, initializer and `sizeof` of a type of the
-## function bodies, and of each field, that names one of them, by the id of the node. `lengths` are the number of
-## items of each local array of such structs (`struct pair a[2]`, whose `typed` is the record of its items).
-export struct Owning
-  returns: Set[String]
-  takes: Map[String, List[Int]]
-  frees: Map[String, List[Int]]
-  outs: Map[String, List[Int]]
-  fields: Set[String]
-  globals: Set[String]
-  unions: Set[String]
-  records: Map[String, OwnedRecord]
-  typed: Map[String, String]
-  lengths: Map[String, Int] = {}
-end
-
-## A struct with a CC_OWNS field, or with a field of such a struct: the ids and names of all its fields, in the order
-## of the items of an initializer, and for each the id of such a struct that the field is by value ("" for any other).
-export struct OwnedRecord
-  ids: List[String]
-  names: List[String]
-  nested: List[String] = []
-end
-
-## What the graphs of one translation unit need: the functions that say something about locks, by key, the keys of
-## its static functions by name, the class of each field by id (`queue.mu`), the class of each global variable by
-## the id of its declaration (its name, `name@file` for a static one), so a local of the same name is not it, and
-## what its functions say about ownership.
-export struct Context
-  callees: Map[String, Callee]
-  statics: Map[String, String]
-  fields: Map[String, String]
-  globals: Map[String, String]
-  owning: Owning
-end
-
 # An argument of a call: its text, its class when it is a lock, and the pointer that owns it names (`p`, `&p`, `*p`).
 struct Arg
   text: String
@@ -339,7 +675,7 @@ end
 
 struct Builder
   ctx: Context
-  aliases: Map[String, Json]
+  aliases: Map[String, JSON.Value]
   label_blocks: Map[String, List[String]]
   nodes: List[Node]
   scopes: List[Scope]
@@ -406,12 +742,6 @@ struct Owners
   calls: Bool
 end
 
-## A local variable or a parameter that gets a value: at its declaration or in an assignment.
-export struct Written
-  name: String
-  value: Json
-end
-
 # A condition that says whether a pointer that owns is null: it is when the condition is `null_if`.
 struct NullTest
   name: String
@@ -429,7 +759,7 @@ end
 struct Valued
   b: Builder
   exits: List[Int]
-  value: Json
+  value: JSON.Value
 end
 
 # A condition: the nodes after it when it is true, and when it is false.
@@ -452,349 +782,21 @@ end
 # A call of `Known.TRIES` in a condition or a value, and whether that is true when the call gave 0 (`call == 0`,
 # `!call`) or false (`call`, `call != 0`).
 struct Tried
-  call: Json
+  call: JSON.Value
   zero_is_true: Bool
 end
 
 # What a comparison with 0 (`zero_compared`) or another whole number (`number`) compares, and whether it is `==`.
 struct Compared
-  operand: Json
+  operand: JSON.Value
   equal: Bool
   number: String = ""
-end
-
-## Returns whether a function body calls something that takes or releases a lock, the only bodies the path rules read.
-export def locks?(ctx: Context, node: Json) -> Bool
-  name = ""
-  if Ast.kind(node) == "CallExpr"
-    name = callee_name(node)
-  elsif Ast.kind(node) == "CleanupAttr"
-    name = Ast.text(JSON.get(node, "cleanup_function").unwrap_or(JSON.from("")), "name")
-  end
-
-  return true if Known.TAKES.include?(name) or Known.TRIES.include?(name) or Known.DROPS.include?(name)
-
-  return true if name != "" and ctx.callees.key?(key_of_function(ctx, name))
-
-  Ast.children(node).any? do |child| locks?(ctx, child) end
-end
-
-## Returns whether the ownership rules read a function definition, whose key is `key`: it has a pointer that owns or
-## a parameter that hands one out, or calls a function that returns one or hands one out.
-export def owns?(ctx: Context, key: String, node: Json) -> Bool
-  return true if ctx.owning.takes.key?(key) or ctx.owning.frees.key?(key) or ctx.owning.outs.key?(key)
-
-  return true if Ast.children(node).any? do |child| owning_node?(ctx, child) end
-
-  # A local struct whose CC_OWNS fields the rules follow (`owned_fields`), which only the whole function tells.
-  return false if not Ast.children(node).any? do |child| field_access?(ctx, child) end
-
-  bodies = Ast.children(node).select do |child| Ast.kind(child) == "CompoundStmt" end
-  all = descendants(bodies)
-  not owned_fields(ctx, all, keys_of(node, all)).of.empty?
-end
-
-## Returns the graph of a function definition, whose key is `key`.
-export def body_of(ctx: Context, key: String, node: Json) -> Body
-  bodies = Ast.children(node).select do |child| Ast.kind(child) == "CompoundStmt" end
-  place = Ast.place_of(node)
-  owners = owners_of(ctx, key, node)
-  all = descendants(bodies)
-  start = Builder(
-    ctx: ctx,
-    aliases: aliases_of(bodies),
-    label_blocks: label_blocks(bodies, []),
-    nodes: [Node(event: Event.Join, next: [])],
-    scopes: [],
-    jumps: [],
-    labels: {},
-    gotos: [],
-    owners: owners,
-    opaque: opaque_of(owners.places.keys, all, flag_addresses(ctx, all)),
-    guarded: guarded_of(ctx, owners.places.keys, all),
-  )
-
-  built = Built(b: start, exits: [0])
-  for body in bodies
-    built = statement(built.b, body, built.exits)
-    end_place = Ast.end_of(body)
-    built = add(built.b, Event.Exit(Mark(word: "ends", line: end_place.line, column: end_place.column)), built.exits)
-    built = Built(b: built.b, exits: [])
-  end
-
-  linked = with_gotos(built.b)
-  names = params_named(node)
-  # The locks a call drops on one side come after the others on its site (`flagged_call`), and so here.
-  dropped_locks = ctx.callees.get(key).map do |callee| callee.locks.select do |lock| not lock.takes end end
-  dropped = dropped_locks.unwrap_or([])
-  flagged = dropped.select do |lock| lock.flag != "" end
-  plain = dropped.select do |lock| lock.flag == "" end
-  dropped = plain.concat(flagged)
-  taken_locks = ctx.callees.get(key).map do |callee| callee.locks.select do |lock| lock.takes end end
-  taken = taken_locks.unwrap_or([])
-  keys = keys_of(node, all)
-  Body(
-    key: key,
-    name: Ast.text(node, "name"),
-    file: place.file,
-    line: place.line,
-    column: place.column,
-    nodes: linked.nodes,
-    owned: owners.params,
-    owns: owners.calls or not owners.names.empty?,
-    releases: dropped.map do |lock| released_key(lock, names) end,
-    acquires: taken.map do |lock| released_key(lock, names) end,
-    flags: flag_keys(flagged, node, keys),
-    params: mapped_params(node, keys, all),
-    enters: linked.enters,
-  )
-end
-
-## Returns the lock text of an annotation (`q->mu`) for a call that passes `args`, the texts of its arguments, to a
-## function whose parameters are `params`; "" when the lock names a parameter that the call passes no text for.
-export def substituted(lock: String, params: List[String], args: List[String]) -> String
-  whole = lock.replace(" ", "")
-  marks = 0
-  while marks < whole.length and ["&", "*"].include?(whole.slice(marks, 1))
-    marks += 1
-  end
-
-  prefix = whole.slice(0, marks)
-  written = whole.slice(marks, whole.length - marks)
-
-  root = written.length
-  for i in 0...written.length
-    if not identifier_char?(written.slice(i, 1))
-      root = i
-      break
-    end
-  end
-
-  name = written.slice(0, root)
-  for i in 0...params.size
-    if params[i] == name
-      return "" if i >= args.size or args[i] == ""
-
-      return prefix + args[i] + written.slice(root, written.length - root)
-    end
-  end
-
-  prefix + written
-end
-
-## Returns the variable that a lock text starts from, after its `&` and `*`: `q` for `&q->mu`.
-export def lock_root(lock: String) -> String
-  written = lock.replace(" ", "")
-  while written.start_with?("&") or written.start_with?("*")
-    written = written.slice(1, written.length - 1)
-  end
-
-  for i in 0...written.length
-    return written.slice(0, i) if not identifier_char?(written.slice(i, 1))
-  end
-
-  written
-end
-
-## Returns the key of a lock text: the object, without the `&` or `*&` in front, and `->` read as `.`.
-export def key_of(lock: String) -> String = shown_of(lock).replace("->", ".")
-
-## Returns a lock text as a finding shows it: without the `&` or `*&` in front.
-export def shown_of(lock: String) -> String
-  written = lock.replace(" ", "").replace("(", "").replace(")", "")
-  while written.start_with?("*&") or written.start_with?("&")
-    if written.start_with?("*&")
-      written = written.slice(2, written.length - 2)
-    else
-      written = written.slice(1, written.length - 1)
-    end
-  end
-
-  written
-end
-
-## Returns whether a declaration is marked CC_OWNS.
-export def marked_owner?(node: Json) -> Bool
-  Ast.children(node).any? do |child|
-    Ast.kind(child) == "DeprecatedAttr" and Ast.text(child, "message") == OWNS_MARK
-  end
-end
-
-## Returns the values that the local variables and the parameters (`locals`, by key) get among the nodes `all`: at
-## their declaration and in a plain assignment.
-export def writes_of(all: List[Json], locals: Set[String], keys: Map[String, String]) -> List[Written]
-  found: List[Written] = []
-  for n in all
-    if Ast.kind(n) == "VarDecl"
-      values = Ast.children(n).select do |child| not Ast.kind(child).end_with?("Attr") end
-      if values.size == 1
-        found = found.push(Written(name: declared_key(keys, n), value: values.first))
-      end
-    elsif Ast.kind(n) == "BinaryOperator" and Ast.text(n, "opcode") == "="
-      parts = Ast.children(n)
-      name = variable_key(keys, parts.first)
-      if locals.include?(name)
-        found = found.push(Written(name: name, value: parts[1]))
-      end
-    end
-  end
-
-  found
-end
-
-## Returns whether an expression is a call of a function that returns an owned pointer (CC_OWNS on the function).
-export def owning_call?(ctx: Context, node: Json) -> Bool
-  bare = see_through(node)
-  return false if Ast.kind(bare) != "CallExpr"
-
-  name = callee_name(bare)
-  name != "" and ctx.owning.returns.include?(key_of_function(ctx, name))
-end
-
-## Returns the name of the local variable or the parameter that an expression is, through casts and parentheses; ""
-## for any other.
-export def variable_name(node: Json) -> String
-  bare = see_through(node)
-  return Ast.referenced_name(bare) if Ast.kind(bare) == "DeclRefExpr" and VARIABLES.include?(Ast.referenced_kind(bare))
-
-  ""
-end
-
-## Returns the key of the local variable or parameter that an expression is, through casts and parentheses: the key
-## that `keys` gives its declaration; "" for any other expression, and for a variable the function does not declare (a
-## global). Two variables of one function never share a key, so a local that shadows another has a state of its own.
-## A CC_OWNS field of a local struct that the rules follow (`p.left`) has the key that `keys` gives the expression.
-export def variable_key(keys: Map[String, String], node: Json) -> String
-  bare = see_through(node)
-  if Ast.kind(bare) == "DeclRefExpr" and VARIABLES.include?(Ast.referenced_kind(bare))
-    return keys.get(Ast.referenced_id(bare), "")
-  end
-
-  return keys.get(Ast.text(bare, "id"), "") if Ast.kind(bare) == "MemberExpr"
-
-  ""
-end
-
-## Returns the key of a variable at its declaration (see `variable_key`).
-export def declared_key(keys: Map[String, String], decl: Json) -> String
-  keys.get(Ast.text(decl, "id"), Ast.text(decl, "name"))
-end
-
-## Returns the name that a key stands for: what the code calls the variable (`p` for `p#2`, `p.left` for `p#2.left`).
-export def plain(key: String) -> String
-  parts = key.split(KEY_MARK)
-  return key if parts.size < 2
-
-  rest = parts[1]
-  digits = 0
-  while digits < rest.length and DIGITS.include?(rest.slice(digits, 1))
-    digits += 1
-  end
-
-  parts[0] + rest.slice(digits, rest.length - digits)
-end
-
-## Returns every node under the given ones, each before the nodes inside it.
-export def descendants(nodes: List[Json]) -> List[Json]
-  found: List[Json] = []
-  for node in nodes
-    found = with_descendants(found, node)
-  end
-
-  found
-end
-
-## Returns an expression without the casts and parentheses around it.
-export def see_through(node: Json) -> Json
-  bare = node
-  while SEE_THROUGH.include?(Ast.kind(bare)) and not Ast.children(bare).empty?
-    bare = Ast.children(bare).first
-  end
-
-  bare
-end
-
-## Returns the name of the function that a call names, or "" for a call through a pointer.
-export def callee_name(node: Json) -> String
-  parts = Ast.children(node)
-  return "" if parts.empty?
-
-  callee = see_through(parts.first)
-  return "" if Ast.kind(callee) != "DeclRefExpr" or Ast.referenced_kind(callee) != "FunctionDecl"
-
-  Ast.referenced_name(callee)
-end
-
-## Returns the key of a function of the unit by name: `name@file` for a static one.
-export def key_of_function(ctx: Context, name: String) -> String = ctx.statics.get(name).unwrap_or(name)
-
-## Returns whether a returned value is an error by the usual C convention: a negative integer constant (or a negated
-## enum constant), a null pointer constant, or a false bool, by the type after typedefs. Any other value, 0 of an int
-## and a variable included, may be a success.
-export def error_value?(node: Json) -> Bool
-  type_node = JSON.get(node, "type").unwrap_or(JSON.from(""))
-  type = Ast.text(type_node, "desugaredQualType")
-  if type == ""
-    type = Ast.text(type_node, "qualType")
-  end
-
-  type = unqualified(type)
-  bare = see_through(node)
-  if type.end_with?("*") or type == "_Bool" or type == "bool"
-    return (
-      zero?(node) or
-      Ast.kind(bare) == "CXXNullPtrLiteralExpr" or
-      (Ast.kind(bare) == "CXXBoolLiteralExpr" and not Ast.flag?(bare, "value"))
-    )
-  end
-
-  return false if Ast.kind(bare) != "UnaryOperator" or Ast.text(bare, "opcode") != "-" or Ast.children(bare).empty?
-
-  value = see_through(Ast.children(bare).first)
-  constant = Ast.kind(value) == "DeclRefExpr" and Ast.referenced_kind(value) == "EnumConstantDecl"
-  constant or (Ast.kind(value) == "IntegerLiteral" and Ast.text(value, "value") != "0")
-end
-
-## Returns whether an expression is the constant 0, through casts and parentheses.
-export def zero?(node: Json) -> Bool
-  bare = see_through(node)
-  Ast.kind(bare) == "IntegerLiteral" and Ast.text(bare, "value") == "0"
-end
-
-## Returns a type without the qualifiers at its end, and out of `_Atomic(...)`: `char *` for `char *const volatile`.
-## clang writes no space between the star and the qualifier.
-export def unqualified(type: String) -> String
-  text = type.strip
-  return unqualified(text.slice(8, text.length - 9)) if text.start_with?("_Atomic(") and text.end_with?(")")
-
-  for word in ["const", "volatile", "restrict", "__restrict"]
-    if text.end_with?(" #{word}") or text.end_with?("*#{word}")
-      return unqualified(text.slice(0, text.length - word.length))
-    end
-  end
-
-  text
-end
-
-## Returns the names of the parameters of a function definition, whose key is `key`, that own what the caller passes
-## (CC_OWNS or CC_FREES), in the order of the parameters.
-export def owned_params(ctx: Context, key: String, node: Json) -> List[String]
-  names = params_named(node)
-  indices = ctx.owning.takes.get(key, []).concat(ctx.owning.frees.get(key, [])).uniq.sort
-  in_range = indices.select do |i| i < names.size end
-  in_range.map do |i| names[i] end
-end
-
-## Returns the names of the parameters of a function, in order.
-export def params_named(node: Json) -> List[String]
-  params = Ast.children(node).select do |child| Ast.kind(child) == "ParmVarDecl" end
-  params.map do |child| Ast.text(child, "name") end
 end
 
 # The pointers of a function that own, or may stand for one that does. A local is one when it gets an owned value (a
 # call of a function that returns one, or a realloc of a pointer that owns) or a pointer that owns; the walk tells at
 # each point whether it owns.
-def owners_of(ctx: Context, key: String, node: Json) -> Owners
+def owners_of(ctx: Context, key: String, node: JSON.Value) -> Owners
   bodies = Ast.children(node).select do |child| Ast.kind(child) == "CompoundStmt" end
   all = descendants(bodies)
   names_of_params = params_named(node)
@@ -871,7 +873,7 @@ end
 
 # The parameters of a function, whose key is `key`, that a caller passes a struct to by value and that take it
 # (CC_OWNS): their fields own from the entry.
-def taken_structs(ctx: Context, key: String, node: Json) -> List[Json]
+def taken_structs(ctx: Context, key: String, node: JSON.Value) -> List[JSON.Value]
   params = Ast.children(node).select do |child| Ast.kind(child) == "ParmVarDecl" end
   takes = ctx.owning.takes.get(key, [])
   taken_params = (0...params.size).to_a.select do |i| takes.include?(i) end
@@ -879,7 +881,7 @@ def taken_structs(ctx: Context, key: String, node: Json) -> List[Json]
 end
 
 # Whether the type of a declaration or an expression is a struct or a union itself, as written or behind a typedef.
-def record_type?(node: Json) -> Bool
+def record_type?(node: JSON.Value) -> Bool
   type = JSON.get(node, "type").unwrap_or(JSON.from(""))
   [Ast.text(type, "qualType"), Ast.text(type, "desugaredQualType")].any? do |text|
     bare = unqualified(text)
@@ -894,13 +896,13 @@ def record_type?(node: Json) -> Bool
 end
 
 # Whether an expression is a call of an allocator (`malloc`, `calloc`, ...), through casts and parentheses.
-def allocation?(node: Json) -> Bool
+def allocation?(node: JSON.Value) -> Bool
   bare = see_through(node)
   Ast.kind(bare) == "CallExpr" and Known.OWNED.include?(callee_name(bare))
 end
 
 # The locals whose address a call passes to a parameter that hands an owned pointer out (`fill(&p)`).
-def filled_locals(ctx: Context, all: List[Json], locals: Set[String], keys: Map[String, String]) -> Set[String]
+def filled_locals(ctx: Context, all: List[JSON.Value], locals: Set[String], keys: Map[String, String]) -> Set[String]
   found: Set[String] = Set.new([])
   for n in all
     if Ast.kind(n) == "CallExpr"
@@ -930,7 +932,7 @@ end
 # one that hands an owned pointer out through a parameter.
 # Whether a node is or holds a CC_OWNS field of a local variable (`p.left`), or the declaration of a local struct with
 # such a field.
-def field_access?(ctx: Context, node: Json) -> Bool
+def field_access?(ctx: Context, node: JSON.Value) -> Bool
   return true if struct_of(node) != "" and ctx.owning.fields.include?(Ast.text(node, "referencedMemberDecl"))
 
   return true if Ast.kind(node) == "VarDecl" and ctx.owning.typed.key?(Ast.text(node, "id"))
@@ -938,7 +940,7 @@ def field_access?(ctx: Context, node: Json) -> Bool
   Ast.children(node).any? do |child| field_access?(ctx, child) end
 end
 
-def owning_node?(ctx: Context, node: Json) -> Bool
+def owning_node?(ctx: Context, node: JSON.Value) -> Bool
   return true if (Ast.kind(node) == "VarDecl" and marked_owner?(node)) or owning_call?(ctx, node)
 
   return true if Ast.kind(node) == "CallExpr" and not out_params(ctx, callee_name(node)).empty?
@@ -948,7 +950,13 @@ end
 
 # Whether a value makes the variable that gets it stand for an owned pointer: a call that returns one, a realloc of a
 # pointer in `names`, or a pointer in `names` (`*p` of a CC_FREES parameter in `freed` is `p`).
-def gets_owner?(ctx: Context, keys: Map[String, String], names: Set[String], freed: Set[String], value: Json) -> Bool
+def gets_owner?(
+  ctx: Context,
+  keys: Map[String, String],
+  names: Set[String],
+  freed: Set[String],
+  value: JSON.Value,
+) -> Bool
   if CHOICES.include?(Ast.kind(see_through(value)))
     return values_of(value).any? do |branch| gets_owner?(ctx, keys, names, freed, branch) end
   end
@@ -970,11 +978,11 @@ end
 # The calls of a function that returns an owned pointer whose value is kept: in a local or a parameter, in a CC_OWNS
 # field or global, in a return, in a place of `places` (`*out`, `argv[i]`), or in an argument that the called
 # function takes or frees. Any other is lost.
-def kept_calls(ctx: Context, all: List[Json], places: Places) -> Set[String]
+def kept_calls(ctx: Context, all: List[JSON.Value], places: Places) -> Set[String]
   kept: Set[String] = Set.new([])
   for n in all
     parts = Ast.children(n)
-    values: List[Json] = []
+    values: List[JSON.Value] = []
     case Ast.kind(n)
       "VarDecl" -> values = parts.select do |child| not Ast.kind(child).end_with?("Attr") end
       "InitListExpr" ->
@@ -1020,7 +1028,7 @@ end
 
 # The values an expression may have: each side of `?:` (`x ?: y` is `x` or `y`), the last expression of a statement
 # expression, or itself.
-def values_of(node: Json) -> List[Json]
+def values_of(node: JSON.Value) -> List[JSON.Value]
   bare = see_through(node)
   return Ast.children(bare).drop(1).flat_map(&values_of) if Ast.kind(bare) == "ConditionalOperator"
 
@@ -1038,7 +1046,7 @@ def values_of(node: Json) -> List[Json]
 end
 
 # A statement under its labels and attributes (`done: p;` is `p;`).
-def unlabelled(node: Json) -> Json
+def unlabelled(node: JSON.Value) -> JSON.Value
   bare = node
   while Ast.kind(bare) == "LabelStmt" or Ast.kind(bare) == "AttributedStmt"
     bare = last_child(bare)
@@ -1050,7 +1058,7 @@ end
 # The key of each variable that a function declares (its parameters, then its locals in the order of the source), by
 # the id of its declaration: its name, or `name#2`, `name#3` for a variable whose name an earlier one has, or a name
 # that the function reads and does not declare (a global: it keeps its name).
-def keys_of(node: Json, all: List[Json]) -> Map[String, String]
+def keys_of(node: JSON.Value, all: List[JSON.Value]) -> Map[String, String]
   params = Ast.children(node).select do |child| Ast.kind(child) == "ParmVarDecl" end
   decls = params.concat(all.select do |n| VARIABLES.include?(Ast.kind(n)) end)
   ids = Set.new(decls.map do |decl| Ast.text(decl, "id") end)
@@ -1085,11 +1093,16 @@ end
 # union and one whose record is not known (`Owning.typed`) are not followed: a store into their CC_OWNS fields hands
 # the pointer on. A struct passed by value to a CC_OWNS parameter (`params`) is followed as a local one. Each item of
 # a local array of structs is a struct of its own (`a[0].left`), within the bound of `MAX_NESTED_FIELDS` in all.
-def owned_fields(ctx: Context, all: List[Json], keys: Map[String, String], params: List[Json] = []) -> Followed
+def owned_fields(
+  ctx: Context,
+  all: List[JSON.Value],
+  keys: Map[String, String],
+  params: List[JSON.Value] = [],
+) -> Followed
   found = Followed(members: {}, of: {}, items: {})
   return found if ctx.owning.fields.empty?
 
-  structs: Map[String, Json] = {}
+  structs: Map[String, JSON.Value] = {}
   for n in params.concat(all)
     local = Ast.kind(n) == "ParmVarDecl" or (Ast.kind(n) == "VarDecl" and Ast.text(n, "storageClass") == "")
     if local and ctx.owning.typed.key?(Ast.text(n, "id"))
@@ -1155,7 +1168,7 @@ end
 # the address of an item (`&a[0]`), but for the array that `memset` clears and an item that a CC_FREES parameter gets.
 # Such a read may reach any item, and in a loop the walk also takes the path that does not run it (a loop that frees
 # every item would leak them all there): such an array is not followed in the function.
-def unfollowed_arrays(ctx: Context, found: Followed, all: List[Json], keys: Map[String, String]) -> Set[String]
+def unfollowed_arrays(ctx: Context, found: Followed, all: List[JSON.Value], keys: Map[String, String]) -> Set[String]
   arrays = Set.new(found.parts.keys.select do |key| found.slots.key?("#{key}|[0]") end)
   unfollowed: Set[String] = Set.new([])
   return unfollowed if arrays.empty?
@@ -1322,7 +1335,7 @@ end
 
 # The key of the part that a member expression names (`p.left`, `p.inner`, `p.inner.left`, `c.buf` through an unnamed
 # member, `a[0]` and `a[0].left` of an array by a constant index), when its struct is followed; "" for any other.
-def part_of(found: Followed, keys: Map[String, String], node: Json) -> String
+def part_of(found: Followed, keys: Map[String, String], node: JSON.Value) -> String
   bare = see_through(node)
   if Ast.kind(bare) == "DeclRefExpr" and VARIABLES.include?(Ast.referenced_kind(bare))
     key = keys.get(Ast.referenced_id(bare), "")
@@ -1350,7 +1363,7 @@ end
 
 # The value of an index that is an integer constant: a number, also through a cast, parentheses and the operators `+`,
 # `-` and `*` of such numbers (`N - 1` of a macro); -1 for any other (a variable, an enum constant, a negative value).
-def constant_of(node: Json) -> Int
+def constant_of(node: JSON.Value) -> Int
   bare = see_through(node)
   if Ast.kind(bare) == "IntegerLiteral"
     value = Ast.text(bare, "value").to_i.unwrap_or(-1)
@@ -1393,7 +1406,7 @@ end
 
 # The items of an initializer that give a CC_OWNS field of its struct its value, by index. The item of a union is the
 # field it names.
-def owning_items(ctx: Context, init: Json) -> Set[Int]
+def owning_items(ctx: Context, init: JSON.Value) -> Set[Int]
   owning: Set[Int] = Set.new([])
   case JSON.get(init, "field")
     ok(field) ->
@@ -1420,7 +1433,7 @@ def owning_items(ctx: Context, init: Json) -> Set[Int]
 end
 
 # The record of a variable, an initializer or a `sizeof` with a CC_OWNS field, by the id of its node.
-def record_of(ctx: Context, node: Json) -> Optional[OwnedRecord]
+def record_of(ctx: Context, node: JSON.Value) -> Optional[OwnedRecord]
   case ctx.owning.typed.get(Ast.text(node, "id"))
     some(id) -> ctx.owning.records.get(id)
     none -> none
@@ -1429,7 +1442,7 @@ end
 
 # The id of the local variable whose field an expression is (`p.left`, `p.inner.left`, not `p->left`); "" for any
 # other.
-def struct_of(node: Json) -> String
+def struct_of(node: JSON.Value) -> String
   return "" if Ast.kind(node) != "MemberExpr" or Ast.flag?(node, "isArrow")
 
   base = see_through(Ast.children(node).first)
@@ -1450,7 +1463,7 @@ end
 
 # The key of what a reference names: the key of a variable of the function, else the name (a global, a function, an
 # enum constant), which no key of the function has. Conditions and writes name variables so.
-def referenced_key(keys: Map[String, String], ref: Json) -> String
+def referenced_key(keys: Map[String, String], ref: JSON.Value) -> String
   keys.get(Ast.referenced_id(ref), Ast.referenced_name(ref))
 end
 
@@ -1478,7 +1491,7 @@ end
 
 # Whether a store into an expression hands a pointer on: a CC_OWNS field (`x->held`), an item of one
 # (`x->items[i]`), or a CC_OWNS global.
-def place_owns?(ctx: Context, node: Json) -> Bool
+def place_owns?(ctx: Context, node: JSON.Value) -> Bool
   bare = see_through(node)
   case Ast.kind(bare)
     "MemberExpr" -> ctx.owning.fields.include?(Ast.text(bare, "referencedMemberDecl"))
@@ -1490,7 +1503,7 @@ end
 
 # Whether a store into an expression of a function hands a pointer on to a place that `places` names: `*out` of a
 # parameter that hands an owned pointer out, or an item of a pointer whose items own (`argv[i]`).
-def handed_place?(places: Places, node: Json) -> Bool
+def handed_place?(places: Places, node: JSON.Value) -> Bool
   return true if pointee_param(places.keys, node, places.outs) != ""
 
   bare = see_through(node)
@@ -1509,7 +1522,7 @@ end
 # a write through the pointer changes it), a `volatile` one, and a `static` one (another call writes it). The address
 # passed as the flag of a CC_ACQUIRES_IF (`flags`, by the id of the `&x`) is not one: the call sets the flag, and the
 # mark says what it means.
-def opaque_of(keys: Map[String, String], nodes: List[Json], flags: Set[String]) -> Set[String]
+def opaque_of(keys: Map[String, String], nodes: List[JSON.Value], flags: Set[String]) -> Set[String]
   found: Set[String] = Set.new([])
   for node in nodes
     kind = Ast.kind(node)
@@ -1533,7 +1546,7 @@ end
 # that takes or releases a lock, or a way out (`return`, `goto`, `break`, `continue`): only such a test can change
 # what a path does with a lock, so only its variables get a fact from a constant written to them. The `else if` of an
 # `if` is a statement of its own. The flag passed to a CC_RELEASES_IF is such a test too.
-def guarded_of(ctx: Context, keys: Map[String, String], nodes: List[Json]) -> Set[String]
+def guarded_of(ctx: Context, keys: Map[String, String], nodes: List[JSON.Value]) -> Set[String]
   found: Set[String] = Set.new([])
   for node in nodes
     at = GUARDS.get(Ast.kind(node), -1)
@@ -1562,7 +1575,7 @@ def guarded_of(ctx: Context, keys: Map[String, String], nodes: List[Json]) -> Se
 end
 
 # The ids of the `&x` that the calls among `nodes` pass as the flag of a CC_ACQUIRES_IF (`lock_if(q, &locked)`).
-def flag_addresses(ctx: Context, nodes: List[Json]) -> Set[String]
+def flag_addresses(ctx: Context, nodes: List[JSON.Value]) -> Set[String]
   found: Set[String] = Set.new([])
   for node in nodes
     next if Ast.kind(node) != "CallExpr"
@@ -1595,12 +1608,12 @@ def flag_places(ctx: Context, name: String, takes: Bool) -> List[Int]
 end
 
 # Whether a statement holds a way out of it.
-def leaves?(node: Json) -> Bool = WAYS_OUT.include?(Ast.kind(node)) or Ast.children(node).any?(&leaves?)
+def leaves?(node: JSON.Value) -> Bool = WAYS_OUT.include?(Ast.kind(node)) or Ast.children(node).any?(&leaves?)
 
 # The local variables that are set once, where they are declared, and never written or lent (`&x`) after: a lock
 # named through one of them is the lock of its value.
-def aliases_of(bodies: List[Json]) -> Map[String, Json]
-  values: Map[String, Json] = {}
+def aliases_of(bodies: List[JSON.Value]) -> Map[String, JSON.Value]
+  values: Map[String, JSON.Value] = {}
   written: Set[String] = Set.new([])
   for node in descendants(bodies)
     kind = Ast.kind(node)
@@ -1621,7 +1634,7 @@ def aliases_of(bodies: List[Json]) -> Map[String, Json]
 end
 
 # Whether a node writes the variable of its first child: an assignment, `++`, `--`, or `&`, which lends it.
-def writes?(node: Json) -> Bool
+def writes?(node: JSON.Value) -> Bool
   opcode = Ast.text(node, "opcode")
   case Ast.kind(node)
     "BinaryOperator" -> ASSIGNMENTS.include?(opcode)
@@ -1633,7 +1646,7 @@ end
 
 # The blocks (and the `for` loops, a scope of their own) around each label, by the id of the label's declaration, from
 # the outermost.
-def label_blocks(nodes: List[Json], around: List[String]) -> Map[String, List[String]]
+def label_blocks(nodes: List[JSON.Value], around: List[String]) -> Map[String, List[String]]
   found: Map[String, List[String]] = {}
   for node in nodes
     inner = around
@@ -1654,7 +1667,7 @@ def label_blocks(nodes: List[Json], around: List[String]) -> Map[String, List[St
   found
 end
 
-def statement(b: Builder, node: Json, preds: List[Int]) -> Built
+def statement(b: Builder, node: JSON.Value, preds: List[Int]) -> Built
   case Ast.kind(node)
     "" -> Built(b: b, exits: preds)
     "CompoundStmt" -> block(b, node, preds)
@@ -1708,7 +1721,7 @@ def statement(b: Builder, node: Json, preds: List[Int]) -> Built
 end
 
 # The label of a `LabelStmt`: the paths join there, and a `goto` finds it.
-def labelled(b: Builder, node: Json, preds: List[Int]) -> Built
+def labelled(b: Builder, node: JSON.Value, preds: List[Int]) -> Built
   label = add(b, Event.Join, preds)
   Built(b: label.b.with(labels: label.b.labels.put(Ast.text(node, "declId"), label.exits.first)), exits: label.exits)
 end
@@ -1716,7 +1729,7 @@ end
 # The end of a full statement (`node`): the pointers of its statement expressions close there (`pending`). One that a
 # variable still stands for stays, so they close again with the block around the statement, where that variable may
 # close with them.
-def flushed(b: Builder, node: Json, preds: List[Int]) -> Built
+def flushed(b: Builder, node: JSON.Value, preds: List[Int]) -> Built
   return Built(b: b, exits: preds) if b.pending.empty?
 
   scopes = b.scopes
@@ -1732,7 +1745,7 @@ def flushed(b: Builder, node: Json, preds: List[Int]) -> Built
 end
 
 # `flushed` on both sides of a condition (`node`) of a statement.
-def flushed_split(split: Split, node: Json) -> Split
+def flushed_split(split: Split, node: JSON.Value) -> Split
   yes = flushed(split.b, node, split.yes)
   no = flushed(yes.b.with(pending: split.b.pending), node, split.no)
   Split(b: no.b, yes: yes.exits, no: no.exits)
@@ -1746,7 +1759,7 @@ def closes_at(b: Builder, names: List[String], mark: Mark, preds: List[Int]) -> 
 end
 
 # The block of a statement expression `({ ...; v; })` opens as a scope for the cleanups of its variables.
-def opened_expression(b: Builder, node: Json) -> Builder
+def opened_expression(b: Builder, node: JSON.Value) -> Builder
   inner = last_child(see_through(node))
   scope = Scope(id: Ast.text(inner, "id"), cleanups: [], outer: b.pending)
   b.with(scopes: b.scopes.push(scope), pending: [])
@@ -1755,14 +1768,14 @@ end
 # A statement expression (`node`, with statements) up to its value: its scope opened, and its statements run but the
 # expression of the last one, under the labels on it (`done: p;`). A last statement that is not an expression runs
 # too, and gives no value.
-def valued_expression(b: Builder, node: Json, preds: List[Int]) -> Valued
+def valued_expression(b: Builder, node: JSON.Value, preds: List[Int]) -> Valued
   statements = Ast.children(last_child(node))
   opened = opened_expression(b, node)
   built = in_order_statements(opened, statements.take(statements.size - 1), preds)
   last_value(built.b, statements.last, built.exits)
 end
 
-def last_value(b: Builder, node: Json, preds: List[Int]) -> Valued
+def last_value(b: Builder, node: JSON.Value, preds: List[Int]) -> Valued
   kind = Ast.kind(node)
   if kind == "LabelStmt"
     label = labelled(b, node, preds)
@@ -1793,7 +1806,7 @@ def closed_expression(b: Builder, preds: List[Int]) -> Built
   )
 end
 
-def block(b: Builder, node: Json, preds: List[Int]) -> Built
+def block(b: Builder, node: JSON.Value, preds: List[Int]) -> Built
   opened = b.with(scopes: b.scopes.push(Scope(id: Ast.text(node, "id"), cleanups: [])))
   built = Built(b: opened, exits: preds)
   for child in Ast.children(node)
@@ -1805,14 +1818,14 @@ end
 
 # The way out of the innermost scope (`node`) at its end: its cleanup calls, the close of its pointers, and the scope
 # gone.
-def closed(b: Builder, node: Json, preds: List[Int]) -> Built
+def closed(b: Builder, node: JSON.Value, preds: List[Int]) -> Built
   place = Ast.end_of(node)
   left = leaving(b, b.scopes.size - 1, preds, some(Mark(word: "ends", line: place.line, column: place.column)))
   Built(b: left.b.with(scopes: left.b.scopes.take(left.b.scopes.size - 1)), exits: left.exits)
 end
 
 # An `if` and the `else if` chain after it, in a loop: a recursion would keep every builder of the chain alive.
-def if_statement(b: Builder, node: Json, preds: List[Int]) -> Built
+def if_statement(b: Builder, node: JSON.Value, preds: List[Int]) -> Built
   current = node
   built = b
   pending = preds
@@ -1837,14 +1850,14 @@ def if_statement(b: Builder, node: Json, preds: List[Int]) -> Built
   Built(b: built, exits: exits)
 end
 
-def while_loop(b: Builder, node: Json, preds: List[Int]) -> Built
+def while_loop(b: Builder, node: JSON.Value, preds: List[Int]) -> Built
   parts = Ast.children(node)
   head = add(b, Event.Join, preds)
   split = flushed_split(condition(head.b, parts[0], head.exits), parts[0])
   looped(split.b, parts[1], split, head.exits.first, JSON.from(""))
 end
 
-def do_loop(b: Builder, node: Json, preds: List[Int]) -> Built
+def do_loop(b: Builder, node: JSON.Value, preds: List[Int]) -> Built
   parts = Ast.children(node)
   head = add(b, Event.Join, preds)
   opened = head.b.with(jumps: head.b.jumps.push(loop_jump(head.b, head.exits.first)))
@@ -1856,7 +1869,7 @@ def do_loop(b: Builder, node: Json, preds: List[Int]) -> Built
   Built(b: link(split.b, split.yes, head.exits.first), exits: split.no.concat(jump.breaks))
 end
 
-def for_loop(b: Builder, node: Json, preds: List[Int]) -> Built
+def for_loop(b: Builder, node: JSON.Value, preds: List[Int]) -> Built
   # The parts are the init, a C++ condition variable, the condition, the increment and the body; a missing one is an
   # empty node. The variables of the init live until the loop ends, as in a block.
   parts = Ast.children(node)
@@ -1874,7 +1887,7 @@ end
 
 # The body of a `while` or a `for` from the true side of its condition, then the increment (an empty node for a
 # `while`), back to the head.
-def looped(b: Builder, body: Json, split: Split, head: Int, increment: Json) -> Built
+def looped(b: Builder, body: JSON.Value, split: Split, head: Int, increment: JSON.Value) -> Built
   opened = b.with(jumps: b.jumps.push(loop_jump(b, head)))
   ran = statement(opened, body, split.yes)
   jump = ran.b.jumps.last
@@ -1890,7 +1903,7 @@ end
 
 # A switch jumps from its head to each `case` and `default` of its body; without a `default`, a value that no case
 # names goes past the body.
-def switch_statement(b: Builder, node: Json, preds: List[Int]) -> Built
+def switch_statement(b: Builder, node: JSON.Value, preds: List[Int]) -> Built
   parts = Ast.children(node)
   evaluated = expression(b, parts[0], preds)
   value = flushed(evaluated.b, parts[0], evaluated.exits)
@@ -1955,7 +1968,7 @@ def label_event(jump: Jump, word: String, number: Optional[String], place: Ast.P
 end
 
 # Whether the body of a switch has a `case 0` of its own, not one of a switch inside it.
-def zero_case?(node: Json) -> Bool
+def zero_case?(node: JSON.Value) -> Bool
   return false if Ast.kind(node) == "SwitchStmt"
 
   parts = Ast.children(node)
@@ -1967,7 +1980,7 @@ def zero_case?(node: Json) -> Bool
   parts.any?(&zero_case?)
 end
 
-def case_label(b: Builder, node: Json, preds: List[Int], word: String) -> Built
+def case_label(b: Builder, node: JSON.Value, preds: List[Int], word: String) -> Built
   at = innermost(b.jumps, true)
   return statement(b, last_child(node), preds) if at < 0
 
@@ -1988,7 +2001,7 @@ def case_label(b: Builder, node: Json, preds: List[Int], word: String) -> Built
   statement(updated, last_child(node), entry.exits)
 end
 
-def break_statement(b: Builder, node: Json, preds: List[Int]) -> Built
+def break_statement(b: Builder, node: JSON.Value, preds: List[Int]) -> Built
   at = innermost(b.jumps, false)
   return Built(b: b, exits: []) if at < 0
 
@@ -1997,7 +2010,7 @@ def break_statement(b: Builder, node: Json, preds: List[Int]) -> Built
   Built(b: left.b.with(jumps: left.b.jumps.set(at, jump.with(breaks: jump.breaks.concat(left.exits)))), exits: [])
 end
 
-def continue_statement(b: Builder, node: Json, preds: List[Int]) -> Built
+def continue_statement(b: Builder, node: JSON.Value, preds: List[Int]) -> Built
   at = innermost_loop(b.jumps)
   return Built(b: b, exits: []) if at < 0
 
@@ -2031,7 +2044,7 @@ def innermost_loop(jumps: List[Jump]) -> Int
   -1
 end
 
-def return_statement(b: Builder, node: Json, preds: List[Int]) -> Built
+def return_statement(b: Builder, node: JSON.Value, preds: List[Int]) -> Built
   value = Built(b: b, exits: preds)
   for child in Ast.children(node)
     value = handed_value(value.b, none, child, value.exits)
@@ -2046,7 +2059,7 @@ end
 
 # A `goto` leaves the blocks that are not around its label. The label is linked at the end, when every label is known;
 # an indirect `goto` ("") may go to any label, so it closes no block: the pointers of each may still be read there.
-def goto_statement(b: Builder, node: Json, label: String, preds: List[Int]) -> Built
+def goto_statement(b: Builder, node: JSON.Value, label: String, preds: List[Int]) -> Built
   around = Set.new(b.label_blocks.get(label).unwrap_or([]))
   depth = 0
   while depth < b.scopes.size and around.include?(b.scopes[depth].id)
@@ -2116,7 +2129,7 @@ def leaving(b: Builder, depth: Int, preds: List[Int], at: Optional[Mark]) -> Bui
 end
 
 # A mark at the start of a statement.
-def mark_at(node: Json, word: String) -> Mark
+def mark_at(node: JSON.Value, word: String) -> Mark
   place = Ast.start_of(node)
   Mark(word: word, line: place.line, column: place.column)
 end
@@ -2130,7 +2143,7 @@ def calls(b: Builder, sites: List[Site], preds: List[Int]) -> Built
   built
 end
 
-def declarations(b: Builder, node: Json, preds: List[Int]) -> Built
+def declarations(b: Builder, node: JSON.Value, preds: List[Int]) -> Built
   built = Built(b: b, exits: preds)
   for child in Ast.children(node)
     if Ast.kind(child) == "VarDecl"
@@ -2142,7 +2155,7 @@ def declarations(b: Builder, node: Json, preds: List[Int]) -> Built
 end
 
 # A variable: its value, then the write of it, and its cleanup call for the way out of its block.
-def declaration(b: Builder, node: Json, preds: List[Int]) -> Built
+def declaration(b: Builder, node: JSON.Value, preds: List[Int]) -> Built
   name = Ast.text(node, "name")
   key = declared_key(b.owners.places.keys, node)
   values = Ast.children(node).select do |child| not Ast.kind(child).end_with?("Attr") end
@@ -2200,7 +2213,7 @@ end
 # null when it has none, and each struct in it gets its own initializer the same way; the other items are read in
 # order. A struct in it that gets another value (`{ .inner = q }`) holds what `q` held: its fields are someone else's,
 # as after an escape. `held` are the items that a compound literal read before the store (see `reset_by_literal`).
-def initializer(b: Builder, key: String, init: Json, preds: List[Int], held: Map[Int, String] = {}) -> Built
+def initializer(b: Builder, key: String, init: JSON.Value, preds: List[Int], held: Map[Int, String] = {}) -> Built
   items = Ast.items(init)
   at: Map[Int, String] = {}
   for place in b.owners.places.parts.get(key, [])
@@ -2248,7 +2261,7 @@ def initializer(b: Builder, key: String, init: Json, preds: List[Int], held: Map
 end
 
 # A CC_OWNS field, or each one of a struct in the struct, that an initializer leaves out: it is null.
-def nulled_struct(b: Builder, place: String, init: Json, preds: List[Int]) -> Built
+def nulled_struct(b: Builder, place: String, init: JSON.Value, preds: List[Int]) -> Built
   return nulled_field(b, place, init, preds) if not b.owners.places.parts.key?(place)
 
   built = Built(b: b, exits: preds)
@@ -2260,7 +2273,7 @@ def nulled_struct(b: Builder, place: String, init: Json, preds: List[Int]) -> Bu
 end
 
 # A field that takes the value an item of a compound literal held before the store (`held`).
-def moved_field(b: Builder, place: String, temp: String, item: Json, preds: List[Int]) -> Built
+def moved_field(b: Builder, place: String, temp: String, item: JSON.Value, preds: List[Int]) -> Built
   at = Ast.start_of(item)
   assign = Assign(name: place, value: "moved", from: temp, shown: plain(temp), line: at.line, column: at.column)
   written = add(b, Event.Writes([place]), preds)
@@ -2268,14 +2281,14 @@ def moved_field(b: Builder, place: String, temp: String, item: Json, preds: List
 end
 
 # A CC_OWNS field that an initializer leaves out: it is null.
-def nulled_field(b: Builder, place: String, init: Json, preds: List[Int]) -> Built
+def nulled_field(b: Builder, place: String, init: JSON.Value, preds: List[Int]) -> Built
   at = Ast.start_of(init)
   assign = Assign(name: place, value: "null", from: "", shown: "NULL", line: at.line, column: at.column)
   written = add(b, Event.Writes([place]), preds)
   add(written.b, Event.Assigns(assign), written.exits)
 end
 
-def expression(b: Builder, node: Json, preds: List[Int]) -> Built
+def expression(b: Builder, node: JSON.Value, preds: List[Int]) -> Built
   case Ast.kind(node)
     "" -> Built(b: b, exits: preds)
     "CallExpr" -> call(b, node, preds, false)
@@ -2372,7 +2385,7 @@ end
 
 # A field of a local struct that the rules do not follow as a pointer (`p.n`, `a[0].n`): no read of the struct. An
 # index that is not a constant (`a[i].n`, of an array that is then not followed) is read.
-def item_read(b: Builder, node: Json, preds: List[Int]) -> Built
+def item_read(b: Builder, node: JSON.Value, preds: List[Int]) -> Built
   base = see_through(Ast.children(node).first)
   while Ast.kind(base) == "MemberExpr"
     base = see_through(Ast.children(base).first)
@@ -2383,7 +2396,7 @@ def item_read(b: Builder, node: Json, preds: List[Int]) -> Built
   in_order(b, Ast.children(base), preds)
 end
 
-def in_order(b: Builder, nodes: List[Json], preds: List[Int]) -> Built
+def in_order(b: Builder, nodes: List[JSON.Value], preds: List[Int]) -> Built
   built = Built(b: b, exits: preds)
   for node in nodes
     built = expression(built.b, node, built.exits)
@@ -2392,7 +2405,7 @@ def in_order(b: Builder, nodes: List[Json], preds: List[Int]) -> Built
   built
 end
 
-def in_order_statements(b: Builder, nodes: List[Json], preds: List[Int]) -> Built
+def in_order_statements(b: Builder, nodes: List[JSON.Value], preds: List[Int]) -> Built
   built = Built(b: b, exits: preds)
   for node in nodes
     built = statement(built.b, node, built.exits)
@@ -2403,7 +2416,7 @@ end
 
 # An assignment: the value, then the target. A plain write of a variable does not read it; a pointer that owns gets
 # its new value, and one stored in a CC_OWNS place is handed on.
-def assignment(b: Builder, node: Json, preds: List[Int]) -> Built
+def assignment(b: Builder, node: JSON.Value, preds: List[Int]) -> Built
   parts = Ast.children(node)
   if Ast.kind(node) == "BinaryOperator" and Ast.text(node, "opcode") == "=" and parts.size == 2
     name = variable_key(b.owners.places.keys, parts[0])
@@ -2477,7 +2490,7 @@ end
 
 # The variables a write to `target` changes, by key: its root, and for a write through a pointer (`*p = 1`, `p->n =
 # 0`) every local whose address the function takes (`Builder.opaque`), which the pointer may reach.
-def written_roots(b: Builder, target: Json) -> List[String]
+def written_roots(b: Builder, target: JSON.Value) -> List[String]
   keys = b.owners.places.keys
   root = target_root(keys, target)
   return [root] if storage_root(keys, target) != "" or b.opaque.empty?
@@ -2488,7 +2501,7 @@ end
 # A value handed on: returned (`into` is none) or stored in a place that hands it on (`into`). A pointer that owns is
 # handed on there, on its side of a `?:` (`x->held = n ? p : NULL`, `return n ? p : NULL`, `x->held = p ?: q`) or as
 # the last expression of a statement expression, the same values as `values_of`.
-def handed_value(b: Builder, into: Optional[String], value: Json, preds: List[Int]) -> Built
+def handed_value(b: Builder, into: Optional[String], value: JSON.Value, preds: List[Int]) -> Built
   bare = see_through(value)
   if Ast.kind(bare) == "ConditionalOperator"
     parts = Ast.children(bare)
@@ -2527,7 +2540,7 @@ def handed_value(b: Builder, into: Optional[String], value: Json, preds: List[In
 end
 
 # A pointer that owns, `value`, handed on by a return (`into` is none) or to the place `into` by a store.
-def handed_on(b: Builder, into: Optional[String], value: Json, preds: List[Int]) -> Built
+def handed_on(b: Builder, into: Optional[String], value: JSON.Value, preds: List[Int]) -> Built
   given = owner_named(b, value)
   place = Ast.start_of(value)
   stored = into.map do |shown| "stores #{plain(given)} in #{shown}" end
@@ -2537,7 +2550,7 @@ def handed_on(b: Builder, into: Optional[String], value: Json, preds: List[Int])
 end
 
 # A pointer that owns, or may stand for one, gets a value. A pointer that it moves from is not read.
-def owner_assigned(b: Builder, name: String, value: Json, preds: List[Int]) -> Built
+def owner_assigned(b: Builder, name: String, value: JSON.Value, preds: List[Int]) -> Built
   bare = see_through(value)
   if Ast.kind(bare) == "ConditionalOperator"
     # Each side gives its own value: `p = n ? make(n) : NULL` owns where `n` is true only.
@@ -2580,7 +2593,7 @@ def owner_assigned(b: Builder, name: String, value: Json, preds: List[Int]) -> B
 end
 
 # How a pointer that owns, or may stand for one, gets a value (`Assign`).
-def assigned(b: Builder, name: String, value: Json) -> Assign
+def assigned(b: Builder, name: String, value: JSON.Value) -> Assign
   place = Ast.start_of(value)
   start = Assign(name: name, value: "other", from: "", shown: "", line: place.line, column: place.column)
   bare = see_through(value)
@@ -2630,7 +2643,7 @@ end
 
 # A read of a variable: an event when it is a pointer that owns, or may stand for one, or a local struct whose CC_OWNS
 # fields the rules follow, which escapes there (a field of it is no read of the struct: see `expression`).
-def used(b: Builder, node: Json, preds: List[Int]) -> Built
+def used(b: Builder, node: JSON.Value, preds: List[Int]) -> Built
   name = owner_named(b, node)
   return escaped(b, node, preds) if name == ""
 
@@ -2640,7 +2653,7 @@ end
 
 # A new value of a whole local struct (`p = q`): each followed CC_OWNS field gets a value the rules do not know, so
 # one that still owns leaks there, and then the fields are the new value's, as after an escape.
-def struct_assigned(b: Builder, target: Json, value: Json, preds: List[Int]) -> Built
+def struct_assigned(b: Builder, target: JSON.Value, value: JSON.Value, preds: List[Int]) -> Built
   fields = followed_struct(b, target)
   return Built(b: b, exits: preds) if fields.empty?
 
@@ -2660,14 +2673,14 @@ def struct_assigned(b: Builder, target: Json, value: Json, preds: List[Int]) -> 
 end
 
 # The value of a variable that is not a pointer that owns, then what it does to a whole local struct (`p = q`).
-def struct_assigned_after(b: Builder, target: Json, value: Json, preds: List[Int]) -> Built
+def struct_assigned_after(b: Builder, target: JSON.Value, value: JSON.Value, preds: List[Int]) -> Built
   read = expression(b, value, preds)
   struct_assigned(read.b, target, value, read.exits)
 end
 
 # `p = (struct pair){ ... }` of a followed struct: the fields are followed again, and each gets its item as from an
 # initializer (null when it has none), so one that still owned leaks there; none for any other assignment.
-def reset_by_literal(b: Builder, target: Json, value: Json, preds: List[Int]) -> Optional[Built]
+def reset_by_literal(b: Builder, target: JSON.Value, value: JSON.Value, preds: List[Int]) -> Optional[Built]
   fields = followed_struct(b, target)
   bare = see_through(value)
   return none if fields.empty? or Ast.kind(bare) != "CompoundLiteralExpr"
@@ -2733,7 +2746,7 @@ def reset_by_literal(b: Builder, target: Json, value: Json, preds: List[Int]) ->
 end
 
 # Whether a fill byte is zero: `0` or `'\0'`.
-def zero_byte?(node: Json) -> Bool
+def zero_byte?(node: JSON.Value) -> Bool
   bare = see_through(node)
   zero?(bare) or (Ast.kind(bare) == "CharacterLiteral" and Ast.number(bare, "value") == 0)
 end
@@ -2741,7 +2754,7 @@ end
 # Whether the size of a `memset` of `&p` (or `&p.inner`) is that of the whole struct: `sizeof p`, `sizeof(struct pair)`
 # or the size of a typedef of it. A smaller size clears some of the fields only, and stays an escape. A followed array
 # (`memset(a, 0, sizeof a)`) is cleared by `sizeof a` only.
-def whole_size?(b: Builder, target: Json, size: Json) -> Bool
+def whole_size?(b: Builder, target: JSON.Value, size: JSON.Value) -> Bool
   bare = see_through(size)
   return false if Ast.kind(bare) != "UnaryExprOrTypeTraitExpr" or Ast.text(bare, "name") != "sizeof"
 
@@ -2767,7 +2780,7 @@ def whole_size?(b: Builder, target: Json, size: Json) -> Bool
 end
 
 # Whether an expression reads one of the followed fields `fields` (`p.left`) anywhere in it.
-def reads_field?(b: Builder, node: Json, fields: List[String]) -> Bool
+def reads_field?(b: Builder, node: JSON.Value, fields: List[String]) -> Bool
   return true if Ast.kind(node) == "MemberExpr" and fields.include?(b.owners.places.keys.get(Ast.text(node, "id"), ""))
 
   Ast.children(node).any? do |child| reads_field?(b, child, fields) end
@@ -2780,11 +2793,11 @@ end
 
 # The followed CC_OWNS fields of the local struct, or the struct in it (`p.inner`), that an expression names whole, or
 # none.
-def followed_struct(b: Builder, node: Json) -> List[String] = b.owners.places.fields.get(whole_key(b, node), [])
+def followed_struct(b: Builder, node: JSON.Value) -> List[String] = b.owners.places.fields.get(whole_key(b, node), [])
 
 # The key of the followed local struct (`p`), of the struct in it (`p.inner`), of a followed array (`a`) or of an item
 # of it (`a[0]`), that an expression names whole; "".
-def whole_key(b: Builder, node: Json) -> String
+def whole_key(b: Builder, node: JSON.Value) -> String
   bare = see_through(node)
   if Ast.kind(bare) == "MemberExpr" or Ast.kind(bare) == "ArraySubscriptExpr"
     return b.owners.places.wholes.get(Ast.text(bare, "id"), "")
@@ -2799,7 +2812,7 @@ def whole_key(b: Builder, node: Json) -> String
 end
 
 # The followed CC_OWNS fields of the local struct whose address an expression is (`&p`), or none.
-def struct_address(b: Builder, node: Json) -> List[String]
+def struct_address(b: Builder, node: JSON.Value) -> List[String]
   bare = see_through(node)
   return [] if not address?(bare)
 
@@ -2808,7 +2821,7 @@ end
 
 # The followed CC_OWNS fields of what a `memset` clears: the struct whose address it gets (`&p`), or a followed array
 # that it gets whole (`a`).
-def cleared_struct(b: Builder, node: Json) -> List[String]
+def cleared_struct(b: Builder, node: JSON.Value) -> List[String]
   bare = see_through(node)
   return followed_struct(b, bare) if Ast.kind(bare) == "DeclRefExpr"
 
@@ -2817,7 +2830,7 @@ end
 
 # `memset(&p, 0, sizeof p)` of a followed struct: its fields are followed again, null, so one that still owned leaks
 # there.
-def cleared(b: Builder, fields: List[String], node: Json, preds: List[Int]) -> Built
+def cleared(b: Builder, fields: List[String], node: JSON.Value, preds: List[Int]) -> Built
   at = Ast.start_of(node)
   built = add(b, Event.Resets(fields), preds)
   for field in fields
@@ -2831,7 +2844,7 @@ end
 
 # The followed CC_OWNS fields of a local struct that an expression names whole, which escape there; nothing for any
 # other expression.
-def escaped(b: Builder, node: Json, preds: List[Int]) -> Built
+def escaped(b: Builder, node: JSON.Value, preds: List[Int]) -> Built
   fields = followed_struct(b, node)
   return Built(b: b, exits: preds) if fields.empty?
 
@@ -2839,7 +2852,7 @@ def escaped(b: Builder, node: Json, preds: List[Int]) -> Built
 end
 
 # The pointer that owns, or may stand for one, that an expression is, through casts and parentheses; "".
-def owner_named(b: Builder, node: Json) -> String
+def owner_named(b: Builder, node: JSON.Value) -> String
   name = variable_key(b.owners.places.keys, node)
   return name if b.owners.names.include?(name)
 
@@ -2848,7 +2861,7 @@ end
 
 # The pointer that owns an argument names: `p`, `&p` (a cleanup function, or a function that frees through a pointer
 # to it) or `*p`, also as the last expression of a statement expression; "" for none, or for a `?:`.
-def owner_of(b: Builder, node: Json) -> String
+def owner_of(b: Builder, node: JSON.Value) -> String
   bare = see_through(single_value(node))
   return owner_named(b, Ast.children(bare).first) if address?(bare)
 
@@ -2860,7 +2873,7 @@ end
 
 # The one value of an expression (`values_of`): the last expression of a statement expression, or the expression
 # itself, also when it may have several (`?:`).
-def single_value(node: Json) -> Json
+def single_value(node: JSON.Value) -> JSON.Value
   values = values_of(node)
   return values.first if values.size == 1
 
@@ -2868,17 +2881,19 @@ def single_value(node: Json) -> Json
 end
 
 # Whether an expression takes the address of something: `&x`.
-def address?(node: Json) -> Bool
+def address?(node: JSON.Value) -> Bool
   bare = see_through(node)
   Ast.kind(bare) == "UnaryOperator" and Ast.text(bare, "opcode") == "&"
 end
 
 # The CC_FREES parameter that `*p` stands for when the parameter points to the pointer it frees (`T **p`, a cleanup
 # function); "" for any other.
-def pointee_owner(b: Builder, node: Json) -> String = pointee_param(b.owners.places.keys, node, b.owners.places.freed)
+def pointee_owner(b: Builder, node: JSON.Value) -> String
+  pointee_param(b.owners.places.keys, node, b.owners.places.freed)
+end
 
 # The parameter in `freed` that `*p` is, when `*p` is itself a pointer; "" for any other expression.
-def pointee_param(keys: Map[String, String], node: Json, freed: Set[String]) -> String
+def pointee_param(keys: Map[String, String], node: JSON.Value, freed: Set[String]) -> String
   bare = see_through(node)
   return "" if Ast.kind(bare) != "UnaryOperator" or Ast.text(bare, "opcode") != "*" or not pointer_type?(bare)
 
@@ -2889,14 +2904,14 @@ def pointee_param(keys: Map[String, String], node: Json, freed: Set[String]) -> 
 end
 
 # Whether the type of an expression is a pointer, as written or behind a typedef, `const` or not (`char *const`).
-def pointer_type?(node: Json) -> Bool
+def pointer_type?(node: JSON.Value) -> Bool
   type = JSON.get(node, "type").unwrap_or(JSON.from(""))
   [Ast.text(type, "qualType"), Ast.text(type, "desugaredQualType")].any? do |text| unqualified(text).end_with?("*") end
 end
 
 # A call: its arguments in order, then the call. A call that never comes back ends the path. `tried` leaves out the
 # lock that a call of `Known.TRIES` takes: the condition around it takes it on the branch where it worked.
-def call(b: Builder, node: Json, preds: List[Int], tried: Bool) -> Built
+def call(b: Builder, node: JSON.Value, preds: List[Int], tried: Bool) -> Built
   parts = Ast.children(node)
   return Built(b: b, exits: preds) if parts.empty?
 
@@ -3002,7 +3017,7 @@ end
 # gets the value there, as a write, which a later test of it reads; a flag that is no local of the function (`&b->f`,
 # a pointer it was passed) splits the path with no value a test can read. The flag of a release is a test of the
 # argument, as an `if` reads it, and a constant flag takes one side.
-def flagged_call(b: Builder, site: Site, args: List[Json], preds: List[Int]) -> Built
+def flagged_call(b: Builder, site: Site, args: List[JSON.Value], preds: List[Int]) -> Built
   flagged = case b.ctx.callees.get(site.key)
     some(callee) -> callee.locks.select do |lock| lock.flag != "" end
     none -> []
@@ -3065,7 +3080,7 @@ def flag_split(
   site: Site,
   takes: Bool,
   locks: List[Lock],
-  args: List[Json],
+  args: List[JSON.Value],
   at: Int,
   preds: List[Int],
 ) -> Split
@@ -3109,7 +3124,7 @@ end
 
 # The two sides of the flag of a CC_RELEASES_IF: the argument read as the test of an `if` (`fact_of`), quiet, as the
 # call tests it; a constant takes one side.
-def released_split(b: Builder, place_fact: Fact, arg: Json, preds: List[Int]) -> Split
+def released_split(b: Builder, place_fact: Fact, arg: JSON.Value, preds: List[Int]) -> Split
   bare = see_through(arg)
   if Ast.kind(bare) == "IntegerLiteral"
     return Split(b: b, yes: [], no: preds) if Ast.text(bare, "value") == "0"
@@ -3125,7 +3140,7 @@ end
 
 # The followed CC_OWNS fields of the items after the one whose address an argument is (`&a[0]` of `a[2]`): a CC_FREES
 # parameter that gets it may free them too (`pairs_free(&a[0], n)`), so they escape there; none for any other.
-def later_items(b: Builder, arg: Json) -> List[String]
+def later_items(b: Builder, arg: JSON.Value) -> List[String]
   item = see_through(Ast.children(see_through(arg)).first)
   return [] if Ast.kind(item) != "ArraySubscriptExpr"
 
@@ -3140,7 +3155,7 @@ end
 # An argument of a call, before the call. A pointer that owns at a parameter that frees or takes it (`taking`), or
 # whose address is at a CC_OWNS_OUT parameter (`filling`), is not read. A statement expression runs its statements,
 # then its last expression is the argument (`free(({ ...; p; }))` frees `p`).
-def argument(b: Builder, arg: Json, taking: Bool, filling: Bool, preds: List[Int]) -> Built
+def argument(b: Builder, arg: JSON.Value, taking: Bool, filling: Bool, preds: List[Int]) -> Built
   bare = see_through(arg)
   if Ast.kind(bare) == "StmtExpr" and not Ast.children(last_child(bare)).empty?
     inner = valued_expression(b, bare, preds)
@@ -3242,7 +3257,7 @@ def lock_of(args: List[Arg], index: Int) -> List[Lock]
 end
 
 # The keys of the parameters of a definition at the places where the marks of `locks` name their flag.
-def flag_keys(locks: List[Annotated], node: Json, keys: Map[String, String]) -> List[String]
+def flag_keys(locks: List[Annotated], node: JSON.Value, keys: Map[String, String]) -> List[String]
   params = Ast.children(node).select do |child| Ast.kind(child) == "ParmVarDecl" end
   found: List[String] = []
   for lock in locks
@@ -3258,7 +3273,7 @@ end
 
 # The names of the parameters of a definition (`Body.params`), "" for one whose own storage the body writes or takes
 # the address of (`m = &other`, `&m`), or whose name another variable has (`keys`: a later one is `m#2`).
-def mapped_params(node: Json, keys: Map[String, String], all: List[Json]) -> List[String]
+def mapped_params(node: JSON.Value, keys: Map[String, String], all: List[JSON.Value]) -> List[String]
   stored: Set[String] = Set.new([])
   for n in all
     parts = Ast.children(n)
@@ -3301,7 +3316,7 @@ def annotated_lock(lock: Annotated, texts: List[String]) -> List[Lock]
   end
 end
 
-def arg_of(b: Builder, node: Json) -> Arg
+def arg_of(b: Builder, node: JSON.Value) -> Arg
   Arg(
     text: text_of(b, node, true),
     class: class_of(b, node),
@@ -3313,7 +3328,7 @@ end
 
 # Whether the field or global that a lock expression ends in is a pointer (`c->lk` of `pthread_mutex_t *lk`), through
 # `&`, `*`, subscripts and the local variables set once, as `aliased_class` reads them.
-def aliased_through?(b: Builder, node: Json, depth: Int) -> Bool
+def aliased_through?(b: Builder, node: JSON.Value, depth: Int) -> Bool
   bare = see_through(node)
   while Ast.kind(bare) == "UnaryOperator" and UNARY_TEXT.include?(Ast.text(bare, "opcode"))
     bare = see_through(Ast.children(bare).first)
@@ -3335,9 +3350,9 @@ end
 
 # The class of a lock expression: the field it ends in, or a global variable, through `&`, `*` and the local variables
 # set once.
-def class_of(b: Builder, node: Json) -> String = aliased_class(b, node, 0)
+def class_of(b: Builder, node: JSON.Value) -> String = aliased_class(b, node, 0)
 
-def aliased_class(b: Builder, node: Json, depth: Int) -> String
+def aliased_class(b: Builder, node: JSON.Value, depth: Int) -> String
   bare = see_through(node)
   while Ast.kind(bare) == "UnaryOperator" and UNARY_TEXT.include?(Ast.text(bare, "opcode"))
     bare = see_through(Ast.children(bare).first)
@@ -3367,7 +3382,7 @@ end
 
 # A condition: the nodes after it when it is true and when it is false. `!`, `&&` and `||` split it, a constant
 # goes one way, and a call of `Known.TRIES` that is compared with 0 takes its lock on the side where it gave 0.
-def condition(b: Builder, node: Json, preds: List[Int]) -> Split
+def condition(b: Builder, node: JSON.Value, preds: List[Int]) -> Split
   bare = see_through(node)
   kind = Ast.kind(bare)
   opcode = Ast.text(bare, "opcode")
@@ -3410,8 +3425,8 @@ end
 
 # The operands of `a && b && c` (or of `||`) from left to right. clang nests such a chain to the left, so the walk
 # goes down it in a loop.
-def operands_of(node: Json, opcode: String) -> List[Json]
-  rights: List[Json] = []
+def operands_of(node: JSON.Value, opcode: String) -> List[JSON.Value]
+  rights: List[JSON.Value] = []
   current = node
   while Ast.kind(current) == "BinaryOperator" and Ast.text(current, "opcode") == opcode
     parts = Ast.children(current)
@@ -3423,7 +3438,7 @@ def operands_of(node: Json, opcode: String) -> List[Json]
 end
 
 # The operands of `&&` (`all`) or `||` in order: each one after the previous one gave the value that goes on.
-def chain(b: Builder, operands: List[Json], all: Bool, preds: List[Int]) -> Split
+def chain(b: Builder, operands: List[JSON.Value], all: Bool, preds: List[Int]) -> Split
   built = b
   pending = preds
   out: List[Int] = []
@@ -3446,7 +3461,7 @@ end
 
 # A condition of any other form: its calls, then a node for each of its values. A test against 0 is a fact of what it
 # compares (`Fact`).
-def branch(b: Builder, bare: Json, preds: List[Int]) -> Split
+def branch(b: Builder, bare: JSON.Value, preds: List[Int]) -> Split
   value = expression(b, bare, preds)
   keys = value.b.owners.places.keys
   fact = fact_of(value.b, bare)
@@ -3475,7 +3490,7 @@ end
 
 # The fact of a condition where it is true. A test against 0 is a fact of what it compares, and `r != EBUSY` the fact
 # of `r == EBUSY`, the other way round, whichever side the number is on.
-def fact_of(b: Builder, bare: Json) -> Fact
+def fact_of(b: Builder, bare: JSON.Value) -> Fact
   keys = b.owners.places.keys
   tested = copied(b, bare)
   place = Ast.start_of(bare)
@@ -3546,7 +3561,7 @@ end
 # The variable that a test reads: for a local set once to another local set once (`int busy = r;`), that one, so a
 # test of the copy is one of the result it copies; the node itself for anything else, and for a copy of a local whose
 # value can change behind the code, or into one (`Builder.opaque`: `static`, `volatile`, its address taken).
-def copied(b: Builder, node: Json) -> Json
+def copied(b: Builder, node: JSON.Value) -> JSON.Value
   bare = see_through(node)
   return node if Ast.kind(bare) != "DeclRefExpr"
 
@@ -3564,10 +3579,10 @@ def copied(b: Builder, node: Json) -> Json
 end
 
 # A comparison with 0 (`x == 0`, `0 != x`, `p == NULL`): what it compares, and whether it is `==`.
-def zero_compared(node: Json) -> Optional[Compared] = compared_with(node, true)
+def zero_compared(node: JSON.Value) -> Optional[Compared] = compared_with(node, true)
 
 # A comparison with 0 (`zero`) or with a whole number other than 0 (`r == EBUSY`).
-def compared_with(node: Json, zero: Bool) -> Optional[Compared]
+def compared_with(node: JSON.Value, zero: Bool) -> Optional[Compared]
   bare = see_through(node)
   opcode = Ast.text(bare, "opcode")
   parts = Ast.children(bare)
@@ -3585,7 +3600,7 @@ def compared_with(node: Json, zero: Bool) -> Optional[Compared]
 end
 
 # Whether a condition tells that a pointer that owns is null: `p`, `p = malloc(n)`, and either compared with 0.
-def null_test(b: Builder, node: Json) -> Optional[NullTest]
+def null_test(b: Builder, node: JSON.Value) -> Optional[NullTest]
   bare = see_through(node)
   name = owner_named(b, bare)
   if name == ""
@@ -3618,7 +3633,7 @@ end
 
 # A call of `Known.TRIES` or of a function with CC_TRIES, alone, negated or compared with 0 (`call`, `!call`,
 # `call == 0`).
-def tried_call(b: Builder, node: Json) -> Optional[Tried]
+def tried_call(b: Builder, node: JSON.Value) -> Optional[Tried]
   bare = see_through(node)
   return some(Tried(call: bare, zero_is_true: false)) if try_call?(b, bare)
 
@@ -3633,7 +3648,7 @@ def tried_call(b: Builder, node: Json) -> Optional[Tried]
   end
 end
 
-def try_call?(b: Builder, node: Json) -> Bool
+def try_call?(b: Builder, node: JSON.Value) -> Bool
   bare = see_through(node)
   return false if Ast.kind(bare) != "CallExpr"
 
@@ -3662,7 +3677,7 @@ end
 
 # The take of the lock of a call of `Known.TRIES`, or of the locks of a CC_TRIES, where it gave 0. A CC_TRIES never
 # waits for its lock.
-def taking_site(b: Builder, node: Json) -> Site
+def taking_site(b: Builder, node: JSON.Value) -> Site
   name = callee_name(node)
   passed = Ast.children(node).drop(1).map do |arg| arg_of(b, arg) end
   site = site_of(b, name, passed, Ast.start_of(node), false)
@@ -3679,7 +3694,7 @@ end
 
 # The call of an assignment that keeps the result of a trylock in a local variable or a parameter (`r =
 # pthread_mutex_trylock(&m)`, `ok = pthread_mutex_trylock(&m) == 0`).
-def kept_trial(b: Builder, node: Json) -> Optional[Tried]
+def kept_trial(b: Builder, node: JSON.Value) -> Optional[Tried]
   bare = see_through(node)
   parts = Ast.children(bare)
   return none if Ast.kind(bare) != "BinaryOperator" or Ast.text(bare, "opcode") != "=" or parts.size != 2
@@ -3727,7 +3742,7 @@ end
 
 # After the write of a local variable (`key`) with a constant (`locked = 1`, `bool taken = false`), the value of the
 # variable as a fact of its own, when a test of it guards a lock (`guarded_of`); any other write gives none.
-def constant_written(b: Builder, key: String, value: Json, preds: List[Int]) -> Built
+def constant_written(b: Builder, key: String, value: JSON.Value, preds: List[Int]) -> Built
   bare = see_through(value)
   number = ""
   case Ast.kind(bare)
@@ -3755,11 +3770,11 @@ end
 
 # The text of an expression, from the names, fields, constants and operators of `UNARY_TEXT` and `BINARY_TEXT`; ""
 # for anything else. With `aliases`, a local variable set once reads as its value.
-def text_of(b: Builder, node: Json, aliases: Bool) -> String = written_text(b, node, aliases, {}, 0)
+def text_of(b: Builder, node: JSON.Value, aliases: Bool) -> String = written_text(b, node, aliases, {}, 0)
 
 # `text_of`, with the key that `keys` gives a variable in place of its name: the text of a condition, so a condition on
 # a local is not one on another variable of its name.
-def written_text(b: Builder, node: Json, aliases: Bool, keys: Map[String, String], depth: Int) -> String
+def written_text(b: Builder, node: JSON.Value, aliases: Bool, keys: Map[String, String], depth: Int) -> String
   bare = see_through(node)
   parts = Ast.children(bare)
   case Ast.kind(bare)
@@ -3817,7 +3832,7 @@ def local_text(b: Builder, name: String) -> String
 end
 
 # The variables an expression reads, by key (`referenced_key`).
-def roots_of(keys: Map[String, String], node: Json) -> List[String]
+def roots_of(keys: Map[String, String], node: JSON.Value) -> List[String]
   return [referenced_key(keys, node)] if Ast.kind(node) == "DeclRefExpr"
 
   # A followed CC_OWNS field of a local struct is a variable of its own, besides the struct.
@@ -3831,7 +3846,7 @@ def roots_of(keys: Map[String, String], node: Json) -> List[String]
 end
 
 # The variable an assignment writes, by key (`referenced_key`): the root of `x`, `x->a.b` or `x[i]`.
-def target_root(keys: Map[String, String], node: Json) -> String
+def target_root(keys: Map[String, String], node: JSON.Value) -> String
   bare = see_through(node)
   case Ast.kind(bare)
     "DeclRefExpr" -> referenced_key(keys, bare)
@@ -3848,7 +3863,7 @@ end
 
 # The variable whose own storage an expression is, by key: `x`, `x.a`, `x[i]` of an array `x`; "" through a pointer
 # (`q->mu`, `*p`, `p[i]`), whose variable a write through the address does not change.
-def storage_root(keys: Map[String, String], node: Json) -> String
+def storage_root(keys: Map[String, String], node: JSON.Value) -> String
   bare = see_through(node)
   case Ast.kind(bare)
     "DeclRefExpr" -> referenced_key(keys, bare)
@@ -3865,7 +3880,7 @@ def storage_root(keys: Map[String, String], node: Json) -> String
   end
 end
 
-def last_child(node: Json) -> Json
+def last_child(node: JSON.Value) -> JSON.Value
   parts = Ast.children(node)
   return JSON.from("") if parts.empty?
 
@@ -3892,7 +3907,7 @@ def link(b: Builder, froms: List[Int], to: Int) -> Builder
 end
 
 # `found` with the node and every node inside it, in order. Only pushes, so the list is never copied.
-def with_descendants(found: List[Json], node: Json) -> List[Json]
+def with_descendants(found: List[JSON.Value], node: JSON.Value) -> List[JSON.Value]
   all = found.push(node)
   for child in Ast.children(node)
     all = with_descendants(all, child)

@@ -1,6 +1,8 @@
 import Findings from "../src/findings"
 import {Finding} from "../src/findings"
 
+private
+
 def at(file: String, line: Int, column: Int, code: String) -> Finding
   Finding(code: code, tool: "gcc", file: file, line: line, column: column, message: "m")
 end

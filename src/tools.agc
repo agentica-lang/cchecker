@@ -11,6 +11,263 @@ import {Tool} from "tool_kind"
 import UnitReader from "unit"
 import {Unit} from "unit"
 
+## One tool on one translation unit. `shown` is the path of the file in the report. `wrapped` runs the tool under
+## `timeout`, which stops the children of the tool too. A job of the rules writes the AST to `dump` and keeps the
+## declarations of the files under `cwd`. `acquires`, `releases` and `tries` are the lock wrappers of `[assume]`.
+struct Job
+  tool: Tool
+  entry: Commands.Entry
+  options: Options
+  shown: String
+  wrapped: Bool
+  dump: String = ""
+  cwd: String = ""
+  budget: Optional[Budget] = none
+  target: String = ""
+  acquires: List[String] = []
+  releases: List[String] = []
+  tries: List[String] = []
+end
+
+## How much of the kept AST the jobs of the rules parse and read at once, in MiB of its text: the parsed tree is
+## some ten times the text, so a run with many large files at once would hold all their trees. A job takes its share
+## (1 MiB for each MiB of text, at most all of it) before it parses and gives it back when its unit is read. `turn`
+## lets one job take tokens at a time, so two jobs never wait on each other with half a share each.
+struct Budget
+  turn: Channel[Int]
+  tokens: Channel[Int]
+  mib: Int
+end
+
+## What a job found, and what kept it from finding more. A job of the rules finds nothing alone: it gives the unit
+## that the rules check with the units of the other files, and the count of declarations too large to read that name
+## no function. `unchecked` names the file when a header it includes is not found: the job then has no findings and
+## no errors.
+struct Outcome
+  findings: List[Finding]
+  errors: List[ToolError]
+  units: List[Unit] = []
+  skipped_declarations: Int = 0
+  unchecked: List[UncheckedFile] = []
+end
+
+## Returns the time in milliseconds after which nothing of a job is left to wait for.
+def limit_ms(options: Options) -> Int = options.timeout_s * 1000 + WRAPPER_MS + 5_000
+
+## Returns a budget of `mib` MiB, all of it free.
+def budget(mib: Int) -> Budget
+  turn: Channel[Int] = Channel.new(1)
+  tokens: Channel[Int] = Channel.new(mib)
+  _ = Channel.send(turn, 0, 1_000)
+  for _ in 0...mib
+    _ = Channel.send(tokens, 1, 1_000)
+  end
+
+  Budget(turn: turn, tokens: tokens, mib: mib)
+end
+
+## Returns whether `timeout` of coreutils is installed. Without it a timeout stops the tool but not its children.
+def timeout_available?() -> Bool
+  case Process.spawn_captured("timeout", ["--version"], Process.Options(timeout_ms: 5_000))
+    ok(process) ->
+      code = Process.wait(process, 5_000).unwrap_or(1)
+      Process.close(process)
+      code == 0
+    error(_) -> false
+  end
+end
+
+## Returns the triple of clang for the flags of a compile command (`x86_64-pc-linux-gnu`), from the flags that choose
+## the target; "" when `clang` does not say.
+def target_of(clang: String, entry: Commands.Entry) -> String
+  args = ["-print-target-triple"].concat(target_flags(entry.args))
+  case Process.spawn_captured(clang, args, Process.Options(timeout_ms: 5_000, chdir: entry.directory))
+    ok(process) ->
+      line = Process.read_line(process, 5_000).unwrap_or("")
+      code = Process.wait(process, 5_000).unwrap_or(1)
+      Process.close(process)
+      return "" if code != 0
+
+      line.strip
+    error(_) -> ""
+  end
+end
+
+## Returns the name that the baseline gives the program of a tool: `gcc`, `clang-tidy`, and `clang` for the rules.
+def version_key(tool: Tool) -> String
+  case tool
+    Tool.Gcc -> "gcc"
+    Tool.ClangTidy -> "clang-tidy"
+    Tool.Rules -> "clang"
+  end
+end
+
+## Returns the first line of what `--version` prints for the programs of the tools of `options` that `keys` names
+## (see `version_key`), by key. A program that does not start, fails, or prints nothing has no entry.
+def versions_of(options: Options, keys: List[String]) -> Map[String, String]
+  found: Map[String, String] = {}
+  for tool in options.tools
+    key = version_key(tool)
+    if keys.include?(key)
+      line = version_line(program_of(options, tool))
+      if line != ""
+        found = found.put(key, line)
+      end
+    end
+  end
+
+  found
+end
+
+## Returns the flags of a compile command that choose its target: `--target=`, `-target T`, `-arch A`, `-m32`, ...
+def target_flags(args: List[String]) -> List[String]
+  found: List[String] = []
+  i = 0
+  while i < args.size
+    arg = args[i]
+    if TARGET_PAIRS.include?(arg) and i + 1 < args.size
+      found = found.push(arg).push(args[i + 1])
+      i += 1
+    elsif arg.start_with?("--target=") or TARGET_FLAGS.include?(arg)
+      found = found.push(arg)
+    end
+
+    i += 1
+  end
+
+  found
+end
+
+## Runs the job. An error is a tool that did not start or did not finish in time; a file that does not compile is an
+## `Outcome` with an error in it. Findings keep the path the tool printed, made absolute.
+def run(job: Job) -> Result[Outcome]
+  program = executable(job)
+  timeout_ms = job.options.timeout_s * 1000
+  command = program
+  args = arguments(job)
+  env = {"LC_ALL": "C"}
+  if job.wrapped
+    command = "timeout"
+    args = ["--kill-after=#{KILL_AFTER_S}", "#{job.options.timeout_s}", program].concat(args)
+    timeout_ms += WRAPPER_MS
+  end
+
+  fifo = ""
+  raws: List[String] = []
+  copy_error = ""
+  if job.tool == Tool.Rules
+    fifo = fifo_path(job.dump)
+    args = ["-c", DUMP_SCRIPT, command].concat(args)
+    command = "sh"
+    env = env.put("CCHECKER_FIFO", fifo)
+    try Scan.fifo(fifo)
+  end
+
+  started = start(command, args, job.entry.directory, timeout_ms, program, env)
+  if job.tool == Tool.Rules and not started.ok?
+    _ = Path.remove(fifo)
+  end
+
+  process = try started
+  if job.tool == Tool.Rules
+    # The copy runs while clang writes. Its deadline starts with the call, so a wait for a thread of the compute
+    # pool does not count. Past it, or on an error before clang opened the FIFO (where it may wait for good), clang
+    # is stopped before the FIFO goes. On another error clang has the FIFO closed under it and ends by itself: its
+    # own outcome is still read, and its failure comes first.
+    copied = System.Profile.measure("clang") do Scan.compact(fifo, job.dump, timeout_ms) end
+    case copied
+      ok(found) -> raws = found
+      error(problem) ->
+        # Agentica 0.31 gives an Error here and 0.30 a String: the interpolation is the text of both.
+        message = "#{problem}"
+        _ = Path.remove(job.dump)
+        if message == Scan.TIMED_OUT or message.start_with?(Scan.UNSTARTED)
+          Process.close(process)
+          _ = Path.remove(fifo)
+          return error(message)
+        end
+
+        copy_error = message
+    end
+
+    _ = Path.remove(fifo)
+  end
+
+  read_output = System.Profile.measure("clang") do Process.output(process, timeout_ms) end
+  if not read_output.ok?
+    Process.close(process)
+  end
+
+  output = try read_output
+  code = try Process.wait(process, timeout_ms)
+  Process.close(process)
+  if output.truncated
+    return error("#{program} printed more than 1 MiB for #{job.entry.file}; narrow the checks or exclude the file")
+  end
+
+  done = outcome(job, "#{output.stdout}\n#{output.stderr}", code)
+  return ok(done) if job.tool != Tool.Rules
+
+  if copy_error != ""
+    copy_failed = ToolError(tool: "rules", file: job.entry.file, message: copy_error)
+    return ok(done.with(errors: done.errors.push(copy_failed)))
+  end
+
+  # The dump of a file whose header is not found is the part before the #include: nothing to read.
+  if not done.unchecked.empty?
+    _ = Path.remove(job.dump)
+    return ok(done)
+  end
+
+  # The dump is tens of MiB: it goes as soon as it is read, or when clang failed.
+  read = with_unit(job, done, raws)
+  _ = Path.remove(job.dump)
+  read
+end
+
+## Returns the code of a diagnostic: `-Wanalyzer-malloc-leak` of gcc is CC-GCC-ANALYZER-MALLOC-LEAK, and the check
+## `clang-analyzer-unix.Malloc` is CC-TIDY-CLANG-ANALYZER-UNIX-MALLOC. A diagnostic with no name is CC-GCC-WARNING or
+## CC-TIDY-WARNING.
+def code_of(tool: Tool, option: Optional[String]) -> String
+  case tool
+    Tool.Gcc -> "CC-GCC-" + plain_option(option.unwrap_or("-WWARNING")).replace("=", "").upcase
+    Tool.ClangTidy -> "CC-TIDY-" + option.unwrap_or("WARNING").replace(".", "-").upcase
+    # Never asked: the dump of the rules reports no diagnostic of clang, only its errors (see `verdict`).
+    Tool.Rules -> "CC-CLANG-" + plain_option(option.unwrap_or("-WWARNING")).upcase
+  end
+end
+
+## Returns why a run with a non-zero exit code failed. Under `timeout` the code 124 is the timeout and 137 is the kill
+## after it, but a tool that kills itself or is killed from outside (the OOM killer) gives the same codes, so the text
+## says both.
+def failure(wrapped: Bool, timeout_s: Int, text: String, code: Int) -> String
+  return "was stopped after #{timeout_s} seconds, or ended by itself with code 124" if wrapped and code == 124
+
+  return "was killed: it did not end in #{timeout_s} seconds, or a signal ended it" if wrapped and code == 137
+
+  "exited with code #{code}: #{first_line(text)}"
+end
+
+## Returns the line that says why a tool stopped: a fatal error (gcc says so when cc1 is killed), else the first error,
+## else the first line.
+def first_line(text: String) -> String
+  stripped = text.split("\n").map do |line| line.strip end
+  lines = stripped.select do |line| line != "" end
+  return "no output" if lines.empty?
+
+  for marker in ["fatal error:", "error"]
+    found = lines.select do |line| line.include?(marker) end
+    return found.first if not found.empty?
+  end
+
+  lines.first
+end
+
+## Returns the path of the FIFO that clang writes the dump into: the dump's, `N.fifo` for `N.json`.
+def fifo_path(dump: String) -> String = "#{dump.slice(0, dump.length - ".json".length)}.fifo"
+
+private
+
 # Flags before the user's: a database made for gcc has flags that clang does not know, and it would stop with an error.
 # clang-tidy turns no warning into an error and prints no colours, whatever the .clang-tidy of the project says: a
 # failed run is a tool error, and a coloured line is not read (see `Diagnostics.unparsed`).
@@ -56,267 +313,12 @@ STRAY_SHOWN = 200
 # cchecker does.
 WRAPPER_MS = 6_000
 
-## One tool on one translation unit. `shown` is the path of the file in the report. `wrapped` runs the tool under
-## `timeout`, which stops the children of the tool too. A job of the rules writes the AST to `dump` and keeps the
-## declarations of the files under `cwd`. `acquires`, `releases` and `tries` are the lock wrappers of `[assume]`.
-export struct Job
-  tool: Tool
-  entry: Commands.Entry
-  options: Options
-  shown: String
-  wrapped: Bool
-  dump: String = ""
-  cwd: String = ""
-  budget: Optional[Budget] = none
-  target: String = ""
-  acquires: List[String] = []
-  releases: List[String] = []
-  tries: List[String] = []
-end
-
-## How much of the kept AST the jobs of the rules parse and read at once, in MiB of its text: the parsed tree is
-## some ten times the text, so a run with many large files at once would hold all their trees. A job takes its share
-## (1 MiB for each MiB of text, at most all of it) before it parses and gives it back when its unit is read. `turn`
-## lets one job take tokens at a time, so two jobs never wait on each other with half a share each.
-export struct Budget
-  turn: Channel[Int]
-  tokens: Channel[Int]
-  mib: Int
-end
-
-## What a job found, and what kept it from finding more. A job of the rules finds nothing alone: it gives the unit
-## that the rules check with the units of the other files, and the count of declarations too large to read that name
-## no function. `unchecked` names the file when a header it includes is not found: the job then has no findings and
-## no errors.
-export struct Outcome
-  findings: List[Finding]
-  errors: List[ToolError]
-  units: List[Unit] = []
-  skipped_declarations: Int = 0
-  unchecked: List[UncheckedFile] = []
-end
-
 # What a diagnostic of a tool is for cchecker.
 enum Verdict
   Report
   Failure
   Ignore
 end
-
-## Returns the time in milliseconds after which nothing of a job is left to wait for.
-export def limit_ms(options: Options) -> Int = options.timeout_s * 1000 + WRAPPER_MS + 5_000
-
-## Returns a budget of `mib` MiB, all of it free.
-export def budget(mib: Int) -> Budget
-  turn: Channel[Int] = Channel.new(1)
-  tokens: Channel[Int] = Channel.new(mib)
-  _ = Channel.send(turn, 0, 1_000)
-  for _ in 0...mib
-    _ = Channel.send(tokens, 1, 1_000)
-  end
-
-  Budget(turn: turn, tokens: tokens, mib: mib)
-end
-
-## Returns whether `timeout` of coreutils is installed. Without it a timeout stops the tool but not its children.
-export def timeout_available?() -> Bool
-  case Process.spawn_captured("timeout", ["--version"], Process.Options(timeout_ms: 5_000))
-    ok(process) ->
-      code = Process.wait(process, 5_000).unwrap_or(1)
-      Process.close(process)
-      code == 0
-    error(_) -> false
-  end
-end
-
-## Returns the triple of clang for the flags of a compile command (`x86_64-pc-linux-gnu`), from the flags that choose
-## the target; "" when `clang` does not say.
-export def target_of(clang: String, entry: Commands.Entry) -> String
-  args = ["-print-target-triple"].concat(target_flags(entry.args))
-  case Process.spawn_captured(clang, args, Process.Options(timeout_ms: 5_000, chdir: entry.directory))
-    ok(process) ->
-      line = Process.read_line(process, 5_000).unwrap_or("")
-      code = Process.wait(process, 5_000).unwrap_or(1)
-      Process.close(process)
-      return "" if code != 0
-
-      line.strip
-    error(_) -> ""
-  end
-end
-
-## Returns the name that the baseline gives the program of a tool: `gcc`, `clang-tidy`, and `clang` for the rules.
-export def version_key(tool: Tool) -> String
-  case tool
-    Tool.Gcc -> "gcc"
-    Tool.ClangTidy -> "clang-tidy"
-    Tool.Rules -> "clang"
-  end
-end
-
-## Returns the first line of what `--version` prints for the programs of the tools of `options` that `keys` names
-## (see `version_key`), by key. A program that does not start, fails, or prints nothing has no entry.
-export def versions_of(options: Options, keys: List[String]) -> Map[String, String]
-  found: Map[String, String] = {}
-  for tool in options.tools
-    key = version_key(tool)
-    if keys.include?(key)
-      line = version_line(program_of(options, tool))
-      if line != ""
-        found = found.put(key, line)
-      end
-    end
-  end
-
-  found
-end
-
-## Returns the flags of a compile command that choose its target: `--target=`, `-target T`, `-arch A`, `-m32`, ...
-export def target_flags(args: List[String]) -> List[String]
-  found: List[String] = []
-  i = 0
-  while i < args.size
-    arg = args[i]
-    if TARGET_PAIRS.include?(arg) and i + 1 < args.size
-      found = found.push(arg).push(args[i + 1])
-      i += 1
-    elsif arg.start_with?("--target=") or TARGET_FLAGS.include?(arg)
-      found = found.push(arg)
-    end
-
-    i += 1
-  end
-
-  found
-end
-
-## Runs the job. An error is a tool that did not start or did not finish in time; a file that does not compile is an
-## `Outcome` with an error in it. Findings keep the path the tool printed, made absolute.
-export def run(job: Job) -> Result[Outcome]
-  program = executable(job)
-  timeout_ms = job.options.timeout_s * 1000
-  command = program
-  args = arguments(job)
-  env = {"LC_ALL": "C"}
-  if job.wrapped
-    command = "timeout"
-    args = ["--kill-after=#{KILL_AFTER_S}", "#{job.options.timeout_s}", program].concat(args)
-    timeout_ms += WRAPPER_MS
-  end
-
-  fifo = ""
-  raws: List[String] = []
-  copy_error = ""
-  if job.tool == Tool.Rules
-    fifo = fifo_path(job.dump)
-    args = ["-c", DUMP_SCRIPT, command].concat(args)
-    command = "sh"
-    env = env.put("CCHECKER_FIFO", fifo)
-    try Scan.fifo(fifo)
-  end
-
-  started = start(command, args, job.entry.directory, timeout_ms, program, env)
-  if job.tool == Tool.Rules and not started.ok?
-    _ = Path.remove(fifo)
-  end
-
-  process = try started
-  if job.tool == Tool.Rules
-    # The copy runs while clang writes. Its deadline starts with the call, so a wait for a thread of the compute
-    # pool does not count. Past it, or on an error before clang opened the FIFO (where it may wait for good), clang
-    # is stopped before the FIFO goes. On another error clang has the FIFO closed under it and ends by itself: its
-    # own outcome is still read, and its failure comes first.
-    copied = Profile.measure("clang") do Scan.compact(fifo, job.dump, timeout_ms) end
-    case copied
-      ok(found) -> raws = found
-      error(problem) ->
-        # Agentica 0.31 gives an Error here and 0.30 a String: the interpolation is the text of both.
-        message = "#{problem}"
-        _ = Path.remove(job.dump)
-        if message == Scan.TIMED_OUT or message.start_with?(Scan.UNSTARTED)
-          Process.close(process)
-          _ = Path.remove(fifo)
-          return error(message)
-        end
-
-        copy_error = message
-    end
-
-    _ = Path.remove(fifo)
-  end
-
-  read_output = Profile.measure("clang") do Process.output(process, timeout_ms) end
-  if not read_output.ok?
-    Process.close(process)
-  end
-
-  output = try read_output
-  code = try Process.wait(process, timeout_ms)
-  Process.close(process)
-  if output.truncated
-    return error("#{program} printed more than 1 MiB for #{job.entry.file}; narrow the checks or exclude the file")
-  end
-
-  done = outcome(job, "#{output.stdout}\n#{output.stderr}", code)
-  return ok(done) if job.tool != Tool.Rules
-
-  if copy_error != ""
-    copy_failed = ToolError(tool: "rules", file: job.entry.file, message: copy_error)
-    return ok(done.with(errors: done.errors.push(copy_failed)))
-  end
-
-  # The dump of a file whose header is not found is the part before the #include: nothing to read.
-  if not done.unchecked.empty?
-    _ = Path.remove(job.dump)
-    return ok(done)
-  end
-
-  # The dump is tens of MiB: it goes as soon as it is read, or when clang failed.
-  read = with_unit(job, done, raws)
-  _ = Path.remove(job.dump)
-  read
-end
-
-## Returns the code of a diagnostic: `-Wanalyzer-malloc-leak` of gcc is CC-GCC-ANALYZER-MALLOC-LEAK, and the check
-## `clang-analyzer-unix.Malloc` is CC-TIDY-CLANG-ANALYZER-UNIX-MALLOC. A diagnostic with no name is CC-GCC-WARNING or
-## CC-TIDY-WARNING.
-export def code_of(tool: Tool, option: Optional[String]) -> String
-  case tool
-    Tool.Gcc -> "CC-GCC-" + plain_option(option.unwrap_or("-WWARNING")).replace("=", "").upcase
-    Tool.ClangTidy -> "CC-TIDY-" + option.unwrap_or("WARNING").replace(".", "-").upcase
-    # Never asked: the dump of the rules reports no diagnostic of clang, only its errors (see `verdict`).
-    Tool.Rules -> "CC-CLANG-" + plain_option(option.unwrap_or("-WWARNING")).upcase
-  end
-end
-
-## Returns why a run with a non-zero exit code failed. Under `timeout` the code 124 is the timeout and 137 is the kill
-## after it, but a tool that kills itself or is killed from outside (the OOM killer) gives the same codes, so the text
-## says both.
-export def failure(wrapped: Bool, timeout_s: Int, text: String, code: Int) -> String
-  return "was stopped after #{timeout_s} seconds, or ended by itself with code 124" if wrapped and code == 124
-
-  return "was killed: it did not end in #{timeout_s} seconds, or a signal ended it" if wrapped and code == 137
-
-  "exited with code #{code}: #{first_line(text)}"
-end
-
-## Returns the line that says why a tool stopped: a fatal error (gcc says so when cc1 is killed), else the first error,
-## else the first line.
-export def first_line(text: String) -> String
-  stripped = text.split("\n").map do |line| line.strip end
-  lines = stripped.select do |line| line != "" end
-  return "no output" if lines.empty?
-
-  for marker in ["fatal error:", "error"]
-    found = lines.select do |line| line.include?(marker) end
-    return found.first if not found.empty?
-  end
-
-  lines.first
-end
-
-## Returns the path of the FIFO that clang writes the dump into: the dump's, `N.fifo` for `N.json`.
-export def fifo_path(dump: String) -> String = "#{dump.slice(0, dump.length - ".json".length)}.fifo"
 
 def executable(job: Job) -> String = program_of(job.options, job.tool)
 
@@ -349,7 +351,7 @@ end
 def with_unit(job: Job, done: Outcome, raws: List[String]) -> Result[Outcome]
   return ok(done) if not done.errors.empty?
 
-  scanned = Profile.measure("scan") do Scan.decls_in(job.dump, raws, job.entry.directory, job.cwd) end
+  scanned = System.Profile.measure("scan") do Scan.decls_in(job.dump, raws, job.entry.directory, job.cwd) end
   dump = try scanned
   share = 0
   timeout_ms = job.options.timeout_s * 1000
@@ -404,9 +406,9 @@ end
 
 # The unit of the kept declarations.
 def parse_and_read(decls: String, acquires: List[String], releases: List[String], tries: List[String]) -> Result[Unit]
-  parsed = Profile.measure("json") do JSON.parse(decls) end
+  parsed = System.Profile.measure("json") do JSON.parse(decls) end
   tree = try parsed
-  Profile.measure("unit") do UnitReader.read_with(tree, acquires, releases, tries) end
+  System.Profile.measure("unit") do UnitReader.read_with(tree, acquires, releases, tries) end
 end
 
 # Takes `share` MiB of the budget, waiting for jobs that hold it; an error when they do not give it back in time.

@@ -7,6 +7,42 @@
 import Prop from "pkg/prop/prop"
 import Props from "props"
 
+## A line of the generated file. `kind` is a function that blocks or not, a comment alone, a blank line, an
+## unrelated line of code (with more code after a trailing `/* */`), or a function that calls the function before
+## it; `attach` what a line of code carries; `code` the index in CODES of the code of its suppression; `reason` is
+## NO_REASON for a comment with no reason.
+struct Line
+  kind: Int
+  code: Int
+  attach: Int
+  reason: Int
+end
+
+## The generator of files: up to 8 lines.
+def files() -> Prop.Gen[List[Line]]
+  kind_and_code = Prop.pair(Prop.int(0, CALLER), Prop.int(0, CODES.size - 1))
+  attach_and_reason = Prop.pair(Prop.int(0, MARK), Prop.int(0, NO_REASON))
+  (
+    Prop.pair(kind_and_code, attach_and_reason)
+    |> Prop.map(&line_of)
+    |> Prop.list(8)
+  )
+end
+
+## Checks `runs` files, from `seed` when it is given, with cchecker (the bytecode `program`, run in specs/ on a compile
+## database in `folder`): its findings, suppressed findings and exit code are the oracle's.
+def suppressions_agree(program: String, folder: String, runs: Int, seed: Optional[Int]) -> Result[Void]
+  check(program, folder, runs, seed, false)
+end
+
+## The negative control: the same files with no function that blocks. Nothing is suppressed, and every suppression
+## with a reason is unused.
+def nothing_to_suppress(program: String, folder: String, runs: Int, seed: Optional[Int]) -> Result[Void]
+  check(program, folder, runs, seed, true)
+end
+
+private
+
 # The kinds of a line.
 BLOCKING = 0
 CLEAN = 1
@@ -37,17 +73,6 @@ ARGUMENTS = "[\"cc\", \"-I../../../include\", \"-c\", \"case.c\"]"
 # The lines before the generated ones.
 HEADER = ["#include \"cchecker.h\"", "unsigned int sleep(unsigned int seconds);"]
 
-## A line of the generated file. `kind` is a function that blocks or not, a comment alone, a blank line, an
-## unrelated line of code (with more code after a trailing `/* */`), or a function that calls the function before
-## it; `attach` what a line of code carries; `code` the index in CODES of the code of its suppression; `reason` is
-## NO_REASON for a comment with no reason.
-export struct Line
-  kind: Int
-  code: Int
-  attach: Int
-  reason: Int
-end
-
 # A suppression as the oracle sees it: its line, its codes, and whether it is alone on its line or a CC_IGNORE.
 struct Ignore
   line: Int
@@ -61,29 +86,6 @@ struct Outcome
   findings: List[String]
   suppressed: List[String]
   code: Int
-end
-
-## The generator of files: up to 8 lines.
-export def files() -> Prop.Gen[List[Line]]
-  kind_and_code = Prop.pair(Prop.int(0, CALLER), Prop.int(0, CODES.size - 1))
-  attach_and_reason = Prop.pair(Prop.int(0, MARK), Prop.int(0, NO_REASON))
-  (
-    Prop.pair(kind_and_code, attach_and_reason)
-    |> Prop.map(&line_of)
-    |> Prop.list(8)
-  )
-end
-
-## Checks `runs` files, from `seed` when it is given, with cchecker (the bytecode `program`, run in specs/ on a compile
-## database in `folder`): its findings, suppressed findings and exit code are the oracle's.
-export def suppressions_agree(program: String, folder: String, runs: Int, seed: Optional[Int]) -> Result[Void]
-  check(program, folder, runs, seed, false)
-end
-
-## The negative control: the same files with no function that blocks. Nothing is suppressed, and every suppression
-## with a reason is unused.
-export def nothing_to_suppress(program: String, folder: String, runs: Int, seed: Optional[Int]) -> Result[Void]
-  check(program, folder, runs, seed, true)
 end
 
 def check(program: String, folder: String, runs: Int, seed: Optional[Int], clean: Bool) -> Result[Void]
@@ -140,8 +142,8 @@ def outcome_of(output: Props.Output) -> Outcome
   Outcome(findings: listed(parsed, "findings"), suppressed: listed(parsed, "suppressed"), code: output.code)
 end
 
-def listed(parsed: Json, key: String) -> List[String]
-  items: List[Json] = JSON.list(JSON.get(parsed, key).unwrap_or(JSON.from(""))).unwrap_or([])
+def listed(parsed: JSON.Value, key: String) -> List[String]
+  items: List[JSON.Value] = JSON.list(JSON.get(parsed, key).unwrap_or(JSON.from(""))).unwrap_or([])
   named = items.map do |item|
     code = JSON.string(JSON.get(item, "code").unwrap_or(JSON.from(""))).unwrap_or("")
     line = JSON.int(JSON.get(item, "line").unwrap_or(JSON.from(0))).unwrap_or(0)

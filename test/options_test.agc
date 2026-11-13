@@ -1,5 +1,7 @@
 import Options from "../src/options"
 
+private
+
 def test_a_value_that_starts_with_a_dash_is_taken_from_the_next_word() -> Result[Void]
   long = try Options.parse(["--checks", "-*,bugprone-*", "-j", "1", "a.c"])
   try Test.eq(long.checks, "-*,bugprone-*")

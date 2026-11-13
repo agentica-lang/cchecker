@@ -5,6 +5,69 @@ import {Opt, Kind} from "std/option_parser"
 import ToolKind from "tool_kind"
 import {Tool} from "tool_kind"
 
+## What a run was asked to do.
+struct Options
+  files: List[String]
+  flags: List[String]
+  database: Optional[String]
+  tools: List[Tool]
+  checks: String
+  custom_checks: Bool
+  jobs: Int
+  timeout_s: Int
+  baseline: Optional[String]
+  update_baseline: Bool
+  exclude: List[String]
+  gcc: String
+  clang_tidy: String
+  clang: String
+  json: Bool
+  config: Optional[String] = none
+  infer: Bool = true
+  all_paths: Bool = false
+  strict_baseline: Bool = false
+end
+
+## Returns the options of the command line, or the error to print: a usage error, or the help text.
+def parse(args: List[String]) -> Result[Options]
+  words = args.take_while do |word| word != "--" end
+  flags = args.drop(words.size + 1)
+  split = tell_apart(words)
+  files = split.files
+  parser = OP.new("cchecker", DESCRIPTION, [], OPTIONS)
+  parsed = try OP.parse(parser, split.options)
+  tools = try tool_list(OP.string(parsed, "tools"))
+  database = OP.optional_string(parsed, "compile-commands")
+  options = Options(
+    files: files,
+    flags: flags,
+    database: database,
+    tools: tools,
+    checks: OP.optional_string(parsed, "checks").unwrap_or(DEFAULT_CHECKS),
+    custom_checks: OP.optional_string(parsed, "checks").some?,
+    jobs: jobs_of(OP.optional_int(parsed, "jobs")),
+    timeout_s: OP.int(parsed, "timeout"),
+    baseline: OP.optional_string(parsed, "baseline"),
+    update_baseline: OP.flag(parsed, "update-baseline"),
+    exclude: names(OP.optional_string(parsed, "exclude").unwrap_or("")),
+    gcc: OP.string(parsed, "gcc"),
+    clang_tidy: OP.string(parsed, "clang-tidy"),
+    clang: OP.string(parsed, "clang"),
+    json: OP.flag(parsed, "json"),
+    config: OP.optional_string(parsed, "config"),
+    infer: not OP.flag(parsed, "no-infer"),
+    all_paths: OP.flag(parsed, "all-paths"),
+    strict_baseline: OP.flag(parsed, "strict-baseline"),
+  )
+
+  problem = mistake(options)
+  return error("cchecker: #{problem}\n#{hint()}") if problem != ""
+
+  ok(options)
+end
+
+private
+
 # The clang-tidy checks of a run without --checks: the path-sensitive analyzer families that find real bugs in C, and a
 # few bugprone checks that are about C itself.
 # A .clang-tidy file of the project is applied first, and these checks come after it.
@@ -84,67 +147,6 @@ VALUE_SHORT = Set.new(SHORT_VALUE_OPTIONS.map do |o| o.short end)
 struct Words
   files: List[String]
   options: List[String]
-end
-
-## What a run was asked to do.
-export struct Options
-  files: List[String]
-  flags: List[String]
-  database: Optional[String]
-  tools: List[Tool]
-  checks: String
-  custom_checks: Bool
-  jobs: Int
-  timeout_s: Int
-  baseline: Optional[String]
-  update_baseline: Bool
-  exclude: List[String]
-  gcc: String
-  clang_tidy: String
-  clang: String
-  json: Bool
-  config: Optional[String] = none
-  infer: Bool = true
-  all_paths: Bool = false
-  strict_baseline: Bool = false
-end
-
-## Returns the options of the command line, or the error to print: a usage error, or the help text.
-export def parse(args: List[String]) -> Result[Options]
-  words = args.take_while do |word| word != "--" end
-  flags = args.drop(words.size + 1)
-  split = tell_apart(words)
-  files = split.files
-  parser = OP.new("cchecker", DESCRIPTION, [], OPTIONS)
-  parsed = try OP.parse(parser, split.options)
-  tools = try tool_list(OP.string(parsed, "tools"))
-  database = OP.optional_string(parsed, "compile-commands")
-  options = Options(
-    files: files,
-    flags: flags,
-    database: database,
-    tools: tools,
-    checks: OP.optional_string(parsed, "checks").unwrap_or(DEFAULT_CHECKS),
-    custom_checks: OP.optional_string(parsed, "checks").some?,
-    jobs: jobs_of(OP.optional_int(parsed, "jobs")),
-    timeout_s: OP.int(parsed, "timeout"),
-    baseline: OP.optional_string(parsed, "baseline"),
-    update_baseline: OP.flag(parsed, "update-baseline"),
-    exclude: names(OP.optional_string(parsed, "exclude").unwrap_or("")),
-    gcc: OP.string(parsed, "gcc"),
-    clang_tidy: OP.string(parsed, "clang-tidy"),
-    clang: OP.string(parsed, "clang"),
-    json: OP.flag(parsed, "json"),
-    config: OP.optional_string(parsed, "config"),
-    infer: not OP.flag(parsed, "no-infer"),
-    all_paths: OP.flag(parsed, "all-paths"),
-    strict_baseline: OP.flag(parsed, "strict-baseline"),
-  )
-
-  problem = mistake(options)
-  return error("cchecker: #{problem}\n#{hint()}") if problem != ""
-
-  ok(options)
 end
 
 # The jobs of -j, or the number of cores without it.

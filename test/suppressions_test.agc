@@ -2,6 +2,8 @@ import Baseline from "../src/baseline"
 import {Finding} from "../src/findings"
 import Suppressions from "../src/suppressions"
 
+private
+
 LEAK = "CC-GCC-ANALYZER-MALLOC-LEAK"
 
 # The line, the codes and whether it is alone, of each suppression of a text, or the error.

@@ -1,7 +1,7 @@
 ## Reading whole files of any size.
 
 ## Returns the text of a file. `File.read_text` stops at 1 MiB, and a compile database or a baseline can be larger.
-export def read_all(path: String) -> Result[String]
+def read_all(path: String) -> Result[String]
   handle = try File.open(path)
   chunks: List[Bytes] = []
   while true

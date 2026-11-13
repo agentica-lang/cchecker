@@ -2,6 +2,8 @@ import Scan from "../src/scan"
 import Paths from "../src/paths"
 import UnitReader from "../src/unit"
 
+private
+
 # A dump as clang writes it: a location leaves out the file and the line when they are those of the location before
 # it, and `includedFrom` names the file that included it, which is not the file of the location.
 DUMP = <<~JSON

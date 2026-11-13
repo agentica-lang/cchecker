@@ -17,6 +17,72 @@
 import Prop from "pkg/prop/prop"
 import Props from "props"
 
+## A statement of a generated function. `kind` is the token that made it; `id` numbers its condition (`pick(id)`), so
+## that no two conditions are the same, and picks the form of a statement on `r` or `q`; `body` is the then branch or
+## the loop body, `other` the else branch, `cases` the cases of a switch in order.
+struct Stmt
+  kind: Int
+  id: Int = 0
+  body: List[Stmt] = []
+  other: List[Stmt] = []
+  cases: List[List[Stmt]] = []
+end
+
+## A generated function: how `r` starts (`start`: a value cchecker cannot know, a trylock, a lock that waits), its
+## body, and what runs after the label `out:` that `goto out` reaches.
+struct Program
+  start: Int
+  body: List[Stmt]
+  cleanup: List[Stmt]
+end
+
+## The generator of functions: up to 24 tokens of the body and 3 of the cleanup (lock, unlock, work, or a `return` or
+## a `goto out` under a condition), and how `r` starts.
+def programs() -> Prop.Gen[Program]
+  drawn = Prop.list(Prop.one_of(DRAWN), 24)
+  tail = Prop.list(Prop.one_of([LOCK, UNLOCK, WORK, RETURN, GOTO]), 3)
+  tokens = Prop.pair(Prop.pair(drawn, tail), Prop.int(0, 2))
+  Prop.map(tokens, &program_of)
+end
+
+## Checks `runs` functions, from `seed` when it is given, with cchecker (the bytecode `program`, run in specs/): each
+## rule that a path breaks is reported (no false negative), each code reported is a rule that a path breaks (no false
+## positive), and the exit code is 1 with findings and 0 without.
+def walk_agrees(program: String, folder: String, runs: Int, seed: Optional[Int]) -> Result[Void]
+  config = Prop.Config(runs: runs, seed: seed, shrinks: Props.SHRINKS)
+  Prop.check(programs(), config) do |generated|
+    source = c_file(generated)
+    agrees(Props.run(program, folder, source), generated, source)
+  end
+end
+
+## The C file of a generated function: `f` with the label `out:` before its cleanup.
+def c_file(generated: Program) -> String
+  start = ["pick(0)", "pthread_mutex_trylock(&m)", "pthread_mutex_lock(&m)"][generated.start]
+  head = [
+    "#include <errno.h>",
+    "#include <pthread.h>",
+    "#include \"cchecker.h\"",
+    "",
+    "pthread_mutex_t m;",
+    "int pick(int k);",
+    "void work(void);",
+    "CC_TRIES(m) int try_m(void);",
+    "CC_ACQUIRES_IF(m, *locked) void take_if(int *locked);",
+    "CC_RELEASES_IF(m, locked) void drop_if(int locked);",
+    "int f(void) {",
+    "  int r = #{start};",
+    "  int q = pick(-1);",
+    "  int *p = &q;",
+    "  int k = pick(-2);",
+  ]
+
+  lines = head.concat(lines_of(generated.body, 1)).push("out:").concat(lines_of(generated.cleanup, 1))
+  lines.push("  return 0;").push("}").join("\n") + "\n"
+end
+
+private
+
 # The tokens of a program: a list of them is read as a structured function (`program_of`), so any list is one, and a
 # shorter list a smaller function. A way out (`return`, `goto out`, `break`, `continue`) is taken under a condition of
 # its own, so the code after it is not dead. A token that does not fit where it is (an `else` outside an `if`, a
@@ -81,25 +147,6 @@ KNOWS = 3
 NOT_RELEASED = "CC-PATH-LOCK-NOT-RELEASED"
 NOT_HELD = "CC-PATH-LOCK-NOT-HELD"
 
-## A statement of a generated function. `kind` is the token that made it; `id` numbers its condition (`pick(id)`), so
-## that no two conditions are the same, and picks the form of a statement on `r` or `q`; `body` is the then branch or
-## the loop body, `other` the else branch, `cases` the cases of a switch in order.
-export struct Stmt
-  kind: Int
-  id: Int = 0
-  body: List[Stmt] = []
-  other: List[Stmt] = []
-  cases: List[List[Stmt]] = []
-end
-
-## A generated function: how `r` starts (`start`: a value cchecker cannot know, a trylock, a lock that waits), its
-## body, and what runs after the label `out:` that `goto out` reaches.
-export struct Program
-  start: Int
-  body: List[Stmt]
-  cleanup: List[Stmt]
-end
-
 # The statements of a block, the token after it and the token that ended it (-1 for the end of the list).
 struct Parsed
   stmts: List[Stmt]
@@ -130,51 +177,6 @@ struct Oracle
   live: List[Int]
   probe: Bool = false
   k_guarded: Bool = false
-end
-
-## The generator of functions: up to 24 tokens of the body and 3 of the cleanup (lock, unlock, work, or a `return` or
-## a `goto out` under a condition), and how `r` starts.
-export def programs() -> Prop.Gen[Program]
-  drawn = Prop.list(Prop.one_of(DRAWN), 24)
-  tail = Prop.list(Prop.one_of([LOCK, UNLOCK, WORK, RETURN, GOTO]), 3)
-  tokens = Prop.pair(Prop.pair(drawn, tail), Prop.int(0, 2))
-  Prop.map(tokens, &program_of)
-end
-
-## Checks `runs` functions, from `seed` when it is given, with cchecker (the bytecode `program`, run in specs/): each
-## rule that a path breaks is reported (no false negative), each code reported is a rule that a path breaks (no false
-## positive), and the exit code is 1 with findings and 0 without.
-export def walk_agrees(program: String, folder: String, runs: Int, seed: Optional[Int]) -> Result[Void]
-  config = Prop.Config(runs: runs, seed: seed, shrinks: Props.SHRINKS)
-  Prop.check(programs(), config) do |generated|
-    source = c_file(generated)
-    agrees(Props.run(program, folder, source), generated, source)
-  end
-end
-
-## The C file of a generated function: `f` with the label `out:` before its cleanup.
-export def c_file(generated: Program) -> String
-  start = ["pick(0)", "pthread_mutex_trylock(&m)", "pthread_mutex_lock(&m)"][generated.start]
-  head = [
-    "#include <errno.h>",
-    "#include <pthread.h>",
-    "#include \"cchecker.h\"",
-    "",
-    "pthread_mutex_t m;",
-    "int pick(int k);",
-    "void work(void);",
-    "CC_TRIES(m) int try_m(void);",
-    "CC_ACQUIRES_IF(m, *locked) void take_if(int *locked);",
-    "CC_RELEASES_IF(m, locked) void drop_if(int locked);",
-    "int f(void) {",
-    "  int r = #{start};",
-    "  int q = pick(-1);",
-    "  int *p = &q;",
-    "  int k = pick(-2);",
-  ]
-
-  lines = head.concat(lines_of(generated.body, 1)).push("out:").concat(lines_of(generated.cleanup, 1))
-  lines.push("  return 0;").push("}").join("\n") + "\n"
 end
 
 def program_of(drawn: Prop.Pair[Prop.Pair[List[Int], List[Int]], Int]) -> Program

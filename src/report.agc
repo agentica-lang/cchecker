@@ -18,7 +18,7 @@ import {Suppressed} from "suppressions"
 ## the compile database that were not run because they repeat a file with the same flags (see `Commands.fold`).
 ## `inferred_short_locks` are the classes of the locks that the rules found short by their critical sections, or none
 ## when that inference is off (then `--json` leaves the key out).
-export struct Report
+struct Report
   findings: List[Finding]
   baselined: Int
   fixed: Int
@@ -38,28 +38,9 @@ export struct Report
   inferred_short_locks: Optional[List[String]] = none
 end
 
-# The JSON form of a report, which says in `clean` whether the run is clean.
-struct Encoded
-  clean: Bool
-  findings: List[Finding]
-  baselined: Int
-  fixed: Int
-  stale: List[Entry]
-  errors: List[ToolError]
-  skipped: Int
-  skipped_declarations: Int
-  incomplete_functions: List[IncompleteFunction]
-  suppressed: List[Suppressed]
-  config: String
-  unresolved_callbacks: List[UnresolvedCallback]
-  unchecked_files: List[UncheckedFile]
-  version_changes: List[VersionChange]
-  folded: Int
-end
-
 ## Returns the report for people: one line for each finding, a summary line, then one line for each stale entry of
 ## the baseline and, when they fail the run, how to drop them.
-export def text(report: Report) -> String
+def text(report: Report) -> String
   lines = report.findings.map do |f| "#{f.file}:#{f.line}:#{f.column} #{f.code} #{f.message}#{path_text(f)}" end
   lines = lines.push(summary(report)).concat(report.stale.map(&stale_line))
   if failed_stale?(report)
@@ -79,10 +60,10 @@ export def text(report: Report) -> String
 end
 
 ## Returns whether the stale entries of the baseline fail the run.
-export def failed_stale?(report: Report) -> Bool = not report.failing.empty?
+def failed_stale?(report: Report) -> Bool = not report.failing.empty?
 
 ## Returns the report as one JSON object for tools and agents.
-export def json(report: Report) -> String
+def json(report: Report) -> String
   encoded = JSON.encode(
     Encoded(
       clean: report.findings.empty? and report.errors.empty? and not failed_stale?(report),
@@ -111,13 +92,13 @@ export def json(report: Report) -> String
 end
 
 ## Returns the lines for standard error: one for each tool error.
-export def error_lines(report: Report) -> List[String]
+def error_lines(report: Report) -> List[String]
   report.errors.map do |e| "cchecker: error: #{e.tool} on #{e.file}: #{e.message}" end
 end
 
 ## Returns the line for standard error about the tools whose version is not the one that made the baseline, or none.
 ## The findings of the analyzers change with their version, so the new and fixed ones may come from it.
-export def version_line(report: Report) -> Optional[String]
+def version_line(report: Report) -> Optional[String]
   return none if report.version_changes.empty?
 
   changes = report.version_changes.map do |c| "#{c.tool} was #{c.baseline}, is #{c.current}" end
@@ -135,13 +116,13 @@ export def version_line(report: Report) -> Optional[String]
 end
 
 ## Returns the lines for standard error: one for each file that was not checked.
-export def unchecked_lines(report: Report) -> List[String]
+def unchecked_lines(report: Report) -> List[String]
   report.unchecked_files.map do |u| "cchecker: warning: #{u.file} not checked: #{u.missing} not found" end
 end
 
 ## Returns the line for standard error that says how many locks the rules found short by their critical sections, or
 ## none.
-export def inferred_line(report: Report) -> Optional[String]
+def inferred_line(report: Report) -> Optional[String]
   classes = report.inferred_short_locks.unwrap_or([])
   count = classes.size
   return none if count == 0
@@ -154,7 +135,7 @@ export def inferred_line(report: Report) -> Optional[String]
 end
 
 ## Returns the line for standard error about the callbacks that the inference of roots could not follow, or none.
-export def unresolved_line(report: Report) -> Optional[String]
+def unresolved_line(report: Report) -> Optional[String]
   count = report.unresolved_callbacks.size
   return none if count == 0
 
@@ -165,6 +146,27 @@ export def unresolved_line(report: Report) -> Optional[String]
     "cchecker: #{count} #{plural(count, "callback")} of a libuv call could not be followed to a function, so " +
     "#{plural_it(count)} no root (first: #{first.call} at #{first.file}:#{first.line}); --json lists them",
   )
+end
+
+private
+
+# The JSON form of a report, which says in `clean` whether the run is clean.
+struct Encoded
+  clean: Bool
+  findings: List[Finding]
+  baselined: Int
+  fixed: Int
+  stale: List[Entry]
+  errors: List[ToolError]
+  skipped: Int
+  skipped_declarations: Int
+  incomplete_functions: List[IncompleteFunction]
+  suppressed: List[Suppressed]
+  config: String
+  unresolved_callbacks: List[UnresolvedCallback]
+  unchecked_files: List[UncheckedFile]
+  version_changes: List[VersionChange]
+  folded: Int
 end
 
 # A stale entry of the baseline: its file, code and message, and how many of it were not found when more than one.
