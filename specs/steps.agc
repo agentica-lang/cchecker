@@ -7,6 +7,8 @@ import LockProps from "lock_props"
 import Props from "props"
 import SuppressionProps from "suppression_props"
 
+private
+
 # The steps run from the folder where `agentica test` runs, the root of the repository.
 # cchecker runs in specs/, as a user would run it in a project.
 # A scenario that writes C files does it in a folder of its own, specs/scratch/NAME, removed at the end of

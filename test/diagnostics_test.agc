@@ -1,5 +1,7 @@
 import Diagnostics from "../src/diagnostics"
 
+private
+
 def test_gcc_line_with_a_cwe_and_an_option() -> Result[Void]
   found = Diagnostics.parse("a.c:9:12: warning: leak of 'buf' [CWE-401] [-Wanalyzer-malloc-leak]")
   try Test.eq(found.size, 1)

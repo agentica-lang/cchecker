@@ -458,30 +458,31 @@ Feature: Running the analyzers on C files
       "errors":[{"tool":"gcc","file":"fixtures/clean.c"
       """
 
+  # Each tool writes the pid of its child in a file of its own: the scenarios of one file run at once.
   Scenario Outline: A tool that does not end in time is stopped with everything it started
-    Given the file "scratch/hang.pid" is removed
+    Given the file "scratch/<pids>.pid" is removed
     When I run cchecker with "--json --tools gcc --gcc fixtures/<tool> --timeout 1 fixtures/clean.c"
     Then the exit code is 2
     And the output includes:
       """
       "errors":[{"tool":"gcc","file":"fixtures/clean.c"
       """
-    And the process written in "scratch/hang.pid" has ended
+    And the process written in "scratch/<pids>.pid" has ended
 
     Examples:
-      | tool                          |
-      | fake_gcc_hang.sh              |
-      | fake_gcc_ignores_term.sh      |
+      | tool                          | pids         |
+      | fake_gcc_hang.sh              | hang         |
+      | fake_gcc_ignores_term.sh      | ignores_term |
 
   Scenario: A clang of the rules that does not end in time is stopped, and its dump and FIFO are removed
-    Given the file "scratch/hang.pid" is removed
-    When I run cchecker with "--json --tools rules --clang fixtures/fake_gcc_hang.sh --timeout 1 fixtures/clean.c" and TMPDIR "$DIR/tmp"
+    Given the file "scratch/clang_hang.pid" is removed
+    When I run cchecker with "--json --tools rules --clang fixtures/fake_clang_hang.sh --timeout 1 fixtures/clean.c" and TMPDIR "$DIR/tmp"
     Then the exit code is 2
     And the output includes:
       """
       "errors":[{"tool":"rules","file":"fixtures/clean.c"
       """
-    And the process written in "scratch/hang.pid" has ended
+    And the process written in "scratch/clang_hang.pid" has ended
     And the folder "$DIR/tmp" is empty
 
   Scenario: A database with a file outside the working directory is reported as skipped

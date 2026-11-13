@@ -1,6 +1,8 @@
 import Baseline from "../src/baseline"
 import {Finding} from "../src/findings"
 
+private
+
 def leak(file: String, line: Int) -> Finding
   Finding(code: "CC-GCC-X", tool: "gcc", file: file, line: line, column: 3, message: "leak of 'p'")
 end

@@ -18,40 +18,25 @@ import ToolKind from "tool_kind"
 import {Tool} from "tool_kind"
 
 ## The code of a value of the collector stored in memory from malloc.
-export IN_MALLOC = "CC-OWN-GC-IN-MALLOC"
+IN_MALLOC = "CC-OWN-GC-IN-MALLOC"
 
 ## The code of a value of the collector stored in, or declared as, a variable of static storage.
-export IN_STATIC = "CC-OWN-GC-IN-STATIC"
-
-# The words of a type that do not change what it is.
-QUALIFIERS = ["const ", "volatile ", "struct ", "union ", "restrict", "_Atomic "]
+IN_STATIC = "CC-OWN-GC-IN-STATIC"
 
 ## What the rule knows of a translation unit: the names of the types that the collector manages (CC_GC on a struct,
 ## a union or a typedef), the records that hold one of their values (by name), the keys of the functions marked
 ## CC_GC_ALLOC, and the ids of the variables of static storage declared at the top of the file.
-export struct Marks
+struct Marks
   types: Set[String]
   holders: Set[String]
   allocators: Set[String]
   statics: Set[String]
 end
 
-# What the check of one function knows: the marks of the unit and its context, the library allocators of the
-# collector it counts, the ids of its static locals, its locals that point to memory from malloc (`heap`) and those
-# that hold a value of the collector (`collected`).
-struct Scope
-  marks: Marks
-  ctx: Context
-  library: Set[String]
-  statics: Set[String]
-  heap: Set[String]
-  collected: Set[String]
-end
-
 ## Returns whether a type (as clang writes it) is that of a value of the collector: a type marked CC_GC or a pointer to
 ## one, or a record that holds one, or an array of those. A pointer to a pointer is not, and neither is a function or a
 ## pointer to one: what is left of its text once the stars go (`value_t ()(int)`) names no type.
-export def collector_type?(marks: Marks, type: String) -> Bool
+def collector_type?(marks: Marks, type: String) -> Bool
   name = type
   case name.index_of("[")
     some(at) -> name = name.slice(0, at)
@@ -72,13 +57,13 @@ end
 
 ## Returns the findings of the rule in a function definition, at the function: `key` and `name` are the function's, at
 ## `place`, and `params` the names of the parameters that own what the caller passes.
-export def stores(
+def stores(
   marks: Marks,
   ctx: Context,
   name: String,
   place: Ast.Place,
   params: List[String],
-  node: Json,
+  node: JSON.Value,
 ) -> List[Finding]
   bodies = Ast.children(node).select do |child| Ast.kind(child) == "CompoundStmt" end
   all = Flow.descendants(bodies)
@@ -160,7 +145,7 @@ end
 
 ## Returns the findings of the variables of static storage declared at the top of the file with a collector type, at
 ## each variable. An `extern` declaration is not one: the definition is.
-export def statics(marks: Marks, nodes: List[Json]) -> List[Finding]
+def statics(marks: Marks, nodes: List[JSON.Value]) -> List[Finding]
   found: List[Finding] = []
   for node in nodes
     if Ast.kind(node) == "VarDecl" and Ast.text(node, "storageClass") != "extern"
@@ -175,8 +160,25 @@ export def statics(marks: Marks, nodes: List[Json]) -> List[Finding]
   found
 end
 
+private
+
+# The words of a type that do not change what it is.
+QUALIFIERS = ["const ", "volatile ", "struct ", "union ", "restrict", "_Atomic "]
+
+# What the check of one function knows: the marks of the unit and its context, the library allocators of the
+# collector it counts, the ids of its static locals, its locals that point to memory from malloc (`heap`) and those
+# that hold a value of the collector (`collected`).
+struct Scope
+  marks: Marks
+  ctx: Context
+  library: Set[String]
+  statics: Set[String]
+  heap: Set[String]
+  collected: Set[String]
+end
+
 # Whether a variable is declared with a collector type, as written or behind a typedef (`obj_ref`), and may change.
-def declared_collector?(marks: Marks, decl: Json) -> Bool
+def declared_collector?(marks: Marks, decl: JSON.Value) -> Bool
   type = type_of(decl)
   (collector_type?(marks, type) or collector_type?(marks, desugared_type_of(decl))) and not constant?(type)
 end
@@ -206,7 +208,7 @@ end
 
 # Whether an expression is a value of the collector: by its type or the type of a cast in it, a call of an allocator
 # of the collector, a local that got one, or either side of `?:`.
-def collected?(scope: Scope, node: Json) -> Bool
+def collected?(scope: Scope, node: JSON.Value) -> Bool
   # A null pointer is no value: clang gives the cast of `NULL` or `0` the type of the target.
   return false if Flow.zero?(node)
 
@@ -233,7 +235,7 @@ end
 
 # Whether a pointer points to memory from malloc: a local that got it or is marked CC_OWNS, a CC_OWNS field or global,
 # a call of an allocator, or an offset from one of those.
-def heap?(scope: Scope, node: Json) -> Bool
+def heap?(scope: Scope, node: JSON.Value) -> Bool
   bare = Flow.see_through(node)
   parts = Ast.children(bare)
   case Ast.kind(bare)
@@ -251,7 +253,7 @@ end
 # Where a store goes: "static" (a variable of static storage, or a field or an item of one), "heap" (memory that a
 # pointer from malloc points to), or "" (anything else: the stack, memory of the collector, memory the rule cannot
 # tell).
-def storage(scope: Scope, node: Json) -> String
+def storage(scope: Scope, node: JSON.Value) -> String
   bare = Flow.see_through(node)
   parts = Ast.children(bare)
   case Ast.kind(bare)
@@ -278,14 +280,14 @@ def storage(scope: Scope, node: Json) -> String
   end
 end
 
-def pointee(scope: Scope, pointer: Json) -> String
+def pointee(scope: Scope, pointer: JSON.Value) -> String
   return "heap" if heap?(scope, pointer)
 
   ""
 end
 
 # How a step names the value stored: the function called, or the expression.
-def value_word(node: Json) -> String
+def value_word(node: JSON.Value) -> String
   bare = Flow.see_through(node)
   return Flow.callee_name(bare) if Ast.kind(bare) == "CallExpr" and Flow.callee_name(bare) != ""
 
@@ -293,7 +295,7 @@ def value_word(node: Json) -> String
 end
 
 # The text of the target of a store, from its names, fields, items and `*`; `?` for a part it cannot write.
-def shown(node: Json) -> String
+def shown(node: JSON.Value) -> String
   bare = Flow.see_through(node)
   parts = Ast.children(bare)
   case Ast.kind(bare)
@@ -325,9 +327,9 @@ def constant?(type: String) -> Bool
   stars.last.include?("const")
 end
 
-def type_of(node: Json) -> String = Ast.text(JSON.get(node, "type").unwrap_or(JSON.from("")), "qualType")
+def type_of(node: JSON.Value) -> String = Ast.text(JSON.get(node, "type").unwrap_or(JSON.from("")), "qualType")
 
-def desugared_type_of(node: Json) -> String
+def desugared_type_of(node: JSON.Value) -> String
   Ast.text(JSON.get(node, "type").unwrap_or(JSON.from("")), "desugaredQualType")
 end
 

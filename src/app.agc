@@ -19,51 +19,9 @@ import Tools from "tools"
 import Files from "files"
 import {Unit} from "unit"
 
-# The compile database that a run without FILE or -p reads.
-DEFAULT_DATABASE = "compile_commands.json"
-
-# The kept AST that the jobs of the rules parse and read at once, in MiB of its text (Tools.Budget). On the 84 files of
-# the VM of Agentica at -j 8 it took the peak memory from 721 MB to 336 MB for half a second more; 8 MiB saved nothing
-# more.
-READ_BUDGET_MIB = 16
-
-# The start of the name of the folder of the AST dumps of a run, in $TMPDIR.
-SCRATCH_PREFIX = "cchecker-"
-
-# The mode of that folder, 0700: only its user can read it.
-PRIVATE_MODE = 448
-
-# What the tools made of all the jobs, before the paths are shortened and the repeats taken out. `units` are the
-# translation units of the rules, which also hold the CC_IGNORE of the functions. `unchecked` are the files whose
-# header was not found, once each.
-struct Collected
-  findings: List[Finding]
-  errors: List[ToolError]
-  ran: List[String]
-  units: List[Unit]
-  skipped_declarations: Int = 0
-  incomplete_functions: List[IncompleteFunction] = []
-  unresolved: List[UnresolvedCallback] = []
-  missing_roots: List[String] = []
-  missing_assumed: List[String] = []
-  unknown_targets: List[String] = []
-  unchecked: List[UncheckedFile] = []
-  short_locks: List[String] = []
-  # Whether a function of the run takes a lock: a run that is not full then infers no short lock, and says so.
-  locks: Bool = false
-end
-
-# The jobs of a run, the files that were left out because they are outside the working directory, and the entries of
-# the database that are not C files (they are not run, and so a run of the database is not a run of all its files).
-struct Plan
-  jobs: List[Tools.Job]
-  skipped: List[String]
-  ignored: List[String]
-end
-
 ## Runs the tools, prints the report and returns the exit code: 0 for no new findings, 1 for new ones, 2 for an error
 ## of a tool. A setup error (no files, a bad baseline) is an `error`.
-export def run(options: Options) -> Result[Int]
+def run(options: Options) -> Result[Int]
   cwd = try Paths.working_directory()
   config = try Config.load(options.config, cwd)
   if options.update_baseline and options.tools.include?(Tool.Rules)
@@ -223,6 +181,50 @@ export def run(options: Options) -> Result[Int]
         ),
       )
   end
+end
+
+private
+
+# The compile database that a run without FILE or -p reads.
+DEFAULT_DATABASE = "compile_commands.json"
+
+# The kept AST that the jobs of the rules parse and read at once, in MiB of its text (Tools.Budget). On the 84 files of
+# the VM of Agentica at -j 8 it took the peak memory from 721 MB to 336 MB for half a second more; 8 MiB saved nothing
+# more.
+READ_BUDGET_MIB = 16
+
+# The start of the name of the folder of the AST dumps of a run, in $TMPDIR.
+SCRATCH_PREFIX = "cchecker-"
+
+# The mode of that folder, 0700: only its user can read it.
+PRIVATE_MODE = 448
+
+# What the tools made of all the jobs, before the paths are shortened and the repeats taken out. `units` are the
+# translation units of the rules, which also hold the CC_IGNORE of the functions. `unchecked` are the files whose
+# header was not found, once each.
+struct Collected
+  findings: List[Finding]
+  errors: List[ToolError]
+  ran: List[String]
+  units: List[Unit]
+  skipped_declarations: Int = 0
+  incomplete_functions: List[IncompleteFunction] = []
+  unresolved: List[UnresolvedCallback] = []
+  missing_roots: List[String] = []
+  missing_assumed: List[String] = []
+  unknown_targets: List[String] = []
+  unchecked: List[UncheckedFile] = []
+  short_locks: List[String] = []
+  # Whether a function of the run takes a lock: a run that is not full then infers no short lock, and says so.
+  locks: Bool = false
+end
+
+# The jobs of a run, the files that were left out because they are outside the working directory, and the entries of
+# the database that are not C files (they are not run, and so a run of the database is not a run of all its files).
+struct Plan
+  jobs: List[Tools.Job]
+  skipped: List[String]
+  ignored: List[String]
 end
 
 # A baseline written with a check off, or with fewer roots than the project names, would drop the accepted findings of
@@ -598,7 +600,7 @@ end
 def collect(options: Options, config: Config.Config, jobs: List[Tools.Job], cwd: String, planned: Bool) -> Collected
   budget = Tools.budget(READ_BUDGET_MIB)
   budgeted = jobs.map do |job| job.with(budget: some(budget)) end
-  results = Profile.measure("jobs") do run_largest_first(options, budgeted) end
+  results = System.Profile.measure("jobs") do run_largest_first(options, budgeted) end
   findings: List[Finding] = []
   errors: List[ToolError] = []
   ran: List[String] = []
@@ -627,18 +629,18 @@ def collect(options: Options, config: Config.Config, jobs: List[Tools.Job], cwd:
   cut_missing = Effects.missing_fields(units, config).concat(Effects.missing_calls(units, config))
   units = Effects.assumed(units, config)
   if not config.off.include?(Known.JUMP_CALLERS_FLAG)
-    units = Profile.measure("jumps") do Effects.with_jumps(units, cwd) end
+    units = System.Profile.measure("jumps") do Effects.with_jumps(units, cwd) end
   end
 
   # The lock walk goes first: the effect rules infer short locks from the sections it finds.
-  locked = Profile.measure("locking") do Locking.check(units, config.owned_locks) end
+  locked = System.Profile.measure("locking") do Locking.check(units, config.owned_locks) end
   full = planned and errors.empty? and unchecked.empty?
   sections = Effects.Sections(calls: locked.sections, partial: locked.partial, full: full)
-  checked = Profile.measure("effects") do
+  checked = System.Profile.measure("effects") do
     Effects.check(units, config, options.infer, options.all_paths, cwd, sections)
   end
 
-  owned = Profile.measure("ownership") do Ownership.check(units) end
+  owned = System.Profile.measure("ownership") do Ownership.check(units) end
   from_units = units.flat_map do |unit| unit.collected end
   unchecked_groups = unchecked.group_by do |u| "#{u.file}\n#{u.missing}" end
   unchecked_once = unchecked_groups.values.map do |same| same.first end

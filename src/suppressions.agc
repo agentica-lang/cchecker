@@ -11,32 +11,12 @@ import Baseline from "baseline"
 import {Finding} from "findings"
 
 ## The code of a suppression that matched nothing.
-export UNUSED = "CC-UNUSED-IGNORE"
-
-MARKER = "cchecker:"
-WORD = "ignore"
-BLANKS = Set.new([" ", "\t", "\r"])
-# What may stand before the marker in a comment: blanks, the `*` of a block comment's line, and the third `/`, the
-# `!` and the `<` of a doc comment (`///`, `//!`, `/**`, `/*!`, `///<`).
-LEADING = Set.new([" ", "\t", "\r", "*", "/", "!", "<"])
-# The directives whose text is not made of tokens, so a `'` there opens no literal (`#error it's`); a `"` still does.
-TEXT_DIRECTIVES = ["error", "warning"]
-MARK_PREFIX = "ignore("
-# What a line leaves open for the next (Lexed.carry): a block comment, or a `//` comment continued with `\`.
-BLOCK = "*"
-LINE = "/"
-# The tool whose findings a CC_IGNORE holds for: only the rules know the function of a finding.
-RULES = "rules"
-USAGE = (
-  "a suppression is `cchecker: ignore CODE[, CODE...]: reason`, " +
-  "with codes that start with CC-GCC-, CC-TIDY-, CC-EFFECT-, CC-PATH- or CC-OWN-"
-)
-MARK_USAGE = "CC_IGNORE takes codes of the rules only (CC-EFFECT-, CC-PATH- or CC-OWN-)"
+UNUSED = "CC-UNUSED-IGNORE"
 
 ## One suppression. `file` is relative to the working directory. A comment holds for `line`, and for the line below
 ## when it is `alone` on its line; a CC_IGNORE (`function`) for the findings of the rules at `line` and `column`, the
 ## place of the function.
-export struct Ignore
+struct Ignore
   file: String
   line: Int
   column: Int
@@ -46,23 +26,8 @@ export struct Ignore
   alone: Bool = false
 end
 
-# The text of a comment on one line, from `start` (0-based), without its `//`, `/*` or `*/`.
-struct Comment
-  start: Int
-  text: String
-end
-
-# The comments of one line, whether the line has code outside them, and what goes on past its end (`carry`): "" for
-# nothing, BLOCK for a block comment, LINE for a `//` comment that ends with `\`, or the quote of a string or char
-# literal that ends with `\`.
-struct Lexed
-  comments: List[Comment]
-  code: Bool
-  carry: String
-end
-
 ## A finding that a suppression took out, with its reason.
-export struct Suppressed
+struct Suppressed
   code: String
   tool: String
   file: String
@@ -73,14 +38,14 @@ export struct Suppressed
 end
 
 ## The findings after the suppressions: those that stay, the unused suppressions among them, and those taken out.
-export struct Applied
+struct Applied
   findings: List[Finding]
   suppressed: List[Suppressed]
 end
 
 ## Returns the suppressions in the comments of a file, or an error for one without codes or a reason, or with a code of
 ## no tool.
-export def in_text(file: String, text: String) -> Result[List[Ignore]]
+def in_text(file: String, text: String) -> Result[List[Ignore]]
   ignores: List[Ignore] = []
   return ok(ignores) if not text.include?(MARKER)
 
@@ -104,7 +69,7 @@ end
 
 ## Returns the suppression of an annotation of a function (`ignore(CODE: reason)`, from CC_IGNORE), or none for any
 ## other annotation; an error for a code of another tool than the rules, which never report at a function.
-export def of_mark(file: String, line: Int, column: Int, mark: String) -> Result[Optional[Ignore]]
+def of_mark(file: String, line: Int, column: Int, mark: String) -> Result[Optional[Ignore]]
   return ok(none) if not mark.start_with?(MARK_PREFIX) or not mark.end_with?(")")
 
   body = mark.slice(MARK_PREFIX.length, mark.length - MARK_PREFIX.length - 1)
@@ -117,7 +82,7 @@ end
 ## Takes the suppressed findings out. `ran` holds the pairs of a tool and a file (`Baseline.pair`) that the run covered
 ## (a job that ended well; for the rules, only in a full run): only there is a suppression that matched nothing unused,
 ## as a tool that did not run found nothing.
-export def apply(findings: List[Finding], ignores: List[Ignore], ran: Set[String]) -> Applied
+def apply(findings: List[Finding], ignores: List[Ignore], ran: Set[String]) -> Applied
   kept: List[Finding] = []
   suppressed: List[Suppressed] = []
   used: Set[String] = Set.new([])
@@ -157,6 +122,43 @@ export def apply(findings: List[Finding], ignores: List[Ignore], ran: Set[String
   end
 
   Applied(findings: kept, suppressed: suppressed)
+end
+
+private
+
+MARKER = "cchecker:"
+WORD = "ignore"
+BLANKS = Set.new([" ", "\t", "\r"])
+# What may stand before the marker in a comment: blanks, the `*` of a block comment's line, and the third `/`, the
+# `!` and the `<` of a doc comment (`///`, `//!`, `/**`, `/*!`, `///<`).
+LEADING = Set.new([" ", "\t", "\r", "*", "/", "!", "<"])
+# The directives whose text is not made of tokens, so a `'` there opens no literal (`#error it's`); a `"` still does.
+TEXT_DIRECTIVES = ["error", "warning"]
+MARK_PREFIX = "ignore("
+# What a line leaves open for the next (Lexed.carry): a block comment, or a `//` comment continued with `\`.
+BLOCK = "*"
+LINE = "/"
+# The tool whose findings a CC_IGNORE holds for: only the rules know the function of a finding.
+RULES = "rules"
+USAGE = (
+  "a suppression is `cchecker: ignore CODE[, CODE...]: reason`, " +
+  "with codes that start with CC-GCC-, CC-TIDY-, CC-EFFECT-, CC-PATH- or CC-OWN-"
+)
+MARK_USAGE = "CC_IGNORE takes codes of the rules only (CC-EFFECT-, CC-PATH- or CC-OWN-)"
+
+# The text of a comment on one line, from `start` (0-based), without its `//`, `/*` or `*/`.
+struct Comment
+  start: Int
+  text: String
+end
+
+# The comments of one line, whether the line has code outside them, and what goes on past its end (`carry`): "" for
+# nothing, BLOCK for a block comment, LINE for a `//` comment that ends with `\`, or the quote of a string or char
+# literal that ends with `\`.
+struct Lexed
+  comments: List[Comment]
+  code: Bool
+  carry: String
 end
 
 # Splits one line into its comments and the rest, skipping string and character literals, so a marker in a string is

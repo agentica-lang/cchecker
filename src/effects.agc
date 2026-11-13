@@ -9,37 +9,24 @@ import Paths from "paths"
 import {Call, Callback, Function, Section, Source, Store, Target, Unit} from "unit"
 
 ## The tool name of the findings of the rules.
-export TOOL = "rules"
+TOOL = "rules"
 
 ## The mark of a function that counts as fine for CC_SHORT (CC_ASSUME_SHORT, `[assume] short`).
-export ASSUME_SHORT = "assume_short"
+ASSUME_SHORT = "assume_short"
 
 ## The mark of a function that no walk goes into (CC_STOP, `[assume] stop`).
-export STOP = "stop"
+STOP = "stop"
 
 ## The mark of a function whose call may jump out of its caller (CC_MAY_JUMP, `[assume] may_jump`).
-export MAY_JUMP = "may_jump"
+MAY_JUMP = "may_jump"
 ## The mark of a function that catches the jumps of the functions it calls (CC_CATCHES, `[assume] catches`).
-export CATCHES = "catches"
+CATCHES = "catches"
 ## The mark of a helper whose lock the catcher of a jump gives back (CC_JUMP_RELEASES, `[assume] jump_releases`).
-export JUMP_RELEASES = "jump_releases"
+JUMP_RELEASES = "jump_releases"
 ## The mark of a function whose call always jumps out of its caller and never returns (CC_JUMPS, `[assume] jumps`).
-export JUMPS = "jumps"
+JUMPS = "jumps"
 ## The mark of a function whose descriptors are non-blocking (`[assume] nonblocking`).
-export NONBLOCKING = "nonblocking"
-
-# The start of the slot of a field (`field:request.call`).
-FIELD_SLOT = "field:"
-
-# The mark of a short lock: a field or a global marked CC_NO_SYSCALL_UNDER().
-SHORT_LOCK_MARK = "no_syscall_under()"
-
-# The effects a rule looks for.
-enum Effect
-  Blocks
-  Allocates
-  System
-end
+NONBLOCKING = "nonblocking"
 
 ## The call graph of the project. A function is merged from all its declarations: the marks of each, and the place of
 ## its definition. A slot holds every function stored in it. `pointers` are the slots of each call through a pointer,
@@ -48,7 +35,7 @@ end
 ## whether each call of a function of `Known.FLAG_ARGUMENTS` has the flag that makes it return at once, by the same
 ## key. `unknown_targets` are the targets whose flags the rules do not know, of the units that call one with a
 ## constant flag.
-export struct Graph
+struct Graph
   functions: Map[String, Function]
   edges: Map[String, List[Target]]
   slots: Map[String, List[String]]
@@ -59,60 +46,10 @@ export struct Graph
   declared: Map[String, List[String]] = {}
 end
 
-# How a rule walks the graph: the families of blocking calls that are on, whether it goes into the functions that never
-# return or are cold, whether it finds every bad call or stops at the first, and the classes of the short locks, whose
-# taking is not blocking, and whether a call with a flag that makes it return at once is not blocking (`flags`).
-# `short_wrappers` are the functions of `[assume] short_locks` whose locks are short, whatever the lock.
-struct Walk
-  families: List[Known.Family]
-  follow_cold: Bool
-  all: Bool
-  short_locks: Set[String]
-  flags: Bool = false
-  # The classes inferred short, matched as they are: `short_locks` is matched as `[assume]` names them.
-  inferred: Set[String]
-  # Whether a call through a pointer that the run stores no function in is a bad call (for the inference of short
-  # locks, where it may be any function); the rules reach nothing through it.
-  empty_slots: Bool = false
-  short_wrappers: List[Config.Wrapper] = []
-end
-
-# One entry of `[roots]` or `[assume]`: a bare name (every function of that name, a static one in any file), or
-# `name@file`, whose `tail` is the end of the path of the file. A `./` before the path is ignored. An entry with an
-# empty path (`name@`) is neither: it names nothing, so it is reported as missing.
-struct Entry
-  name: String
-  bare: Bool
-  tail: String
-end
-
-# The entries of a list, split once: the bare names, and the ends of the paths of `name@file` by name.
-struct Listing
-  bare: Set[String]
-  tails: Map[String, List[String]]
-end
-
-# A pair of `[assume] stop_calls` with each side as a listing: the functions that the call may come from and go to.
-struct Cut
-  caller: Listing
-  callee: Listing
-end
-
-# The lists of `[assume] short`, `stop`, `may_jump`, `jumps`, `catches`, `jump_releases` and `nonblocking`.
-struct Assumed
-  short: Listing
-  stop: Listing
-  may_jump: Listing
-  jumps: Listing
-  catches: Listing
-  jump_releases: Listing
-  nonblocking: Listing
-end
-
 ## What the rules found: the findings, and the callbacks of libuv calls they could not follow to a function.
 ## `missing_roots` are the names of `[roots]` that no function of the units defines, and `missing_assumed` those of
 ## `[assume]` that no function of the units declares, each with its key (`trace (assume.stop)`).
-export struct Checked
+struct Checked
   findings: List[Finding]
   unresolved: List[UnresolvedCallback]
   missing_roots: List[String] = []
@@ -124,17 +61,10 @@ end
 ## The critical sections of the locks (`Locking.check`): the calls made while a lock is held, the classes whose
 ## sections are not all known, and whether the run read every file of the compile database (`full`): the inference
 ## runs only then, as a file left out may hold a lock across a blocking call.
-export struct Sections
+struct Sections
   calls: List[Section] = []
   partial: List[String] = []
   full: Bool = false
-end
-
-# The CC_SHORT roots inferred from the callbacks of libuv, by function key, each with the call that made it, and the
-# callbacks that name no function.
-struct Inferred
-  roots: Map[String, String]
-  unresolved: List[UnresolvedCallback]
 end
 
 ## Returns the findings of the rules on the units of a run. A root is a function marked in the C, named in the
@@ -143,7 +73,7 @@ end
 ## rule it breaks, at the nearest bad call, or one for each bad call it reaches when `all_paths`. `cwd` shortens the
 ## paths of the inferred roots and of the unresolved callbacks; one outside it stays absolute. A lock whose sections
 ## reach no blocking call is short too (`inferred_locks`), unless `[library] short_lock_sections` is off.
-export def check(
+def check(
   units: List[Unit],
   config: Config.Config,
   infer: Bool,
@@ -211,7 +141,7 @@ end
 ## Returns the units with the marks that `[assume]` gives the functions it names, as if the C had them, and without
 ## the calls through the fields of `[assume] stop_fields`, which no walk follows, and the direct calls of the pairs of
 ## `[assume] stop_calls`. A call through a copy of such a field (a local that got it) is still followed.
-export def assumed(units: List[Unit], config: Config.Config) -> List[Unit]
+def assumed(units: List[Unit], config: Config.Config) -> List[Unit]
   return units if not Config.assumes_any?(config)
 
   cut = Set.new(config.stop_fields.map do |field| "#{FIELD_SLOT}#{field}" end)
@@ -241,7 +171,7 @@ end
 ## anywhere in a function catches every jump of its calls: an approximation. Its `via` is the chain of calls down to
 ## the marked function, a shortest one, where a name that two functions share has its file, relative to `cwd`. A
 ## function that never returns and may jump out is a way out where the path ends, as CC_JUMPS is.
-export def with_jumps(units: List[Unit], cwd: String) -> List[Unit]
+def with_jumps(units: List[Unit], cwd: String) -> List[Unit]
   graph = graph_of(units)
   callers: Map[String, List[String]] = {}
   catchers: Set[String] = Set.new([])
@@ -300,7 +230,7 @@ end
 
 ## Returns the fields of `[assume] stop_fields` that the units neither store a function in nor call through, each with
 ## its key (`request.cal (assume.stop_fields)`). It reads the units before `assumed` takes the calls out.
-export def missing_fields(units: List[Unit], config: Config.Config) -> List[String]
+def missing_fields(units: List[Unit], config: Config.Config) -> List[String]
   return [] if config.stop_fields.empty?
 
   known: Set[String] = Set.new([])
@@ -323,7 +253,7 @@ end
 
 ## Returns the pairs of `[assume] stop_calls` that match no call of the units, each with its key
 ## (`on_exit>close (assume.stop_calls)`). It reads the units before `assumed` takes the calls out.
-export def missing_calls(units: List[Unit], config: Config.Config) -> List[String]
+def missing_calls(units: List[Unit], config: Config.Config) -> List[String]
   return [] if config.stop_calls.empty?
 
   functions = functions_by_key(units)
@@ -337,15 +267,15 @@ export def missing_calls(units: List[Unit], config: Config.Config) -> List[Strin
 end
 
 ## Returns whether no walk goes into a function: it is marked CC_STOP or named in `[assume] stop`.
-export def stopped?(graph: Graph, key: String) -> Bool = marked?(graph, key, STOP)
+def stopped?(graph: Graph, key: String) -> Bool = marked?(graph, key, STOP)
 
 ## Returns the functions of the units, each merged from all its declarations.
-export def functions(units: List[Unit]) -> List[Function] = graph_of(units).functions.values
+def functions(units: List[Unit]) -> List[Function] = graph_of(units).functions.values
 
 ## Returns the names of the shortest call path from a function of the project to a system call, a blocking one
 ## included: [`key`'s name, ..., the call]; none when it makes none. A library function is a path of its own name when
 ## it is a system call.
-export def system_path(graph: Graph, key: String) -> Optional[List[String]]
+def system_path(graph: Graph, key: String) -> Optional[List[String]]
   # A function of the project marked CC_BLOCKING is one itself, whatever its body does. Every blocking call enters the
   # kernel whatever the `[library]` flags say, so the families passed do not change what a system call is.
   families = Known.BLOCKING_FAMILIES
@@ -363,14 +293,14 @@ export def system_path(graph: Graph, key: String) -> Optional[List[String]]
 end
 
 ## Returns the functions that a call through a pointer at `line`:`column` of `caller` reaches: those stored in its slot.
-export def pointer_targets(graph: Graph, caller: String, line: Int, column: Int) -> List[String]
+def pointer_targets(graph: Graph, caller: String, line: Int, column: Int) -> List[String]
   slots = graph.pointers.get("#{caller} #{line}:#{column}").unwrap_or([])
   targets = slots.flat_map do |slot| graph.slots.get(slot).unwrap_or([]) end
   targets.uniq
 end
 
 ## Returns the functions that a function calls, directly or through a slot.
-export def callees(graph: Graph, key: String) -> List[String]
+def callees(graph: Graph, key: String) -> List[String]
   found: List[String] = []
   for target in graph.edges.get(key).unwrap_or([])
     case target
@@ -383,13 +313,13 @@ export def callees(graph: Graph, key: String) -> List[String]
 end
 
 ## Returns whether the project defines the function.
-export def defined?(graph: Graph, key: String) -> Bool
+def defined?(graph: Graph, key: String) -> Bool
   found = graph.functions.get(key).map do |f| f.defined end
   found.unwrap_or(false)
 end
 
 ## Returns the call graph of the units.
-export def graph_of(units: List[Unit]) -> Graph
+def graph_of(units: List[Unit]) -> Graph
   functions: Map[String, Function] = {}
   edges: Map[String, List[Target]] = {}
   pointers: Map[String, List[String]] = {}
@@ -454,8 +384,80 @@ end
 ## Returns whether a lock class is among the classes of a list of `[assume]` (`short_locks`, `owned_locks`): as it is,
 ## or by the name of a static global (`big_lock` for `big_lock@src/a.c`, as `[assume]` names a static function), or by
 ## its name and the end of its file (`big_lock@a.c`).
-export def named_class?(names: Set[String], class: String) -> Bool
+def named_class?(names: Set[String], class: String) -> Bool
   names.include?(class) or names.include?(bare_class(class)) or names.to_a.any? do |entry| in_file?(entry, class) end
+end
+
+private
+
+# The start of the slot of a field (`field:request.call`).
+FIELD_SLOT = "field:"
+
+# The mark of a short lock: a field or a global marked CC_NO_SYSCALL_UNDER().
+SHORT_LOCK_MARK = "no_syscall_under()"
+
+# The effects a rule looks for.
+enum Effect
+  Blocks
+  Allocates
+  System
+end
+
+# How a rule walks the graph: the families of blocking calls that are on, whether it goes into the functions that never
+# return or are cold, whether it finds every bad call or stops at the first, and the classes of the short locks, whose
+# taking is not blocking, and whether a call with a flag that makes it return at once is not blocking (`flags`).
+# `short_wrappers` are the functions of `[assume] short_locks` whose locks are short, whatever the lock.
+struct Walk
+  families: List[Known.Family]
+  follow_cold: Bool
+  all: Bool
+  short_locks: Set[String]
+  flags: Bool = false
+  # The classes inferred short, matched as they are: `short_locks` is matched as `[assume]` names them.
+  inferred: Set[String]
+  # Whether a call through a pointer that the run stores no function in is a bad call (for the inference of short
+  # locks, where it may be any function); the rules reach nothing through it.
+  empty_slots: Bool = false
+  short_wrappers: List[Config.Wrapper] = []
+end
+
+# One entry of `[roots]` or `[assume]`: a bare name (every function of that name, a static one in any file), or
+# `name@file`, whose `tail` is the end of the path of the file. A `./` before the path is ignored. An entry with an
+# empty path (`name@`) is neither: it names nothing, so it is reported as missing.
+struct Entry
+  name: String
+  bare: Bool
+  tail: String
+end
+
+# The entries of a list, split once: the bare names, and the ends of the paths of `name@file` by name.
+struct Listing
+  bare: Set[String]
+  tails: Map[String, List[String]]
+end
+
+# A pair of `[assume] stop_calls` with each side as a listing: the functions that the call may come from and go to.
+struct Cut
+  caller: Listing
+  callee: Listing
+end
+
+# The lists of `[assume] short`, `stop`, `may_jump`, `jumps`, `catches`, `jump_releases` and `nonblocking`.
+struct Assumed
+  short: Listing
+  stop: Listing
+  may_jump: Listing
+  jumps: Listing
+  catches: Listing
+  jump_releases: Listing
+  nonblocking: Listing
+end
+
+# The CC_SHORT roots inferred from the callbacks of libuv, by function key, each with the call that made it, and the
+# callbacks that name no function.
+struct Inferred
+  roots: Map[String, String]
+  unresolved: List[UnresolvedCallback]
 end
 
 # The classes of the short locks: those marked CC_NO_SYSCALL_UNDER() and those of `[assume] short_locks`. An entry

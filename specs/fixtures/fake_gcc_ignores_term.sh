@@ -3,5 +3,5 @@
 trap '' TERM
 mkdir -p scratch
 sleep 27 &
-echo $! > scratch/hang.pid
+echo $! > scratch/ignores_term.pid
 wait

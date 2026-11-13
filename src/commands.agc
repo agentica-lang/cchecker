@@ -3,19 +3,8 @@
 import Files from "files"
 import Paths from "paths"
 
-# Flags that a build system adds to the entry of a file for a shared library and not for the static one. They change
-# the code that the compiler makes (position independent), not the C that the tools read: their one trace in the C is
-# the `__PIC__` and `__PIE__` macros, which code reads to pick assembly. So two entries that differ only in them are
-# one. CMake adds `-D<target>_EXPORTS` too (see `export_define?`).
-UNFOLDED = Set.new(["-fPIC", "-fpic", "-fPIE", "-fpie"])
-
-# Flags of a build that mean nothing to an analysis and would write files or stop the tools: the object file, the
-# dependency files. Those in the second set take a value in the next word.
-DROPPED = Set.new(["-c", "-MD", "-MMD", "-MP", "-MG"])
-DROPPED_WITH_VALUE = Set.new(["-o", "-MF", "-MT", "-MQ", "-MJ"])
-
 ## One translation unit. `directory` is absolute and is where the tools run; `file` is as the database spells it.
-export struct Entry
+struct Entry
   directory: String
   file: String
   args: List[String]
@@ -23,22 +12,14 @@ end
 
 ## The entries of a run with each file once for each set of flags that can change what the tools find, and the
 ## count of the entries that were left out for it.
-export struct Folded
+struct Folded
   entries: List[Entry]
   folded: Int
 end
 
-# A line of compile_commands.json: `arguments` or `command`, one of them.
-struct Raw
-  directory: String
-  file: String
-  command: Optional[String] = none
-  arguments: Optional[List[String]] = none
-end
-
 ## Returns the entries of a compile database: `path` is the file or the folder that holds `compile_commands.json`.
 ## A relative `directory` is taken from the folder of the database.
-export def load(path: String) -> Result[List[Entry]]
+def load(path: String) -> Result[List[Entry]]
   file = path
   info = try File.stat(path)
   if info.kind == "directory"
@@ -58,7 +39,7 @@ export def load(path: String) -> Result[List[Entry]]
 end
 
 ## Returns the entries of the C files given on the command line, all built with the same flags.
-export def from_files(files: List[String], flags: List[String]) -> Result[List[Entry]]
+def from_files(files: List[String], flags: List[String]) -> Result[List[Entry]]
   cwd = try Paths.working_directory()
   ok(files.map do |file| Entry(directory: cwd, file: file, args: flags) end)
 end
@@ -68,7 +49,7 @@ end
 ## they run in the same folder on the same file with the same flags, leaving out those that only a shared library adds
 ## (`UNFOLDED`, `-D<target>_EXPORTS`) and the defines named in `ignored` (`[database] fold_ignoring`), with any value.
 ## Other defines or include paths may change what the tools find: such entries are each kept.
-export def fold(entries: List[Entry], ignored: List[String]) -> Folded
+def fold(entries: List[Entry], ignored: List[String]) -> Folded
   names = Set.new(ignored)
   seen: Set[String] = Set.new([])
   kept: List[Entry] = []
@@ -86,7 +67,7 @@ export def fold(entries: List[Entry], ignored: List[String]) -> Folded
 end
 
 ## Returns the words of a shell command line: spaces separate them, quotes and backslashes group and escape.
-export def split_words(text: String) -> List[String]
+def split_words(text: String) -> List[String]
   words: List[String] = []
   current: List[String] = []
   started = false
@@ -139,7 +120,7 @@ end
 
 ## Returns the flags of a compiler command: it leaves out the compiler, the source file (however the command spells it
 ## against `directory`) and the flags that name an output.
-export def flags_of(words: List[String], source: String, directory: String) -> List[String]
+def flags_of(words: List[String], source: String, directory: String) -> List[String]
   kept: List[String] = []
   skip = false
   for word in words.drop(1)
@@ -156,6 +137,27 @@ export def flags_of(words: List[String], source: String, directory: String) -> L
   end
 
   kept
+end
+
+private
+
+# Flags that a build system adds to the entry of a file for a shared library and not for the static one. They change
+# the code that the compiler makes (position independent), not the C that the tools read: their one trace in the C is
+# the `__PIC__` and `__PIE__` macros, which code reads to pick assembly. So two entries that differ only in them are
+# one. CMake adds `-D<target>_EXPORTS` too (see `export_define?`).
+UNFOLDED = Set.new(["-fPIC", "-fpic", "-fPIE", "-fpie"])
+
+# Flags of a build that mean nothing to an analysis and would write files or stop the tools: the object file, the
+# dependency files. Those in the second set take a value in the next word.
+DROPPED = Set.new(["-c", "-MD", "-MMD", "-MP", "-MG"])
+DROPPED_WITH_VALUE = Set.new(["-o", "-MF", "-MT", "-MQ", "-MJ"])
+
+# A line of compile_commands.json: `arguments` or `command`, one of them.
+struct Raw
+  directory: String
+  file: String
+  command: Optional[String] = none
+  arguments: Optional[List[String]] = none
 end
 
 def entry(folder: String, row: Raw) -> Result[Entry]

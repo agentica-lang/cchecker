@@ -9,23 +9,15 @@ import Known from "known"
 import {Unit} from "unit"
 
 ## The code of a system call or a blocking call under a lock marked CC_NO_SYSCALL_UNDER.
-export SYSCALL_UNDER_LOCK = "CC-PATH-SYSCALL-UNDER-LOCK"
+SYSCALL_UNDER_LOCK = "CC-PATH-SYSCALL-UNDER-LOCK"
 
 ## The code of a lock taken while a lock of the same or a higher level is held.
-export LOCK_ORDER = "CC-PATH-LOCK-ORDER"
-
-# The marks of a lock class (a field or a global).
-QUIET_MARK = "no_syscall_under()"
-LEVEL_PREFIX = "lock_level("
-
-# The most waits on distinct locks that a helper's reaches keep: a helper that passes on a longer lock each time
-# (`f(x->next)` in `f`) would add one for each pass; the next one is a wait on a lock it cannot name.
-MAX_WAITS = 8
+LOCK_ORDER = "CC-PATH-LOCK-ORDER"
 
 ## What the rules know of the project: its call graph, the classes of the locks marked CC_NO_SYSCALL_UNDER(), the level
 ## of each class with CC_LOCK_LEVEL, the classes each function takes in its own body, and the graphs of the functions
 ## that take or release a lock, by key.
-export struct Rules
+struct Rules
   graph: Effects.Graph
   quiet: Set[String]
   levels: Map[String, Int]
@@ -42,21 +34,21 @@ end
 ## waits on when it is a wait on a lock that starts from a parameter of the helper (`Body.params`), in their names; ""
 ## for any other call or wait. A call puts its arguments in the place of the parameters: under that very lock a wait is
 ## no finding, since it gives the lock back while it waits.
-export struct Reach
+struct Reach
   path: List[String]
   waited: String
 end
 
 ## A lock that a path holds at a call, and the steps of the path from its take to the call. `quiet` is a lock that the
 ## function's own CC_NO_SYSCALL_UNDER(lock) names.
-export struct Held
+struct Held
   lock: Lock
   quiet: Bool
   path: List[String]
 end
 
 ## A rule that a call breaks: `id` tells two apart (one finding for each), and the message and the path of the finding.
-export struct Breach
+struct Breach
   id: String
   code: String
   message: String
@@ -65,7 +57,7 @@ end
 
 ## Returns what the rules need from the units: the marks of their lock fields and globals, and the classes that each
 ## function takes.
-export def rules_of(units: List[Unit], graph: Effects.Graph) -> Rules
+def rules_of(units: List[Unit], graph: Effects.Graph) -> Rules
   quiet: Set[String] = Set.new([])
   levels: Map[String, Int] = {}
   takes: Map[String, Set[String]] = {}
@@ -107,9 +99,19 @@ end
 
 ## Returns the rules that a call of `body` breaks while the path holds `held`; `at` is the step of the call
 ## (`LINE:COL`).
-export def at_call(rules: Rules, body: Body, held: List[Held], site: Site, at: String) -> List[Breach]
+def at_call(rules: Rules, body: Body, held: List[Held], site: Site, at: String) -> List[Breach]
   under_quiet(rules, body, held, site, at).concat(out_of_order(rules, body, held, site, at))
 end
+
+private
+
+# The marks of a lock class (a field or a global).
+QUIET_MARK = "no_syscall_under()"
+LEVEL_PREFIX = "lock_level("
+
+# The most waits on distinct locks that a helper's reaches keep: a helper that passes on a longer lock each time
+# (`f(x->next)` in `f`) would add one for each pass; the next one is a wait on a lock it cannot name.
+MAX_WAITS = 8
 
 # A call under a quiet lock that is, or reaches, a system call. The release of the lock and a wait on it are how the
 # lock works, and so is the release of a lock taken under it, whose take is the finding. A function of the project

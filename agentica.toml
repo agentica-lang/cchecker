@@ -1,4 +1,5 @@
 name = "cchecker"
+agentica = "0.31.0"
 
 # Every bare `end` is followed by an empty line (AGENTS.md).
 [style]
@@ -10,5 +11,5 @@ build = { sources = ["native/scan.c"] }
 
 # Property tests of the features (specs/props.agc).
 [dependencies]
-prop = { git = "https://github.com/agentica-lang/packages", tag = "prop-0.2.1", subdir = "prop" }
-native-gen = { git = "https://github.com/agentica-lang/packages", tag = "native-gen-0.3.0", subdir = "native-gen" }
+prop = { git = "https://github.com/agentica-lang/packages", tag = "prop-0.3.0", subdir = "prop" }
+native-gen = { git = "https://github.com/agentica-lang/packages", tag = "native-gen-0.4.0", subdir = "native-gen" }

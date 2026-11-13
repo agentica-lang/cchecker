@@ -23,13 +23,50 @@ import Locking from "locking"
 import {Function, Unit} from "unit"
 
 ## The code of a path that returns, or gives a pointer a new value, while the pointer still owns.
-export LEAK = "CC-OWN-LEAK"
+LEAK = "CC-OWN-LEAK"
 
 ## The code of a path that frees a pointer that it already freed or handed on.
-export DOUBLE_FREE = "CC-OWN-DOUBLE-FREE"
+DOUBLE_FREE = "CC-OWN-DOUBLE-FREE"
 
 ## The code of a path that uses a pointer after it freed it or handed it on.
-export USE_AFTER_FREE = "CC-OWN-USE-AFTER-FREE"
+USE_AFTER_FREE = "CC-OWN-USE-AFTER-FREE"
+
+## What the rules found, and the functions with more paths than the walk follows with their conditions, checked on
+## those it went through only or without the conditions.
+struct Checked
+  findings: List[Finding]
+  incomplete: List[IncompleteFunction]
+end
+
+## Returns the findings of the ownership rules on the functions of the units. A function defined in several units (a
+## static inline function of a header) is checked once.
+def check(units: List[Unit]) -> Checked
+  functions: Map[String, Function] = {}
+  for function in Effects.functions(units)
+    functions = functions.put(function.key, function)
+  end
+
+  done: Set[String] = Set.new([])
+  findings: List[Finding] = []
+  incomplete: List[IncompleteFunction] = []
+  for unit in units
+    for body in unit.bodies
+      if body.owns and not done.include?(body.key)
+        walk = checked(body, functions)
+        findings = findings.concat(walk.findings.values)
+        if not walk.complete or not walk.exact
+          incomplete = incomplete.push(IncompleteFunction(file: body.file, line: body.line, function: body.name))
+        end
+      end
+
+      done = done.add(body.key)
+    end
+  end
+
+  Checked(findings: findings, incomplete: incomplete)
+end
+
+private
 
 # The states of a pointer on a path; one that owns nothing is not in the state at all. A pointer is `unknown` after it
 # was lent to a call, which may have set it: it may be freed and handed on, and a path may end with it. A pointer is
@@ -118,41 +155,6 @@ struct Walk
   findings: Map[String, Finding]
   complete: Bool
   exact: Bool = true
-end
-
-## What the rules found, and the functions with more paths than the walk follows with their conditions, checked on
-## those it went through only or without the conditions.
-export struct Checked
-  findings: List[Finding]
-  incomplete: List[IncompleteFunction]
-end
-
-## Returns the findings of the ownership rules on the functions of the units. A function defined in several units (a
-## static inline function of a header) is checked once.
-export def check(units: List[Unit]) -> Checked
-  functions: Map[String, Function] = {}
-  for function in Effects.functions(units)
-    functions = functions.put(function.key, function)
-  end
-
-  done: Set[String] = Set.new([])
-  findings: List[Finding] = []
-  incomplete: List[IncompleteFunction] = []
-  for unit in units
-    for body in unit.bodies
-      if body.owns and not done.include?(body.key)
-        walk = checked(body, functions)
-        findings = findings.concat(walk.findings.values)
-        if not walk.complete or not walk.exact
-          incomplete = incomplete.push(IncompleteFunction(file: body.file, line: body.line, function: body.name))
-        end
-      end
-
-      done = done.add(body.key)
-    end
-  end
-
-  Checked(findings: findings, incomplete: incomplete)
 end
 
 # The findings of one function: with the conditions it tests twice, or without them when there are too many paths.

@@ -1,7 +1,7 @@
 ## Paths of the findings: absolute while the tools run, relative to the working directory in the output.
 
 ## Returns the working directory without a trailing slash (`Path.cwd` keeps the one the shell gave).
-export def working_directory() -> Result[String]
+def working_directory() -> Result[String]
   cwd = try Path.cwd()
   return ok(cwd.slice(0, cwd.length - 1)) if cwd.length > 1 and cwd.end_with?("/")
 
@@ -10,7 +10,7 @@ end
 
 ## Returns `path` made absolute against `base` (a path that is absolute already stays as it is), with `.` and `..`
 ## taken out.
-export def absolute(base: String, path: String) -> Result[String]
+def absolute(base: String, path: String) -> Result[String]
   return Path.resolve(path) if path.start_with?("/")
 
   joined = try Path.join([base, path])
@@ -18,7 +18,7 @@ export def absolute(base: String, path: String) -> Result[String]
 end
 
 ## Returns the path relative to `cwd`, or `none` for a path outside of it (a system or a third-party header).
-export def inside(cwd: String, path: String) -> Optional[String]
+def inside(cwd: String, path: String) -> Optional[String]
   prefix = cwd + "/"
   if cwd == "/"
     prefix = "/"
@@ -31,18 +31,20 @@ end
 
 ## Returns whether the path, relative to `cwd`, is one of the excluded files or folders or is inside one. An exclusion
 ## may be written with `./` or `..`, with a trailing slash or as an absolute path, and it matches whole path parts.
-export def excluded?(cwd: String, path: String, exclude: List[String]) -> Bool
+def excluded?(cwd: String, path: String, exclude: List[String]) -> Bool
   exclude.any? do |item| matches?(cwd, path, item) end
 end
 
 ## Returns the folder of an absolute path.
-export def parent(path: String) -> String
+def parent(path: String) -> String
   parts = path.split("/")
   folder = parts.take(parts.size - 1).join("/")
   return "/" if folder == ""
 
   folder
 end
+
+private
 
 def matches?(cwd: String, path: String, item: String) -> Bool
   full = without_slash(absolute(cwd, item).unwrap_or(item))

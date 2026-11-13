@@ -24,17 +24,298 @@ import Known from "known"
 import {Function, PAIR_MARK, Section, Unit} from "unit"
 
 ## The code of a path that returns with a lock that the function took.
-export NOT_RELEASED = "CC-PATH-LOCK-NOT-RELEASED"
+NOT_RELEASED = "CC-PATH-LOCK-NOT-RELEASED"
 
 ## The code of a path that releases a lock that the function did not take.
-export NOT_HELD = "CC-PATH-LOCK-NOT-HELD"
+NOT_HELD = "CC-PATH-LOCK-NOT-HELD"
 
 ## The code of a path that returns after a call of the set of a CC_PAIR and no call of its restore.
-export PAIR_NOT_RESTORED = "CC-PATH-PAIR-NOT-RESTORED"
+PAIR_NOT_RESTORED = "CC-PATH-PAIR-NOT-RESTORED"
 
 ## The code of a path that calls the restore of a CC_PAIR with no call of its set before it, in a function that calls
 ## the set on some path.
-export PAIR_NOT_SET = "CC-PATH-PAIR-NOT-SET"
+PAIR_NOT_SET = "CC-PATH-PAIR-NOT-SET"
+
+## The findings of the lock rules, and the functions with more paths than the walk follows with their conditions
+## (their findings are those of the paths it went through, or of a walk that does not know the conditions). `sections` are the calls made while a lock is held, in every function that
+## takes or releases one, helpers included, and `partial` the classes whose sections are not all known: those of the
+## functions whose paths the walk did not all go through, and those of a lock that a function returns or jumps out
+## with, or releases without holding it (a helper: one its marks do not name), as its caller holds the lock across code
+## that no walk sees. A lock of a class that the inference cannot trust (`section_class`) is "" in both, and a take of
+## a lock that no text names (`unnamed` of a call) puts "" in `partial`.
+struct Checked
+  findings: List[Finding]
+  incomplete: List[IncompleteFunction]
+  sections: List[Section] = []
+  partial: List[String] = []
+end
+
+## Returns the findings of the lock rules on the functions of the units. A function defined in several units (a static
+## inline function of a header) is checked once. `owned` names the pointer fields and globals that point to a mutex of
+## their own (`[assume] owned_locks`): a lock through one keeps its class in the sections.
+def check(units: List[Unit], owned: List[String] = []) -> Checked
+  graph = Effects.graph_of(units)
+  rules = Held.rules_of(units, graph)
+  functions: Map[String, Function] = {}
+  for function in graph.functions.values
+    functions = functions.put(function.key, function)
+  end
+
+  owning = Set.new(owned)
+  done: Set[String] = Set.new([])
+  findings: List[Finding] = []
+  incomplete: List[IncompleteFunction] = []
+  sections: List[Section] = []
+  partial: Set[String] = Set.new([])
+  for unit in units
+    for body in unit.bodies
+      if not done.include?(body.key) and unnamed?(body)
+        partial = partial.add("")
+      end
+
+      if not done.include?(body.key) and not locks_of(body).empty?
+        # The body of a helper is how its lock works, so its findings are not kept; what it calls after it takes the
+        # lock is still a section of that lock.
+        helper = helper?(functions.get(body.key))
+        walk = checked(body, functions, rules, owning)
+        sections = sections.concat(walk.sections.values)
+        locks = locks_of(body)
+        if not walk.complete
+          partial = partial.union(Set.new(locks.values.map do |lock| section_class(lock, owning) end))
+        end
+
+        # A lock left to the caller is held (or was) across code that no walk reads; a helper may do so with the
+        # locks of its own marks only.
+        own = annotated_keys(body, functions.get(body.key))
+        left = unbalanced(walk.findings).select do |key| not own.include?(key) end
+        partial = partial.union(
+          Set.new(left.map do |key| section_class(locks.get(key).unwrap_or(Lock(key: key, shown: key)), owning) end),
+        )
+
+        if not helper
+          findings = findings.concat(walk.findings.values)
+          if not walk.complete or not walk.exact
+            incomplete = incomplete.push(IncompleteFunction(file: body.file, line: body.line, function: body.name))
+          end
+        end
+      end
+
+      done = done.add(body.key)
+    end
+  end
+
+  Checked(findings: findings, incomplete: incomplete, sections: sections, partial: partial.to_a)
+end
+
+## Returns the conditions that the function tests, or sets (a constant written to a variable, the result of a trylock
+## kept in one), in two places or more: only those can make a path impossible. A test or a kept result counts by its
+## side where the value is true, a constant or a `case` label by its one node.
+def tracked_of(body: Body) -> Set[String]
+  seen: Set[String] = Set.new([])
+  twice: Set[String] = Set.new([])
+  for node in body.nodes
+    case node.event
+      Event.Branch(fact) ->
+        if fact.text != "" and (fact.value or fact.single)
+          if seen.include?(fact.text)
+            twice = twice.add(fact.text)
+          end
+
+          seen = seen.add(fact.text)
+        end
+
+      _ -> next
+    end
+  end
+
+  twice
+end
+
+## Returns the nodes of the failure side of a lock call that fails only on an error (`Fact.if_tested`, `ret =
+## pthread_mutex_lock(&m)`) from which a test of the result can come before a new value of the variable: a path goes
+## to such a side only there. A test is a condition in the code, not a fact that a write made (`Fact.written`), and a
+## test of the variable before the call, or after a new value, is not one of its result.
+def tested_after(body: Body) -> Set[Int]
+  tested: Set[String] = Set.new([])
+  results: Set[String] = Set.new([])
+  failing: List[Int] = []
+  for at in 0...body.nodes.size
+    case body.nodes[at].event
+      Event.Branch(fact) ->
+        if fact.text != "" and not fact.written
+          tested = tested.add(fact.text)
+        end
+
+        if fact.if_tested
+          failing = failing.push(at)
+          results = results.add(fact.text)
+        end
+
+      _ -> next
+    end
+  end
+
+  # Only the tests of a lock result are followed: the liveness pass grows with the texts it tracks.
+  tested = tested.intersection(results)
+  found: Set[Int] = Set.new([])
+  return found if tested.empty?
+
+  live = live_facts(body, tested, roots_of(body))
+  for at in failing
+    node = body.nodes[at]
+    text = case node.event
+      Event.Branch(fact) -> fact.text
+      _ -> ""
+    end
+
+    if node.next.any? do |after| live.get(after, Set.new([])).include?(text) end
+      found = found.add(at)
+    end
+  end
+
+  found
+end
+
+## Returns a finding at the function, with its path cut to the first and the last steps when it is long.
+def located(body: Body, code: String, message: String, path: List[String]) -> Finding
+  texts = path
+  if texts.size > MAX_PATH
+    texts = texts.take(MAX_PATH / 2).push("...").concat(texts.drop(texts.size - MAX_PATH / 2))
+  end
+
+  Finding(
+    code: code,
+    tool: Effects.TOOL,
+    file: body.file,
+    line: body.line,
+    column: body.column,
+    message: message,
+    path: texts,
+  )
+end
+
+## Returns the variables each condition reads, so a write to one of them forgets the condition.
+def roots_of(body: Body) -> Map[String, List[String]]
+  roots: Map[String, List[String]] = {}
+  for node in body.nodes
+    case node.event
+      Event.Branch(fact) -> roots = roots.put(fact.text, fact.roots)
+      _ -> next
+    end
+  end
+
+  roots
+end
+
+## Returns the known conditions without those that read one of `names`, which a path just wrote.
+def forgotten(facts: Map[String, Bool], roots: Map[String, List[String]], names: List[String]) -> Map[String, Bool]
+  facts.select do |text, _value| not roots.get(text, []).any? do |root| names.include?(root) end end
+end
+
+## Returns the known conditions that are still in `live`, the ones a later path can read.
+def kept(facts: Map[String, Bool], live: Set[String]) -> Map[String, Bool]
+  return facts if facts.empty?
+
+  return facts if facts.keys.all? do |text| live.include?(text) end
+
+  facts.select do |text, _value| live.include?(text) end
+end
+
+## Returns, for each node, the tracked conditions that a path from it can still test before a write to a variable of
+## theirs: the only known values that can still make a path impossible. The walks drop the others from their state, so
+## that two paths that differ in a condition that is not read again are one. A node not in the map has none.
+def live_facts(body: Body, tracked: Set[String], roots: Map[String, List[String]]) -> Map[Int, Set[String]]
+  live: Map[Int, Set[String]] = {}
+  return live if tracked.empty?
+
+  nodes = body.nodes
+  before: Map[Int, List[Int]] = {}
+  for at in 0...nodes.size
+    for after in nodes[at].next
+      before = before.put(after, before.get(after, []).push(at))
+    end
+  end
+
+  # Backwards from every node: a set only grows, so a node is read again only when its size changed.
+  queue = (0...nodes.size).to_a.reverse
+  i = 0
+  while i < queue.size
+    at = queue[i]
+    i += 1
+    reads: Set[String] = Set.new([])
+    for after in nodes[at].next
+      reads = reads.union(live.get(after, Set.new([])))
+    end
+
+    reads = read_before(nodes[at].event, reads, tracked, roots)
+
+    if reads.size != live.get(at, Set.new([])).size
+      live = live.put(at, reads)
+      queue = queue.concat(before.get(at, []))
+    end
+  end
+
+  live
+end
+
+## Returns whether a call never comes back: by its type or name, or by a CC_NORETURN on the function.
+def stops?(site: Site, functions: Map[String, Function]) -> Bool
+  looked_up = functions.get(site.key).map do |f| f.noreturn end
+  noreturn = looked_up.unwrap_or(false)
+  site.stops or noreturn
+end
+
+## Returns whether a call may jump out of its caller (CC_MAY_JUMP, `[assume] may_jump`, CC_JUMPS, `[assume] jumps`):
+## the call is a way out of the caller. When it also never comes back (`stops?`), the jump is its only way out and the
+## path ends there; otherwise the path goes on after the call too.
+def jumps?(site: Site, functions: Map[String, Function]) -> Bool
+  looked_up = functions.get(site.key).map do |f| f.marks end
+  marks = looked_up.unwrap_or([])
+  marks.include?(Effects.MAY_JUMP) or marks.include?(Effects.JUMPS)
+end
+
+## Returns the step that ends a path at a call that jumps out of the caller: `jumps in` for a call that never comes
+## back (`stops`), `may jump in` for one that may also return. An inferred jump names its chain of calls, the first
+## MAX_VIA of them (`may jump in path_of (as_string, wrong_tag)`); for a function that never returns it says so, as
+## the inference shows only that it may jump (`may jump in bad_signature (fail), never returns`).
+def jump_text(site: Site, stops: Bool, functions: Map[String, Function]) -> String
+  at = "#{site.line}:#{site.column}"
+  looked_up = functions.get(site.key).map do |f| f.via end
+  via = looked_up.unwrap_or([])
+  return "#{at} jumps in #{site.name}" if via.empty? and stops
+
+  return "#{at} may jump in #{site.name}" if via.empty?
+
+  shown = via.take(MAX_VIA)
+  if via.size > MAX_VIA
+    shown = shown.push("...")
+  end
+
+  text = "#{at} may jump in #{site.name} (#{shown.join(", ")})"
+  return "#{text}, never returns" if stops
+
+  text
+end
+
+## Returns the `source` of a finding at a call that jumps: the flag of the inference when the jump is inferred.
+def jump_source(site: Site, functions: Map[String, Function]) -> String
+  looked_up = functions.get(site.key).map do |f| not f.via.empty? end
+  inferred = looked_up.unwrap_or(false)
+  return Known.JUMP_CALLERS_FLAG if inferred
+
+  ""
+end
+
+## Returns the word of the value of a condition on a step of a path: that of the test as the code wrote it.
+def truth(fact: Fact) -> String
+  return fact.word if fact.word != ""
+
+  return "true" if fact.value
+
+  "false"
+end
+
+private
 
 # A lock taken or released more times than this on one path counts as this many, so a loop ends.
 MAX_COUNT = 2
@@ -117,289 +398,6 @@ struct Walk
   complete: Bool
   sections: Map[String, Section] = {}
   exact: Bool = true
-end
-
-## The findings of the lock rules, and the functions with more paths than the walk follows with their conditions
-## (their findings are those of the paths it went through, or of a walk that does not know the conditions). `sections` are the calls made while a lock is held, in every function that
-## takes or releases one, helpers included, and `partial` the classes whose sections are not all known: those of the
-## functions whose paths the walk did not all go through, and those of a lock that a function returns or jumps out
-## with, or releases without holding it (a helper: one its marks do not name), as its caller holds the lock across code
-## that no walk sees. A lock of a class that the inference cannot trust (`section_class`) is "" in both, and a take of
-## a lock that no text names (`unnamed` of a call) puts "" in `partial`.
-export struct Checked
-  findings: List[Finding]
-  incomplete: List[IncompleteFunction]
-  sections: List[Section] = []
-  partial: List[String] = []
-end
-
-## Returns the findings of the lock rules on the functions of the units. A function defined in several units (a static
-## inline function of a header) is checked once. `owned` names the pointer fields and globals that point to a mutex of
-## their own (`[assume] owned_locks`): a lock through one keeps its class in the sections.
-export def check(units: List[Unit], owned: List[String] = []) -> Checked
-  graph = Effects.graph_of(units)
-  rules = Held.rules_of(units, graph)
-  functions: Map[String, Function] = {}
-  for function in graph.functions.values
-    functions = functions.put(function.key, function)
-  end
-
-  owning = Set.new(owned)
-  done: Set[String] = Set.new([])
-  findings: List[Finding] = []
-  incomplete: List[IncompleteFunction] = []
-  sections: List[Section] = []
-  partial: Set[String] = Set.new([])
-  for unit in units
-    for body in unit.bodies
-      if not done.include?(body.key) and unnamed?(body)
-        partial = partial.add("")
-      end
-
-      if not done.include?(body.key) and not locks_of(body).empty?
-        # The body of a helper is how its lock works, so its findings are not kept; what it calls after it takes the
-        # lock is still a section of that lock.
-        helper = helper?(functions.get(body.key))
-        walk = checked(body, functions, rules, owning)
-        sections = sections.concat(walk.sections.values)
-        locks = locks_of(body)
-        if not walk.complete
-          partial = partial.union(Set.new(locks.values.map do |lock| section_class(lock, owning) end))
-        end
-
-        # A lock left to the caller is held (or was) across code that no walk reads; a helper may do so with the
-        # locks of its own marks only.
-        own = annotated_keys(body, functions.get(body.key))
-        left = unbalanced(walk.findings).select do |key| not own.include?(key) end
-        partial = partial.union(
-          Set.new(left.map do |key| section_class(locks.get(key).unwrap_or(Lock(key: key, shown: key)), owning) end),
-        )
-
-        if not helper
-          findings = findings.concat(walk.findings.values)
-          if not walk.complete or not walk.exact
-            incomplete = incomplete.push(IncompleteFunction(file: body.file, line: body.line, function: body.name))
-          end
-        end
-      end
-
-      done = done.add(body.key)
-    end
-  end
-
-  Checked(findings: findings, incomplete: incomplete, sections: sections, partial: partial.to_a)
-end
-
-## Returns the conditions that the function tests, or sets (a constant written to a variable, the result of a trylock
-## kept in one), in two places or more: only those can make a path impossible. A test or a kept result counts by its
-## side where the value is true, a constant or a `case` label by its one node.
-export def tracked_of(body: Body) -> Set[String]
-  seen: Set[String] = Set.new([])
-  twice: Set[String] = Set.new([])
-  for node in body.nodes
-    case node.event
-      Event.Branch(fact) ->
-        if fact.text != "" and (fact.value or fact.single)
-          if seen.include?(fact.text)
-            twice = twice.add(fact.text)
-          end
-
-          seen = seen.add(fact.text)
-        end
-
-      _ -> next
-    end
-  end
-
-  twice
-end
-
-## Returns the nodes of the failure side of a lock call that fails only on an error (`Fact.if_tested`, `ret =
-## pthread_mutex_lock(&m)`) from which a test of the result can come before a new value of the variable: a path goes
-## to such a side only there. A test is a condition in the code, not a fact that a write made (`Fact.written`), and a
-## test of the variable before the call, or after a new value, is not one of its result.
-export def tested_after(body: Body) -> Set[Int]
-  tested: Set[String] = Set.new([])
-  results: Set[String] = Set.new([])
-  failing: List[Int] = []
-  for at in 0...body.nodes.size
-    case body.nodes[at].event
-      Event.Branch(fact) ->
-        if fact.text != "" and not fact.written
-          tested = tested.add(fact.text)
-        end
-
-        if fact.if_tested
-          failing = failing.push(at)
-          results = results.add(fact.text)
-        end
-
-      _ -> next
-    end
-  end
-
-  # Only the tests of a lock result are followed: the liveness pass grows with the texts it tracks.
-  tested = tested.intersection(results)
-  found: Set[Int] = Set.new([])
-  return found if tested.empty?
-
-  live = live_facts(body, tested, roots_of(body))
-  for at in failing
-    node = body.nodes[at]
-    text = case node.event
-      Event.Branch(fact) -> fact.text
-      _ -> ""
-    end
-
-    if node.next.any? do |after| live.get(after, Set.new([])).include?(text) end
-      found = found.add(at)
-    end
-  end
-
-  found
-end
-
-## Returns a finding at the function, with its path cut to the first and the last steps when it is long.
-export def located(body: Body, code: String, message: String, path: List[String]) -> Finding
-  texts = path
-  if texts.size > MAX_PATH
-    texts = texts.take(MAX_PATH / 2).push("...").concat(texts.drop(texts.size - MAX_PATH / 2))
-  end
-
-  Finding(
-    code: code,
-    tool: Effects.TOOL,
-    file: body.file,
-    line: body.line,
-    column: body.column,
-    message: message,
-    path: texts,
-  )
-end
-
-## Returns the variables each condition reads, so a write to one of them forgets the condition.
-export def roots_of(body: Body) -> Map[String, List[String]]
-  roots: Map[String, List[String]] = {}
-  for node in body.nodes
-    case node.event
-      Event.Branch(fact) -> roots = roots.put(fact.text, fact.roots)
-      _ -> next
-    end
-  end
-
-  roots
-end
-
-## Returns the known conditions without those that read one of `names`, which a path just wrote.
-export def forgotten(
-  facts: Map[String, Bool],
-  roots: Map[String, List[String]],
-  names: List[String],
-) -> Map[String, Bool]
-  facts.select do |text, _value| not roots.get(text, []).any? do |root| names.include?(root) end end
-end
-
-## Returns the known conditions that are still in `live`, the ones a later path can read.
-export def kept(facts: Map[String, Bool], live: Set[String]) -> Map[String, Bool]
-  return facts if facts.empty?
-
-  return facts if facts.keys.all? do |text| live.include?(text) end
-
-  facts.select do |text, _value| live.include?(text) end
-end
-
-## Returns, for each node, the tracked conditions that a path from it can still test before a write to a variable of
-## theirs: the only known values that can still make a path impossible. The walks drop the others from their state, so
-## that two paths that differ in a condition that is not read again are one. A node not in the map has none.
-export def live_facts(body: Body, tracked: Set[String], roots: Map[String, List[String]]) -> Map[Int, Set[String]]
-  live: Map[Int, Set[String]] = {}
-  return live if tracked.empty?
-
-  nodes = body.nodes
-  before: Map[Int, List[Int]] = {}
-  for at in 0...nodes.size
-    for after in nodes[at].next
-      before = before.put(after, before.get(after, []).push(at))
-    end
-  end
-
-  # Backwards from every node: a set only grows, so a node is read again only when its size changed.
-  queue = (0...nodes.size).to_a.reverse
-  i = 0
-  while i < queue.size
-    at = queue[i]
-    i += 1
-    reads: Set[String] = Set.new([])
-    for after in nodes[at].next
-      reads = reads.union(live.get(after, Set.new([])))
-    end
-
-    reads = read_before(nodes[at].event, reads, tracked, roots)
-
-    if reads.size != live.get(at, Set.new([])).size
-      live = live.put(at, reads)
-      queue = queue.concat(before.get(at, []))
-    end
-  end
-
-  live
-end
-
-## Returns whether a call never comes back: by its type or name, or by a CC_NORETURN on the function.
-export def stops?(site: Site, functions: Map[String, Function]) -> Bool
-  looked_up = functions.get(site.key).map do |f| f.noreturn end
-  noreturn = looked_up.unwrap_or(false)
-  site.stops or noreturn
-end
-
-## Returns whether a call may jump out of its caller (CC_MAY_JUMP, `[assume] may_jump`, CC_JUMPS, `[assume] jumps`):
-## the call is a way out of the caller. When it also never comes back (`stops?`), the jump is its only way out and the
-## path ends there; otherwise the path goes on after the call too.
-export def jumps?(site: Site, functions: Map[String, Function]) -> Bool
-  looked_up = functions.get(site.key).map do |f| f.marks end
-  marks = looked_up.unwrap_or([])
-  marks.include?(Effects.MAY_JUMP) or marks.include?(Effects.JUMPS)
-end
-
-## Returns the step that ends a path at a call that jumps out of the caller: `jumps in` for a call that never comes
-## back (`stops`), `may jump in` for one that may also return. An inferred jump names its chain of calls, the first
-## MAX_VIA of them (`may jump in path_of (as_string, wrong_tag)`); for a function that never returns it says so, as
-## the inference shows only that it may jump (`may jump in bad_signature (fail), never returns`).
-export def jump_text(site: Site, stops: Bool, functions: Map[String, Function]) -> String
-  at = "#{site.line}:#{site.column}"
-  looked_up = functions.get(site.key).map do |f| f.via end
-  via = looked_up.unwrap_or([])
-  return "#{at} jumps in #{site.name}" if via.empty? and stops
-
-  return "#{at} may jump in #{site.name}" if via.empty?
-
-  shown = via.take(MAX_VIA)
-  if via.size > MAX_VIA
-    shown = shown.push("...")
-  end
-
-  text = "#{at} may jump in #{site.name} (#{shown.join(", ")})"
-  return "#{text}, never returns" if stops
-
-  text
-end
-
-## Returns the `source` of a finding at a call that jumps: the flag of the inference when the jump is inferred.
-export def jump_source(site: Site, functions: Map[String, Function]) -> String
-  looked_up = functions.get(site.key).map do |f| not f.via.empty? end
-  inferred = looked_up.unwrap_or(false)
-  return Known.JUMP_CALLERS_FLAG if inferred
-
-  ""
-end
-
-## Returns the word of the value of a condition on a step of a path: that of the test as the code wrote it.
-export def truth(fact: Fact) -> String
-  return fact.word if fact.word != ""
-
-  return "true" if fact.value
-
-  "false"
 end
 
 # Whether a function takes or releases a lock for its callers, always or on one side (HELPER_MARKS).

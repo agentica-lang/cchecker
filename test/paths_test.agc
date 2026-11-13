@@ -1,5 +1,7 @@
 import Paths from "../src/paths"
 
+private
+
 def test_a_path_inside_the_folder_is_relative() -> Result[Void]
   Test.eq(Paths.inside("/p/proj", "/p/proj/src/a.c"), some("src/a.c"))
 end

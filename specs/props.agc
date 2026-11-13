@@ -3,12 +3,9 @@
 
 import Prop from "pkg/prop/prop"
 
-# The longest one run of cchecker on a generated file may take.
-RUN_MS = 30_000
-
 # The most runs of cchecker that shrinking a miss may take: at about 0.25 s a run, a miss found late in a scenario
 # still prints its shrunk C file and seed before the 30 s of the scenario.
-export SHRINKS = 30
+SHRINKS = 30
 
 ## A table that stores a function among filler items, and the call through it. `shape` is the kind of table: an array
 ## of function pointers, of structs, of nested structs, a struct with an array of function pointers in it, or an array
@@ -17,7 +14,7 @@ export SHRINKS = 30
 ## them and `style` how the items are written: in order, all designated in reverse, the function alone designated, or
 ## the function last with a chained designator (`[k].op.run = f`, `.ops[k] = f`). Each part shrinks toward 0, the
 ## plainest form.
-export struct Table
+struct Table
   shape: Int
   ref: Int
   deref: Int
@@ -27,14 +24,14 @@ export struct Table
 end
 
 ## What one run of cchecker gave.
-export struct Output
+struct Output
   code: Int
   stdout: String
   stderr: String
 end
 
 ## The generator of tables, with up to 6 fillers.
-export def tables() -> Prop.Gen[Table]
+def tables() -> Prop.Gen[Table]
   sizes = Prop.pair(Prop.int(0, 4), Prop.int(0, 5))
   kind = Prop.pair(sizes, Prop.int(0, 1))
   ranges = Prop.pair(Prop.int(0, 6), Prop.int(0, 3))
@@ -47,7 +44,7 @@ end
 ## Checks `runs` tables, from `seed` when it is given: cchecker (the bytecode `program`, run in specs/) reports that
 ## the CC_SHORT `entry` reaches `sleep` through `slow`, stored in the table, with CC-EFFECT-SHORT-BLOCKS. `folder` is
 ## the folder of the scenario, under specs/, where the C files go.
-export def scanner_keeps_paths(program: String, folder: String, runs: Int, seed: Optional[Int]) -> Result[Void]
+def scanner_keeps_paths(program: String, folder: String, runs: Int, seed: Optional[Int]) -> Result[Void]
   Prop.check(tables(), Prop.Config(runs: runs, seed: seed, shrinks: SHRINKS)) do |table|
     source = c_file(table, "slow")
     found(run(program, folder, source), source)
@@ -56,7 +53,7 @@ end
 
 ## The negative twin of `scanner_keeps_paths`: the table stores `quick`, which does not block, in place of `slow`, and
 ## cchecker exits 0 with no CC-EFFECT-SHORT-BLOCKS.
-export def scanner_blames_nothing(program: String, folder: String, runs: Int, seed: Optional[Int]) -> Result[Void]
+def scanner_blames_nothing(program: String, folder: String, runs: Int, seed: Optional[Int]) -> Result[Void]
   Prop.check(tables(), Prop.Config(runs: runs, seed: seed, shrinks: SHRINKS)) do |table|
     source = c_file(table, "quick")
     clean(run(program, folder, source), source)
@@ -64,14 +61,14 @@ export def scanner_blames_nothing(program: String, folder: String, runs: Int, se
 end
 
 ## One run of cchecker (the bytecode `program`) on the C file `source`, written in the folder of the scenario.
-export def run(program: String, folder: String, source: String) -> Result[Output]
+def run(program: String, folder: String, source: String) -> Result[Output]
   path = "#{folder}/case.c"
   try File.write_text("specs/#{path}", source)
   run_with(program, ["--tools", "rules", "--json", path, "--", "-I../include"])
 end
 
 ## One run of cchecker (the bytecode `program`) in specs/ with the options `options`.
-export def run_with(program: String, options: List[String]) -> Result[Output]
+def run_with(program: String, options: List[String]) -> Result[Output]
   args = ["run", "--", program].concat(options)
   process = try Process.spawn_captured("agentica", args, Process.Options(timeout_ms: RUN_MS, chdir: "specs"))
   output = try Process.output(process, RUN_MS)
@@ -79,6 +76,11 @@ export def run_with(program: String, options: List[String]) -> Result[Output]
   Process.close(process)
   ok(Output(code: code, stdout: output.stdout, stderr: output.stderr))
 end
+
+private
+
+# The longest one run of cchecker on a generated file may take.
+RUN_MS = 30_000
 
 def table_of(parts: Prop.Pair[Prop.Pair[Prop.Pair[Int, Int], Int], Prop.Pair[List[Int], Prop.Pair[Int, Int]]]) -> Table
   Table(

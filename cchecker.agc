@@ -4,6 +4,8 @@ import App from "src/app"
 import OP from "std/option_parser"
 import Options from "src/options"
 
+private
+
 def main() -> Void
   parsed = Options.parse(System.args())
   options = OP.run!(parsed)

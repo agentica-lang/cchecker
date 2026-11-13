@@ -11,14 +11,144 @@
 
 import Paths from "paths"
 
-# The longest line the scan reads. A line of the dump is short, except a string literal of the source, which is one.
-LINE_BYTES = 16_777_216
-
 ## The error of `compact` past its timeout: the text of `Process.output` on one.
-export TIMED_OUT = "process: operation timed out"
+TIMED_OUT = "process: operation timed out"
 
 ## The start of an error of `compact` that came before clang opened the FIFO, which it may then wait on for good.
-export UNSTARTED = "before clang wrote its dump: "
+UNSTARTED = "before clang wrote its dump: "
+
+## The state of a scan. `directory` is where clang ran (its paths are relative to it) and `cwd` the root of the
+## project: a declaration is kept when its first location is under it.
+struct State
+  directory: String
+  cwd: String
+  encoded: String = "\"\""
+  line: Int = 0
+  inside: Bool = false
+  included: Bool = false
+  phase: Phase = Phase.Between
+  spelling: Bool = false
+  variable: Bool = false
+  array: Bool = false
+  items: Bool = false
+  functions: Bool = false
+  desugared: String = ""
+  name: String = ""
+  lines: List[String] = []
+  decls: List[String] = []
+  oversized: List[String] = []
+  skipped: Int = 0
+  ended: Bool = false
+end
+
+## The declarations of the project in a dump, as the text of a JSON array, the names of those too large to keep whose
+## calls are lost, and the count of those too large to keep that name no function.
+struct Dump
+  decls: String
+  oversized: List[String]
+  skipped: Int
+end
+
+## Returns the declarations of the project in the dump at `path`, or an error when the dump ends early. It gives what
+## `reference_decls` gives, in C; with `prune` (the default) without the keys that no rule reads, which hold a third
+## of the text.
+def project_decls(path: String, directory: String, cwd: String, prune: Bool = true) -> Result[Dump]
+  decls_in(path, try files(path), directory, cwd, prune)
+end
+
+## Returns what `project_decls` returns, for a dump whose `"file": ` values `raws` are known (`compact` gives them).
+def decls_in(path: String, raws: List[String], directory: String, cwd: String, prune: Bool = true) -> Result[Dump]
+  places = raws.map do |raw|
+    located = place_of(directory, cwd, raw)
+    Place(raw: raw, encoded: located.encoded, inside: located.inside)
+  end
+
+  dump = try scan(path, places, prune)
+  return error("the AST dump ends early") if not dump.ended
+
+  ok(Dump(decls: dump.decls, oversized: dump.oversized.map(&decoded_name), skipped: dump.skipped))
+end
+
+## Returns what `project_decls` returns, by the scan in Agentica: the reference that the C scan is tested against.
+def reference_decls(path: String, directory: String, cwd: String) -> Result[Dump]
+  state = try File.foreach(path, LINE_BYTES).reduce(start(directory, cwd), &step)
+  return error("the AST dump ends early") if not state.ended
+
+  ok(Dump(decls: finish(state), oversized: state.oversized, skipped: state.skipped))
+end
+
+## Returns the state before the first line.
+def start(directory: String, cwd: String) -> State = State(directory: directory, cwd: cwd)
+
+## Returns the state after one line of the dump.
+def step(state: State, line: String) -> State
+  if line == DECL_START
+    return state.with(
+      phase: Phase.Open,
+      lines: [line],
+      variable: false,
+      array: false,
+      items: false,
+      functions: false,
+      desugared: "",
+      name: "",
+    )
+  end
+
+  return close(state) if DECL_ENDS.include?(line) and state.phase != Phase.Between
+
+  return state.with(ended: line == DUMP_END) if state.phase == Phase.Between
+
+  return oversized(state) if state.phase == Phase.Kept and state.lines.size >= MAX_DECL_LINES
+
+  return past_the_cap(state, line) if state.phase == Phase.Oversized
+
+  current = state
+  if line.start_with?("      \"") or line.start_with?("        \"")
+    current = top_key(state, line)
+  else
+    current = deeper_key(state, line)
+  end
+
+  return current if current.phase == Phase.Dropped
+
+  located_or_kept(current, line)
+end
+
+## Returns the kept declarations as the text of a JSON array.
+def finish(state: State) -> String = "[#{state.decls.join(",\n")}]"
+
+## Whether a type, as clang writes it (`"const unsigned char[300]"`), is an array of numbers or characters. A scalar or
+## a pointer, `void *` among them, can hold a function through a cast, and a typedef is not known here.
+def plain_array?(type: String) -> Bool
+  return false if not type.include?("[") or type.include?("(") or type.include?("*")
+
+  words = type.replace("\"", " ").replace("[", " [").split(" ")
+  named = words.select do |word| word != "" and not word.start_with?("[") end
+  named.all? do |word| PLAIN_WORDS.include?(word) end
+end
+
+# The scan of `step` in C, for speed: the dump of one file is tens of MiB. The module is built from native/ by
+# the first run; a failed build or load stops the run. Where a file is stays here: `files` lists the values of the
+# `"file": ` lines, which are resolved below, and `scan` takes them. Both read the dump, so they run on the compute
+# pool.
+extern module "cchecker_scan"
+  ## Makes the FIFO at `path` that clang writes its dump into, for `compact`.
+  compute def fifo(path: String) -> Result[Bool]
+  ## Copies the dump that clang writes into the FIFO `from` to the file `to`, until clang closes it, with the indent of
+  ## each line cut short, and gives the values of its `"file": ` lines for `decls_in`. clang indents a node two spaces
+  ## per level, so the dump of a deep tree (a chain of else-if) is gigabytes of spaces; the copy scans as the dump
+  ## would, and stays the size of the tree. Past `timeout_ms` from the start of the call (a writer that never opens
+  ## the FIFO included) it gives the error TIMED_OUT; another error before a writer opened it starts with UNSTARTED.
+  compute def compact(from: String, to: String, timeout_ms: Int) -> Result[List[String]]
+  compute def files(path: String) -> Result[List[String]]
+  compute def scan(path: String, places: List[Place], prune: Bool) -> Result[NativeDump]
+end
+
+private
+
+# The longest line the scan reads. A line of the dump is short, except a string literal of the source, which is one.
+LINE_BYTES = 16_777_216
 
 # The most lines the scan keeps of one declaration, so that a generated table cannot take all the memory. A large
 # function of an interpreter loop has some 190 thousand. A declaration over it is an error when it names a function,
@@ -67,38 +197,6 @@ enum Phase
   Oversized
 end
 
-## The state of a scan. `directory` is where clang ran (its paths are relative to it) and `cwd` the root of the
-## project: a declaration is kept when its first location is under it.
-export struct State
-  directory: String
-  cwd: String
-  encoded: String = "\"\""
-  line: Int = 0
-  inside: Bool = false
-  included: Bool = false
-  phase: Phase = Phase.Between
-  spelling: Bool = false
-  variable: Bool = false
-  array: Bool = false
-  items: Bool = false
-  functions: Bool = false
-  desugared: String = ""
-  name: String = ""
-  lines: List[String] = []
-  decls: List[String] = []
-  oversized: List[String] = []
-  skipped: Int = 0
-  ended: Bool = false
-end
-
-## The declarations of the project in a dump, as the text of a JSON array, the names of those too large to keep whose
-## calls are lost, and the count of those too large to keep that name no function.
-export struct Dump
-  decls: String
-  oversized: List[String]
-  skipped: Int
-end
-
 # What the native scan (native/scan.c) gives: `oversized` holds the names as the dump writes them (JSON text).
 struct NativeDump
   decls: String
@@ -113,108 +211,6 @@ struct Place
   raw: String
   encoded: String
   inside: Bool
-end
-
-## Returns the declarations of the project in the dump at `path`, or an error when the dump ends early. It gives what
-## `reference_decls` gives, in C; with `prune` (the default) without the keys that no rule reads, which hold a third
-## of the text.
-export def project_decls(path: String, directory: String, cwd: String, prune: Bool = true) -> Result[Dump]
-  decls_in(path, try files(path), directory, cwd, prune)
-end
-
-## Returns what `project_decls` returns, for a dump whose `"file": ` values `raws` are known (`compact` gives them).
-export def decls_in(
-  path: String,
-  raws: List[String],
-  directory: String,
-  cwd: String,
-  prune: Bool = true,
-) -> Result[Dump]
-  places = raws.map do |raw|
-    located = place_of(directory, cwd, raw)
-    Place(raw: raw, encoded: located.encoded, inside: located.inside)
-  end
-
-  dump = try scan(path, places, prune)
-  return error("the AST dump ends early") if not dump.ended
-
-  ok(Dump(decls: dump.decls, oversized: dump.oversized.map(&decoded_name), skipped: dump.skipped))
-end
-
-## Returns what `project_decls` returns, by the scan in Agentica: the reference that the C scan is tested against.
-export def reference_decls(path: String, directory: String, cwd: String) -> Result[Dump]
-  state = try File.foreach(path, LINE_BYTES).reduce(start(directory, cwd), &step)
-  return error("the AST dump ends early") if not state.ended
-
-  ok(Dump(decls: finish(state), oversized: state.oversized, skipped: state.skipped))
-end
-
-## Returns the state before the first line.
-export def start(directory: String, cwd: String) -> State = State(directory: directory, cwd: cwd)
-
-## Returns the state after one line of the dump.
-export def step(state: State, line: String) -> State
-  if line == DECL_START
-    return state.with(
-      phase: Phase.Open,
-      lines: [line],
-      variable: false,
-      array: false,
-      items: false,
-      functions: false,
-      desugared: "",
-      name: "",
-    )
-  end
-
-  return close(state) if DECL_ENDS.include?(line) and state.phase != Phase.Between
-
-  return state.with(ended: line == DUMP_END) if state.phase == Phase.Between
-
-  return oversized(state) if state.phase == Phase.Kept and state.lines.size >= MAX_DECL_LINES
-
-  return past_the_cap(state, line) if state.phase == Phase.Oversized
-
-  current = state
-  if line.start_with?("      \"") or line.start_with?("        \"")
-    current = top_key(state, line)
-  else
-    current = deeper_key(state, line)
-  end
-
-  return current if current.phase == Phase.Dropped
-
-  located_or_kept(current, line)
-end
-
-## Returns the kept declarations as the text of a JSON array.
-export def finish(state: State) -> String = "[#{state.decls.join(",\n")}]"
-
-## Whether a type, as clang writes it (`"const unsigned char[300]"`), is an array of numbers or characters. A scalar or
-## a pointer, `void *` among them, can hold a function through a cast, and a typedef is not known here.
-export def plain_array?(type: String) -> Bool
-  return false if not type.include?("[") or type.include?("(") or type.include?("*")
-
-  words = type.replace("\"", " ").replace("[", " [").split(" ")
-  named = words.select do |word| word != "" and not word.start_with?("[") end
-  named.all? do |word| PLAIN_WORDS.include?(word) end
-end
-
-# The scan of `step` in C, for speed: the dump of one file is tens of MiB. The module is built from native/ by
-# the first run; a failed build or load stops the run. Where a file is stays here: `files` lists the values of the
-# `"file": ` lines, which are resolved below, and `scan` takes them. Both read the dump, so they run on the compute
-# pool.
-extern module "cchecker_scan"
-  ## Makes the FIFO at `path` that clang writes its dump into, for `compact`.
-  export compute def fifo(path: String) -> Result[Bool]
-  ## Copies the dump that clang writes into the FIFO `from` to the file `to`, until clang closes it, with the indent of
-  ## each line cut short, and gives the values of its `"file": ` lines for `decls_in`. clang indents a node two spaces
-  ## per level, so the dump of a deep tree (a chain of else-if) is gigabytes of spaces; the copy scans as the dump
-  ## would, and stays the size of the tree. Past `timeout_ms` from the start of the call (a writer that never opens
-  ## the FIFO included) it gives the error TIMED_OUT; another error before a writer opened it starts with UNSTARTED.
-  export compute def compact(from: String, to: String, timeout_ms: Int) -> Result[List[String]]
-  compute def files(path: String) -> Result[List[String]]
-  compute def scan(path: String, places: List[Place], prune: Bool) -> Result[NativeDump]
 end
 
 # The lines of a location move the file and the line; every other line is kept or dropped with its declaration.

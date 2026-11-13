@@ -11,26 +11,16 @@ import Regex from "std/regex"
 import Toml from "std/toml"
 
 ## The settings file that a project folder may hold for cchecker alone.
-export OWN_FILE = "cchecker.toml"
+OWN_FILE = "cchecker.toml"
 
 ## The manifest whose `[tool.cchecker]` table holds the settings when there is no cchecker.toml.
-export MANIFEST = "agentica.toml"
+MANIFEST = "agentica.toml"
 
 ## What `origin` says when no file was read.
-export DEFAULTS = "defaults"
-
-# The table of cchecker in a manifest.
-TOOL_TABLE = "tool.cchecker"
-
-# What an unknown key of a file of -c without that table adds: the file may be a manifest that lacks it.
-WHOLE_NOTE = " (no [tool.cchecker] table; read as a cchecker file)"
-
-# The `[library]` flags that are false unless the settings set them true: the inference of short locks is
-# experimental.
-OFF_BY_DEFAULT = [Known.SECTIONS_FLAG]
+DEFAULTS = "defaults"
 
 ## A `caller>callee` pair of `[assume] stop_calls`: the call of `callee` in `caller`, each a function name or `name@path`.
-export struct Edge
+struct Edge
   caller: String
   callee: String
 end
@@ -38,7 +28,7 @@ end
 ## A lock wrapper of `[assume] acquires`, `releases`, `tries` and `short_locks`: `name(N)` or `name@path(N)`, with `N` the place
 ## of the parameter (from 0) that holds the lock. `tail` is the end of the path of the file of `name@path`, "" for a
 ## bare name.
-export struct Wrapper
+struct Wrapper
   name: String
   tail: String
   index: Int
@@ -60,7 +50,7 @@ end
 ## CC_RELEASES), `tries` is `[assume] tries`, those that take it where they return 0 (as CC_TRIES), `nonblocking` is `[assume] nonblocking`, the functions whose descriptors are non-blocking: their
 ## calls of `Known.FD_CALLS` return at once, and `owned_locks` is `[assume] owned_locks`, the pointer fields and globals
 ## that point to a mutex of their own, which no other field or global points to.
-export struct Config
+struct Config
   origin: String
   off: Set[String]
   short: List[String]
@@ -84,7 +74,7 @@ export struct Config
 end
 
 ## Returns the settings of a run in `folder`, the project folder: those of `explicit` (the file of -c) when given.
-export def load(explicit: Optional[String], folder: String) -> Result[Config]
+def load(explicit: Optional[String], folder: String) -> Result[Config]
   case explicit
     some(path) ->
       text = try read(path)
@@ -100,7 +90,7 @@ end
 
 ## Returns the settings of a table: the whole file, or the table of cchecker in a manifest, whose keys start with
 ## `prefix` in the errors.
-export def from_table(origin: String, prefix: String, table: Toml.Value, note: String = "") -> Result[Config]
+def from_table(origin: String, prefix: String, table: Toml.Value, note: String = "") -> Result[Config]
   config = defaults().with(origin: origin)
   entries = try table_of(origin, TOOL_TABLE, table)
   for key in entries.keys
@@ -172,11 +162,11 @@ export def from_table(origin: String, prefix: String, table: Toml.Value, note: S
 end
 
 ## Returns the settings that hold when no file gives any: every family on, no roots.
-export def defaults() -> Config = Config(origin: DEFAULTS, off: Set.new(OFF_BY_DEFAULT), short: [], hot: [])
+def defaults() -> Config = Config(origin: DEFAULTS, off: Set.new(OFF_BY_DEFAULT), short: [], hot: [])
 
 ## Returns whether the settings have any list of `[assume]`. Each list is here, so a new one is not left out of the
 ## checks that skip the work when there is none.
-export def assumes_any?(config: Config) -> Bool
+def assumes_any?(config: Config) -> Bool
   not (
     config.trusted.empty? and
     config.stops.empty? and
@@ -196,7 +186,7 @@ export def assumes_any?(config: Config) -> Bool
 end
 
 ## Returns the flags of `[library]` that a run knows, in the order of docs/settings.md.
-export def flags() -> List[String]
+def flags() -> List[String]
   families = Known.BLOCKING_FAMILIES.map do |family| family.flag end
   (
     families.push(Known.CALLBACKS_FLAG)
@@ -209,7 +199,7 @@ end
 
 ## Returns the pair that `text` writes, or none when it is not `caller>callee`: a name on each side, with no blank or
 ## `>` inside, and no `-` before the `>` (`a->b` is not a pair).
-export def edge_of(text: String) -> Optional[Edge]
+def edge_of(text: String) -> Optional[Edge]
   case text.index_of(">")
     some(at) ->
       caller = text.slice(0, at)
@@ -222,7 +212,7 @@ export def edge_of(text: String) -> Optional[Edge]
 end
 
 ## Returns the wrapper that `text` writes, or none when it is not `name(N)` or `name@path(N)` with a decimal `N`.
-export def wrapper_of(text: String) -> Optional[Wrapper]
+def wrapper_of(text: String) -> Optional[Wrapper]
   parts = text.split("(")
   return none if parts.size != 2 or not parts[1].end_with?(")")
 
@@ -239,6 +229,18 @@ export def wrapper_of(text: String) -> Optional[Wrapper]
     error(_) -> none
   end
 end
+
+private
+
+# The table of cchecker in a manifest.
+TOOL_TABLE = "tool.cchecker"
+
+# What an unknown key of a file of -c without that table adds: the file may be a manifest that lacks it.
+WHOLE_NOTE = " (no [tool.cchecker] table; read as a cchecker file)"
+
+# The `[library]` flags that are false unless the settings set them true: the inference of short locks is
+# experimental.
+OFF_BY_DEFAULT = [Known.SECTIONS_FLAG]
 
 # The wrapper of a name or `name@path` and the place of its parameter. A leading `./` of the path is ignored, as for
 # the other entries of `[assume]`.

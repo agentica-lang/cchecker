@@ -1,6 +1,8 @@
 import Tools from "../src/tools"
 import {Tool} from "../src/tool_kind"
 
+private
+
 def test_a_gcc_option_is_the_code() -> Result[Void]
   Test.eq(Tools.code_of(Tool.Gcc, some("-Wanalyzer-malloc-leak")), "CC-GCC-ANALYZER-MALLOC-LEAK")
 end

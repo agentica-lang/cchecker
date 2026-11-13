@@ -2,17 +2,9 @@
 
 import Regex from "std/regex"
 
-HEADER = /^(.+?):(\d+):(\d+): (warning|error|fatal error|note): (.*)$/
-TAG = /^(.*) \[([-\w.=,+]+)\]$/
-# A diagnostic line as far as its severity, which `unparsed` looks for once the escape sequences are out.
-LOOSE = /^(.+?):(\d+):(\d+): (warning|error|fatal error|note):/
-# The escape sequences of a terminal: colours (`ESC[0;1;35m`) and the links of OSC 8 (`ESC]8;;URL BEL`, which gcc
-# prints around a tag with `-fdiagnostics-urls=always`), ended by BEL or by `ESC\`.
-ESCAPE = /\x1B\[[0-9;]*[A-Za-z]|\x1B\]8;[^\x07\x1B]*(?:\x07|\x1B\\)/
-
 ## One diagnostic line. `tags` are the bracketed names at the end of the message: `[CWE-401] [-Wanalyzer-malloc-leak]`
 ## for gcc, `[clang-analyzer-unix.Malloc]` for clang-tidy.
-export struct Diagnostic
+struct Diagnostic
   file: String
   line: Int
   column: Int
@@ -21,15 +13,9 @@ export struct Diagnostic
   tags: List[String]
 end
 
-# A message without its tags, and the tags.
-struct Tagged
-  message: String
-  tags: List[String]
-end
-
 ## Returns the diagnostics of a tool's output, in order. The notes, the source lines and the carets are skipped, and
 ## so are the lines with an escape sequence, which `unparsed` returns.
-export def parse(text: String) -> List[Diagnostic]
+def parse(text: String) -> List[Diagnostic]
   esc = escape_char()
   found: List[Diagnostic] = []
   for line in text.split("\n")
@@ -47,7 +33,7 @@ end
 ## Returns the lines of a tool's output that look like a diagnostic but that `parse` does not read: a line with an
 ## escape sequence (a tool that prints colours or links), without its escape sequences, or a line that does not have
 ## the whole form. A finding in such a line would be lost without a word, so the caller makes them a tool error.
-export def unparsed(text: String) -> List[String]
+def unparsed(text: String) -> List[String]
   esc = escape_char()
   found: List[String] = []
   for line in text.split("\n")
@@ -65,11 +51,27 @@ export def unparsed(text: String) -> List[String]
 end
 
 ## Returns the option name of a diagnostic: the first tag that is not a CWE number, or none.
-export def option(d: Diagnostic) -> Optional[String]
+def option(d: Diagnostic) -> Optional[String]
   names = d.tags.select do |tag| not tag.start_with?("CWE-") end
   return none if names.empty?
 
   some(names.first.split(",").first)
+end
+
+private
+
+HEADER = /^(.+?):(\d+):(\d+): (warning|error|fatal error|note): (.*)$/
+TAG = /^(.*) \[([-\w.=,+]+)\]$/
+# A diagnostic line as far as its severity, which `unparsed` looks for once the escape sequences are out.
+LOOSE = /^(.+?):(\d+):(\d+): (warning|error|fatal error|note):/
+# The escape sequences of a terminal: colours (`ESC[0;1;35m`) and the links of OSC 8 (`ESC]8;;URL BEL`, which gcc
+# prints around a tag with `-fdiagnostics-urls=always`), ended by BEL or by `ESC\`.
+ESCAPE = /\x1B\[[0-9;]*[A-Za-z]|\x1B\]8;[^\x07\x1B]*(?:\x07|\x1B\\)/
+
+# A message without its tags, and the tags.
+struct Tagged
+  message: String
+  tags: List[String]
 end
 
 # The escape character, ESC, which starts every escape sequence of a terminal.
