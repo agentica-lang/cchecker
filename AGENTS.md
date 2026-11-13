@@ -78,7 +78,8 @@ test/             unit tests of the pure helpers (the parsers, the scan of the A
   not pass yet stays, in an `Examples` block tagged `@pending` and `@issue-N`; the PR that closes the issue moves it up
   (`make test-pending` fails until it does).
 - A PR is about 2k lines at most and holds its own tests and docs; do not leave validation or conventions to the next
-  PR. A change that a user sees adds a line under `## [Unreleased]` in `CHANGELOG.md` and updates the README, or the
+  PR. A change that a user sees adds a line under `## [Unreleased]` in `CHANGELOG.md` (the file keeps the last three
+  versions; older ones live in the release notes, which a release PR trims) and updates the README, or the
   file of docs/ for its topic.
 - Before a PR: read the diff against main; say which findings change (for a rule change, on a real code base too:
   `make bench`); every fix has a row that failed before it, and a new or changed rule has rows in
