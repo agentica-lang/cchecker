@@ -4,6 +4,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- The docs moved to https://www.agentica-lang.com/cchecker/; the old agentica-lang.github.io links redirect there.
+
 ## [0.8.0] - 2026-11-13
 
 ### Added

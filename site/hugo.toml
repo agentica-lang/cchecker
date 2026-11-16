@@ -2,7 +2,7 @@
 # submodule); `_merge = "deep"` takes its [outputs], [markup] and [minify] too. The pages are the repository's own
 # Markdown, mounted: README.md is the home page and docs/*.md the other pages, so they read the same on GitHub.
 _merge = "deep"
-baseURL = "https://agentica-lang.github.io/cchecker/"
+baseURL = "https://www.agentica-lang.com/cchecker/"
 locale = "en"
 title = "cchecker"
 theme = "docs-theme"
