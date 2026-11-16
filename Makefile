@@ -115,6 +115,10 @@ site-tools:
 
 site: site-tools
 	@hugo --source site --cleanDestinationDir --panicOnWarning $(HUGO_FLAGS)
+	@# A relative link to no page becomes a link to its source on GitHub (repoPublic): to a Markdown file or into
+	@# docs/. Only the footer's "Page source" may be one; link a page by its .md file.
+	@if grep -roE 'blob/[^/"]+/(docs/[^ >"]*|[^ >"]*\.md)"?>[^<]*' site/public \
+		| grep -v '>Page source$$'; then echo "a link points at the source on GitHub, not the page" >&2; exit 1; fi
 
 site-serve: site-tools
 	@hugo server --source site
