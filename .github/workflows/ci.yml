@@ -34,8 +34,8 @@ jobs:
       - name: Install the pinned Agentica release
         uses: agentica-lang/setup-agentica@v1
         with:
-          version: 0.31.1
-          sha256: 82a516c5f83f3c68e9e215bb672301e97ffa9fb15edf01c3b153f6819b9b51df # linux-x86_64
+          version: 0.35.0
+          sha256: 379b0494b84c89b121d089fab9b21879e939a4dd7e89661f6be34e70f13f6322 # linux-x86_64
 
       - name: Check
         run: |
@@ -81,8 +81,8 @@ jobs:
       - name: Install the pinned Agentica release
         uses: agentica-lang/setup-agentica@v1
         with:
-          version: 0.31.1
-          sha256: 82a516c5f83f3c68e9e215bb672301e97ffa9fb15edf01c3b153f6819b9b51df # linux-x86_64
+          version: 0.35.0
+          sha256: 379b0494b84c89b121d089fab9b21879e939a4dd7e89661f6be34e70f13f6322 # linux-x86_64
 
       - name: Slow tests
         run: make test-slow

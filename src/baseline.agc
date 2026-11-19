@@ -149,15 +149,11 @@ def render(entries: List[Entry], tools: Map[String, String]) -> String
   "{\n  \"version\": #{VERSION},\n  \"tools\": #{JSON.encode(tools)},\n  \"findings\": [\n#{body}\n  ]\n}\n"
 end
 
-## Writes the baseline. A file that exists is swapped for the new one in a single rename, so a reader never sees half
-## of it.
+## Writes the baseline in a temporary file and swaps it in with a single rename, so a reader never sees half of it.
 def write(path: String, entries: List[Entry], tools: Map[String, String]) -> Result[Void]
-  text = render(entries, tools)
-  return File.replace(path, text.bytes) if File.stat(path).ok?
-
   temporary = path + ".tmp"
-  try File.write_text(temporary, text)
-  Path.rename(temporary, path)
+  try File.write_text(temporary, render(entries, tools))
+  Path.replace(temporary, path)
 end
 
 ## Takes the accepted findings out of `findings`. When a kind has more findings than the baseline holds, the last ones

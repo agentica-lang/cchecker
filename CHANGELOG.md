@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- CI runs on Agentica 0.35.0; the baseline file is written to a temporary file and swapped in with `Path.replace`.
+
+### Changed
+
 - The docs moved to https://www.agentica-lang.com/cchecker/; the old agentica-lang.github.io links redirect there.
 - The docs site takes the newer docs theme: the org icon, canonical URLs, breadcrumbs, search tags and a sitemap with dates.
 
